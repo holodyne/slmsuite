@@ -547,6 +547,26 @@ ZERNIKE_NAMES = [
 ]
 
 
+
+def zernike_order_number(radial_order):
+    """
+    Get the number of Zernike polynomials under (inclusive) a given radial order.
+
+    For radial order :math:`n`, this evaluates to :math:`(n+1)(n+2)/2`.
+
+    Parameters
+    ----------
+    radial_order : int
+        Maximum radial order to include.
+
+    Returns
+    -------
+    max_index : int
+        Maximum Zernike index for this radial order (ANSI 0-based)
+    """
+    return (radial_order + 1) * (radial_order + 2) // 2
+
+
 def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
     """
     Helper function for converting between Zernike indexing conventions.

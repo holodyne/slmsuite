@@ -1340,7 +1340,7 @@ class SLM(_Picklable, ABC):
 
     def get_point_spread_function_knm(self, padded_shape=None):
         """
-        Fourier transforms the wavefront calibration's measured amplitude to find
+        Fourier transforms the wavefront calibration's measured amplitude to directly compute
         the expected diffraction-limited performance of the system in ``"knm"`` space.
 
         Parameters

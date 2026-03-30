@@ -1906,12 +1906,11 @@ class FourierSLM(CameraSLM):
         if perturbation is None:
             perturbation = 1
 
-        if phase is None:
-            hologram.optimize(
-                "GS", maxiter=3, verbose=0,
-                # raw_stats=True,
-                stat_groups=["computational_spot",],
-            )
+        hologram.optimize(
+            "GS", maxiter=3, verbose=0,
+            # raw_stats=True,
+            stat_groups=["computational_spot",],
+        )
 
         if optimize_weights:
             if isinstance(optimize_weights, bool):

@@ -37,7 +37,7 @@ from examples import download_example_notebooks
 project = "slmsuite"
 copyright = "2021-2025 slmsuite Developers. 2026 Holodyne Labs, Inc."
 author = "Holodyne Labs, Inc."
-release = "0.4.0"
+release = "0.4.1"
 
 # -- General configuration ---------------------------------------------------
 

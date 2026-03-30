@@ -196,7 +196,7 @@ def take(
 
         # Plot if desired
         if plot:
-            take_plot(xp.reshape(result, (vectors.shape[1], size[1], size[0])), separate_axes=True)
+            take_plot(xp.reshape(result, (vectors.shape[1], size[1], size[0])), separate_axes=False)
 
         if integrate:  # Sum over the integration axis.
             return xp.squeeze(xp.sum(result.astype(float), axis=-1))
@@ -1134,7 +1134,7 @@ def image_zernike_fit(
         except ImportError:
             raise ImportError("Phase unwrapping requires scikit-image.")
 
-        images = [unwrap_phase(im) for im in images]
+        phase_images = [unwrap_phase(im) for im in phase_images]
 
     # Generate Zernike terms and norms.
     order = int(order + 1)
