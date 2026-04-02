@@ -2,8 +2,9 @@
 Simulated camera to image the simulated SLM.
 """
 
-import numpy as np
 import warnings
+
+import numpy as np
 
 try:
     import cupy as cp
@@ -15,9 +16,9 @@ except:
 import matplotlib.pyplot as plt
 
 from slmsuite.hardware.cameras.camera import Camera
-from slmsuite.holography.algorithms import Hologram
 from slmsuite.holography import toolbox
-from slmsuite.misc.math import REAL_TYPES
+from slmsuite.holography.algorithms import Hologram
+from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
 
 
 class SimulatedCamera(Camera):
@@ -77,8 +78,9 @@ class SimulatedCamera(Camera):
         ----------
         slm : ~slmsuite.hardware.slms.simulated.SimulatedSLM
             Simulated SLM creating the image.
-        resolution : (int, int)
+        resolution : (int, int) OR int
             See :attr:`resolution`. If ``None``, defaults to the resolution of ``slm``.
+            If positive ``int``, the resolution is multiplied by this factor.
         M, b : array_like
             Passed to :meth:`set_affine()`. Can be set later, but the camera cannot be
             used until then.
@@ -99,8 +101,11 @@ class SimulatedCamera(Camera):
         # Don't interpolate (slower) by default unless required.
         self._interpolate = False
 
+        # If resolution is a positive scalar, assume it is a scaling factor
         if resolution is None:
-            resolution = slm.shape[::-1]
+            resolution = 1
+        if isinstance(resolution, INTEGER_TYPES):
+            resolution = Hologram.get_padded_shape(slm.shape, padding_order=resolution)[::-1]
         elif any([r != s for r, s in zip(resolution, slm.shape[::-1])]):
             self._interpolate = True
 
@@ -124,6 +129,8 @@ class SimulatedCamera(Camera):
 
     def close(self):
         pass
+
+        self.set_woi(None)
 
     def set_affine(self, M=None, b=None, **kwargs):
         """
@@ -398,7 +405,32 @@ class SimulatedCamera(Camera):
         # Truncate to maximum readout value
         img[img > self.bitresolution-1] = self.bitresolution-1
 
+        # Crop to maximum window of interest
+        if self.woi is not None:
+            x, width, y, height = self.woi
+            img = img[y:height, x:width]
+
         # Quantize: all power in one pixel (img=1) -> maximum readout value at base exposure=1
         # img = np.rint(img)
 
         return img.astype(self.dtype)
+
+    def set_woi(self, woi=None):
+        """
+        Sets the imaging region to a 'window of interest' to simulate
+        a limited field of view of the imaging plane.
+
+        Parameters
+        ----------
+        woi : list, None
+            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
+            If ``None``, defaults to largest possible.
+
+        Returns
+        ----------
+        woi : list
+            :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
+        """
+        self.woi = woi
+
+        return woi
