@@ -66,7 +66,6 @@ class _WavefrontCalibration(
     ### Wavefront Calibration Common Helper ###
 
     def _wavefront_calibration_points_parse(self, calibration_points, **kwargs):
-
         # Parse calibration_points.
         if calibration_points is None or isinstance(calibration_points, INTEGER_TYPES):
             if isinstance(calibration_points, INTEGER_TYPES):
@@ -78,6 +77,25 @@ class _WavefrontCalibration(
             calibration_points = calibration_points_[:, :num_points]
 
         calibration_points = np.rint(format_2vectors(calibration_points)).astype(int)
+
+        # Error check that the calibration points are within the camera's field of view.
+        # If pitch is passed to kwargs, then camera should accommodate points within pitch/2 of the edge.
+        pitch = kwargs.get("pitch", 0)
+
+        outside_fov_mask = (
+            (calibration_points[0,:] < pitch/2) +
+            (calibration_points[1,:] < pitch/2) +
+            (calibration_points[0,:] > self.cam.shape[1] - pitch/2) +
+            (calibration_points[1,:] > self.cam.shape[0] - pitch/2)
+        ) > 0
+
+        if np.any(outside_fov_mask):
+            raise ValueError(
+                f"Calibration points must be within the camera's field of view. "
+                f"Found = {calibration_points[:, outside_fov_mask]} which are outside "
+                f"the camera shape {self.cam.shape} and desired pitch={pitch}."
+            )
+
         return calibration_points
 
     def wavefront_calibration_points(

@@ -17,6 +17,7 @@ import inspect
 from abc import ABC, abstractmethod
 
 from slmsuite import __version__
+from slmsuite._logging import _Loggable
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import toolbox
 from slmsuite.misc import fitfunctions
@@ -32,7 +33,7 @@ def _xp(array):
     return np
 
 
-class SLM(_Common, ABC):
+class SLM(_Common, _Loggable, ABC):
     r"""
     Abstract class for SLMs.
 
@@ -171,7 +172,8 @@ class SLM(_Common, ABC):
             See :attr:`settle_time_s`.
         """
         # Initialize the common hardware attributes.
-        super().__init__(
+        _Common.__init__(
+            self,
             resolution=resolution,
             bitdepth=bitdepth,
             name=name,
@@ -190,16 +192,11 @@ class SLM(_Common, ABC):
         else:
             self.wav_design_um = float(wav_design_um)
 
-        self.pitch = self.pitch_um / self.wav_um
-
         # Make normalized coordinate grids.
         height, width = self.shape
         xpix = (width  - 1) * np.linspace(-0.5, 0.5, width)
         ypix = (height - 1) * np.linspace(-0.5, 0.5, height)
         self.grid = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
-
-        # Multiplier for when the target wavelengths differ from the design wavelength.
-        self.phase_scaling = self.wav_um / self.wav_design_um
 
         # Source profile dictionary
         self.source = {}
@@ -216,6 +213,31 @@ class SLM(_Common, ABC):
         # Default settle and phase_correct behavior for set_phase.
         self.phase_correct = True
         self.settle = False
+
+        # Initialize logger.
+        _Loggable.__init__(
+            self,
+            logger_color="bold_blue",
+            logger_attributes=[
+                "grid",
+                "wav_um",
+                "wav_design_um",
+                "pitch_um",
+                "settle_time_s",
+                "phase_correct",
+                "settle",
+                "source",
+            ],
+            # logger_methods=[
+            #     "reset",
+            #     "reset_phase",
+            #     "reset_weights",
+            #     "optimize",
+            #     "set_target",
+            #     "set_weights",
+            #     "_update_weights_generic",
+            # ]
+        )
 
     @abstractmethod
     def close(self):
@@ -360,6 +382,14 @@ class SLM(_Common, ABC):
         plt.sca(ax)
 
         return ax
+
+    @property
+    def pitch(self):
+        return self.pitch_um / self.wav_um
+
+    @property
+    def phase_scaling(self):
+        return self.wav_um / self.wav_design_um
 
     # Writing methods
 

@@ -51,7 +51,7 @@ class _Common(_Viewable, _Picklable, ABC):
         self.is_slm = bool(is_slm)
 
         # Initialize viewer.
-        super().__init__()
+        _Viewable.__init__(self)
 
     @abstractmethod
     def close(self):

@@ -10,6 +10,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.optimize import curve_fit
 from abc import ABC, abstractmethod
 
+from slmsuite._logging import _Loggable
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape
@@ -200,12 +201,34 @@ class Camera(_Common, ABC):
         self._flush_iterations = 2  # Hidden variable: how many frames to capture for a flush.
 
         # Initialize the common hardware attributes.
-        super().__init__(
+        _Common.__init__(
+            self,
             resolution=resolution,
             bitdepth=bitdepth,
             name=name,
             pitch_um=pitch_um,
             is_slm=False,
+        )
+
+        # Initialize logger.
+        _Loggable.__init__(
+            self,
+            logger_color="bold_yellow",
+            logger_attributes=[
+                "woi",
+                "capture_attempts",
+                "averaging",
+                "hdr",
+            ],
+            # logger_methods=[
+            #     "reset",
+            #     "reset_phase",
+            #     "reset_weights",
+            #     "optimize",
+            #     "set_target",
+            #     "set_weights",
+            #     "_update_weights_generic",
+            # ]
         )
 
     @property

@@ -1,4 +1,5 @@
 from slmsuite.holography.algorithms._header import *
+from slmsuite._logging import _Loggable
 from slmsuite.holography.algorithms._stats import _HologramStats
 
 
@@ -23,7 +24,7 @@ if torch is not None:
             return -torch.sum(torch.square(torch.abs(input))) + 10 * torch.std(torch.abs(input))
 
 
-class Hologram(_HologramStats):
+class Hologram(_HologramStats, _Loggable):
     r"""
     Phase retrieval methods applied to holography (DFT-based).
     See :meth:`.optimize()` to learn about the methods implemented for hologram optimization.
@@ -437,6 +438,34 @@ class Hologram(_HologramStats):
                 )
             except:
                 pass
+
+        self.name = ""
+
+        # Initialize logger.
+        _Loggable.__init__(
+            self,
+            logger_color="bold_cyan",
+            logger_attributes=[
+                "phase",
+                "amp",
+                "nearfield",
+                "phase_ff",
+                "amp_ff",
+                "farfield",
+                "target",
+                "weights",
+                "propagation_kernel"
+            ],
+            # logger_methods=[
+            #     "reset",
+            #     "reset_phase",
+            #     "reset_weights",
+            #     "optimize",
+            #     "set_target",
+            #     "set_weights",
+            #     "_update_weights_generic",
+            # ]
+        )
 
     # Initialization helper functions.
     def reset(self, reset_phase=True, reset_flags=False):

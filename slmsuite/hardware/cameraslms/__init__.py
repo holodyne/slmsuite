@@ -9,6 +9,7 @@ import numpy as np
 import warnings
 
 from slmsuite import __version__
+from slmsuite._logging import _Loggable
 from slmsuite.hardware._pickle import _Picklable
 from slmsuite.holography.analysis.files import load_h5, save_h5, generate_path, latest_path
 
@@ -86,17 +87,36 @@ class CameraSLM(_Picklable):
 
         self.calibrations = {}
 
-    def plot(
+        # Initialize logger.
+        _Loggable.__init__(
             self,
-            phase=None,
-            image=None,
-            slm_limits=None,
-            cam_limits=None,
-            title="",
-            axs=None,
-            cbar=True,
-            **kwargs
-        ):
+            logger_color="bold_green",
+            logger_attributes=[
+                "mag",
+                "calibrations",
+            ],
+            # logger_methods=[
+            #     "reset",
+            #     "reset_phase",
+            #     "reset_weights",
+            #     "optimize",
+            #     "set_target",
+            #     "set_weights",
+            #     "_update_weights_generic",
+            # ]
+        )
+
+    def plot(
+        self,
+        phase=None,
+        image=None,
+        slm_limits=None,
+        cam_limits=None,
+        title="",
+        axs=None,
+        cbar=True,
+        **kwargs
+    ):
         """
         Plots the provided phase and image for the child hardware on a pair of subplot axes.
 

@@ -39,7 +39,7 @@ class _Picklable(object):
 
         # Assemble the dictionary.
         pickled = {}
-        pickled["__class__"] = str(self)
+        pickled["__class__"] = self.__class__.__name__
 
         for k in attributes:
             if not hasattr(self, k):
