@@ -1219,20 +1219,21 @@ def image_zernike_fit(
         # Wrap-aware phase gradient: equals the true unwrapped gradient
         # everywhere except at vortices, so no phase unwrapping is needed.
         dx, dy = _wrapped_gradient(phase_images, xp)
-        m = basis.grad_mask
-        # Restrict to the eroded pupil and stack x/y to match grad_basis_flat.
-        # dx/dy are cropped one pixel per differenced axis, so the matching
-        # interior masks are m[:, 1:-1] and m[1:-1, :].
+        # Use precomputed integer indexing on the flattened dx/dy to avoid
+        # expensive GPU-CPU synchronizations from boolean masking in CuPy.
+        dx_flat = dx.reshape(image_count, -1)
+        dy_flat = dy.reshape(image_count, -1)
         stacked = xp.concatenate(
-            [dx[:, m[:, 1:-1]].T, dy[:, m[1:-1, :]].T], axis=0
+            [dx_flat[:, basis.grad_idx_x].T, dy_flat[:, basis.grad_idx_y].T], axis=0
         )                                                               # (2P, image_count)
 
         # Project the gradient onto the gradient basis.
         b = basis.grad_basis_flat @ stacked                             # (D, image_count)
 
         if leastsquares:
-            # Exact least-squares fit: solve the gradient normal equations.
-            vectors_zernike = xp.linalg.solve(basis.grad_gram, b)
+            # Exact least-squares fit: solve via the precomputed inverse of the Gram matrix.
+            # Avoids xp.linalg.solve (cuSOLVER) kernel launch overhead on GPU.
+            vectors_zernike = basis.grad_gram_inv @ b
         else:
             # Cheaper per-mode projection (the gradient basis is not orthonormal).
             vectors_zernike = b / basis.grad_norm[:, np.newaxis]
@@ -1246,8 +1247,9 @@ def image_zernike_fit(
     b = basis.basis_flat @ phase_flat.T                                 # (D, image_count)
 
     if leastsquares:
-        # Exact least-squares fit: solve the normal equations G c = b.
-        vectors_zernike = xp.linalg.solve(basis.gram, b)
+        # Exact least-squares fit: solve via the precomputed inverse of the Gram matrix.
+        # Avoids xp.linalg.solve (cuSOLVER) kernel launch overhead on GPU.
+        vectors_zernike = basis.gram_inv @ b
     else:
         # Cheaper per-mode projection (exact iff the basis is orthonormal).
         vectors_zernike = b / basis.norm[:, np.newaxis]

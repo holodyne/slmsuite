@@ -578,6 +578,10 @@ class ZernikeBasis:
         self._grad_basis_flat = None
         self._grad_gram = None
         self._grad_norm = None
+        self._gram_inv = None
+        self._grad_gram_inv = None
+        self._grad_idx_x = None
+        self._grad_idx_y = None
 
     @property
     def gram(self):
@@ -652,6 +656,34 @@ class ZernikeBasis:
             )
         return self._grad_norm
 
+    @property
+    def gram_inv(self):
+        """Lazily-computed inverse of the Gram matrix."""
+        if self._gram_inv is None:
+            self._gram_inv = self._xp.linalg.inv(self.gram)
+        return self._gram_inv
+
+    @property
+    def grad_gram_inv(self):
+        """Lazily-computed inverse of the gradient Gram matrix."""
+        if self._grad_gram_inv is None:
+            self._grad_gram_inv = self._xp.linalg.inv(self.grad_gram)
+        return self._grad_gram_inv
+
+    @property
+    def grad_idx_x(self):
+        """Lazily-computed flat integer indices for the eroded pupil dx mask."""
+        if self._grad_idx_x is None:
+            self._grad_idx_x = self._xp.where(self.grad_mask[:, 1:-1].ravel())[0]
+        return self._grad_idx_x
+
+    @property
+    def grad_idx_y(self):
+        """Lazily-computed flat integer indices for the eroded pupil dy mask."""
+        if self._grad_idx_y is None:
+            self._grad_idx_y = self._xp.where(self.grad_mask[1:-1, :].ravel())[0]
+        return self._grad_idx_y
+
     def __len__(self):
         return len(self.indices)
 
@@ -673,6 +705,10 @@ class ZernikeBasis:
         sub._grad_basis_flat = None
         sub._grad_gram = None
         sub._grad_norm = None
+        sub._gram_inv = None
+        sub._grad_gram_inv = None
+        sub._grad_idx_x = None
+        sub._grad_idx_y = None
         return sub
 
 
