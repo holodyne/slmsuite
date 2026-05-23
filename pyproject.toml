@@ -99,6 +99,7 @@ dev = [
     "slmsuite[cameras]",
     "line-profiler",
     "snakeviz",
+    "ruff",
 ]
 
 [project.urls]
@@ -117,3 +118,86 @@ slmsuite = ["holography/toolbox/cuda.cu"]
 [tool.uv]
 # pyqt5-qt5 >= 5.15.3 dropped Windows wheels; cap to last working version.
 constraint-dependencies = ["pyqt5-qt5<=5.15.2"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "docs",
+    ".venv",
+    "build",
+    "dist",
+    "*.ipynb",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true               # format code blocks inside docstrings
+docstring-code-line-length = "dynamic"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes (unused imports/vars, undefined names)
+    "I",    # isort (import sorting & grouping)
+    "UP",   # pyupgrade (modernize syntax for py3.10+)
+    "B",    # flake8-bugbear (likely bugs / footguns)
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "PIE",  # misc lints
+    "PERF", # perflint
+    "NPY",  # numpy-specific lints
+    "RUF",  # Ruff-specific
+    "D",    # pydocstyle (numpy convention — see ignores below)
+]
+ignore = [
+    "E501",    # line too long — formatter handles; docstrings/URLs may exceed
+    "E741",    # ambiguous var name (l, I, O) — common in math/holography
+    "B008",    # function call in default arg — np.array(...) defaults are fine
+    "B905",    # zip without strict= — noisy for numeric code
+    "SIM108",  # ternary-instead-of-if — often less readable for math
+    "SIM117",  # combine nested with-statements — hurts readability w/ hardware
+    "PERF203", # try/except in loop — often unavoidable around hardware I/O
+    # pydocstyle — keep numpy convention, drop the noisiest "missing" rules
+    "D100",    # missing docstring in public module
+    "D101",    # missing docstring in public class
+    "D102",    # missing docstring in public method
+    "D103",    # missing docstring in public function
+    "D104",    # missing docstring in public package
+    "D105",    # missing docstring in magic method
+    "D107",    # missing docstring in __init__
+    "D200",    # one-line docstring should fit on one line — cosmetic, lots of churn
+    "D203",    # 1 blank line before class docstring (conflicts w/ D211)
+    "D205",    # 1 blank line between summary and description
+    "D212",    # multi-line summary first line (conflicts w/ D213; numpy uses D213)
+    "D400",    # missing trailing period — false positives on math/symbols
+    "D401",    # imperative mood — too opinionated for scientific prose
+    "D415",    # first line ends with period — false positives on math/symbols
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]                    # re-exports & star-imports are intentional
+"slmsuite/hardware/**/*.py" = ["F401"]              # vendor SDK imports gated by try/except
+"slmsuite/misc/files.py" = ["F403"]                 # backwards-compat re-export shim
+"slmsuite/misc/fitfunctions.py" = ["F403"]          # backwards-compat re-export shim
+"slmsuite/hardware/cameras/template.py" = ["F821"]  # placeholder TODO markers
+"slmsuite/hardware/slms/template.py" = ["F821"]     # placeholder TODO markers
+# Algorithm modules pull shared numpy/scipy/cupy symbols from _header via star import.
+"slmsuite/holography/algorithms/_feedback.py" = ["F403", "F405"]
+"slmsuite/holography/algorithms/_hologram.py" = ["F403", "F405"]
+"slmsuite/holography/algorithms/_multiplane.py" = ["F403", "F405"]
+"slmsuite/holography/algorithms/_spots.py" = ["F403", "F405"]
+"slmsuite/holography/algorithms/_stats.py" = ["F403", "F405"]
+"tests/**/*.py" = ["B011", "D", "SIM"]              # asserts, docstrings, test-style flex
+
+[tool.ruff.lint.isort]
+known-first-party = ["slmsuite"]
+combine-as-imports = true
+force-sort-within-sections = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"

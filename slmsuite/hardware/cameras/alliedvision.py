@@ -15,19 +15,22 @@ Color camera functionality is not currently implemented, and will lead to undefi
 """
 
 import time
-import numpy as np
 import warnings
+
+import numpy as np
 
 from slmsuite.hardware.cameras.camera import Camera
 
 try:
     import vmbpy
+
     vimba_system = vmbpy.VmbSystem
     vimba_name = "vmbpy"
 
 except ImportError:
     try:
         import vimba
+
         vimba_system = vimba.Vimba
         vimba_name = "vimba"
 
@@ -92,7 +95,9 @@ class AlliedVision(Camera):
             See :meth:`.Camera.__init__` for permissible options.
         """
         if vimba_system is None:
-            raise ImportError("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
+            raise ImportError(
+                "vimba or vmbpy are not installed. Install to use AlliedVision cameras."
+            )
 
         if AlliedVision.sdk is None:
             if verbose:
@@ -148,7 +153,6 @@ class AlliedVision(Camera):
             self.cam.ExposureMode.set("Timed")
         except:
             print("Warning: failed to set exposure mode to timed.")
-
 
         try:
             self.cam.AcquisitionMode.set("SingleFrame")
@@ -206,12 +210,14 @@ class AlliedVision(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of AlliedVision serial numbers.
         """
         if vimba_system is None:
-            raise ImportError("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
+            raise ImportError(
+                "vimba or vmbpy are not installed. Install to use AlliedVision cameras."
+            )
 
         if AlliedVision.sdk is None:
             AlliedVision.sdk = vimba_system.get_instance()
@@ -367,7 +373,6 @@ class AlliedVision(Camera):
             woi = self.woi if self.woi is not None else maxwoi
             self._set_woi(woi)
             raise e
-
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""

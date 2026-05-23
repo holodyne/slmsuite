@@ -1,16 +1,19 @@
 """Interface to experimental devices."""
-import warnings
+
 import datetime
+import warnings
 
 from slmsuite import __version__
-from slmsuite.misc.files import generate_path, latest_path, save_h5, load_h5
+from slmsuite.misc.files import generate_path, latest_path, load_h5, save_h5
+
 
 class _Picklable:
     """
     Class for hardware objects to handle state saving.
     """
-    _pickle = []        # Baseline parameters to pickle.
-    _pickle_data = []   #
+
+    _pickle = []  # Baseline parameters to pickle.
+    _pickle_data = []  #
 
     def pickle(self, attributes=True, metadata=True):
         """
@@ -33,7 +36,7 @@ class _Picklable:
             This information is used as standard metadata for calibrations and saving.
         """
         # Parse attributes.
-        recursive_attributes = attributes is True   # Heavy pickling only if True.
+        recursive_attributes = attributes is True  # Heavy pickling only if True.
         if isinstance(attributes, bool):
             attributes = self._pickle + (self._pickle_data if attributes else [])
 
@@ -56,10 +59,10 @@ class _Picklable:
         if metadata:
             t = datetime.datetime.now()
             return {
-                "__version__" : __version__,
-                "__time__" : str(t),
-                "__timestamp__" : t.timestamp(),
-                "__meta__" : pickled
+                "__version__": __version__,
+                "__time__": str(t),
+                "__timestamp__": t.timestamp(),
+                "__meta__": pickled,
             }
         else:
             return pickled
@@ -83,12 +86,9 @@ class _Picklable:
             The file path that the pickled data was saved to.
         """
         if name is None:
-            name = self.name + '-pickle'
+            name = self.name + "-pickle"
         file_path = generate_path(path, name, extension="h5")
 
-        save_h5(
-            file_path,
-            self.pickle(**kwargs)
-        )
+        save_h5(file_path, self.pickle(**kwargs))
 
         return file_path

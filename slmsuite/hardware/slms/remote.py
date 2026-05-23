@@ -1,8 +1,10 @@
 """
 Connects to an SLM on a remote :class:`~slmsuite.hardware.remote.Server`.
 """
+
+from slmsuite.hardware.remote import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, _Client
 from slmsuite.hardware.slms.slm import SLM
-from slmsuite.hardware.remote import _Client, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT
+
 
 class RemoteSLM(_Client, SLM):
     """

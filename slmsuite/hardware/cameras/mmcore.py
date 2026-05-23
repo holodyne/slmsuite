@@ -16,6 +16,7 @@ except ImportError:
     pymmcore = None
     warnings.warn("pymmcore not installed. Install to use Micro-Manager cameras.")
 
+
 class MMCore(Camera):
     """
     Micro-Manager camera.
@@ -32,7 +33,7 @@ class MMCore(Camera):
         path="C:\\Program Files\\Micro-Manager-2.0",
         pitch_um=None,
         verbose=True,
-        **kwargs
+        **kwargs,
     ):
         """
         Initialize camera and attributes.
@@ -85,9 +86,10 @@ class MMCore(Camera):
             bitdepth=self.cam.getImageBitDepth(),
             pitch_um=pitch_um,
             name=config,
-            **kwargs
+            **kwargs,
         )
-        if verbose: print("success")
+        if verbose:
+            print("success")
 
     @staticmethod
     def info(path="C:\\Program Files\\Micro-Manager-2.0"):
@@ -114,13 +116,12 @@ class MMCore(Camera):
         if os.path.isdir(path):
             # Loop through files in the directory.
             for file_name in os.listdir(path):
-                if file_name.endswith('.cfg'):
+                if file_name.endswith(".cfg"):
                     cfg_files.append(file_name)
         else:
             raise ValueError(f"The provided path '{path}' is not a valid directory.")
 
         return cfg_files
-
 
     def close(self):
         """See :meth:`.Camera.close`."""
@@ -142,5 +143,5 @@ class MMCore(Camera):
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
-        self.cam.snapImage();
+        self.cam.snapImage()
         return self.cam.getImage()

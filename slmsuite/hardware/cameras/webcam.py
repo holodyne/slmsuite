@@ -1,11 +1,14 @@
 """
 Wraps OpenCV's :mod:`cv2` ``VideoCapture`` class, which supports many webcams and videostreams.
 """
-import numpy as np
-import cv2
+
 import time
 
+import cv2
+import numpy as np
+
 from slmsuite.hardware.cameras.camera import Camera
+
 
 class Webcam(Camera):
     """
@@ -30,12 +33,7 @@ class Webcam(Camera):
     """
 
     def __init__(
-        self,
-        identifier=0,
-        capture_api=cv2.CAP_ANY,
-        pitch_um=None,
-        verbose=True,
-        **kwargs
+        self, identifier=0, capture_api=cv2.CAP_ANY, pitch_um=None, verbose=True, **kwargs
     ):
         """
         Initialize camera and attributes.
@@ -60,34 +58,36 @@ class Webcam(Camera):
             See :meth:`.Camera.__init__` for permissible options.
         """
         # Then we load the camera from the SDK
-        id = f'{identifier}' if isinstance(identifier, str) else identifier
-        if verbose: print(f"Webcam {id} initializing... ", end="")
+        id = f"{identifier}" if isinstance(identifier, str) else identifier
+        if verbose:
+            print(f"Webcam {id} initializing... ", end="")
         self.cam = cv2.VideoCapture(identifier, capture_api)
-        time.sleep(.5)
+        time.sleep(0.5)
         if not self.cam.isOpened():
             raise RuntimeError(f"Failed to initialize webcam {id}")
 
-        time.sleep(.5)
+        time.sleep(0.5)
 
         # Finally, use the superclass constructor to initialize other required variables.
         super().__init__(
             (
                 int(self.cam.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                int(self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                int(self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT)),
             ),
             bitdepth=8,
             pitch_um=pitch_um,
             name=str(identifier),
-            **kwargs
+            **kwargs,
         )
 
-        time.sleep(.5)
+        time.sleep(0.5)
         self.backend = self.cam.getBackendName()
         self.set_auto_exposure(False)
-        time.sleep(.5)
+        time.sleep(0.5)
         self.set_exposure(self.get_exposure())
-        time.sleep(.5)
-        if verbose: print("success")
+        time.sleep(0.5)
+        if verbose:
+            print("success")
 
     def close(self):
         """See :meth:`.Camera.close`."""
@@ -106,7 +106,7 @@ class Webcam(Camera):
 
             self.shape = self.default_shape = (
                 int(self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                int(self.cam.get(cv2.CAP_PROP_FRAME_WIDTH))
+                int(self.cam.get(cv2.CAP_PROP_FRAME_WIDTH)),
             )
 
             time.sleep(1)
@@ -122,7 +122,7 @@ class Webcam(Camera):
 
             self.shape = self.default_shape = (
                 int(self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                int(self.cam.get(cv2.CAP_PROP_FRAME_WIDTH))
+                int(self.cam.get(cv2.CAP_PROP_FRAME_WIDTH)),
             )
 
             time.sleep(1)
@@ -138,7 +138,7 @@ class Webcam(Camera):
 
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
-        return 2**float(self.cam.get(cv2.CAP_PROP_EXPOSURE))
+        return 2 ** float(self.cam.get(cv2.CAP_PROP_EXPOSURE))
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
@@ -147,9 +147,10 @@ class Webcam(Camera):
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
         (success, img) = self.cam.read()
-        if not success: raise RuntimeError("Could not grab frame.")
+        if not success:
+            raise RuntimeError("Could not grab frame.")
         img = np.array(img)
         if len(img.shape) == 3:
-            return img[:,:,::-1]    # Flip BGR to RGB; FUTURE: Make more general.
+            return img[:, :, ::-1]  # Flip BGR to RGB; FUTURE: Make more general.
         else:
             return img

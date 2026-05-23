@@ -5,6 +5,7 @@ Outlines which camera superclass functions must be implemented.
 
 from slmsuite.hardware.cameras.camera import Camera
 
+
 class Template(Camera):
     """
     Template for adding a new camera to :mod:`slmsuite`. Replace :class:`Template`
@@ -23,13 +24,7 @@ class Template(Camera):
     # Class variable (same for all instances of Template) pointing to a singleton SDK.
     sdk = None
 
-    def __init__(
-        self,
-        serial="",
-        pitch_um=None,
-        verbose=True,
-        **kwargs
-    ):
+    def __init__(self, serial="", pitch_um=None, verbose=True, **kwargs):
         """
         Initialize camera and attributes.
 
@@ -56,15 +51,18 @@ class Template(Camera):
         # - Gathering parameters such a width, height, and bitdepth.
 
         # Most cameras have an SDK that needs to be loaded before the camera
-        if verbose: print("Template SDK initializing... ", end="")
+        if verbose:
+            print("Template SDK initializing... ", end="")
         raise NotImplementedError()
-        Template.sdk = something()                      # TODO: Fill in proper function.
-        if verbose: print("success")
+        Template.sdk = something()  # TODO: Fill in proper function.
+        if verbose:
+            print("success")
 
         # Then we load the camera from the SDK
-        if verbose: print(f"'{serial}' initializing... ", end="")
+        if verbose:
+            print(f"'{serial}' initializing... ", end="")
         raise NotImplementedError()
-        self.cam = sdk.something(serial)                # TODO: Fill in proper function.
+        self.cam = sdk.something(serial)  # TODO: Fill in proper function.
 
         # ... Other setup.
 
@@ -74,14 +72,15 @@ class Template(Camera):
             bitdepth=self.cam.get_depth(),
             pitch_um=pitch_um,
             name=serial,
-            **kwargs
+            **kwargs,
         )
-        if verbose: print("success")
+        if verbose:
+            print("success")
 
     def close(self):
         """See :meth:`.Camera.close`."""
         raise NotImplementedError()
-        self.cam.close()                                # TODO: Fill in proper function.
+        self.cam.close()  # TODO: Fill in proper function.
         del self.cam
 
     @staticmethod
@@ -96,12 +95,12 @@ class Template(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of serial numbers or identifiers.
         """
         raise NotImplementedError()
-        serial_list = Template.sdk.get_serial_list()    # TODO: Fill in proper function.
+        serial_list = Template.sdk.get_serial_list()  # TODO: Fill in proper function.
         return serial_list
 
     ### Property Configuration ###
@@ -109,12 +108,12 @@ class Template(Camera):
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
         raise NotImplementedError()
-        return float(self.cam.get_exposure()) / 1e3     # TODO: Fill in proper function.
+        return float(self.cam.get_exposure()) / 1e3  # TODO: Fill in proper function.
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
         raise NotImplementedError()
-        self.cam.set_exposure(1e3 * exposure_s)         # TODO: Fill in proper function.
+        self.cam.set_exposure(1e3 * exposure_s)  # TODO: Fill in proper function.
 
     def set_woi(self, woi=None):
         """See :meth:`.Camera.set_woi`."""
@@ -129,19 +128,20 @@ class Template(Camera):
         # (similar to how the SLM superclass' set_phase method pairs with _set_phase_hw methods
         # for each subclass) -- frame averaging, transformations, and so on -- so this
         # method should be limited to camera-interface specific functions.
-        return self.cam.get_image_function()     # TODO: Fill in proper function.
+        return self.cam.get_image_function()  # TODO: Fill in proper function.
+
 
 # Optional methods:
 
-    # def _get_images_hw(self, image_count, timeout_s, out=None):
-    #     """See :meth:`.Camera._get_images_hw`."""
-    #     # Similar to the core method but for a batch of images.
-    #     # This should be used if the camera has a hardware-specific method of grabbing
-    #     # frame batches. If not defined, the superclass captures and averages sequential
-    #     # _get_image_hw images.
-    #     return self.cam.get_images_function()     # TODO: Fill in proper function.
+# def _get_images_hw(self, image_count, timeout_s, out=None):
+#     """See :meth:`.Camera._get_images_hw`."""
+#     # Similar to the core method but for a batch of images.
+#     # This should be used if the camera has a hardware-specific method of grabbing
+#     # frame batches. If not defined, the superclass captures and averages sequential
+#     # _get_image_hw images.
+#     return self.cam.get_images_function()     # TODO: Fill in proper function.
 
-    # def flush(self, timeout_s=1):
-    #     """See :meth:`.Camera.flush`."""
-    #     raise NotImplementedError()
-    #     # Clears ungrabbed images from the queue; the abstract default calls .get_image twice.
+# def flush(self, timeout_s=1):
+#     """See :meth:`.Camera.flush`."""
+#     raise NotImplementedError()
+#     # Clears ungrabbed images from the queue; the abstract default calls .get_image twice.

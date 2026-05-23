@@ -29,14 +29,14 @@ class FeedbackHologram(Hologram):
     """
 
     def __init__(
-            self,
-            shape,
-            target_ij=None,
-            cameraslm=None,
-            null_region=None,
-            null_region_radius_frac=None,
-            **kwargs
-        ):
+        self,
+        shape,
+        target_ij=None,
+        cameraslm=None,
+        null_region=None,
+        null_region_radius_frac=None,
+        **kwargs,
+    ):
         """
         Initializes a hologram with camera feedback.
 
@@ -94,7 +94,7 @@ class FeedbackHologram(Hologram):
             amp = kwargs.pop("amp", None)
             slm_shape = None
 
-        if not "slm_shape" in kwargs:
+        if "slm_shape" not in kwargs:
             kwargs["slm_shape"] = slm_shape
 
         super().__init__(target=shape, amp=amp, **kwargs)
@@ -122,16 +122,13 @@ class FeedbackHologram(Hologram):
                 from_units="kxy",
                 to_units="knm",
                 hardware=self.cameraslm.slm,
-                shape=self.shape
+                shape=self.shape,
             )
 
             # Transform the target, if it is provided.
             if target_ij is not None:
                 self.update_target(
-                    target_ij,
-                    null_region,
-                    null_region_radius_frac,
-                    reset_weights=True
+                    target_ij, null_region, null_region_radius_frac, reset_weights=True
                 )
 
         else:
@@ -168,14 +165,17 @@ class FeedbackHologram(Hologram):
             Image transformed into ``"knm"`` space.
         """
         if self.cameraslm is None:
-            raise RuntimeError("Cannot use ijcam_to_knmslm without the calibrations in a cameraslm.")
-        if not "fourier" in self.cameraslm.calibrations:
+            raise RuntimeError(
+                "Cannot use ijcam_to_knmslm without the calibrations in a cameraslm."
+            )
+        if "fourier" not in self.cameraslm.calibrations:
             raise RuntimeError("ijcam_to_knmslm requires a Fourier calibration.")
 
         # First transformation. FUTURE: make convert_basis to output a matrix like here?
-        conversion = (
-            toolbox.convert_vector((1, 1), "knm", "kxy", hardware=self.cameraslm.slm, shape=self.shape) -
-            toolbox.convert_vector((0, 0), "knm", "kxy", hardware=self.cameraslm.slm, shape=self.shape)
+        conversion = toolbox.convert_vector(
+            (1, 1), "knm", "kxy", hardware=self.cameraslm.slm, shape=self.shape
+        ) - toolbox.convert_vector(
+            (0, 0), "knm", "kxy", hardware=self.cameraslm.slm, shape=self.shape
         )
         M1 = np.diag(np.squeeze(conversion))
         b1 = np.matmul(M1, -toolbox.format_2vectors(np.flip(np.squeeze(self.shape)) / 2))
@@ -257,7 +257,11 @@ class FeedbackHologram(Hologram):
 
             # Measure the result.
             self.cameraslm.cam.flush()
-            self.img_ij = np.array(self.cameraslm.cam.get_image(), copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype)
+            self.img_ij = np.array(
+                self.cameraslm.cam.get_image(),
+                copy=(False if np.__version__[0] == "1" else None),
+                dtype=self.dtype,
+            )
 
             if basis == "knm":  # Compute the knm basis image.
                 self.img_knm = self.ijcam_to_knmslm(self.img_ij, out=self.img_knm)
@@ -276,7 +280,9 @@ class FeedbackHologram(Hologram):
             raise ValueError(f"Unrecognized measurement basis '{basis}'. Options are 'ij' or 'knm'")
 
     # Target update.
-    def update_target(self, new_target_ij, null_region=None, null_region_radius_frac=None, reset_weights=False):
+    def update_target(
+        self, new_target_ij, null_region=None, null_region_radius_frac=None, reset_weights=False
+    ):
         """
         Change the target to something new. This method handles cleaning and normalization.
 

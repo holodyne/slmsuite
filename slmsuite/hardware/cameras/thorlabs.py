@@ -28,8 +28,9 @@ Color camera functionality is not currently implemented, and will lead to undefi
 import os
 import sys
 import time
-import numpy as np
 import warnings
+
+import numpy as np
 
 from slmsuite.hardware.cameras.camera import Camera
 
@@ -38,6 +39,7 @@ DEFAULT_DLL_PATH = (
     "Scientific Camera Support\\Scientific Camera "
     "Interfaces\\SDK\\Native Toolkit\\dlls\\Native_"
 )
+
 
 def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
     """
@@ -50,8 +52,8 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
     dll_path : str
         Full path to the Thorlabs camera DLLs.
     """
-    if DEFAULT_DLL_PATH == dll_path:
-        is_64bits = sys.maxsize > 2 ** 32
+    if dll_path == DEFAULT_DLL_PATH:
+        is_64bits = sys.maxsize > 2**32
 
         if is_64bits:
             dll_path += "64_lib"
@@ -62,18 +64,19 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
         try:
             os.add_dll_directory(dll_path)
         except:
-            if DEFAULT_DLL_PATH == dll_path:
+            if dll_path == DEFAULT_DLL_PATH:
                 warnings.warn(
-                    f"thorlabs_tsi_sdk DLLs not found at default path. "
+                    "thorlabs_tsi_sdk DLLs not found at default path. "
                     "Resolve to use Thorlabs cameras.\nDefault path: '{DEFAULT_DLL_PATH}'"
                 )
     else:
         os.environ["PATH"] = dll_path + os.pathsep + os.environ["PATH"]
 
+
 _configure_tlcam_dll_path()
 
 try:
-    from thorlabs_tsi_sdk.tl_camera import TLCameraSDK, ROI
+    from thorlabs_tsi_sdk.tl_camera import ROI, TLCameraSDK
 except ImportError:
     TLCameraSDK = None
     warnings.warn("thorlabs_tsi_sdk not installed. Install to use Thorlabs cameras.")
@@ -175,9 +178,10 @@ class ThorCam(Camera):
             bitdepth=self.cam.bit_depth,
             pitch_um=(self.cam.sensor_pixel_width_um, self.cam.sensor_pixel_height_um),
             name=serial,
-            **kwargs
+            **kwargs,
         )
-        if verbose: print("success")
+        if verbose:
+            print("success")
 
     def close(self, close_sdk=False):
         """
@@ -209,7 +213,7 @@ class ThorCam(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of ThorCam serial numbers.
         """
@@ -295,10 +299,12 @@ class ThorCam(Camera):
             woi = (
                 self.cam.roi_range.upper_left_x_pixels_min,
                 self.cam.roi_range.lower_right_x_pixels_max
-                - self.cam.roi_range.upper_left_x_pixels_min + 1,
+                - self.cam.roi_range.upper_left_x_pixels_min
+                + 1,
                 self.cam.roi_range.upper_left_y_pixels_min,
                 self.cam.roi_range.lower_right_y_pixels_max
-                - self.cam.roi_range.upper_left_y_pixels_min + 1,
+                - self.cam.roi_range.upper_left_y_pixels_min
+                + 1,
             )
 
         self.woi = woi
@@ -375,7 +381,7 @@ class ThorCam(Camera):
 
             self.profile = profile
 
-    def _get_image_hw(self, timeout_s=.1, trigger=True, grab=True):
+    def _get_image_hw(self, timeout_s=0.1, trigger=True, grab=True):
         """
         See :meth:`.Camera._get_image_hw`. By default ``trigger=True`` and ``grab=True`` which
         will result in blocking image acquisition.
@@ -435,11 +441,7 @@ class ThorCam(Camera):
         # Continue flushing frames while the timeout is not exceeded,
         # the returned frame is empty (None),
         # or the frame returned super fast (cached).
-        while (
-            time.perf_counter() - t < timeout_s
-            and frame is not None
-            and frametime < 0.003
-        ):
+        while time.perf_counter() - t < timeout_s and frame is not None and frametime < 0.003:
             t2 = time.perf_counter()
             frame = self.cam.get_pending_frame_or_null()
             frametime = time.perf_counter() - t2

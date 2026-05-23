@@ -10,23 +10,27 @@ For example, the following code loads a UC480 camera:
 
     # Load a legacy Thorlabs camera using the UC480 driver.
     from instrumental.drivers.cameras.uc480 import UC480Camera
+
     i_cam = UC480Camera()
 
     # Wrap the camera with the slmsuite-compatible class.
     from slmsuite.hardware.cameras.instrumental import Instrumental
+
     cam = Instrumental(i_cam)
 
 Note
 ~~~~
 Color camera functionality is not currently implemented, and will lead to undefined behavior.
 """
+
 import warnings
+
 from slmsuite.hardware.cameras.camera import Camera
 
 try:
-    import instrumental.drivers.cameras as instrumental_cameras
-    from instrumental.drivers import ParamSet
     from instrumental import instrument, list_instruments
+    from instrumental.drivers import ParamSet
+    import instrumental.drivers.cameras as instrumental_cameras
 except ImportError:
     instrument = None
     warnings.warn("instrumental-lib not installed. Install to use Instrumental cameras.")
@@ -67,10 +71,12 @@ class Instrumental(Camera):
 
                 # Load a legacy Thorlabs camera using the UC480 driver.
                 from instrumental.drivers.cameras.uc480 import UC480Camera
+
                 i_cam = UC480Camera()
 
                 # Wrap the camera with the slmsuite-compatible class.
                 from slmsuite.hardware.cameras.instrumental import Instrumental
+
                 cam = Instrumental(i_cam)
 
         pitch_um : (float, float) OR None
@@ -87,7 +93,9 @@ class Instrumental(Camera):
            If the camera can not be reached.
         """
         if instrument is None:
-            raise ImportError("instrumental-lib not installed. Install to use Instrumental cameras.")
+            raise ImportError(
+                "instrumental-lib not installed. Install to use Instrumental cameras."
+            )
 
         if cam is None:
             instruments = list_instruments()
@@ -108,17 +116,19 @@ class Instrumental(Camera):
             )
 
         name = kwargs.pop("name", cam.model.decode("utf-8") + "_" + cam.serial.decode("utf-8"))
-        if verbose: print(f"Cam {name} parsing... ", end="")
+        if verbose:
+            print(f"Cam {name} parsing... ", end="")
         self.cam = cam
 
         super().__init__(
             (self.cam.width, self.cam.height),
-            bitdepth=8,         # Currently defaults to 8 because instrumental doesn't cache this. Update in the future, maybe.
+            bitdepth=8,  # Currently defaults to 8 because instrumental doesn't cache this. Update in the future, maybe.
             pitch_um=pitch_um,  # Currently unset because instrumental doesn't cache this. Update in the future, maybe.
             name=name,
-            **kwargs
+            **kwargs,
         )
-        if verbose: print("success")
+        if verbose:
+            print("success")
 
     def close(self):
         """
@@ -150,7 +160,7 @@ class Instrumental(Camera):
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
-        self.cam.exposure = 1000. * float(exposure_s)
+        self.cam.exposure = 1000.0 * float(exposure_s)
 
     def set_woi(self, woi=None):
         """
@@ -164,7 +174,7 @@ class Instrumental(Camera):
             If ``None``, defaults to largest possible.
 
         Returns
-        ----------
+        -------
         woi : list
             :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
         """

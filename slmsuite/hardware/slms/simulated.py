@@ -3,7 +3,9 @@ Simulated SLM.
 """
 
 import numpy as np
+
 from .slm import SLM
+
 
 class SimulatedSLM(SLM):
     """
@@ -21,7 +23,7 @@ class SimulatedSLM(SLM):
             User-defined source phase (with the dimensions of :attr:`shape`) on the SLM.
     """
 
-    def __init__(self, resolution, pitch_um=(8,8), source=None, **kwargs):
+    def __init__(self, resolution, pitch_um=(8, 8), source=None, **kwargs):
         r"""
         Initialize simulated slm.
 
@@ -63,7 +65,6 @@ class SimulatedSLM(SLM):
 
     def _set_phase_hw(self, display):
         """Updates SLM.display to implement various physical artifacts of SLMs."""
-
         # FUTURE: apply physical effects directly to SLM.display
 
         return
