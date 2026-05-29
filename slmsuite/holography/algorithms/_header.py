@@ -36,6 +36,10 @@ try:
 except:
     torch = None
 
+# Import the array-backend abstraction (numpy / cupy / torch dispatch).
+from slmsuite.misc import backend
+from slmsuite.misc.backend import get_module, is_torch, is_cupy, is_autograd, to_numpy
+
 # Import helper functions
 from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.toolbox import phase as tphase

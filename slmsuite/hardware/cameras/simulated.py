@@ -18,6 +18,7 @@ from slmsuite.hardware.cameras.camera import Camera
 from slmsuite.holography.algorithms import Hologram
 from slmsuite.holography import toolbox
 from slmsuite.misc.math import REAL_TYPES
+from slmsuite.misc import backend
 
 
 class SimulatedCamera(Camera):
@@ -69,7 +70,7 @@ class SimulatedCamera(Camera):
 
     """
 
-    def __init__(self, slm, resolution=None, M=None, b=None, noise=None, pitch_um=None, gain=1, **kwargs):
+    def __init__(self, slm, resolution=None, M=None, b=None, noise=None, pitch_um=None, gain=1, return_complex=False, **kwargs):
         """
         Initialize simulated camera.
 
@@ -89,12 +90,24 @@ class SimulatedCamera(Camera):
             are not available (e.g. :meth:`build_affine()` for certain units).
         gain : float
             Gain to emulate physical cameras while keeping the same values for exposure time.
+        return_complex : bool
+            If ``True``, the differentiable (torch) imaging path additionally stores the complex
+            pupil field :attr:`field_pupil` (``amp * exp(i*phase)`` at the SLM plane) and the
+            complex far-field :attr:`field_far` (the camera-plane field ``U`` whose squared
+            magnitude is the image) after each :meth:`get_image`. These enable analytic
+            Fisher-information / CRLB Jacobians, e.g. ``dI/da = -2 Im[U* . FFT(Z . E)]``.
+            Has no effect on the numpy/cupy path. Defaults to ``False``.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
 
         # Store a reference to the SLM: we need this to compute the far-field camera images.
         self._slm = slm
+
+        # Optional exposure of the complex fields for analytic Fisher/CRLB use (torch path).
+        self.return_complex = return_complex
+        self.field_pupil = None
+        self.field_far = None
 
         # Don't interpolate (slower) by default unless required.
         self._interpolate = False
@@ -354,6 +367,59 @@ class SimulatedCamera(Camera):
             raise RuntimeError(
                 "Cannot display SimulatedCamera before affine transformation is defined."
             )
+
+        # Torch backend: if the SLM holds an analog (differentiable) torch phase, compute the
+        # far-field intensity as a torch tensor with the autograd graph intact. This mirrors the
+        # numpy/cupy path below but skips host transfer, noise, clipping, and integer casting --
+        # all non-differentiable terminal operations -- returning an unclipped float image.
+        if backend.is_torch(self._slm.phase):
+            torch = backend.torch
+            phase = self._slm.phase
+            device = phase.device
+            dtype = phase.dtype
+
+            phase_sim = torch.as_tensor(
+                np.asarray(self._slm.source["phase_sim"]), dtype=dtype, device=device
+            )
+            amp_sim = torch.as_tensor(
+                np.asarray(self._slm.source["amplitude_sim"]), dtype=dtype, device=device
+            )
+
+            # Drive the internal hologram with analog torch arrays (get_farfield is backend-aware).
+            self._hologram.amp = amp_sim
+            self._hologram.phase = phase + phase_sim
+            self._hologram.propagation_kernel = None
+            self._hologram.amp_ff = None
+            self._hologram.phase_ff = None
+
+            ff = self._hologram.get_farfield(get=False)     # complex far-field U (padded)
+
+            if self._interpolate:
+                # Differentiable PyTorch interpolation using grid_sample
+                knm_cam_torch = torch.as_tensor(backend.to_numpy(self.knm_cam), dtype=dtype, device=device)
+                grid_y = (knm_cam_torch[0] / (self.shape_padded[0] - 1)) * 2 - 1
+                grid_x = (knm_cam_torch[1] / (self.shape_padded[1] - 1)) * 2 - 1
+                grid_sample_grid = torch.stack((grid_x, grid_y), dim=-1).unsqueeze(0)
+
+                ff_intensity = (ff.real ** 2 + ff.imag ** 2).unsqueeze(0).unsqueeze(0)
+                img = torch.nn.functional.grid_sample(
+                    ff_intensity,
+                    grid_sample_grid,
+                    mode='bilinear',
+                    padding_mode='zeros',
+                    align_corners=True
+                )
+                img = img.squeeze(0).squeeze(0) * (self.exposure_s * self.gain)
+            else:
+                ff = toolbox.unpad(ff, self.shape)              # crop to camera pixels (slicing)
+                img = (ff.real ** 2 + ff.imag ** 2) * (self.exposure_s * self.gain)
+
+            # Optionally expose the complex fields for analytic Fisher/CRLB Jacobians.
+            if self.return_complex:
+                self.field_pupil = amp_sim * torch.exp(1j * (phase + phase_sim))
+                self.field_far = ff
+
+            return img
 
         # Update phase; calculate the far-field (keep on GPU if using cupy for follow-on interp)
         # FUTURE: in the case where sim is being used inside a GS loop, there could be

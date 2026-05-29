@@ -120,6 +120,23 @@ slmsuite = ["holography/toolbox/cuda.cu"]
 # pyqt5-qt5 >= 5.15.3 dropped Windows wheels; cap to last working version.
 constraint-dependencies = ["pyqt5-qt5<=5.15.2"]
 
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+# Select the PyTorch wheel (CPU vs cuXXX) that matches the locally installed CUDA driver
+# at resolve/install time, instead of hardcoding a CUDA version. uv detects the driver
+# (e.g. CUDA 13.2 -> torch ...+cu130) and points at the matching PyTorch index. Falls back
+# to CPU when no CUDA driver is present. Override per-invocation with
+# `--torch-backend <cpu|cuXXX|auto>` or the UV_TORCH_BACKEND environment variable.
+torch-backend = "auto"
+
 [tool.coverage.run]
 # Don't include hardware drivers in coverage reports, as we cannot autotest them.
 include = [

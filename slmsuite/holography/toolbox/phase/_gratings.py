@@ -1,11 +1,6 @@
-"""
-Grating phase patterns.
-"""
 import numpy as np
-try:
-    import cupy as cp   # type: ignore
-except ImportError:
-    cp = np
+from slmsuite.misc import backend
+from slmsuite.misc.backend import cp, torch, get_module
 from typing import Tuple, Union, Callable
 from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
 
@@ -35,10 +30,11 @@ def blaze(
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_module(x_grid)
 
     # Optimize phase construction based on context.
     if vector[0] == 0 and vector[1] == 0:
-        result = np.zeros_like(x_grid)
+        result = xp.zeros_like(x_grid)
     elif vector[1] == 0:
         result = (2 * np.pi * vector[0]) * x_grid
     elif vector[0] == 0:
@@ -47,7 +43,7 @@ def blaze(
         result = (2 * np.pi * vector[0]) * x_grid + (2 * np.pi * vector[1]) * y_grid
 
     if len(vector) > 2:
-        result += (np.pi * vector[2]) * (np.square(x_grid) + np.square(y_grid))
+        result += (np.pi * vector[2]) * (xp.square(x_grid) + xp.square(y_grid))
 
     return result
 
@@ -92,11 +88,13 @@ def sinusoid(
     :return:
         The phase for this function.
     """
+    (x_grid, y_grid) = _process_grid(grid)
+    xp = get_module(x_grid)
+
     if vector[0] == 0 and vector[1] == 0:
-        (x_grid, _) = _process_grid(grid)
-        result = np.full_like(x_grid, (a-b)/2 * (1 + np.cos(shift)))
+        result = xp.full_like(x_grid, (a-b)/2 * (1 + np.cos(shift)))
     else:
-        result = (a-b)/2 * (1 + np.cos(blaze(grid, vector) + shift))
+        result = (a-b)/2 * (1 + xp.cos(blaze(grid, vector) + shift))
 
     # Add offset if provided.
     if b != 0:
@@ -186,6 +184,7 @@ def binary(
         The phase for this function.
     """
     grid = (x_grid, y_grid) = _process_grid(grid)
+    xp = get_module(x_grid)
     dtype = x_grid.dtype
     duty_cycle = np.clip(float(duty_cycle), 0, 1)
 
@@ -207,7 +206,7 @@ def binary(
         if shift != 0:
             if np.mod(shift, 2*np.pi) >= (2 * np.pi * duty_cycle):
                 phase = a
-        return np.full(x_grid.shape, phase, dtype=dtype)
+        return xp.full(x_grid.shape, phase, dtype=dtype)
     elif vector[0] != 0 and vector[1] != 0:
         pass    # xor the next case.
     elif vector[0] == 0 or vector[1] == 0:
@@ -220,11 +219,14 @@ def binary(
         if np.all(np.isclose(period, period_int)) and np.all(np.isclose(duty, duty_int)):
             pass    # Future: speed optimization.
 
-    # If we have not returned, then we have to use the slow np.mod option.
-    decision = np.mod(blaze(grid, vector) + shift, 2*np.pi)
-    decision[np.isclose(decision, 2*np.pi)] = 0   # Handle edge case
+    # If we have not returned, then we have to use the mod option.
+    decision = backend.mod(blaze(grid, vector) + shift, 2*np.pi)
+    is_close_2pi = backend.isclose(decision, 2*np.pi)
+    decision = backend.where(is_close_2pi, xp.zeros_like(decision), decision)
     decision -= (2 * np.pi * duty_cycle)
-    return np.where((decision < 0) & ~np.isclose(decision, 0), a, b)
+    is_close_0 = backend.isclose(decision, 0)
+    cond = (decision < 0) & ~is_close_0
+    return backend.where(cond, a, b)
 
 
 def _quadrants(

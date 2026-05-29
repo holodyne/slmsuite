@@ -21,15 +21,14 @@ from slmsuite.hardware._common import _Common
 from slmsuite.holography import toolbox
 from slmsuite.misc import fitfunctions
 from slmsuite.misc.math import REAL_TYPES
+from slmsuite.misc import backend
 from slmsuite.holography import analysis
 from slmsuite.misc.files import generate_path, latest_path, save_h5, load_h5
 
 
 def _xp(array):
-    """Return cupy if array is a cupy ndarray, else numpy."""
-    if cp is not np and isinstance(array, cp.ndarray):
-        return cp
-    return np
+    """Return the array namespace backing ``array``: torch, cupy, or numpy."""
+    return backend.get_module(array)
 
 
 class SLM(_Common, ABC):
@@ -133,6 +132,12 @@ class SLM(_Common, ABC):
         "phase",
         "display",
     ]
+
+    #: Whether :meth:`set_phase` accepts a differentiable :class:`torch.Tensor` phase (stored
+    #: analog, bypassing bitdepth quantization). Only meaningful for compute-only SLMs such as
+    #: :class:`~slmsuite.hardware.slms.simulated.SimulatedSLM`; physical SLMs cannot display an
+    #: analog torch phase, so the base default is ``False`` (a torch phase raises).
+    _supports_torch_phase = False
 
     @abstractmethod
     def __init__(
@@ -682,6 +687,33 @@ class SLM(_Common, ABC):
         if hasattr(phase, "get_phase"):
             # If we passed a hologram, grab the phase from there.
             phase = phase.get_phase()
+
+        # Torch backend: store an analog (differentiable) phase and bypass the bitdepth
+        # quantization in _phase2gray, which is non-differentiable. The simulated camera reads
+        # this analog ``self.phase`` directly. This is backend-transparent: the public set_phase
+        # signature is unchanged; we simply dispatch on the array type that was passed in.
+        if backend.is_torch(phase):
+            if not self._supports_torch_phase:
+                raise TypeError(
+                    f"'{self.name}' cannot accept a torch.Tensor phase: a physical SLM displays "
+                    "bit-quantized values, which are non-differentiable. Differentiable (analog) "
+                    "torch phases are only supported on compute-only SLMs such as SimulatedSLM. "
+                    "Pass a numpy/cupy array, or use a SimulatedSLM for autodiff workflows."
+                )
+            if tuple(phase.shape) != tuple(self.shape):
+                phase = toolbox.unpad(phase, self.shape)
+
+            if phase_correct is None:
+                phase_correct = self.phase_correct
+            if phase_correct and ("phase" in self.source):
+                phase = phase + backend.torch.as_tensor(
+                    np.asarray(self.source["phase"]), dtype=phase.dtype, device=phase.device
+                )
+
+            self.phase = phase
+            # ``display`` (integer hardware buffer) is undefined for an analog torch phase;
+            # leave the prior buffer in place. Nothing is written to hardware (sim is a no-op).
+            return self.display
 
         if phase is None:
             # Zero the phase pattern.

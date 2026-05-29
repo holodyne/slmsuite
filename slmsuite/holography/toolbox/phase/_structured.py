@@ -5,10 +5,8 @@ import os
 import warnings
 import time
 import numpy as np
-try:
-    import cupy as cp   # type: ignore
-except ImportError:
-    cp = np
+from slmsuite.misc import backend
+from slmsuite.misc.backend import cp, torch, get_module
 from scipy import special
 from math import factorial
 import matplotlib.pyplot as plt
@@ -62,18 +60,21 @@ def laguerre_gaussian(grid, l, p=0, w=None):
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_module(x_grid)
 
     w = _determine_source_radius(grid, w)
 
-    theta_grid = np.arctan2(y_grid, x_grid)
+    theta_grid = backend.arctan2(y_grid, x_grid)
     rr_grid = y_grid * y_grid + x_grid * x_grid
 
-    canvas = 0
+    canvas = xp.zeros_like(x_grid)
 
     if l != 0:
-        canvas += l * theta_grid
+        canvas = canvas + l * theta_grid
     if p != 0:
-        canvas += np.pi * np.heaviside(-special.genlaguerre(p, np.abs(l))(16 * rr_grid / w / w), 0)
+        rr_numpy = backend.to_numpy(rr_grid)
+        radial_term = np.pi * np.heaviside(-special.genlaguerre(p, np.abs(l))(16 * rr_numpy / w / w), 0)
+        canvas = canvas + xp.asarray(radial_term)
 
     return canvas
 
@@ -456,15 +457,16 @@ def airy(grid, f=(np.inf, np.inf), w=None):
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_module(x_grid)
     w = _determine_source_radius(grid, w)
 
-    canvas = np.zeros_like(x_grid)
+    canvas = xp.zeros_like(x_grid)
 
     fx, fy = f
 
     if np.isfinite(fx):
-        canvas += (x_grid / (fx * w)) ** 3
+        canvas = canvas + (x_grid / (fx * w)) ** 3
     if np.isfinite(fy):
-        canvas += (y_grid / (fy * w)) ** 3
+        canvas = canvas + (y_grid / (fy * w)) ** 3
 
     return canvas

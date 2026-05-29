@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import warnings
 
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.misc import backend as _backend
 
 
 # Unit definitions.
@@ -1663,9 +1664,9 @@ def pad(matrix, shape):
     pad_l = int(np.floor(deltashape[1]))
     pad_r = int(np.ceil(deltashape[1]))
 
-    padded = np.pad(matrix, [(pad_b, pad_t), (pad_l, pad_r)], mode="constant", constant_values=0)
+    padded = _backend.pad(matrix, [(pad_b, pad_t), (pad_l, pad_r)])
 
-    if not padded.shape == shape:
+    if not tuple(padded.shape) == shape:
         raise RuntimeError("Padded result should have desired shape.")
 
     return padded

@@ -361,12 +361,20 @@ class MultiplaneHologram(Hologram):
 
     # Multiplane hacks to get meta optimization to work.
 
-    def _cg_loss(self, phase_torch):
-        """Sum the losses of all the child holograms."""
-        loss = self.holograms[0]._cg_loss(phase_torch)
+    def _cg_loss(self):
+        """
+        Sum the losses of all the child holograms.
 
-        for h in self.holograms[1:]:
-            loss += h._cg_loss(phase_torch)
+        During :meth:`optimize_cg` the meta :attr:`phase` is a torch leaf; share that exact
+        leaf with every child so a single optimized phase drives all planes (each child still
+        applies its own ``propagation_kernel`` in ``_build_nearfield``) and gradients
+        accumulate back to the one leaf.
+        """
+        loss = None
+        for h in self.holograms:
+            h.phase = self.phase
+            contribution = h._cg_loss()
+            loss = contribution if loss is None else loss + contribution
 
         return loss
 

@@ -674,16 +674,20 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
             self._cupy_kernel = self._build_cupy_kernel_batched(out=self._cupy_kernel)
 
-    def _nearfield2farfield(self, phase_torch=None):
+    def _nearfield2farfield(self):
         """
         Maps the ``(H,W)`` nearfield (complex value on the SLM)
         onto the ``(N,)`` farfield (complex value for each spot).
+        Backend-transparent and dispatched on the backend of :attr:`phase`; autograd-safe
+        on torch (no ``.detach()``). ``_nearfield2farfield_cupy`` auto-detects the backend
+        of the nearfield it receives.
         """
-        # This may return a torch nearfield if we are in torch mode.
-        nearfield = self._build_nearfield(phase_torch)
+        # _build_nearfield returns a torch nearfield when self.phase is a torch tensor.
+        nearfield = self._build_nearfield()
+        istorch = is_torch(nearfield)
 
         if self.cuda:
-            if phase_torch is None:
+            if not istorch:
                 try:
                     self.farfield = self._nearfield2farfield_cuda(nearfield)
                     self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
@@ -698,14 +702,12 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 self.cuda = False
 
         if not self.cuda:
-            if phase_torch is None:
-                self.farfield = self._nearfield2farfield_cupy(nearfield)
+            self.farfield = self._nearfield2farfield_cupy(nearfield)
+            # amp cache only on numpy/cupy; the torch farfield keeps its autograd graph.
+            if not is_torch(self.farfield):
                 self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
-            else:
-                farfield_torch = self._nearfield2farfield_cupy(nearfield)
-                self.farfield = cp.asarray(farfield_torch.detach())
-                self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
-                return farfield_torch
+
+        return self.farfield
 
     def _nearfield2farfield_cuda(self, nearfield):
         # CUDA_KERNELS = _load_cuda()
@@ -772,27 +774,49 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         # Determine whether we are in torch-mode.
         istorch = torch is not None and isinstance(nearfield, torch.Tensor)
 
-        # Do some prep work.
         if istorch:
             nearfield = torch.conj(nearfield)
-            farfield = self._get_torch_tensor_from_cupy(self.farfield)
-            def collapse_kernel(kernel, out):
-                # (N, H*W), (H*W, 1) x  = (N,1)
-                result = torch.matmul(
-                    self._get_torch_tensor_from_cupy(kernel),
-                    nearfield.ravel()[:, np.newaxis]
+            # Differentiable/autograd path for torch to maintain the computational graph perfectly
+            if N <= N_BATCH_MAX:
+                self._update_cupy_kernel()
+                kernel_torch = self._get_torch_tensor_from_cupy(self._cupy_kernel)
+                if kernel_torch.dtype != nearfield.dtype:
+                    kernel_torch = kernel_torch.to(dtype=nearfield.dtype)
+                # (N, H*W) x (H*W, 1) -> (N, 1) -> (N,)
+                farfield = torch.matmul(kernel_torch, nearfield.ravel()[:, np.newaxis]).squeeze(1)
+            else:
+                warnings.warn(
+                    f"Operating on {N} spots, larger than the threshold {N_BATCH_MAX} for a static kernel cache. "
+                    f"Operating slmsuite's compressed kernel on a CUDA-capable GPU avoids a cycling cache."
                 )
-                out[:, np.newaxis] = result
-        else:
-            nearfield = cp.conj(nearfield, out=nearfield)
-            farfield = self.farfield
-            def collapse_kernel(kernel, out):
-                # (N, H*W) x (H*W, 1) = (N,1)
-                cp.matmul(
-                    kernel,
-                    nearfield.ravel()[:, np.newaxis],
-                    out=out[:, np.newaxis]
-                )
+                farfield_pieces = []
+                batches = int(np.ceil(N / N_BATCH_MAX))
+                for batch in range(batches):
+                    batch_slice = slice(batch * N_BATCH_MAX, np.clip((batch+1) * N_BATCH_MAX, 0, N))
+                    kernel_slice = slice(0, batch_slice.stop - batch_slice.start)
+                    self._update_cupy_kernel(kernel_slice, batch_slice)
+                    kernel_torch = self._get_torch_tensor_from_cupy(self._cupy_kernel[kernel_slice, :])
+                    if kernel_torch.dtype != nearfield.dtype:
+                        kernel_torch = kernel_torch.to(dtype=nearfield.dtype)
+                    piece = torch.matmul(kernel_torch, nearfield.ravel()[:, np.newaxis]).squeeze(1)
+                    farfield_pieces.append(piece)
+                farfield = torch.cat(farfield_pieces)
+
+            farfield = torch.conj(farfield)
+            farfield = farfield * (1 / backend.norm(farfield))
+            self.farfield = farfield
+            return farfield
+
+        # Do some prep work.
+        nearfield = cp.conj(nearfield, out=nearfield)
+        farfield = self.farfield
+        def collapse_kernel(kernel, out):
+            # (N, H*W) x (H*W, 1) = (N,1)
+            cp.matmul(
+                kernel,
+                nearfield.ravel()[:, np.newaxis],
+                out=out[:, np.newaxis]
+            )
 
         # Evaluate the kernel.
         if N <= N_BATCH_MAX:
@@ -812,14 +836,11 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 collapse_kernel(self._cupy_kernel[kernel_slice, :], out=farfield[batch_slice])
 
         # Restore the in-place memory.
-        if not istorch:
-            nearfield = cp.conj(nearfield, out=nearfield)
-            farfield = cp.conj(farfield, out=farfield)
-        else:
-            return torch.conj(farfield)
+        nearfield = cp.conj(nearfield, out=nearfield)
+        farfield = cp.conj(farfield, out=farfield)
 
-        # Normalize. This might need to be brought into torch?
-        farfield *= (1 / Hologram._norm(farfield, xp=torch if istorch else cp))
+        # Normalize.
+        farfield *= (1 / Hologram._norm(farfield, xp=cp))
 
         return farfield
 
@@ -887,6 +908,37 @@ class CompressedSpotHologram(_AbstractSpotHologram):
     def _farfield2nearfield_cupy(self):
         # FYI: Farfield shape is (N,)
         N = len(self)
+
+        istorch = is_torch(self.farfield)
+
+        if istorch:
+            def expand_kernel_torch(kernel, farfield):
+                # Element-wise multiplication and sum (mathematically identical to matmul)
+                # Bypasses cuBLAS / torch.matmul complex CUDA segfaults on Windows.
+                kernel_torch = self._get_torch_tensor_from_cupy(kernel)
+                if kernel_torch.dtype != farfield.dtype:
+                    kernel_torch = kernel_torch.to(dtype=farfield.dtype)
+                result = torch.sum(farfield[:, np.newaxis] * kernel_torch, dim=0)
+                return result # shape (H*W,)
+
+            if N <= N_BATCH_MAX:
+                self._update_cupy_kernel()
+                nearfield_flat = expand_kernel_torch(self._cupy_kernel, self.farfield)
+                self.nearfield = nearfield_flat.reshape(self.slm_shape)
+            else:
+                batches = int(np.ceil(N / N_BATCH_MAX))
+                nearfield_flat = None
+                for batch in range(batches):
+                    batch_slice = slice(batch * N_BATCH_MAX, np.clip((batch+1) * N_BATCH_MAX, 0, N))
+                    kernel_slice = slice(0, batch_slice.stop - batch_slice.start)
+                    self._update_cupy_kernel(kernel_slice, batch_slice)
+                    piece = expand_kernel_torch(self._cupy_kernel[kernel_slice, :], self.farfield[batch_slice])
+                    if nearfield_flat is None:
+                        nearfield_flat = piece
+                    else:
+                        nearfield_flat = nearfield_flat + piece
+                self.nearfield = nearfield_flat.reshape(self.slm_shape)
+            return
 
         def expand_kernel(kernel, farfield, out):
             # (1, N) x (N, H*W) = (1, H*W)   ===reshape===>   (H,W)
@@ -981,10 +1033,14 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             raise ValueError("Feedback '{}' not recognized.".format(feedback))
 
         # Apply weights.
-        self._update_weights_generic(
+        self.weights = backend.to_backend(self.weights, amp_feedback)
+        target_xp = backend.to_backend(self.target, amp_feedback)
+        amp_feedback_xp = backend.to_backend(amp_feedback, amp_feedback)
+        
+        self.weights = self._update_weights_generic(
             self.weights,
-            cp.array(amp_feedback, copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype),
-            self.target,
+            amp_feedback_xp,
+            target_xp,
             nan_checks=True
         )
 
@@ -1584,18 +1640,43 @@ class SpotHologram(_AbstractSpotHologram):
         # Weighting strategy depends on the chosen feedback method.
         if feedback == "computational":
             # Pixel-by-pixel weighting
-            self._update_weights_generic(self.weights, self.amp_ff, self.target, nan_checks=True)
+            self.weights = backend.to_backend(self.weights, self.amp_ff)
+            target_xp = backend.to_backend(self.target, self.amp_ff)
+            self.weights = self._update_weights_generic(self.weights, self.amp_ff, target_xp, nan_checks=True)
         else:
             # Integrate a window around each spot, with feedback from respective sources.
             if feedback == "computational_spot":
-                amp_feedback = cp.sqrt(analysis.take(
-                    cp.square(self.amp_ff),
-                    self.spot_knm_rounded,
-                    self.spot_integration_width_knm,
-                    centered=True,
-                    integrate=True,
-                    xp=cp
-                ))
+                if is_torch(self.amp_ff):
+                    # Autograd-friendly PyTorch-based window integration
+                    size = self.spot_integration_width_knm
+                    if np.isscalar(size):
+                        size = (int(size), int(size))
+                    else:
+                        s = np.asarray(size).ravel()
+                        size = (int(s[0]), int(s[1]))
+                    
+                    vectors = np.floor(toolbox.format_2vectors(self.spot_knm_rounded)).astype(int)
+                    edge_x = np.floor(analysis._coordinates(size[0], True)).astype(int)
+                    edge_y = np.floor(analysis._coordinates(size[1], True)).astype(int)
+                    region_x, region_y = np.meshgrid(edge_x, edge_y)
+                    integration_x = np.add(region_x.ravel()[:, np.newaxis].T, vectors[:][0][:, np.newaxis])
+                    integration_y = np.add(region_y.ravel()[:, np.newaxis].T, vectors[:][1][:, np.newaxis])
+                    
+                    dev = self.amp_ff.device
+                    ix_t = torch.as_tensor(integration_x, device=dev)
+                    iy_t = torch.as_tensor(integration_y, device=dev)
+                    
+                    intensity_ff = torch.square(self.amp_ff)
+                    amp_feedback = torch.sqrt(torch.sum(intensity_ff[iy_t, ix_t], dim=-1))
+                else:
+                    amp_feedback = cp.sqrt(analysis.take(
+                        cp.square(self.amp_ff),
+                        self.spot_knm_rounded,
+                        self.spot_integration_width_knm,
+                        centered=True,
+                        integrate=True,
+                        xp=cp
+                    ))
             elif feedback == "experimental_spot":
                 self.measure(basis="ij")
 
@@ -1614,13 +1695,23 @@ class SpotHologram(_AbstractSpotHologram):
                 raise ValueError("Feedback '{}' not recognized.".format(feedback))
 
             # Update the weights of single pixels.
-            self.weights[self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]] = (
-                self._update_weights_generic(
-                    self.weights[self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]],
-                    cp.array(amp_feedback, copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype),
-                    self.spot_amp,
-                    nan_checks=True
-                )
+            self.weights = backend.to_backend(self.weights, amp_feedback)
+            spot_amp_xp = backend.to_backend(self.spot_amp, amp_feedback)
+            amp_feedback_xp = backend.to_backend(amp_feedback, amp_feedback)
+            
+            sub_weights = self.weights[self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]]
+            
+            updated_sub_weights = self._update_weights_generic(
+                sub_weights,
+                amp_feedback_xp,
+                spot_amp_xp,
+                nan_checks=True
+            )
+            
+            self.weights = backend.scatter_update(
+                self.weights,
+                (self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]),
+                updated_sub_weights
             )
 
     def _calculate_stats_computational_spot(self, stats, stat_groups=[]):

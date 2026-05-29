@@ -21,6 +21,10 @@ class SimulatedSLM(SLM):
             User-defined source phase (with the dimensions of :attr:`shape`) on the SLM.
     """
 
+    # SimulatedSLM is compute-only, so it can hold an analog (differentiable) torch phase
+    # for autodiff workflows (see SLM.set_phase / SimulatedCamera).
+    _supports_torch_phase = True
+
     def __init__(self, resolution, pitch_um=(8,8), source=None, **kwargs):
         r"""
         Initialize simulated slm.

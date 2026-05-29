@@ -1,11 +1,6 @@
-"""
-Lens phase patterns.
-"""
 import numpy as np
-try:
-    import cupy as cp   # type: ignore
-except ImportError:
-    cp = np
+from slmsuite.misc import backend
+from slmsuite.misc.backend import cp, torch, get_module
 
 
 from slmsuite.misc.math import REAL_TYPES
@@ -62,17 +57,18 @@ def lens(grid, f=(np.inf, np.inf)):
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_module(x_grid)
     f = _parse_focal_length(f)
 
     # Optimize phase construction based on context (for speed, to avoid square, etc).
     if np.isfinite(f[0]) and np.isfinite(f[1]):
-        return (np.pi / f[0]) * np.square(x_grid) + (np.pi / f[1]) * np.square(y_grid)
+        return (np.pi / f[0]) * xp.square(x_grid) + (np.pi / f[1]) * xp.square(y_grid)
     elif np.isfinite(f[0]):
-        return (np.pi / f[0]) * np.square(x_grid)
+        return (np.pi / f[0]) * xp.square(x_grid)
     elif np.isfinite(f[1]):
-        return (np.pi / f[1]) * np.square(y_grid)
+        return (np.pi / f[1]) * xp.square(y_grid)
     else:
-        return np.zeros_like(x_grid)
+        return xp.zeros_like(x_grid)
 
 
 def axicon(grid, f=(np.inf, np.inf), w=None):
@@ -105,6 +101,7 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_module(x_grid)
     w = _determine_source_radius(grid, w)
     f = _parse_focal_length(f)
 
@@ -112,11 +109,11 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
 
     # Optimize phase construction based on context (for speed, to avoid sqrt, etc).
     if angle[0] == 0 and angle[1] == 0:
-        return 0 * x_grid
+        return xp.zeros_like(x_grid)
     elif angle[0] == 0:
-        return (2 * np.pi * angle[1]) * np.abs(y_grid)
+        return (2 * np.pi * angle[1]) * xp.abs(y_grid)
     elif angle[1] == 0:
-        return (2 * np.pi * angle[0]) * np.abs(x_grid)
+        return (2 * np.pi * angle[0]) * xp.abs(x_grid)
     else:
-        return (2 * np.pi) * np.sqrt(np.square(x_grid * angle[0]) + np.square(y_grid * angle[1]))
+        return (2 * np.pi) * xp.sqrt(xp.square(x_grid * angle[0]) + xp.square(y_grid * angle[1]))
 
