@@ -1,8 +1,8 @@
-from slmsuite.holography.toolbox.phase import _load_cuda
-from slmsuite.holography.toolbox import _process_grid
+from slmsuite.holography.algorithms._feedback import FeedbackHologram
 from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._hologram import Hologram
-from slmsuite.holography.algorithms._feedback import FeedbackHologram
+from slmsuite.holography.toolbox import _process_grid
+from slmsuite.holography.toolbox.phase import _load_cuda
 
 
 class _AbstractSpotHologram(FeedbackHologram):
@@ -684,10 +684,9 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         """
         # _build_nearfield returns a torch nearfield when self.phase is a torch tensor.
         nearfield = self._build_nearfield()
-        istorch = is_torch(nearfield)
 
         if self.cuda:
-            if not istorch:
+            if not is_torch(nearfield):
                 try:
                     self.farfield = self._nearfield2farfield_cuda(nearfield)
                     self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
@@ -772,9 +771,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         N = len(self)
 
         # Determine whether we are in torch-mode.
-        istorch = torch is not None and isinstance(nearfield, torch.Tensor)
 
-        if istorch:
+        if is_torch(nearfield):
             nearfield = torch.conj(nearfield)
             # Differentiable/autograd path for torch to maintain the computational graph perfectly
             if N <= N_BATCH_MAX:
@@ -909,9 +907,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         # FYI: Farfield shape is (N,)
         N = len(self)
 
-        istorch = is_torch(self.farfield)
 
-        if istorch:
+        if is_torch(self.farfield):
             def expand_kernel_torch(kernel, farfield):
                 # Element-wise multiplication and sum (mathematically identical to matmul)
                 # Bypasses cuBLAS / torch.matmul complex CUDA segfaults on Windows.

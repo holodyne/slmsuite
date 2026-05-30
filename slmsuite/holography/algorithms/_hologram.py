@@ -1,7 +1,6 @@
 from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._stats import _HologramStats
 
-
 if torch is not None:
     class ComplexMSELoss(torch.nn.modules.loss._Loss):
         __constants__ = ['reduction']
@@ -201,6 +200,8 @@ class Hologram(_HologramStats):
         slm_shape=None,
         dtype=np.float32,
         propagation_kernel=None,
+        backend=None,
+        device=None,
         **kwargs
     ):
         r"""
@@ -279,6 +280,16 @@ class Hologram(_HologramStats):
             Note
             ~~~~
             Is ignored for :class:`~slmsuite.holography.algorithms.CompressedSpotHologram`.
+        backend : str OR None
+            Which array backend stores this hologram's arrays (``phase``, ``amp``, ``nearfield``,
+            ``farfield``, ``weights``, ``target``). ``None`` / ``"auto"`` (default) uses
+            :mod:`cupy` if installed, else :mod:`numpy`. ``"numpy"``
+            forces CPU numpy; ``"cupy"`` forces cupy; ``"torch"`` stores arrays as
+            :class:`torch.Tensor`, which makes the optimization differentiable (the same
+            dispatch-on-array path used when a torch ``phase`` is assigned directly).
+        device : str OR torch.device OR None
+            Only used for ``backend="torch"``: the device for the stored tensors. Defaults to
+            ``"cuda"`` if available, else ``"cpu"``.
         **kwargs
             Passed to :attr:`flags`.
         """
@@ -334,19 +345,19 @@ class Hologram(_HologramStats):
         else:
             self.slm_shape = np.rint(np.nanmean(stack, axis=0)).astype(int)
 
-            if not (amp_shape[0] is np.nan):
+            if amp_shape[0] is not np.nan:
                 if not np.all(self.slm_shape == np.array(amp_shape)):
                     raise ValueError(
                         "The shape of amplitude (via `amp` or SLM) is not equal to the "
                         "shapes of the provided initial phase (`phase`) or SLM (via `target` or `slm_shape`)"
                     )
-            if not (phase_shape[0] is np.nan):
+            if phase_shape[0] is not np.nan:
                 if not np.all(self.slm_shape == np.array(phase_shape)):
                     raise ValueError(
                         "The shape of the initial phase (`phase`) is not equal to the "
                         "shapes of the provided amplitude (via `amp` or SLM) or SLM (via `target` or `slm_shape`)"
                     )
-            if not (slm_shape[0] is np.nan):
+            if slm_shape[0] is not np.nan:
                 if not np.all(self.slm_shape == np.array(slm_shape)):
                     raise ValueError(
                         "The shape of SLM (via `target` or `slm_shape`) is not equal to the "
@@ -387,6 +398,9 @@ class Hologram(_HologramStats):
             self.slm_shape = self.shape
 
         # 2) Initialize variables.
+        # Resolve the array backend / device for this hologram's stored arrays.
+        self._xp, self._device = resolve_backend(backend, device)
+
         # Save the data type.
         if dtype(0).nbytes == 4:
             self.dtype = np.float32
@@ -474,8 +488,37 @@ class Hologram(_HologramStats):
 
         # Reset complex looping variables.
         self.nearfield = cp.zeros(self.shape, dtype=self.dtype_complex)
-        if not self.target is None:
+        if self.target is not None:
             self.farfield = cp.zeros(self.target.shape, dtype=self.dtype_complex)
+
+        # Place the freshly-built arrays on the configured backend/device (no-op by default).
+        self._to_storage_backend()
+
+    def _to_storage_backend(self):
+        """
+        Move the core stored arrays onto the backend/device chosen at construction
+        (``self._xp`` / ``self._device``, via the ``backend=``/``device=`` constructor arguments).
+
+        Arrays are always built in the default backend (cupy/numpy) by ``reset``/``reset_phase``/
+        ``reset_weights``/``_set_target``; this is the single seam that then moves them to torch
+        (or to a specific device). It is a **no-op for the default backend**, so the numpy/cupy
+        path is byte-for-byte unchanged. Scalars (e.g. uniform ``amp``, a float
+        ``propagation_kernel``) and missing/``None`` attributes are left untouched.
+        """
+        xp = self._xp
+        if xp is cp and self._device is None:
+            return
+
+        def convert(name, dtype):
+            value = getattr(self, name, None)
+            if value is None or np.isscalar(value):
+                return
+            setattr(self, name, backend.asarray(value, xp, dtype, self._device))
+
+        for name in ("phase", "amp", "weights", "target", "propagation_kernel"):
+            convert(name, self.dtype)
+        for name in ("nearfield", "farfield"):
+            convert(name, self.dtype_complex)
 
     def _get_target_moments_knm_norm(self):
         """
@@ -503,10 +546,8 @@ class Hologram(_HologramStats):
         """
         Analytically guesses a phase pattern (lens, blaze) that will overlap with the target.
         """
-        if hasattr(self.amp, "get"):
-            std_amp = np.sqrt(analysis.image_variances(self.amp.get())[:2, 0])
-        else:
-            std_amp = np.sqrt(analysis.image_variances(self.amp)[:2, 0])
+        amp_host = self.amp if np.isscalar(self.amp) else backend.to_numpy(self.amp)
+        std_amp = np.sqrt(analysis.image_variances(amp_host)[:2, 0])
         slm_shape = np.flip(self.slm_shape).astype(float)
         std_amp /= slm_shape
 
@@ -567,8 +608,10 @@ class Hologram(_HologramStats):
             farfield is scaled accordingly.
             This feature is ignored if ``phase`` is not ``None``.
         """
-        if self.phase is None:
-            self.phase = cp.zeros(self.slm_shape, dtype=self.dtype)
+        # Always (re)build the phase in the default backend (cupy/numpy); _to_storage_backend()
+        # at the end moves it to the configured backend/device. Building fresh here (rather than
+        # reusing the buffer) keeps this valid even when ``self.phase`` was a torch tensor.
+        self.phase = cp.zeros(self.slm_shape, dtype=self.dtype)
 
         if custom_phase is not None:
             custom_phase = cp.array(custom_phase, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
@@ -600,18 +643,22 @@ class Hologram(_HologramStats):
             if random_phase:      # Random
                 self.phase += random_phase * self._get_random_phase()
 
+        self._to_storage_backend()
+
     def reset_weights(self):
         """
         Resets the hologram weights to the :attr:`target` defaults.
         """
-        # Copy from the target.
-        self.weights = self.target.copy()
+        # Copy from the target (backend-aware: ``target`` may be numpy/cupy/torch).
+        self.weights = backend.copy(self.target)
 
         if hasattr(self, "zero_weights"):
             self.zero_weights *= 0
 
         # Account for MRAF by setting any noise region to zero by default.
-        cp.nan_to_num(self.weights, copy=False, nan=0)
+        self.weights = backend.nan_to_num(self.weights, copy=False, nan=0)
+
+        self._to_storage_backend()
 
     @staticmethod
     def get_padded_shape(
@@ -768,6 +815,8 @@ class Hologram(_HologramStats):
         if reset_weights:
             self.reset_weights()
 
+        self._to_storage_backend()
+
     def set_target(self, new_target, reset_weights=False):
         """
         Change the target to something new. This method handles cleaning and normalization.
@@ -800,15 +849,11 @@ class Hologram(_HologramStats):
             Current nearfield phase of the optimization.
         """
         if include_propagation and self.propagation_kernel is not None:
-            if cp != np:
-                return (self.phase + self.propagation_kernel).get() + np.pi
-            else:
-                return self.phase + self.propagation_kernel + np.pi
+            phase = self.phase + self.propagation_kernel
         else:
-            if cp != np:
-                return self.phase.get() + np.pi
-            else:
-                return self.phase + np.pi
+            phase = self.phase
+        # to_numpy brings the phase to host for any backend (numpy/cupy/torch).
+        return backend.to_numpy(phase) + np.pi
 
     def get_amp(self):
         """
@@ -819,12 +864,9 @@ class Hologram(_HologramStats):
         numpy.ndarray
             Nearfield amplitude.
         """
-        if cp.isscalar(self.amp):
+        if np.isscalar(self.amp):
             return self.amp
-        elif cp != np:
-            return self.amp.get()
-        else:
-            return self.amp
+        return backend.to_numpy(self.amp)
 
     def set_weights(self, new_weights):
         r"""
@@ -845,10 +887,7 @@ class Hologram(_HologramStats):
         r"""
         Returns the current weights. Collects the current weights from the GPU if applicable.
         """
-        if cp != np:
-            return self.weights.get()
-        else:
-            return self.weights
+        return backend.to_numpy(self.weights)
 
     def get_farfield(self, shape=None, propagation_kernel=None, affine=None, get=True):
         r"""
@@ -891,7 +930,7 @@ class Hologram(_HologramStats):
         if propagation_kernel is None:
             propagation_kernel = 0
         if not np.isscalar(propagation_kernel):
-            propagation_kernel = cp.array(propagation_kernel, copy=(False if np.__version__[0] == '1' else None))
+            propagation_kernel = backend.to_backend(propagation_kernel, self.phase)
 
         # This doesn't use self.nearfield, self.farfield because we might be using different shape.
         # ``xp`` is the array namespace backing the current phase: numpy, cupy, or (when
@@ -905,8 +944,8 @@ class Hologram(_HologramStats):
         # in-place ``out=`` writes would sever the autograd graph (and are unnecessary: the
         # caller reads the returned complex farfield directly).
         if not is_torch(farfield) and self.amp_ff is not None and shape == self.amp_ff.shape:
-            self.amp_ff = cp.abs(farfield, out=self.amp_ff)
-            self.phase_ff = cp.arctan2(farfield.imag, farfield.real, out=self.phase_ff)
+            self.amp_ff = backend.abs(farfield, out=self.amp_ff)
+            self.phase_ff = backend.arctan2(farfield.imag, farfield.real, out=self.phase_ff)
 
         # Transform as desired. Note that this will likely break normalization.
         if is_torch(farfield):
@@ -915,22 +954,13 @@ class Hologram(_HologramStats):
                     "Affine farfield transforms are not yet supported on the torch backend."
                 )
             return farfield
-        elif cp != np:
-            if affine is not None:
-                cp_affine_transform(
-                    input=farfield,
-                    matrix=affine["M"],
-                    offset=affine["b"],
-                    output_shape=shape,
-                    order=3,
-                    output=farfield,
-                    mode="constant",
-                    cval=0,
-                )
-            return farfield.get() if get else farfield
         else:
+            # numpy / cupy: dispatch the affine transform on the farfield's actual backend
+            # (not the global ``cp != np``), so an explicitly-numpy hologram on a cupy-enabled
+            # system uses scipy. ``to_numpy`` returns a host array for either backend.
             if affine is not None:
-                sp_affine_transform(
+                affine_transform = cp_affine_transform if get_module(farfield) is cp else sp_affine_transform
+                affine_transform(
                     input=farfield,
                     matrix=affine["M"],
                     offset=affine["b"],
@@ -940,7 +970,7 @@ class Hologram(_HologramStats):
                     mode="constant",
                     cval=0,
                 )
-            return farfield
+            return backend.to_numpy(farfield) if get else farfield
 
     # Propagation: nearfield-farfield helper functions.
     def _populate_results(self):
@@ -957,8 +987,11 @@ class Hologram(_HologramStats):
         Pass a nearfield complex matrix of self.shape shape to avoid memory reallocation.
         """
         self._nearfield2farfield()
-        self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
-        self.phase_ff = cp.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
+        # Cache farfield amplitude/phase only on numpy/cupy; on torch these in-place out= writes
+        # would sever the autograd graph (callers read the complex self.farfield directly).
+        if not is_torch(self.farfield):
+            self.amp_ff = backend.abs(self.farfield, out=self.amp_ff)
+            self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
 
     def _remove_vortices(self, plot=False):
         """
@@ -1006,60 +1039,34 @@ class Hologram(_HologramStats):
         """
         Populate :attr:`nearfield` with the complex field ``amp * exp(i*phase)``, centered
         in the (padded) computational window.
-
-        Backend-transparent and dispatched on the backend of :attr:`phase`. numpy/cupy reuse
-        the preallocated ``nearfield`` buffer in place (fast); torch builds the field
-        functionally (centered pad, no buffer reuse, no indexed assignment) so the autograd
-        graph is preserved. The torch path matches :meth:`get_farfield` exactly, so the two
-        share one propagation convention.
         """
-        if is_torch(self.phase):
-            amp = backend.to_backend(self.amp, self.phase)
-            prop = backend.to_backend(self.propagation_kernel, self.phase)
+        amp = backend.to_backend(self.amp, self.phase)
+        prop = backend.to_backend(self.propagation_kernel, self.phase)
 
-            if prop is None:
-                active = amp * torch.exp(1j * self.phase)
-            else:
-                active = amp * torch.exp(1j * (self.phase + prop))
-
-            # Center-pad into the computational window (same placement as the numpy/cupy
-            # branch and as get_farfield); functional, so the graph is intact.
-            self.nearfield = toolbox.pad(active, self.shape)
+        if prop is None:
+            active = amp * backend.exp(1j * self.phase)
         else:
-            (i0, i1, i2, i3) = toolbox.unpad(self.shape, self.slm_shape)
-            # Reallocate if the buffer was left as a torch tensor by a prior torch pass
-            # (e.g. after optimize_cg), so the in-place numpy/cupy fill below is valid.
-            if is_torch(self.nearfield):
-                self.nearfield = cp.zeros(self.shape, dtype=self.dtype_complex)
-            self.nearfield.fill(0)
-            if self.propagation_kernel is None:
-                self.nearfield[i0:i1, i2:i3] = self.amp * cp.exp(1j * self.phase)
-            else:
-                self.nearfield[i0:i1, i2:i3] = self.amp * cp.exp(1j * (self.phase + self.propagation_kernel))
+            active = amp * backend.exp(1j * (self.phase + prop))
 
+        self.nearfield = backend.embed(active, self.shape, self.slm_shape, out=self.nearfield)
         return self.nearfield
 
     def _nearfield_extract(self):
         """Populate phase with data from nearfield."""
         (i0, i1, i2, i3) = toolbox.unpad(self.shape, self.slm_shape)
+        nf_cropped = self.nearfield[i0:i1, i2:i3]
 
-        xp = get_module(self.nearfield)
-        if backend.is_torch(self.nearfield):
-            self.phase = backend.arctan2(
-                self.nearfield.imag[i0:i1, i2:i3],
-                self.nearfield.real[i0:i1, i2:i3]
-            )
+        # backend ops honor out= only on numpy/cupy (and only when the buffer matches the active
+        # backend); on torch they compute functionally, so passing out=self.phase is always safe.
+        self.phase = backend.arctan2(
+            backend.imag(nf_cropped),
+            backend.real(nf_cropped),
+            out=self.phase,
+        )
+
+        if self.propagation_kernel is not None:
             prop = backend.to_backend(self.propagation_kernel, self.phase)
-            if prop is not None:
-                self.phase = self.phase - prop
-        else:
-            self.phase = cp.arctan2(
-                self.nearfield.imag[i0:i1, i2:i3],
-                self.nearfield.real[i0:i1, i2:i3],
-                out=self.phase,
-            )
-            if self.propagation_kernel is not None:
-                self.phase -= self.propagation_kernel
+            self.phase = backend.subtract(self.phase, prop, out=self.phase)
 
     def _nearfield2farfield(self):
         """
@@ -1068,13 +1075,14 @@ class Hologram(_HologramStats):
         autograd-safe on torch (no ``.detach()``, no buffer aliasing). Overloaded by subclasses.
         """
         nearfield = self._build_nearfield()
-        xp = get_module(nearfield)
-        self.farfield = xp.fft.fftshift(xp.fft.fft2(xp.fft.fftshift(nearfield), norm="ortho"))
+        self.farfield = backend.fftshift(backend.fft2(backend.fftshift(nearfield), norm="ortho"))
 
         # Maintain the farfield amplitude cache only on numpy/cupy. On torch this in-place
         # ``out=`` write would sever the autograd graph; callers read self.farfield directly.
+        # ``backend.abs`` honors out= on numpy/cupy (matching buffer) and dispatches on the
+        # active backend, so this works whether farfield is numpy or cupy.
         if not is_torch(self.farfield):
-            self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
+            self.amp_ff = backend.abs(self.farfield, out=self.amp_ff)
 
         return self.farfield
 
@@ -1090,7 +1098,7 @@ class Hologram(_HologramStats):
             Whether to extract data into the :attr:`phase` variable. This is not used
             for :class:`MultiplaneHologram`.
         """
-        self.nearfield = cp.fft.ifftshift(cp.fft.ifft2(cp.fft.ifftshift(self.farfield), norm="ortho"))
+        self.nearfield = backend.ifftshift(backend.ifft2(backend.ifftshift(self.farfield), norm="ortho"))
 
         if extract:
             self._nearfield_extract()
@@ -1398,7 +1406,7 @@ class Hologram(_HologramStats):
         """
         # 0) Check and record method.
         methods = list(ALGORITHM_DEFAULTS.keys())
-        if not method in methods:
+        if method not in methods:
             raise ValueError(
                 "Unrecognized method '{}'.\n"
                 "Valid methods include {}".format(method, methods)
@@ -1408,9 +1416,9 @@ class Hologram(_HologramStats):
         # 1) Parse flags:
         # 1.1) Set defaults if not already set.
         for flag, value in ALGORITHM_DEFAULTS[method].items():
-            if not flag in self.flags:
+            if flag not in self.flags:
                 self.flags[flag] = value
-        if not "fixed_phase" in self.flags:
+        if "fixed_phase" not in self.flags:
             self.flags["fixed_phase"] = False
 
         # 1.2) Parse kwargs as flags.
@@ -1419,7 +1427,7 @@ class Hologram(_HologramStats):
 
         # 1.3) Add in non-defaulted flags, with error checks
         for group in stat_groups:
-            if not (group in FEEDBACK_OPTIONS):
+            if group not in FEEDBACK_OPTIONS:
                 raise ValueError(
                     "Statistics group '{}' not recognized as a feedback option.\n"
                     "Valid options: {}".format(group, FEEDBACK_OPTIONS)
@@ -1427,7 +1435,7 @@ class Hologram(_HologramStats):
         self.flags["stat_groups"] = stat_groups
 
         if feedback is not None:
-            if not (feedback in FEEDBACK_OPTIONS):
+            if feedback not in FEEDBACK_OPTIONS:
                 raise ValueError(
                     "Feedback '{}' not recognized as a feedback option.\n"
                     "Valid options: {}".format(feedback, FEEDBACK_OPTIONS)
@@ -1524,13 +1532,13 @@ class Hologram(_HologramStats):
         self._update_slm(force=True, cleanup_images=False)
 
     def _mraf_helper_routines(self):
-        # MRAF helper variables
+        # MRAF helper variables. The detection runs for every hologram, so it must be
+        # backend-agnostic (``target`` may be numpy/cupy/torch); ``to_numpy`` brings the scalar
+        # sum to host for the NaN check regardless of backend.
         if not self.flags.get("mraf", True):
             mraf_enabled = False
-        elif np == cp:
-            mraf_enabled = np.isnan(np.sum(self.target))
         else:
-            mraf_enabled = np.isnan(cp.sum(self.target).get())
+            mraf_enabled = bool(np.isnan(float(backend.to_numpy(self.target.sum()))))
 
         if not mraf_enabled:
             return {
@@ -1613,10 +1621,7 @@ class Hologram(_HologramStats):
 
                 # Save the phase if we are going from unfixed to fixed.
             if self.flags["fixed_phase"] and (self.phase_ff is None or was_not_fixed):
-                if backend.is_autograd(self.farfield):
-                    self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real)
-                else:
-                    self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
+                self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
             else:
                 self.flags["fixed_phase"] = False
 
@@ -1626,16 +1631,13 @@ class Hologram(_HologramStats):
         # Fix amplitude, potentially also fixing the phase.
         if not mraf_enabled:
             if not ("fixed_phase" in self.flags and self.flags["fixed_phase"]) or self.phase_ff is None:
-                if backend.is_autograd(self.farfield):
-                    self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real)
-                else:
-                    self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
+                self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
 
-            if backend.is_autograd(self.farfield):
-                self.farfield = xp.exp(1j * self.phase_ff) * self.weights
-            else:
-                xp.exp(1j * self.phase_ff, out=self.farfield)
-                xp.multiply(self.farfield, self.weights, out=self.farfield)
+            # exp() drops out= on torch (functional), so the multiply below carries the graph;
+            # on numpy/cupy this reuses self.farfield in place.
+            self.farfield = backend.multiply(
+                backend.exp(1j * self.phase_ff), self.weights, out=self.farfield
+            )
         else:   # Mixed region amplitude freedom (MRAF) case.
             zero_region =   mraf_variables["zero_region"]
             noise_region =  mraf_variables["noise_region"]
@@ -1645,19 +1647,16 @@ class Hologram(_HologramStats):
 
             if hasattr(self, "zero_weights"):
                 fz = self.farfield[zero_region]
-                if backend.is_autograd(self.farfield):
-                    self.zero_weights = self.zero_weights - self.flags.get("zero_factor", 1) * xp.abs(fz) * fz
-                else:
-                    self.zero_weights -= self.flags.get("zero_factor", 1) * xp.abs(fz) * fz
+                self.zero_weights = backend.subtract(
+                    self.zero_weights, self.flags.get("zero_factor", 1) * xp.abs(fz) * fz,
+                    out=self.zero_weights,
+                )
                 self.farfield[zero_region] = self.zero_weights
             else:
                 self.farfield[zero_region] = 0
 
             if not ("fixed_phase" in self.flags and self.flags["fixed_phase"]):
-                if backend.is_autograd(self.farfield):
-                    self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real)
-                else:
-                    self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
+                self.phase_ff = backend.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
 
             if backend.is_autograd(self.farfield):
                 # Out-of-place MRAF assignment using backend.where
@@ -1673,11 +1672,13 @@ class Hologram(_HologramStats):
                 if where_working:
                     xp.exp(1j * self.phase_ff, where=signal_region, out=self.farfield)
                     xp.multiply(self.farfield, self.weights, where=signal_region, out=self.farfield)
-                    if mraf_factor is not None: xp.multiply(self.farfield, mraf_factor, where=noise_region, out=self.farfield)
+                    if mraf_factor is not None: 
+                        xp.multiply(self.farfield, mraf_factor, where=noise_region, out=self.farfield)
                 else:
                     xp.exp(1j * self.phase_ff, _where=signal_region, out=self.farfield)
                     xp.multiply(self.farfield, self.weights, _where=signal_region, out=self.farfield)
-                    if mraf_factor is not None: xp.multiply(self.farfield, mraf_factor, _where=noise_region, out=self.farfield)
+                    if mraf_factor is not None: 
+                        xp.multiply(self.farfield, mraf_factor, _where=noise_region, out=self.farfield)
 
             # self.plot_farfield(signal_region.astype(float))
             # self.plot_farfield(noise_region.astype(float))
@@ -1800,9 +1801,10 @@ class Hologram(_HologramStats):
             img_knm_torch = Hologram._get_torch_tensor_from_cupy(self.img_knm)
 
             # Replace the values of the farfield with the measured values, but keep the
-            # gradients using detach().
+            # gradients using detach(). Note: this assignment overwrites the complex farfield U
+            # with real-valued measured amplitude/intensity, discarding phase.
             farfield_feedback_torch = farfield_torch.detach()
-            farfield_feedback_torch[:] = img_knm_torch[:]   # TODO: retain phase?
+            farfield_feedback_torch[:] = img_knm_torch[:]
             farfield_feedback_torch = farfield_feedback_torch.requires_grad_()
 
             return loss(farfield_feedback_torch, target_torch)
@@ -1813,21 +1815,7 @@ class Hologram(_HologramStats):
 
     @staticmethod
     def _get_torch_tensor_from_cupy(array):
-        if torch is None:
-            raise RuntimeError("Cannot get torch tensor without torch. Something is wrong.")
-
-        if array is None:
-            return None
-        else:
-            if cp == np:
-                return torch.from_numpy(array)
-            else:
-                if hasattr(array, "toDlpack"):
-                    if not array.flags.c_contiguous:
-                        array = cp.ascontiguousarray(array)
-                    return torch.from_dlpack(array.toDlpack())
-                else:
-                    return torch.as_tensor(array, device='cuda')
+        return backend._get_torch_tensor_from_cupy(array)
 
     # Weighting functions.
     def _update_weights_generic(
@@ -1875,15 +1863,9 @@ class Hologram(_HologramStats):
             raise ValueError("Weighting is only for WGS.")
         method = method[4:]
 
-        xp = get_module(feedback_amp)
-
         target_amp_xp = backend.to_backend(target_amp, feedback_amp)
 
-        if backend.is_torch(feedback_amp):
-            feedback_corrected = feedback_amp.clone()
-        else:
-            feedback_corrected = xp.array(feedback_amp, copy=True, dtype=self.dtype)
-
+        feedback_corrected = backend.copy(feedback_amp)
         feedback_corrected = feedback_corrected * (1 / backend.norm(feedback_corrected))
 
         if ("wu" in method or "tanh" in method):    # Additive
@@ -1893,15 +1875,9 @@ class Hologram(_HologramStats):
             feedback_corrected = backend.divide(feedback_corrected, target_amp_xp, out=feedback_corrected)
 
             if nan_checks:
-                if backend.is_torch(feedback_corrected):
-                    feedback_corrected = backend.where(feedback_corrected == float('inf'), xp.ones_like(feedback_corrected), feedback_corrected)
-                    target_zero = target_amp_xp == 0
-                    feedback_corrected = backend.where(target_zero, xp.ones_like(feedback_corrected), feedback_corrected)
-                    feedback_corrected = backend.nan_to_num(feedback_corrected, nan=1.0)
-                else:
-                    feedback_corrected[feedback_corrected == xp.inf] = 1
-                    feedback_corrected[target_amp_xp == 0] = 1
-                    backend.nan_to_num(feedback_corrected, copy=False, nan=1)
+                feedback_corrected = backend.where_replace(feedback_corrected, feedback_corrected == float('inf'), 1.0)
+                feedback_corrected = backend.where_replace(feedback_corrected, target_amp_xp == 0, 1.0)
+                feedback_corrected = backend.nan_to_num(feedback_corrected, copy=False, nan=1.0)
 
         # Fix feedback according to the desired method.
         if "leonardo" in method or "kim" in method:
@@ -1923,19 +1899,13 @@ class Hologram(_HologramStats):
             feedback_corrected = backend.add(feedback_corrected, 1, out=feedback_corrected)
 
         if nan_checks:
-            if backend.is_torch(feedback_corrected):
-                feedback_corrected = backend.where(feedback_corrected == float('inf'), xp.ones_like(feedback_corrected), feedback_corrected)
-            else:
-                feedback_corrected[feedback_corrected == xp.inf] = 1
+            feedback_corrected = backend.where_replace(feedback_corrected, feedback_corrected == float('inf'), 1.0)
 
         # Update the weights.
         weight_amp = backend.multiply(weight_amp, feedback_corrected, out=weight_amp)
 
         if nan_checks:
-            if backend.is_torch(weight_amp):
-                weight_amp = backend.nan_to_num(weight_amp, nan=0.0001)
-            else:
-                backend.nan_to_num(weight_amp, copy=False, nan=0.0001)
+            weight_amp = backend.nan_to_num(weight_amp, copy=False, nan=0.0001)
 
         # Normalize amp, as methods may have broken conservation.
         weight_amp = backend.multiply(weight_amp, 1 / backend.norm(weight_amp), out=weight_amp)

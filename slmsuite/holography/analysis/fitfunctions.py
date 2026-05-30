@@ -510,7 +510,7 @@ def _sinc_taylor(x, order=12):
     """
     xp = get_module(x)
     squared = xp.square(np.pi * x)
-    monomial = squared.clone() if backend.is_torch(squared) else squared.copy()
+    monomial = backend.copy(squared)
     result = 1
 
     for n in range(2, order+2, 2):

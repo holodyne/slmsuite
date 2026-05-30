@@ -31,14 +31,17 @@ except ImportError:
         "cupy is not installed; using numpy. Install cupy for faster GPU-based holography."
     )
 
+# Import the array-backend abstraction (numpy / cupy / torch dispatch) BEFORE ``import torch``.
+# backend warms up cupy's cuBLAS before it imports torch, working around a Windows cuBLAS
+# load-order conflict (see slmsuite.misc.backend). Importing it first guarantees the warmup
+# runs before torch's cuBLAS is loaded into the process.
+from slmsuite.misc import backend
+from slmsuite.misc.backend import get_module, is_torch, is_cupy, is_autograd, to_numpy, resolve_backend
+
 try:
     import torch
 except:
     torch = None
-
-# Import the array-backend abstraction (numpy / cupy / torch dispatch).
-from slmsuite.misc import backend
-from slmsuite.misc.backend import get_module, is_torch, is_cupy, is_autograd, to_numpy
 
 # Import helper functions
 from slmsuite.holography import analysis, toolbox
