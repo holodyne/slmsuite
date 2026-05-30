@@ -23,11 +23,12 @@ class TestHologram:
 
     def test_hologram_construction(self):
         """Test the primitives for hologram formation."""
+        rng = np.random.default_rng(42)
         slm_shape = (256, 256)
         shape = (512, 512)
 
-        random_phase = np.random.uniform(0, 2 * np.pi, slm_shape).astype(np.float32)
-        random_amplitude = np.random.uniform(0, 1, slm_shape).astype(np.float32) + 1e-2
+        random_phase = rng.uniform(0, 2 * np.pi, slm_shape).astype(np.float32)
+        random_amplitude = rng.uniform(0, 1, slm_shape).astype(np.float32) + 1e-2
 
         target = np.zeros(shape, dtype=np.float32)
         hologram = Hologram(
@@ -90,7 +91,7 @@ class TestHologram:
         target = np.zeros((64, 64))
 
         rng = np.random.default_rng(random_seed)
-        for i in range(20):
+        for _i in range(20):
             test_point = (rng.integers(0, 64), rng.integers(0, 64))
             logger.info(f"Adding GS test point at: {test_point}")
             target[test_point] = 1
@@ -124,7 +125,7 @@ class TestHologram:
         target = np.zeros((1024, 1024))
 
         rng = np.random.default_rng(random_seed)
-        for i in range(20):
+        for _i in range(20):
             test_point = (rng.integers(0, 1024), rng.integers(0, 1024))
             target[test_point] = 1
         hologram = Hologram(target=target)
@@ -139,7 +140,7 @@ class TestHologram:
         target = cp.zeros((1024, 1024))
 
         rng = np.random.default_rng(random_seed)
-        for i in range(20):
+        for _i in range(20):
             test_point = (rng.integers(0, 1024), rng.integers(0, 1024))
             target[test_point] = 1
         hologram = Hologram(target=target)

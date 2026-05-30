@@ -14,13 +14,13 @@ from slmsuite.misc.math import *
 def test_iseven(subtests):
     """Test iseven function with various inputs."""
     with subtests.test("scalar integers"):
-        assert iseven(0) == True
-        assert iseven(1) == False
-        assert iseven(2) == True
-        assert iseven(3) == False
-        assert iseven(4) == True
-        assert iseven(-1) == False
-        assert iseven(-2) == True
+        assert iseven(0)
+        assert not iseven(1)
+        assert iseven(2)
+        assert not iseven(3)
+        assert iseven(4)
+        assert not iseven(-1)
+        assert iseven(-2)
 
     with subtests.test("arrays"):
         x = np.array([0, 1, 2, 3, 4, 5])
@@ -29,10 +29,10 @@ def test_iseven(subtests):
         np.testing.assert_array_equal(result, expected)
 
     with subtests.test("float inputs"):
-        assert iseven(2.1) == True  # rounds to 2
-        assert iseven(2.9) == False  # rounds to 3
-        assert iseven(3.1) == False  # rounds to 3
-        assert iseven(3.9) == True  # rounds to 4
+        assert iseven(2.1)  # rounds to 2
+        assert not iseven(2.9)  # rounds to 3
+        assert not iseven(3.1)  # rounds to 3
+        assert iseven(3.9)  # rounds to 4
 
 
 def test_type_tuples(subtests):
@@ -224,9 +224,8 @@ def test_gaussian(subtests):
 
     with subtests.test("width comparison"):
         x = np.linspace(-10, 10, 100)
-        y_narrow = gaussian(x, x0=0, a=10, c=1, w=0.1)
-        y_broad = gaussian(x, x0=0, a=10, c=1, w=10)
-        center_idx = 50
+        gaussian(x, x0=0, a=10, c=1, w=0.1)
+        gaussian(x, x0=0, a=10, c=1, w=10)
 
     with subtests.test("offset peak"):
         x = np.linspace(-10, 10, 100)

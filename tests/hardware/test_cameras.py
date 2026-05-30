@@ -138,7 +138,7 @@ class TestCamera:
             with subtests.test("high averaging may promote to float"):
                 camera.averaging = 1000
                 dtype_high = camera._get_averaging_dtype(1000)
-                assert dtype_high == camera.dtype or dtype_high == float
+                assert dtype_high == camera.dtype or dtype_high is float
 
             with subtests.test("None with no averaging raises"):
                 camera.averaging = None
@@ -167,7 +167,8 @@ class TestCamera:
 
     def test_get_image_hdr_analysis(self, subtests):
         """get_image_hdr_analysis produces correct output and validates input."""
-        test_img = np.random.rand(10, 10) * 200
+        rng = np.random.default_rng(42)
+        test_img = rng.random((10, 10)) * 200
         test_imgs = np.array([np.minimum(test_img * (2**i), 255) for i in range(3)], dtype=np.uint8)
 
         with subtests.test("basic analysis"):
@@ -246,7 +247,7 @@ class TestCamera:
         orig_woi = camera.woi
         orig_shape = camera.shape
 
-        x0, w_max, y0, h_max = orig_woi  # full-sensor WOI after reset
+        _x0, w_max, _y0, h_max = orig_woi  # full-sensor WOI after reset
 
         # Determine normal vs rotated orientation once.
         # default_shape is (height, width) for normal, (width, height) for 90/270 rot.

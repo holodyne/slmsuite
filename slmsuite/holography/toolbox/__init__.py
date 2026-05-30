@@ -1380,7 +1380,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
     return result
 
 
-def lloyds_points(grid, n_points, iterations=10, plot=False):
+def lloyds_points(grid, n_points, iterations=10, plot=False, seed=None):
     r"""
     Implements `Lloyd's Algorithm <https://en.wikipedia.org/wiki/Lloyd's_algorithm>`_
     without seed ``vectors``; instead, autogenerates the seed ``vectors`` randomly.
@@ -1396,6 +1396,8 @@ def lloyds_points(grid, n_points, iterations=10, plot=False):
         Number of iterations to apply Lloyd's Algorithm.
     plot : bool
         Whether to plot each iteration of the algorithm.
+    seed : int OR None
+        Optional seed to make the random generation deterministic.
 
     Returns
     -------
@@ -1412,10 +1414,11 @@ def lloyds_points(grid, n_points, iterations=10, plot=False):
         (x_grid, y_grid) = _process_grid(grid)
         shape = x_grid.shape
 
+    rng = np.random.default_rng(seed)
     vectors = np.vstack(
         (
-            np.random.default_rng().integers(0, shape[1], n_points),
-            np.random.default_rng().integers(0, shape[0], n_points),
+            rng.integers(0, shape[1], n_points),
+            rng.integers(0, shape[0], n_points),
         )
     )
 
@@ -1423,8 +1426,8 @@ def lloyds_points(grid, n_points, iterations=10, plot=False):
     while smallest_distance(vectors) < 1:
         vectors = np.vstack(
             (
-                np.random.default_rng().integers(0, shape[1], n_points),
-                np.random.default_rng().integers(0, shape[0], n_points),
+                rng.integers(0, shape[1], n_points),
+                rng.integers(0, shape[0], n_points),
             )
         )
 

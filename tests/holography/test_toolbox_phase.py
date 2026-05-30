@@ -429,7 +429,7 @@ def test_zernike_get_string(subtests):
         assert "y^2" in s
 
     with subtests.test("derivative reduces order"):
-        s_orig = phase.zernike_get_string(4, derivative=(0, 0))
+        phase.zernike_get_string(4, derivative=(0, 0))
         s_dx = phase.zernike_get_string(4, derivative=(1, 0))
         # Derivative should not contain x^2
         assert "x^2" not in s_dx
@@ -1105,5 +1105,5 @@ def test_zernike_sum_gpu(benchmark, has_cupy):
     def run():
         phase.zernike_sum(grid, indices=list(range(len(coeffs))), weights=coeffs)
 
-    result = benchmark(run)
+    benchmark(run)
     assert grid[0].shape == (256, 256)

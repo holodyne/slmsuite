@@ -172,7 +172,7 @@ def test_convert_vector(slm, subtests):
         vecs_3d = np.array([[0.1, 0.2], [-0.1, -0.2], [0.3, 0.4]])
         assert convert_vector(vecs_3d, "norm", "mrad").shape == (3, 2)
 
-    for unit in ["mrad", "deg"] + slm_units:
+    for unit in ["mrad", "deg", *slm_units]:
         with subtests.test(f"symmetry {unit}"):
             pos = convert_vector(vec, "norm", unit, **hw)
             neg = convert_vector(-vec, "norm", unit, **hw)
@@ -191,7 +191,7 @@ def test_imprint(slm, subtests, benchmark):
     y = np.arange(H, dtype=float)
     grid = np.meshgrid(x, y)
 
-    # (x, w, y, h) — upper-left (10,5), size 20×15
+    # (x, w, y, h) — upper-left (10,5), size 20x15
     win = [10, 20, 5, 15]
     sl = (slice(5, 20), slice(10, 30))
 
@@ -284,7 +284,7 @@ def test_imprint(slm, subtests, benchmark):
 
     with subtests.test("centered window"):
         mat = np.zeros((H, W))
-        # centered: (cx, w, cy, h) — center at (20, 10) size 6×4
+        # centered: (cx, w, cy, h) — center at (20, 10) size 6x4
         cwin = [20, 6, 10, 4]
         imprint(mat, cwin, 1.0, centered=True)
         csl = window_slice(cwin, centered=True)
@@ -396,7 +396,7 @@ def test_format_vectors(subtests):
 
     for n in [1, 5, 100]:
         with subtests.test(f"batch N={n}"):
-            arr = np.random.rand(2, n)
+            arr = np.random.default_rng().random((2, n))
             result = format_vectors(arr)
             assert result.shape == (2, n)
             np.testing.assert_array_equal(result, arr)
@@ -530,7 +530,10 @@ def test_smallest_distance(subtests):
 
     with subtests.test("custom callable metric"):
         vecs = np.array([[0, 3, 10], [0, 4, 10]])
-        euclidean_fn = lambda a, b: np.sqrt(np.sum((a - b) ** 2))
+
+        def euclidean_fn(a, b):
+            return np.sqrt(np.sum((a - b) ** 2))
+
         result = smallest_distance(vecs, metric=euclidean_fn)
         assert result == pytest.approx(5.0)
 
@@ -647,24 +650,20 @@ def test_lloyds_points(subtests):
     shape = (100, 100)
 
     with subtests.test("output shape"):
-        np.random.seed(42)
-        result = lloyds_points(shape, 7, iterations=5)
+        result = lloyds_points(shape, 7, iterations=5, seed=42)
         assert result.shape == (2, 7)
 
     with subtests.test("meshgrid input"):
-        np.random.seed(11)
         grid = np.meshgrid(range(shape[1]), range(shape[0]))
-        result = lloyds_points(grid, 6, iterations=10)
+        result = lloyds_points(grid, 6, iterations=10, seed=11)
         assert result.shape == (2, 6)
 
     with subtests.test("no duplicates"):
-        np.random.seed(0)
-        result = lloyds_points(shape, 10, iterations=10)
+        result = lloyds_points(shape, 10, iterations=10, seed=0)
         assert smallest_distance(result) > 0
 
     with subtests.test("single point near center"):
-        np.random.seed(22)
-        result = lloyds_points(shape, 1, iterations=20)
+        result = lloyds_points(shape, 1, iterations=20, seed=22)
         assert result.shape == (2, 1)
         assert result[0, 0] == pytest.approx(50, abs=10)
         assert result[1, 0] == pytest.approx(50, abs=10)

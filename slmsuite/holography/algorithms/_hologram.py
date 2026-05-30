@@ -438,13 +438,14 @@ class Hologram(_HologramStats):
 
         # Custom GPU kernels for speedy weighting.
         self._update_weights_generic_cuda_kernel = None
-        if np != cp and False:  # Disabled until 0.5.0
-            try:
-                self._update_weights_generic_cuda_kernel = cp.RawKernel(
-                    CUDA_KERNELS, "update_weights_generic"
-                )
-            except Exception:
-                pass
+        # Disabled until 0.5.0
+        # if np != cp:
+        #     try:
+        #         self._update_weights_generic_cuda_kernel = cp.RawKernel(
+        #             CUDA_KERNELS, "update_weights_generic"
+        #         )
+        #     except Exception:
+        #         pass
 
     # Initialization helper functions.
     def reset(self, reset_phase=True, reset_flags=False):

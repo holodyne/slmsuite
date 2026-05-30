@@ -70,8 +70,10 @@ def test_image_centroids(subtests):
 
 def test_image_moments(subtests, benchmark):
     """Test image_moment() moment calculation."""
+    rng = np.random.default_rng(42)
+
     with subtests.test("benchmark"):
-        image = np.random.rand(128, 128).astype(np.float32)
+        image = rng.random((128, 128)).astype(np.float32)
         image = image[np.newaxis, :, :]
         benchmark(analysis.image_moment, image, moment=(1, 0))
 
@@ -276,8 +278,10 @@ def test_image_ellipticity(subtests):
 
 def test_image_normalization(subtests):
     """Test image_normalize() and image_normalization()."""
+    rng = np.random.default_rng(42)
+
     with subtests.test("normalize sums to 1 and preserves argmax"):
-        image = np.random.rand(50, 50) * 100 + 50
+        image = rng.random((50, 50)) * 100 + 50
         image = image[np.newaxis, :, :]
 
         normalized = analysis.image_normalize(image)
@@ -389,6 +393,7 @@ def test_image_relative_strehl(subtests):
 
 def test_image_fit(subtests, benchmark):
     """Test image_fit() Gaussian fitting."""
+    rng = np.random.default_rng(42)
     x = np.linspace(-10, 10, 50)
     y = np.linspace(-10, 10, 50)
     X, Y = np.meshgrid(x, y)
@@ -435,7 +440,7 @@ def test_image_fit(subtests, benchmark):
         def custom_fn(xy, a, b):
             return a * xy[0] + b * xy[1]
 
-        img = np.random.rand(1, 20, 20)
+        img = rng.random((1, 20, 20))
         with pytest.warns(UserWarning, match="not implemented"):
             result = analysis.image_fit(
                 img, grid=grid[:20, :20] if False else None, function=custom_fn, guess=None
@@ -448,7 +453,7 @@ def test_image_fit(subtests, benchmark):
         def custom_fn2(xy, a, b):
             return a * xy[0] + b * xy[1]
 
-        img = np.random.rand(1, 20, 20)
+        img = rng.random((1, 20, 20))
         with pytest.raises(NotImplementedError, match="not implemented"):
             analysis.image_fit(img, function=custom_fn2, guess=True)
 
@@ -605,19 +610,20 @@ def test_image_zernike_fit(subtests):
 
 def test_take(subtests, benchmark):
     """Test take(), take_tile(), take_plot(), and _take_parse_shape()."""
+    rng = np.random.default_rng(42)
+
     with subtests.test("benchmark"):
-        rng = np.random.default_rng(42)
         image = rng.random((512, 512)).astype(np.float32)
         vectors = np.stack([rng.integers(20, 492, 50), rng.integers(20, 492, 50)])
         benchmark(analysis.take, image, vectors=vectors, size=20, centered=True)
 
     with subtests.test("single region extraction"):
-        image = np.random.rand(100, 100)
+        image = rng.random((100, 100))
         result = analysis.take(image, vectors=[50, 50], size=10, centered=True)
         assert result.shape == (1, 10, 10)
 
     with subtests.test("multiple region extraction"):
-        image = np.random.rand(100, 100)
+        image = rng.random((100, 100))
         vectors = np.array([[25, 75], [50, 50], [75, 25]]).T
         result = analysis.take(image, vectors=vectors, size=10, centered=True)
         assert result.shape == (3, 10, 10)
@@ -629,39 +635,39 @@ def test_take(subtests, benchmark):
         assert float(result) == pytest.approx(100)
 
     with subtests.test("take_tile with explicit shape"):
-        test_images = np.random.rand(3, 10, 10)
+        test_images = rng.random((3, 10, 10))
         tiled = analysis.take_tile(test_images, shape=(2, 2))
         assert tiled.shape == (20, 20)
 
     with subtests.test("take_tile with automatic shape"):
-        test_images = np.random.rand(3, 10, 10)
+        test_images = rng.random((3, 10, 10))
         tiled_auto = analysis.take_tile(test_images)
         assert tiled_auto.shape == (20, 20)
 
     with subtests.test("_take_parse_shape auto"):
-        test_images = np.random.rand(3, 10, 10)
+        test_images = rng.random((3, 10, 10))
         img_count, (M, N) = analysis._take_parse_shape(test_images, shape=None)
         assert img_count == 3
         assert M == 2
         assert N == 2
 
     with subtests.test("_take_parse_shape explicit"):
-        test_images = np.random.rand(3, 10, 10)
+        test_images = rng.random((3, 10, 10))
         img_count2, (M2, N2) = analysis._take_parse_shape(test_images, shape=(1, 4))
         assert img_count2 == 3
         assert M2 == 1
         assert N2 == 4
 
     with subtests.test("_take_parse_shape warns on truncation"):
-        test_images = np.random.rand(3, 10, 10)
+        test_images = rng.random((3, 10, 10))
         with pytest.warns(UserWarning, match="Not enough space"):
-            img_count3, (M3, N3) = analysis._take_parse_shape(test_images, shape=(1, 2))
+            img_count3, (_M3, _N3) = analysis._take_parse_shape(test_images, shape=(1, 2))
             assert img_count3 == 2
 
     with subtests.test("take_plot does not crash"):
         import matplotlib.pyplot as plt
 
-        test_images = np.random.rand(3, 10, 10)
+        test_images = rng.random((3, 10, 10))
         plt.ioff()
 
         analysis.take_plot(test_images, separate_axes=False)
@@ -671,12 +677,12 @@ def test_take(subtests, benchmark):
         plt.close("all")
 
     with subtests.test("tuple size input"):
-        image = np.random.rand(100, 100)
+        image = rng.random((100, 100))
         result = analysis.take(image, vectors=[50, 50], size=(8, 12), centered=True)
         assert result.shape == (1, 12, 8)
 
     with subtests.test("clip=True with out-of-range regions"):
-        image = np.random.rand(50, 50)
+        image = rng.random((50, 50))
         result = analysis.take(image, vectors=[0, 0], size=20, centered=True, clip=True)
         assert result.shape == (1, 20, 20)
         assert np.any(np.isnan(result))
@@ -688,26 +694,26 @@ def test_take(subtests, benchmark):
         assert np.any(result == 0)
 
     with subtests.test("return_mask=True boolean canvas"):
-        image = np.random.rand(80, 80)
+        image = rng.random((80, 80))
         canvas = analysis.take(image, vectors=[40, 40], size=10, centered=True, return_mask=True)
         assert canvas.dtype == bool
         assert canvas.shape == (80, 80)
         assert np.sum(canvas) == 100
 
     with subtests.test("return_mask=2 nan canvas"):
-        image = np.random.rand(80, 80)
+        image = rng.random((80, 80))
         canvas = analysis.take(image, vectors=[40, 40], size=10, centered=True, return_mask=2)
         assert canvas.shape == (80, 80)
         nan_count = np.sum(np.isnan(canvas))
         assert nan_count > 0
 
     with subtests.test("3D image stack with integrate"):
-        images = np.random.rand(3, 100, 100)
+        images = rng.random((3, 100, 100))
         result = analysis.take(images, vectors=[50, 50], size=10, centered=True, integrate=True)
         assert result.shape == (3,)
 
     with subtests.test("clip=True fully in-bounds sets clip=False"):
-        image = np.random.rand(100, 100)
+        image = rng.random((100, 100))
         result = analysis.take(image, vectors=[50, 50], size=10, centered=True, clip=True)
         assert result.shape == (1, 10, 10)
         assert not np.any(np.isnan(result))
@@ -717,7 +723,7 @@ def test_take(subtests, benchmark):
 
         plt.ioff()
 
-        image = np.random.rand(60, 60)
+        image = rng.random((60, 60))
         shown = {"called": False}
 
         def _show2():
@@ -741,7 +747,7 @@ def test_take(subtests, benchmark):
 
         plt.ioff()
 
-        image = np.random.rand(60, 60)
+        image = rng.random((60, 60))
         shown = {"called": False}
 
         def _show():

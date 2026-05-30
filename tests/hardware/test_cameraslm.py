@@ -128,9 +128,6 @@ class TestFourierSLM:
     def test_fourier_calibrate_analytic(self, fourierslm, subtests):
         """Test FourierSLM.fourier_calibrate_analytic."""
 
-        M = np.array([[1.5, 0.1], [-0.05, 1.6]])
-        b = np.array([[10.0], [20.0]])
-
         with subtests.test("stores M and b"):
             # Note: fourier_calibrate_analytic with arbitrary M calls set_affine
             # on SimulatedCamera, which may fail for small M values.
@@ -150,7 +147,7 @@ class TestFourierSLM:
 
         with subtests.test("wrong-shape M raises"):
             with pytest.raises(ValueError):
-                fourierslm.fourier_calibrate_analytic(np.eye(3), b)
+                fourierslm.fourier_calibrate_analytic(np.eye(3), np.zeros((2, 1)))
 
     def test_fourier_grid_project(self, fourierslm_calibrated, subtests):
         """Test FourierSLM.fourier_grid_project."""
@@ -362,9 +359,10 @@ class TestFourierSLM:
 
     def test_plot(self, fourierslm, subtests):
         """Test FourierSLM.plot."""
+        rng = np.random.default_rng(42)
 
         with subtests.test("default call"):
-            phase = np.random.rand(*fourierslm.slm.shape) * 2 * np.pi
+            phase = rng.random(fourierslm.slm.shape) * 2 * np.pi
             axs = fourierslm.plot(phase=phase)
             plt.show()
             assert axs is not None
@@ -547,7 +545,7 @@ class TestFourierSLM:
     def test_wavefront_calibration_points(self, fourierslm_calibrated, subtests):
         """Test FourierSLM.wavefront_calibration_points."""
 
-        with subtests.test("returns 2×N array"):
+        with subtests.test("returns 2xN array"):
             pts = fourierslm_calibrated.wavefront_calibration_points(pitch=60)
             assert pts.ndim == 2
             assert pts.shape[0] == 2

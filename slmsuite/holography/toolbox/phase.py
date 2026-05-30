@@ -1980,8 +1980,8 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
     numpy.ndarray
         The phase for this function.
     """
-    (x_grid, y_grid) = _process_grid(grid)
-    w = _determine_source_radius(grid, w)
+    # (x_grid, y_grid) = _process_grid(grid)
+    # w = _determine_source_radius(grid, w)
 
     if parity == 1:
         if not 0 <= m <= p:
@@ -1990,9 +1990,9 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
         if not 1 <= m <= p:
             raise ValueError(f"{(p, m)} is an invalid Ince polynomial.")
 
-    complex_grid = x_grid + 1j * y_grid
+    # complex_grid = x_grid + 1j * y_grid
 
-    factor = 1 / (w * np.sqrt(ellipticity / 2))
+    # factor = 1 / (w * np.sqrt(ellipticity / 2))
 
     # elliptic_grid = np.arccosh(complex_grid * factor)
 

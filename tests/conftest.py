@@ -32,6 +32,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
+from slmsuite.hardware.cameras.simulated import SimulatedCamera
+from slmsuite.hardware.cameraslms import FourierSLM
+from slmsuite.hardware.slms.simulated import SimulatedSLM
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Globals
@@ -77,7 +81,7 @@ def random_seed():
     seed = random.randint(0, 2**32 - 1)
 
     # Set numpy's random seed
-    np.random.seed(seed)
+    np.random.seed(seed)  # noqa: NPY002
 
     # Set CuPy's random seed if available
     if HAS_CUPY:
@@ -92,10 +96,6 @@ def random_seed():
 
 
 # Fixtures for SLM and Camera instances, with dynamic configuration via environment variables.
-
-from slmsuite.hardware.cameras.simulated import SimulatedCamera
-from slmsuite.hardware.cameraslms import FourierSLM
-from slmsuite.hardware.slms.simulated import SimulatedSLM
 
 _TEST_SMALL_RESOLUTION = (128, 128)
 

@@ -11,19 +11,6 @@ import h5py
 import numpy as np
 import pytest
 
-
-def _safe_unlink(path, retries=5, delay=0.1):
-    """Remove a file, retrying on PermissionError (Windows h5py file lock)."""
-    for i in range(retries):
-        try:
-            os.unlink(path)
-            return
-        except PermissionError:
-            if i == retries - 1:
-                raise
-            time.sleep(delay)
-
-
 from slmsuite.holography.analysis.files import (
     _gray2rgb,
     _load_image,
@@ -36,6 +23,18 @@ from slmsuite.holography.analysis.files import (
     save_image,
     write_h5,
 )
+
+
+def _safe_unlink(path, retries=5, delay=0.1):
+    """Remove a file, retrying on PermissionError (Windows h5py file lock)."""
+    for i in range(retries):
+        try:
+            os.unlink(path)
+            return
+        except PermissionError:
+            if i == retries - 1:
+                raise
+            time.sleep(delay)
 
 
 def _touch(path, content="test"):
@@ -163,7 +162,7 @@ def test_save_and_load_h5(subtests):
             assert loaded["float"] == pytest.approx(3.14)
             assert loaded["string"] == "hello"
             np.testing.assert_array_equal(loaded["array"], [1, 2, 3, 4, 5])
-            assert loaded["none_value"] == False  # None becomes False
+            assert not loaded["none_value"]  # None becomes False
         finally:
             _safe_unlink(path)
 
@@ -385,12 +384,12 @@ def test_gray2rgb(subtests):
         assert result.shape[-1] == 4
 
     with subtests.test("float image with normalize"):
-        img = np.random.rand(1, 10, 10).astype(np.float64)
+        img = np.random.default_rng().random((1, 10, 10)).astype(np.float64)
         result = _gray2rgb(img, cmap="viridis", normalize=True)
         assert result.dtype == np.uint8
 
     with subtests.test("float image without normalize"):
-        img = np.random.rand(1, 10, 10).astype(np.float64) * 0.5
+        img = np.random.default_rng().random((1, 10, 10)).astype(np.float64) * 0.5
         result = _gray2rgb(img, cmap="viridis", normalize=False)
         assert result.dtype == np.uint8
 
@@ -400,7 +399,7 @@ def test_gray2rgb(subtests):
         assert result.shape[-1] == 4
 
     with subtests.test("float image with lut=None uses default"):
-        img = np.random.rand(1, 10, 10).astype(np.float64)
+        img = np.random.default_rng().random((1, 10, 10)).astype(np.float64)
         result = _gray2rgb(img, cmap=False)
         assert result.dtype == np.uint8
 
@@ -463,32 +462,33 @@ def test_gray2rgb(subtests):
 
 def test_save_image(subtests):
     """Test save_image for single images, stacks, and various options."""
+    rng = np.random.default_rng()
     with subtests.test("single grayscale png"):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test.png")
-            img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
+            img = rng.integers(0, 255, (10, 10), dtype=np.uint8)
             save_image(path, img)
             assert os.path.exists(path)
 
     with subtests.test("single image with colormap"):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test_cmap.png")
-            img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
+            img = rng.integers(0, 255, (10, 10), dtype=np.uint8)
             save_image(path, img, cmap="viridis")
             assert os.path.exists(path)
 
     with subtests.test("stack saved as gif"):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test.gif")
-            imgs = np.random.randint(0, 255, (3, 10, 10), dtype=np.uint8)
+            imgs = rng.integers(0, 255, (3, 10, 10), dtype=np.uint8)
             save_image(path, imgs)
             assert os.path.exists(path)
 
     with subtests.test("gif triggers pygifsicle warning"):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test.gif")
-            imgs = np.random.randint(0, 255, (3, 10, 10), dtype=np.uint8)
-            with patch("slmsuite.holography.analysis.files.warnings.warn") as mock_warn:
+            imgs = rng.integers(0, 255, (3, 10, 10), dtype=np.uint8)
+            with patch("slmsuite.holography.analysis.files.warnings.warn"):
                 with patch.dict("sys.modules", {"pygifsicle": None}):
                     save_image(path, imgs)
             # pygifsicle not installed → either warns or succeeds silently
@@ -496,28 +496,28 @@ def test_save_image(subtests):
     with subtests.test("float image"):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test_float.png")
-            img = np.random.rand(10, 10).astype(np.float64)
+            img = rng.random((10, 10)).astype(np.float64)
             save_image(path, img, cmap="viridis")
             assert os.path.exists(path)
 
     with subtests.test("normalize=False with float"):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test_nonorm.png")
-            img = np.random.rand(10, 10).astype(np.float64) * 0.5
+            img = rng.random((10, 10)).astype(np.float64) * 0.5
             save_image(path, img, cmap="viridis", normalize=False)
             assert os.path.exists(path)
 
     with subtests.test("border parameter"):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test_border.png")
-            img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
+            img = rng.integers(0, 255, (10, 10), dtype=np.uint8)
             save_image(path, img, cmap="viridis", border=255)
             assert os.path.exists(path)
 
     with subtests.test("imageio not available raises ValueError"):
         import sys
 
-        img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
+        img = rng.integers(0, 255, (10, 10), dtype=np.uint8)
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test.png")
             with patch.dict(sys.modules, {"imageio": None}):
