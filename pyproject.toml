@@ -180,19 +180,20 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401", "F403"]                    # re-exports & star-imports are intentional
-"slmsuite/hardware/**/*.py" = ["F401"]              # vendor SDK imports gated by try/except
-"slmsuite/misc/files.py" = ["F403"]                 # backwards-compat re-export shim
-"slmsuite/misc/fitfunctions.py" = ["F403"]          # backwards-compat re-export shim
-"slmsuite/hardware/cameras/template.py" = ["F821"]  # placeholder TODO markers
-"slmsuite/hardware/slms/template.py" = ["F821"]     # placeholder TODO markers
+"__init__.py" = ["F401", "F403"]                        # re-exports & star-imports are intentional
+"slmsuite/hardware/**/*.py" = ["F401"]                  # vendor SDK imports gated by try/except
+"slmsuite/holography/algorithms/_header.py" = ["F401"]  # re-exports meant for star-import in other modules
+"slmsuite/misc/files.py" = ["F403"]                     # backwards-compat re-export shim
+"slmsuite/misc/fitfunctions.py" = ["F403"]              # backwards-compat re-export shim
+"slmsuite/hardware/cameras/template.py" = ["F821"]      # placeholder TODO markers
+"slmsuite/hardware/slms/template.py" = ["F821"]         # placeholder TODO markers
 # Algorithm modules pull shared numpy/scipy/cupy symbols from _header via star import.
 "slmsuite/holography/algorithms/_feedback.py" = ["F403", "F405"]
 "slmsuite/holography/algorithms/_hologram.py" = ["F403", "F405"]
 "slmsuite/holography/algorithms/_multiplane.py" = ["F403", "F405"]
 "slmsuite/holography/algorithms/_spots.py" = ["F403", "F405"]
 "slmsuite/holography/algorithms/_stats.py" = ["F403", "F405"]
-"tests/**/*.py" = ["B011", "D", "SIM"]              # asserts, docstrings, test-style flex
+"tests/**/*.py" = ["B011", "D", "SIM", "F403", "F405"]  # asserts, docstrings, and star-import flex in tests
 
 [tool.ruff.lint.isort]
 known-first-party = ["slmsuite"]

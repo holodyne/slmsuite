@@ -32,7 +32,6 @@ from slmsuite.hardware.slms.slm import SLM
 _DEFAULT_MEADOWLARK_PATH = "C:\\Program Files\\Meadowlark Optics\\"
 
 
-
 class _SDK_MODE(IntEnum):
     #: No connection
     NULL = 0
@@ -963,9 +962,7 @@ class Meadowlark(SLM):
             return lut_path
 
     @staticmethod
-    def _locate_lut_file(
-        search_path: str | Path, slm_shape: tuple[int, int] | None = None
-    ) -> str:
+    def _locate_lut_file(search_path: str | Path, slm_shape: tuple[int, int] | None = None) -> str:
         """
         Locates the LUT file in the given path. If there are multiple, returns the
         most recent file.. If there are none with ".slm" in the

@@ -1,9 +1,9 @@
 """
 Unit tests for slmsuite.holography.toolbox module.
 """
-import pytest
-import numpy as np
 
+import numpy as np
+import pytest
 from scipy.spatial import distance
 
 from slmsuite.holography import toolbox
@@ -61,9 +61,7 @@ def test_convert_vector(slm, subtests):
 
     with subtests.test("norm <-> deg"):
         np.testing.assert_allclose(convert_vector(vec, "norm", "deg"), vec * 180 / np.pi)
-        np.testing.assert_allclose(
-            convert_vector(vec * 180 / np.pi, "deg", "norm"), vec
-        )
+        np.testing.assert_allclose(convert_vector(vec * 180 / np.pi, "deg", "norm"), vec)
 
     pitch_um = toolbox.format_2vectors(slm.pitch_um)
     wav_um = slm.wav_um
@@ -77,16 +75,10 @@ def test_convert_vector(slm, subtests):
         )
 
     with subtests.test("norm <-> lpmm"):
-        np.testing.assert_allclose(
-            convert_vector(vec, "norm", "lpmm", **hw), vec * 1000 / wav_um
-        )
-        np.testing.assert_allclose(
-            convert_vector(vec * 1000 / wav_um, "lpmm", "norm", **hw), vec
-        )
+        np.testing.assert_allclose(convert_vector(vec, "norm", "lpmm", **hw), vec * 1000 / wav_um)
+        np.testing.assert_allclose(convert_vector(vec * 1000 / wav_um, "lpmm", "norm", **hw), vec)
 
-    shape_vec = toolbox.format_2vectors(
-        np.flip(np.squeeze(np.array(knm_shape, dtype=float)))
-    )
+    shape_vec = toolbox.format_2vectors(np.flip(np.squeeze(np.array(knm_shape, dtype=float))))
     knm_conv = toolbox.format_2vectors(slm.pitch) * shape_vec
 
     with subtests.test("norm <-> knm"):
@@ -100,17 +92,13 @@ def test_convert_vector(slm, subtests):
         )
 
     with subtests.test("zero norm maps to knm shape/2"):
-        np.testing.assert_allclose(
-            convert_vector((0, 0), "norm", "knm", **knm_kw), shape_vec / 2.0
-        )
+        np.testing.assert_allclose(convert_vector((0, 0), "norm", "knm", **knm_kw), shape_vec / 2.0)
 
     with subtests.test("knm defaults to slm.shape"):
         shape_default = toolbox.format_2vectors(
             np.flip(np.squeeze(np.array(slm.shape, dtype=float)))
         )
-        np.testing.assert_allclose(
-            convert_vector((0, 0), "norm", "knm", **hw), shape_default / 2.0
-        )
+        np.testing.assert_allclose(convert_vector((0, 0), "norm", "knm", **hw), shape_default / 2.0)
 
     zernike_scale = 2 * np.pi * np.reciprocal(slm.get_source_zernike_scaling())
 
@@ -125,9 +113,7 @@ def test_convert_vector(slm, subtests):
     for unit in all_roundtrip_units:
         with subtests.test(f"roundtrip {unit}"):
             kw = knm_kw if unit == "knm" else (hw if unit in slm_units else {})
-            rt = convert_vector(
-                convert_vector(vec, "norm", unit, **kw), unit, "norm", **kw
-            )
+            rt = convert_vector(convert_vector(vec, "norm", unit, **kw), unit, "norm", **kw)
             np.testing.assert_allclose(rt, vec)
 
     for unit in ["freq", "lpmm", "knm"]:
@@ -167,9 +153,7 @@ def test_convert_vector(slm, subtests):
     zero = np.array([[0.0], [0.0]])
     for unit in no_hw_units:
         with subtests.test(f"zero norm -> {unit}"):
-            np.testing.assert_allclose(
-                convert_vector(zero, "norm", unit), zero, atol=1e-15
-            )
+            np.testing.assert_allclose(convert_vector(zero, "norm", unit), zero, atol=1e-15)
 
     vec_3d = np.array([[0.1], [-0.2], [0.5]])
 
@@ -579,9 +563,7 @@ def test_smallest_distance(subtests):
         rng = np.random.default_rng(7)
         vecs = rng.uniform(0, 100, size=(2, 50))
         str_result = smallest_distance(vecs, metric="euclidean")
-        fn_result = smallest_distance(
-            vecs, metric=lambda a, b: np.sqrt(np.sum((a - b) ** 2))
-        )
+        fn_result = smallest_distance(vecs, metric=lambda a, b: np.sqrt(np.sum((a - b) ** 2)))
         assert str_result == pytest.approx(fn_result, rel=1e-10)
 
 
@@ -592,10 +574,12 @@ def test_lloyds_algorithm(subtests):
 
     for n in [3, 5, 10]:
         with subtests.test(f"output shape {n} points"):
-            seeds = np.array([
-                np.linspace(10, 90, n),
-                np.linspace(10, 90, n),
-            ])
+            seeds = np.array(
+                [
+                    np.linspace(10, 90, n),
+                    np.linspace(10, 90, n),
+                ]
+            )
             result = lloyds_algorithm(grid, seeds, iterations=5)
             assert result.shape == (2, n)
 
@@ -633,8 +617,7 @@ def test_lloyds_algorithm(subtests):
         np.testing.assert_allclose(r1, r2)
 
     with subtests.test("convergence"):
-        seeds = np.array([[10, 11, 12, 88, 89, 90],
-                          [50, 50, 50, 50, 50, 50]])
+        seeds = np.array([[10, 11, 12, 88, 89, 90], [50, 50, 50, 50, 50, 50]])
         r5 = lloyds_algorithm(grid, seeds, iterations=5)
         r50 = lloyds_algorithm(grid, seeds, iterations=50)
         spread_5 = smallest_distance(r5, metric="euclidean")
@@ -767,7 +750,7 @@ def test_pad_unpad(subtests):
         # Original 3x4 data centered in 7x10
         b = (7 - 3) // 2  # =2
         l = (10 - 4) // 2  # =3
-        np.testing.assert_array_equal(result[b:b + 3, l:l + 4], mat)
+        np.testing.assert_array_equal(result[b : b + 3, l : l + 4], mat)
 
     with subtests.test("pad zeros in border"):
         result = pad(mat, (7, 10))

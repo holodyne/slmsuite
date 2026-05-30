@@ -1411,9 +1411,7 @@ class Hologram(_HologramStats):
         # 0) Check and record method.
         methods = list(ALGORITHM_DEFAULTS.keys())
         if method not in methods:
-            raise ValueError(
-                f"Unrecognized method '{method}'.\nValid methods include {methods}"
-            )
+            raise ValueError(f"Unrecognized method '{method}'.\nValid methods include {methods}")
         self.flags["method"] = method
 
         # 1) Parse flags:
@@ -1633,10 +1631,7 @@ class Hologram(_HologramStats):
             #     cp.multiply(farfield, self.weights, out=farfield)
             #     cp.nan_to_num(farfield, copy=False, nan=0)
 
-            if (
-                not (self.flags.get("fixed_phase"))
-                or self.phase_ff is None
-            ):
+            if not (self.flags.get("fixed_phase")) or self.phase_ff is None:
                 self.phase_ff = cp.arctan2(
                     self.farfield.imag, self.farfield.real, out=self.phase_ff
                 )
@@ -1997,9 +1992,7 @@ class Hologram(_HologramStats):
         with cp.cuda.Device(device):
             mempool.set_limit(size=size, fraction=fraction)
 
-            print(
-                f"cupy memory pool limit set to {mempool.get_limit() / (1024.0**3):.2f} GB..."
-            )
+            print(f"cupy memory pool limit set to {mempool.get_limit() / (1024.0**3):.2f} GB...")
 
     @staticmethod
     def get_mempool_limit(device=0):

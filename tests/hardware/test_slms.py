@@ -1,13 +1,14 @@
 """
 Unit tests for SLM base class.
 """
+
 import os
 import tempfile
 import warnings
 
-import pytest
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import pytest
 
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 
@@ -228,7 +229,6 @@ class TestSLM:
 
     def test_plot(self, slm, subtests):
         """plot() runs without error for common argument combos."""
-        import matplotlib.pyplot as plt
 
         with subtests.test("default"):
             ax = slm.plot()

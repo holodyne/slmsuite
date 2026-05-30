@@ -1,15 +1,15 @@
 """
 Unit tests for slmsuite.holography.analysis.files module.
 """
-import pytest
-import sys
+
+import os
 import tempfile
 import time
-import os
-import warnings
+from unittest.mock import patch
+
 import h5py
 import numpy as np
-from unittest.mock import patch, mock_open
+import pytest
 
 
 def _safe_unlink(path, retries=5, delay=0.1):
@@ -23,10 +23,18 @@ def _safe_unlink(path, retries=5, delay=0.1):
                 raise
             time.sleep(delay)
 
+
 from slmsuite.holography.analysis.files import (
-    _max_numeric_id, generate_path, latest_path,
-    load_h5, save_h5, read_h5, write_h5, _load_image,
-    _gray2rgb, save_image,
+    _gray2rgb,
+    _load_image,
+    _max_numeric_id,
+    generate_path,
+    latest_path,
+    load_h5,
+    read_h5,
+    save_h5,
+    save_image,
+    write_h5,
 )
 
 
@@ -176,9 +184,7 @@ def test_save_and_load_h5(subtests):
             loaded = load_h5(path)
 
             assert loaded["level1"]["level2"]["value"] == 123
-            np.testing.assert_array_equal(
-                loaded["level1"]["level2"]["array"], [[1, 2], [3, 4]]
-            )
+            np.testing.assert_array_equal(loaded["level1"]["level2"]["array"], [[1, 2], [3, 4]])
             assert loaded["level1"]["simple"] == "test"
             assert loaded["top_level"] == 456
         finally:
@@ -194,9 +200,7 @@ def test_save_and_load_h5(subtests):
             save_h5(path, data)
             loaded = load_h5(path)
 
-            np.testing.assert_array_equal(
-                loaded["string_array"], ["hello", "world", "test"]
-            )
+            np.testing.assert_array_equal(loaded["string_array"], ["hello", "world", "test"])
             assert loaded["single_string"] == "test_string"
         finally:
             _safe_unlink(path)
@@ -220,9 +224,7 @@ def test_save_and_load_h5(subtests):
 
             loaded = load_h5(path, decode_bytes=True)
             assert loaded["string_data"] == "hello"
-            np.testing.assert_array_equal(
-                loaded["byte_array"], ["hello", "world"]
-            )
+            np.testing.assert_array_equal(loaded["byte_array"], ["hello", "world"])
 
             loaded = load_h5(path, decode_bytes=False)
             assert loaded["string_data"] == b"hello"
@@ -433,6 +435,7 @@ def test_gray2rgb(subtests):
 
     with subtests.test("colormap object with N attribute (ListedColormap)"):
         import matplotlib.pyplot as plt
+
         cm = plt.get_cmap("viridis", 64)
         img = np.array([[[0, 10], [20, 63]]], dtype=np.uint8)
         result = _gray2rgb(img, cmap=cm, lut=64)
@@ -442,6 +445,7 @@ def test_gray2rgb(subtests):
 
         class NoColorsCmap:
             """Colormap-like object with N but no colors attr."""
+
             N = 10
 
             def __call__(self, x):
@@ -484,9 +488,7 @@ def test_save_image(subtests):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test.gif")
             imgs = np.random.randint(0, 255, (3, 10, 10), dtype=np.uint8)
-            with patch(
-                "slmsuite.holography.analysis.files.warnings.warn"
-            ) as mock_warn:
+            with patch("slmsuite.holography.analysis.files.warnings.warn") as mock_warn:
                 with patch.dict("sys.modules", {"pygifsicle": None}):
                     save_image(path, imgs)
             # pygifsicle not installed → either warns or succeeds silently
@@ -514,6 +516,7 @@ def test_save_image(subtests):
 
     with subtests.test("imageio not available raises ValueError"):
         import sys
+
         img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test.png")

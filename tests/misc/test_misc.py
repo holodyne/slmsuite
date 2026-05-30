@@ -1,14 +1,15 @@
 """
 Unit tests for slmsuite.misc modules.
 """
-import pytest
+
 import numpy as np
+import pytest
 
-from slmsuite.misc.math import *
 from slmsuite.misc.fitfunctions import *
-
+from slmsuite.misc.math import *
 
 # Test misc.math functions
+
 
 def test_iseven(subtests):
     """Test iseven function with various inputs."""
@@ -31,7 +32,7 @@ def test_iseven(subtests):
         assert iseven(2.1) == True  # rounds to 2
         assert iseven(2.9) == False  # rounds to 3
         assert iseven(3.1) == False  # rounds to 3
-        assert iseven(3.9) == True   # rounds to 4
+        assert iseven(3.9) == True  # rounds to 4
 
 
 def test_type_tuples(subtests):
@@ -60,12 +61,13 @@ def test_type_tuples(subtests):
         assert isinstance(np.float64(1.0), FLOAT_TYPES)
 
     with subtests.test("complex types"):
-        assert isinstance(1+1j, SCALAR_TYPES)
-        assert isinstance(np.complex64(1+1j), SCALAR_TYPES)
-        assert isinstance(np.complex128(1+1j), SCALAR_TYPES)
+        assert isinstance(1 + 1j, SCALAR_TYPES)
+        assert isinstance(np.complex64(1 + 1j), SCALAR_TYPES)
+        assert isinstance(np.complex128(1 + 1j), SCALAR_TYPES)
 
 
 # Test 1D fit functions
+
 
 def test_linear(subtests):
     """Test linear function."""
@@ -157,26 +159,26 @@ def test_hyperbola(subtests):
 def test_cos(subtests):
     """Test cosine fit function."""
     with subtests.test("basic"):
-        x = np.linspace(0, 2*np.pi, 100)
+        x = np.linspace(0, 2 * np.pi, 100)
         y = cos(x, b=0, a=2, c=1, k=1)
         # Check amplitude range
         assert np.max(y) == pytest.approx(3.0, abs=0.1)
         assert np.min(y) == pytest.approx(1.0, abs=0.1)
 
     with subtests.test("default k"):
-        x = np.array([0, np.pi/2, np.pi, 3*np.pi/2, 2*np.pi])
+        x = np.array([0, np.pi / 2, np.pi, 3 * np.pi / 2, 2 * np.pi])
         y = cos(x, b=0, a=2, c=1)
         expected = np.array([3, 2, 1, 2, 3])
         np.testing.assert_array_almost_equal(y, expected, decimal=5)
 
     with subtests.test("phase offset"):
-        x = np.array([0, np.pi/2, np.pi, 3*np.pi/2, 2*np.pi])
-        y = cos(x, b=np.pi/2, a=2, c=1)
+        x = np.array([0, np.pi / 2, np.pi, 3 * np.pi / 2, 2 * np.pi])
+        y = cos(x, b=np.pi / 2, a=2, c=1)
         expected = np.array([2, 3, 2, 1, 2])
         np.testing.assert_array_almost_equal(y, expected, decimal=5)
 
     with subtests.test("k parameter"):
-        x = np.array([0, np.pi/2, np.pi, 3*np.pi/2, 2*np.pi])
+        x = np.array([0, np.pi / 2, np.pi, 3 * np.pi / 2, 2 * np.pi])
         y = cos(x, b=0, a=2, c=1, k=2)
         expected = np.array([3, 1, 3, 1, 3])
         np.testing.assert_array_almost_equal(y, expected, decimal=5)
@@ -234,6 +236,7 @@ def test_gaussian(subtests):
 
 
 # Test 2D fit functions
+
 
 def test_gaussian2d(subtests):
     """Test 2D Gaussian function."""

@@ -1,20 +1,21 @@
 """
 Unit tests for slmsuite.holography.toolbox.phase module.
 """
-import pytest
+
 import numpy as np
+import pytest
 
 from slmsuite.holography.toolbox import phase
 from slmsuite.holography.toolbox.phase import (
-    _parse_focal_length,
-    _zernike_indices_parse,
     _cantor_pairing,
-    _inverse_cantor_pairing,
-    _parse_out,
     _determine_source_radius,
-    _zernike_build_order,
+    _inverse_cantor_pairing,
+    _parse_focal_length,
+    _parse_out,
     _zernike_build_indices,
+    _zernike_build_order,
     _zernike_coefficients,
+    _zernike_indices_parse,
     _zernike_populate_basis_map,
 )
 
@@ -68,7 +69,7 @@ def test_blaze(simple_grid, subtests, benchmark):
         assert result_3d.shape == result_2d.shape
         assert not np.allclose(result_2d, result_3d)
         diff = result_3d - result_2d
-        r_squared = simple_grid[0]**2 + simple_grid[1]**2
+        r_squared = simple_grid[0] ** 2 + simple_grid[1] ** 2
         assert np.allclose(diff, np.pi * r_squared)
 
         phase_3d = phase.blaze(simple_grid, vector=(0.1, 0.2, 0.5))
@@ -95,8 +96,8 @@ def test_sinusoid(simple_grid, subtests):
         assert np.max(result) <= np.pi + 0.1
 
     with subtests.test("b offset shifts range"):
-        result = phase.sinusoid(simple_grid, vector=(1, 0), a=np.pi, b=np.pi/2)
-        assert np.min(result) >= np.pi/2 - 0.1
+        result = phase.sinusoid(simple_grid, vector=(1, 0), a=np.pi, b=np.pi / 2)
+        assert np.min(result) >= np.pi / 2 - 0.1
         assert np.max(result) <= np.pi + 0.1
 
     with subtests.test("shift parameter changes pattern"):
@@ -105,12 +106,12 @@ def test_sinusoid(simple_grid, subtests):
         assert not np.allclose(result1, result2)
 
     with subtests.test("custom amplitude and offset range"):
-        phase_custom = phase.sinusoid(simple_grid, vector=(0.1, 0.2), a=2*np.pi, b=np.pi/2)
-        assert np.max(phase_custom) <= 2*np.pi + np.pi/2 + 0.1
-        assert np.min(phase_custom) >= np.pi/2 - 0.1
+        phase_custom = phase.sinusoid(simple_grid, vector=(0.1, 0.2), a=2 * np.pi, b=np.pi / 2)
+        assert np.max(phase_custom) <= 2 * np.pi + np.pi / 2 + 0.1
+        assert np.min(phase_custom) >= np.pi / 2 - 0.1
 
     with subtests.test("shift vs unshifted differ"):
-        phase_shifted = phase.sinusoid(simple_grid, vector=(0.1, 0.2), shift=np.pi/4)
+        phase_shifted = phase.sinusoid(simple_grid, vector=(0.1, 0.2), shift=np.pi / 4)
         phase_unshifted = phase.sinusoid(simple_grid, vector=(0.1, 0.2), shift=0)
         assert not np.allclose(phase_shifted, phase_unshifted)
 
@@ -125,7 +126,7 @@ def test_binary(simple_grid, normalized_grid, subtests):
         assert np.pi in unique_vals or np.isclose(unique_vals.max(), np.pi)
 
     with subtests.test("duty cycle 0.25"):
-        result = phase.binary(simple_grid, vector=(.1, .1), duty_cycle=0.25, a=1, b=0)
+        result = phase.binary(simple_grid, vector=(0.1, 0.1), duty_cycle=0.25, a=1, b=0)
         high_fraction = np.sum(result > 0.5) / result.size
         assert high_fraction == pytest.approx(0.25, abs=0.05)
 
@@ -147,13 +148,13 @@ def test_binary(simple_grid, normalized_grid, subtests):
         assert np.allclose(result, 0)
 
     with subtests.test("zero vector with shift beyond duty returns a"):
-        result = phase.binary(simple_grid, vector=(0, 0), a=np.pi, b=0,
-                              shift=np.pi, duty_cycle=0.25)
+        result = phase.binary(
+            simple_grid, vector=(0, 0), a=np.pi, b=0, shift=np.pi, duty_cycle=0.25
+        )
         assert np.allclose(result, np.pi)
 
     with subtests.test("zero vector with small shift returns b"):
-        result = phase.binary(simple_grid, vector=(0, 0), a=np.pi, b=0,
-                              shift=0.1, duty_cycle=0.5)
+        result = phase.binary(simple_grid, vector=(0, 0), a=np.pi, b=0, shift=0.1, duty_cycle=0.5)
         assert np.allclose(result, 0)
 
     with subtests.test("x-only vector uses single-axis path"):
@@ -186,10 +187,10 @@ def test_lens(simple_grid, subtests, benchmark):
         centery = result.shape[0] // 2
         centerx = result.shape[1] // 2
         d = 20
-        dx = result[centery, centerx-d] - result[centery, centerx+d]
-        dy = result[centery-d, centerx] - result[centery+d, centerx]
-        assert dx == pytest.approx(0, abs=.1)
-        assert dy == pytest.approx(0, abs=.1)
+        dx = result[centery, centerx - d] - result[centery, centerx + d]
+        dy = result[centery - d, centerx] - result[centery + d, centerx]
+        assert dx == pytest.approx(0, abs=0.1)
+        assert dy == pytest.approx(0, abs=0.1)
 
     with subtests.test("negative focal length negates phase"):
         phase_pos = phase.lens(simple_grid, f=(10, 10))
@@ -223,10 +224,10 @@ def test_axicon(simple_grid, normalized_grid, subtests):
 
     with subtests.test("linear in radius shape check"):
         result = phase.axicon(normalized_grid, f=(1000, 1000))
-        r = np.sqrt(normalized_grid[0]**2 + normalized_grid[1]**2)
+        r = np.sqrt(normalized_grid[0] ** 2 + normalized_grid[1] ** 2)
         center = result.shape[0] // 2
-        r_center = r[center-50:center+50, center-50:center+50]
-        result_center = result[center-50:center+50, center-50:center+50]
+        r_center = r[center - 50 : center + 50, center - 50 : center + 50]
+        result_center = result[center - 50 : center + 50, center - 50 : center + 50]
         assert result_center.shape == r_center.shape
 
     with subtests.test("y-only axicon (x-axis infinite)"):
@@ -281,14 +282,14 @@ def test_zernike(normalized_grid, subtests):
 
 def test_quadrants(simple_grid):
     """Test that quadrants creates four distinct regions."""
-    result = phase.quadrants(simple_grid, radius=.001*np.sqrt(2), center=(0, 0))
-    result -= phase.blaze(simple_grid, vector=(.001, .001))
+    result = phase.quadrants(simple_grid, radius=0.001 * np.sqrt(2), center=(0, 0))
+    result -= phase.blaze(simple_grid, vector=(0.001, 0.001))
 
     result = np.around(result * 1000)
     vals, counts = np.unique(result, return_counts=True)
     mode = vals[np.argmax(counts)]
 
-    assert np.sum(mode == result) == pytest.approx(.25 * result.size, abs=0.05 * result.size)
+    assert np.sum(mode == result) == pytest.approx(0.25 * result.size, abs=0.05 * result.size)
 
 
 def test_bahtinov(simple_grid):
@@ -367,11 +368,14 @@ def test_zernike_aperture(normalized_grid, subtests):
         assert y_scale == pytest.approx(y_s2)
 
     with subtests.test("SLM-like object with get_source_zernike_scaling"):
+
         class FakeSLM:
             def __init__(self, grid):
                 self.x_grid, self.y_grid = grid
+
             def get_source_zernike_scaling(self):
                 return (0.01, 0.02)
+
         fake = FakeSLM(normalized_grid)
         fake.x_grid = normalized_grid[0]
         fake.y_grid = normalized_grid[1]
@@ -380,15 +384,21 @@ def test_zernike_aperture(normalized_grid, subtests):
         assert y_scale == 0.02
 
     with subtests.test("CameraSLM-like object delegates to slm"):
+
         class FakeCameraSLM:
             def __init__(self, grid):
                 self.x_grid, self.y_grid = grid
-                self.slm = type('FakeSLM', (), {
-                    'get_source_zernike_scaling': lambda self_: (0.03, 0.04),
-                    'x_grid': grid[0],
-                    'y_grid': grid[1],
-                })()
+                self.slm = type(
+                    "FakeSLM",
+                    (),
+                    {
+                        "get_source_zernike_scaling": lambda self_: (0.03, 0.04),
+                        "x_grid": grid[0],
+                        "y_grid": grid[1],
+                    },
+                )()
                 self.cam = True
+
         fake = FakeCameraSLM(normalized_grid)
         x_scale, y_scale = phase.zernike_aperture(fake, aperture=None)
         assert x_scale == 0.03
@@ -527,12 +537,12 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
     with subtests.test("benchmark"):
         rng = np.random.default_rng(42)
         coeffs = rng.normal(0, 0.1, 10)
-        benchmark(phase.zernike_sum, normalized_grid, indices=list(range(len(coeffs))), weights=coeffs)
+        benchmark(
+            phase.zernike_sum, normalized_grid, indices=list(range(len(coeffs))), weights=coeffs
+        )
 
     with subtests.test("use_mask='return' gives boolean mask"):
-        mask = phase.zernike_sum(
-            normalized_grid, indices=[0], weights=[1], use_mask="return"
-        )
+        mask = phase.zernike_sum(normalized_grid, indices=[0], weights=[1], use_mask="return")
         assert mask.dtype == bool
         assert mask.shape == normalized_grid[0].shape
 
@@ -541,24 +551,20 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
             normalized_grid, indices=[4], weights=[1], use_mask=True, aperture="circular"
         )
         mask = phase.zernike_sum(
-            normalized_grid, indices=[0], weights=[1],
-            use_mask="return", aperture="circular"
+            normalized_grid, indices=[0], weights=[1], use_mask="return", aperture="circular"
         )
         # Outside the mask should be zero
         assert np.allclose(result[~mask], 0)
 
     with subtests.test("use_mask=False does not crop"):
-        result = phase.zernike_sum(
-            normalized_grid, indices=[4], weights=[1], use_mask=False
-        )
+        result = phase.zernike_sum(normalized_grid, indices=[4], weights=[1], use_mask=False)
         # Should have non-zero values everywhere (defocus is nonzero at corners)
         assert not np.allclose(result, 0)
 
     with subtests.test("derivative (1,0) of tilt-x is constant"):
         # Z_2 = x, so d/dx = 1 (up to scaling)
         result = phase.zernike_sum(
-            normalized_grid, indices=[2], weights=[1],
-            use_mask=False, derivative=(1, 0)
+            normalized_grid, indices=[2], weights=[1], use_mask=False, derivative=(1, 0)
         )
         # Should be approximately constant and nonzero
         assert np.std(result) < 1e-10
@@ -566,17 +572,13 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
 
     with subtests.test("stacked weights (D, N) returns 3D"):
         weights_2d = np.array([[1, 0], [0, 1]])  # Two polynomials, two stacks
-        result = phase.zernike_sum(
-            normalized_grid, indices=[1, 2], weights=weights_2d
-        )
+        result = phase.zernike_sum(normalized_grid, indices=[1, 2], weights=weights_2d)
         assert result.ndim == 3
         assert result.shape[0] == 2
 
     with subtests.test("out parameter reuses memory"):
         out = np.zeros((1, *normalized_grid[0].shape), dtype=normalized_grid[0].dtype)
-        result = phase.zernike_sum(
-            normalized_grid, indices=[1], weights=[1], out=out
-        )
+        result = phase.zernike_sum(normalized_grid, indices=[1], weights=[1], out=out)
         # result should share memory with out
         assert np.shares_memory(result, out)
 
@@ -593,8 +595,7 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
 
     with subtests.test("use_mask=nan gives nan outside"):
         result = phase.zernike_sum(
-            normalized_grid, indices=[4], weights=[1],
-            use_mask=np.nan, aperture="circular"
+            normalized_grid, indices=[4], weights=[1], use_mask=np.nan, aperture="circular"
         )
         assert np.any(np.isnan(result))
 
@@ -616,8 +617,7 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
 
     with subtests.test("second derivative d^2/dx^2 of Z4"):
         result = phase.zernike_sum(
-            normalized_grid, indices=[4], weights=[1],
-            use_mask=False, derivative=(2, 0)
+            normalized_grid, indices=[4], weights=[1], use_mask=False, derivative=(2, 0)
         )
         assert result.shape == normalized_grid[0].shape
         assert np.std(result) < 1e-8
@@ -625,8 +625,7 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
 
     with subtests.test("mixed derivative d/dxdy of Z3"):
         result = phase.zernike_sum(
-            normalized_grid, indices=[3], weights=[1],
-            use_mask=False, derivative=(1, 1)
+            normalized_grid, indices=[3], weights=[1], use_mask=False, derivative=(1, 1)
         )
         assert np.std(result) < 1e-8
 
@@ -657,7 +656,7 @@ def test_polynomial(simple_grid, subtests):
         terms = np.array([[2, 0], [0, 2]])
         weights = [1.0, 1.0]
         result = phase.polynomial(simple_grid, weights=weights, terms=terms).squeeze()
-        expected = simple_grid[0]**2 + simple_grid[1]**2
+        expected = simple_grid[0] ** 2 + simple_grid[1] ** 2
         assert np.allclose(result, expected)
 
     with subtests.test("stacked weights produce multiple outputs"):
@@ -680,31 +679,28 @@ def test_polynomial(simple_grid, subtests):
 
     with subtests.test("pathing=False disables optimization"):
         terms = np.array([[2, 0], [0, 2]])
-        result = phase.polynomial(simple_grid, weights=[1.0, 1.0],
-                                  terms=terms, pathing=False)
+        result = phase.polynomial(simple_grid, weights=[1.0, 1.0], terms=terms, pathing=False)
         result = result.squeeze()
-        expected = simple_grid[0]**2 + simple_grid[1]**2
+        expected = simple_grid[0] ** 2 + simple_grid[1] ** 2
         assert np.allclose(result, expected)
 
     with subtests.test("bad terms shape raises"):
         with pytest.raises(ValueError, match="Terms must be"):
-            phase.polynomial(simple_grid, weights=[1.0],
-                            terms=np.array([[1, 0, 0]]))
+            phase.polynomial(simple_grid, weights=[1.0], terms=np.array([[1, 0, 0]]))
 
     with subtests.test("mismatched weights 1D raises"):
         with pytest.raises(ValueError, match="common dimension"):
-            phase.polynomial(simple_grid, weights=[1.0, 2.0, 3.0],
-                            terms=np.array([[1, 0], [0, 1]]))
+            phase.polynomial(simple_grid, weights=[1.0, 2.0, 3.0], terms=np.array([[1, 0], [0, 1]]))
 
     with subtests.test("mismatched weights 2D raises"):
         with pytest.raises(ValueError, match="common dimension"):
-            phase.polynomial(simple_grid, weights=np.ones((3, 1)),
-                            terms=np.array([[1, 0], [0, 1]]))
+            phase.polynomial(simple_grid, weights=np.ones((3, 1)), terms=np.array([[1, 0], [0, 1]]))
 
     with subtests.test("3D weights raises"):
         with pytest.raises(ValueError, match="1D or 2D"):
-            phase.polynomial(simple_grid, weights=np.ones((2, 1, 1)),
-                            terms=np.array([[1, 0], [0, 1]]))
+            phase.polynomial(
+                simple_grid, weights=np.ones((2, 1, 1)), terms=np.array([[1, 0], [0, 1]])
+            )
 
     with subtests.test("vortex waveplate term (-1, 0)"):
         terms = np.array([[-1, 0]])
@@ -722,7 +718,7 @@ def test_polynomial(simple_grid, subtests):
         terms = np.array([[2, 0], [0, 2], [1, 0]])
         result = phase.polynomial(simple_grid, weights=[1.0, 1.0, 1.0], terms=terms)
         result = result.squeeze()
-        expected = simple_grid[0]**2 + simple_grid[1]**2 + simple_grid[0]
+        expected = simple_grid[0] ** 2 + simple_grid[1] ** 2 + simple_grid[0]
         assert np.allclose(result, expected)
 
     with subtests.test("out parameter reuses memory"):
@@ -997,27 +993,35 @@ def test_determine_source_radius(simple_grid, subtests):
 
     with subtests.test("w=None from grid"):
         w = _determine_source_radius(simple_grid, w=None)
-        assert w == pytest.approx(np.min([np.amax(simple_grid[0]),
-                                           np.amax(simple_grid[1])]) / 4)
+        assert w == pytest.approx(np.min([np.amax(simple_grid[0]), np.amax(simple_grid[1])]) / 4)
 
     with subtests.test("SLM-like with get_source_radius"):
+
         class FakeSLM:
             x_grid = simple_grid[0]
             y_grid = simple_grid[1]
+
             def get_source_radius(self):
                 return 42.0
+
         assert _determine_source_radius(FakeSLM(), w=None) == 42.0
 
     with subtests.test("CameraSLM-like delegates to slm"):
+
         class FakeCameraSLM:
             x_grid = simple_grid[0]
             y_grid = simple_grid[1]
-            slm = type('FakeSLM', (), {
-                'get_source_radius': lambda self: 99.0,
-                'x_grid': simple_grid[0],
-                'y_grid': simple_grid[1],
-            })()
+            slm = type(
+                "FakeSLM",
+                (),
+                {
+                    "get_source_radius": lambda self: 99.0,
+                    "x_grid": simple_grid[0],
+                    "y_grid": simple_grid[1],
+                },
+            )()
             cam = True
+
         assert _determine_source_radius(FakeCameraSLM(), w=None) == 99.0
 
 
@@ -1059,28 +1063,32 @@ def test_zernike_pyramid_plot(normalized_grid, subtests):
     """Test zernike_pyramid_plot() (L1189-1264)."""
     with subtests.test("order=2 runs without error"):
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+
         plt.figure(figsize=(6, 6))
         phase.zernike_pyramid_plot(normalized_grid, order=2, use_mask=False)
         plt.close("all")
 
     with subtests.test("noborder and nan mask"):
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+
         plt.figure(figsize=(6, 6))
-        phase.zernike_pyramid_plot(normalized_grid, order=1, noborder=True,
-                                    use_mask=np.nan)
+        phase.zernike_pyramid_plot(normalized_grid, order=1, noborder=True, use_mask=np.nan)
         plt.close("all")
 
     with subtests.test("noborder with use_mask=False"):
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+
         plt.figure(figsize=(6, 6))
-        phase.zernike_pyramid_plot(normalized_grid, order=1, noborder=True,
-                                    use_mask=False)
+        phase.zernike_pyramid_plot(normalized_grid, order=1, noborder=True, use_mask=False)
         plt.close("all")
 
 

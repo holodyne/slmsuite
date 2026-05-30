@@ -1,11 +1,12 @@
 """
 Unit tests for slmsuite.holography.analysis module.
 """
+
 import warnings
 
-import pytest
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import pytest
 
 from slmsuite.holography import analysis
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
@@ -200,7 +201,7 @@ def test_image_variances(subtests):
     with subtests.test("circular spot has equal Mxx and Myy"):
         image = np.zeros((100, 100))
         Y, X = np.ogrid[:100, :100]
-        mask = (X - 50)**2 + (Y - 50)**2 <= 10**2
+        mask = (X - 50) ** 2 + (Y - 50) ** 2 <= 10**2
         image[mask] = 1
         image = image[np.newaxis, :, :]
 
@@ -213,7 +214,7 @@ def test_image_variances(subtests):
     with subtests.test("elliptical spot has unequal Mxx and Myy"):
         image = np.zeros((100, 100))
         Y, X = np.ogrid[:100, :100]
-        mask = ((X - 50)/20)**2 + ((Y - 50)/10)**2 <= 1
+        mask = ((X - 50) / 20) ** 2 + ((Y - 50) / 10) ** 2 <= 1
         image[mask] = 1
         image = image[np.newaxis, :, :]
 
@@ -421,7 +422,7 @@ def test_image_fit(subtests, benchmark):
         sz = 30
         img = np.zeros((sz, sz))
         Y2, X2 = np.ogrid[:sz, :sz]
-        img = np.exp(-((X2 - sz/2)**2 + (Y2 - sz/2)**2) / (2 * 4**2)).astype(float)
+        img = np.exp(-((X2 - sz / 2) ** 2 + (Y2 - sz / 2) ** 2) / (2 * 4**2)).astype(float)
         img = img[np.newaxis, :, :]
 
         result = analysis.image_fit(img, grid=None, function=gaussian2d)
@@ -430,17 +431,20 @@ def test_image_fit(subtests, benchmark):
         assert np.isfinite(result[0, 0])
 
     with subtests.test("unknown function guess=None warns"):
+
         def custom_fn(xy, a, b):
             return a * xy[0] + b * xy[1]
 
         img = np.random.rand(1, 20, 20)
         with pytest.warns(UserWarning, match="not implemented"):
-            result = analysis.image_fit(img, grid=grid[:20, :20] if False else None,
-                                        function=custom_fn, guess=None)
+            result = analysis.image_fit(
+                img, grid=grid[:20, :20] if False else None, function=custom_fn, guess=None
+            )
 
         assert result.shape[0] == 1
 
     with subtests.test("unknown function guess=True raises"):
+
         def custom_fn2(xy, a, b):
             return a * xy[0] + b * xy[1]
 
@@ -466,8 +470,6 @@ def test_image_fit(subtests, benchmark):
         assert result.shape[0] == 1
 
     with subtests.test("RuntimeError fit path via monkeypatch"):
-        from scipy.optimize import curve_fit as _real_curve_fit
-
         image = gaussian2d((X, Y), x0=0, y0=0, a=10, c=0, wx=2, wy=2)
         image = image[np.newaxis, :, :]
 
@@ -486,12 +488,14 @@ def test_image_fit(subtests, benchmark):
 
     with subtests.test("plot path"):
         import matplotlib.pyplot as plt
+
         plt.ioff()
 
         image = gaussian2d((X, Y), x0=0, y0=0, a=10, c=0, wx=2, wy=2)
         image = image[np.newaxis, :, :]
 
         shown = {"called": False}
+
         def _show():
             shown["called"] = True
 
@@ -508,6 +512,7 @@ def test_image_fit(subtests, benchmark):
 
     with subtests.test("plot path with guess=None custom function"):
         import matplotlib.pyplot as plt
+
         plt.ioff()
 
         def linear_fn(xy, a, b):
@@ -521,6 +526,7 @@ def test_image_fit(subtests, benchmark):
         img = (2.0 * Xl + 3.0)[np.newaxis, :, :]
 
         shown_p = {"called": False}
+
         def _show_p():
             shown_p["called"] = True
 
@@ -552,8 +558,11 @@ def test_image_zernike_fit(subtests):
 
         try:
             zernike_coeffs = analysis.image_zernike_fit(
-                phase_image, grid_small, order=3,
-                iterations=1, leastsquares=False,
+                phase_image,
+                grid_small,
+                order=3,
+                iterations=1,
+                leastsquares=False,
             )
             expected_coeffs = (3 + 1) * (3 + 2) // 2 - 1
             assert zernike_coeffs.shape == (expected_coeffs, 1)
@@ -565,8 +574,11 @@ def test_image_zernike_fit(subtests):
         phase_2d = 0.2 * X_small
         try:
             zernike_coeffs_2d = analysis.image_zernike_fit(
-                phase_2d, grid_small, order=2,
-                iterations=1, leastsquares=False,
+                phase_2d,
+                grid_small,
+                order=2,
+                iterations=1,
+                leastsquares=False,
             )
             expected_coeffs_2d = (2 + 1) * (2 + 2) // 2 - 1
             assert zernike_coeffs_2d.shape == (expected_coeffs_2d, 1)
@@ -579,8 +591,11 @@ def test_image_zernike_fit(subtests):
 
         try:
             coeffs_ls = analysis.image_zernike_fit(
-                phase_tilt, grid_small, order=3,
-                iterations=2, leastsquares=True,
+                phase_tilt,
+                grid_small,
+                order=3,
+                iterations=2,
+                leastsquares=True,
             )
             expected = (3 + 1) * (3 + 2) // 2 - 1
             assert coeffs_ls.shape == (expected, 1)
@@ -645,14 +660,15 @@ def test_take(subtests, benchmark):
 
     with subtests.test("take_plot does not crash"):
         import matplotlib.pyplot as plt
+
         test_images = np.random.rand(3, 10, 10)
         plt.ioff()
 
         analysis.take_plot(test_images, separate_axes=False)
-        plt.close('all')
+        plt.close("all")
 
         analysis.take_plot(test_images, separate_axes=True, shape=(2, 2))
-        plt.close('all')
+        plt.close("all")
 
     with subtests.test("tuple size input"):
         image = np.random.rand(100, 100)
@@ -698,18 +714,21 @@ def test_take(subtests, benchmark):
 
     with subtests.test("return_mask with plot"):
         import matplotlib.pyplot as plt
+
         plt.ioff()
 
         image = np.random.rand(60, 60)
         shown = {"called": False}
+
         def _show2():
             shown["called"] = True
 
         monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(analysis.plt, "show", _show2)
         try:
-            canvas = analysis.take(image, vectors=[30, 30], size=10, centered=True,
-                                   return_mask=True, plot=True)
+            canvas = analysis.take(
+                image, vectors=[30, 30], size=10, centered=True, return_mask=True, plot=True
+            )
         finally:
             monkeypatch.undo()
             plt.close("all")
@@ -719,10 +738,12 @@ def test_take(subtests, benchmark):
 
     with subtests.test("plot path in take"):
         import matplotlib.pyplot as plt
+
         plt.ioff()
 
         image = np.random.rand(60, 60)
         shown = {"called": False}
+
         def _show():
             shown["called"] = True
 
@@ -752,7 +773,7 @@ def test_image_std():
     """Test image_std() returns positive standard deviations."""
     image = np.zeros((100, 100))
     Y, X = np.ogrid[:100, :100]
-    image = np.exp(-((X-50)**2 + (Y-50)**2) / (2 * 10**2))
+    image = np.exp(-((X - 50) ** 2 + (Y - 50) ** 2) / (2 * 10**2))
     image = image[np.newaxis, :, :]
 
     std = analysis.image_std(image)
@@ -789,10 +810,12 @@ def test_fit_affine(subtests):
 
     with subtests.test("rotation"):
         theta = np.pi / 6
-        M_true = np.array([
-            [np.cos(theta), -np.sin(theta)],
-            [np.sin(theta),  np.cos(theta)],
-        ])
+        M_true = np.array(
+            [
+                [np.cos(theta), -np.sin(theta)],
+                [np.sin(theta), np.cos(theta)],
+            ]
+        )
         x = rng.uniform(-5, 5, size=(2, 40))
         y = M_true @ x
         result = analysis.fit_affine(x, y)
@@ -1005,9 +1028,7 @@ def test_image_reduce_wraps(subtests):
     X, Y = np.meshgrid(x, y)
 
     def wrap_metric(arr):
-        return np.sum(
-            (np.abs(np.gradient(arr, axis=1)) + np.abs(np.gradient(arr, axis=0))) > np.pi
-        )
+        return np.sum((np.abs(np.gradient(arr, axis=1)) + np.abs(np.gradient(arr, axis=0))) > np.pi)
 
     with subtests.test("does not worsen wrap metric"):
         phase = np.mod(0.7 * np.sin(X / 4.0) + 1.6 * np.cos(Y / 7.0) + 3.0, 2 * np.pi)

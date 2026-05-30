@@ -1,4 +1,9 @@
+import pprint
 import warnings
+
+import cv2
+import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # Import numpy and scipy dependencies.
 import numpy as np
@@ -8,6 +13,7 @@ from scipy.ndimage import (
     gaussian_filter as sp_gaussian_filter,
     gaussian_filter1d as sp_gaussian_filter1d,
 )
+from tqdm.auto import tqdm
 
 # Try to import cupy, but revert to base numpy/scipy upon ImportError.
 try:
@@ -36,6 +42,16 @@ except:
     torch = None
 
 # Import helper functions
+from slmsuite.holography import analysis, toolbox
+from slmsuite.holography.toolbox import phase as tphase
+from slmsuite.holography.toolbox.phase import (
+    CUDA_KERNELS,
+    _load_cuda,
+    _zernike_populate_basis_map,
+    zernike_sum,
+)
+from slmsuite.misc.files import load_h5, save_h5
+from slmsuite.misc.math import REAL_TYPES
 
 # List of algorithms and default parameters.
 # See algorithm documentation for parameter definitions.

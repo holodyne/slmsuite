@@ -1,8 +1,9 @@
 """
 Unit tests for Camera base class using SimulatedCamera.
 """
-import pytest
+
 import numpy as np
+import pytest
 
 from slmsuite.hardware.cameras.camera import Camera
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
@@ -20,9 +21,7 @@ class TestCamera:
 
     def test_init(self, slm, subtests):
         """Verify constructor sets shape, pitch, bitdepth, and resolution convention."""
-        cam = SimulatedCamera(
-            slm=slm, resolution=(512, 512), pitch_um=(5.5, 5.5), bitdepth=8
-        )
+        cam = SimulatedCamera(slm=slm, resolution=(512, 512), pitch_um=(5.5, 5.5), bitdepth=8)
 
         with subtests.test("shape"):
             assert cam.shape == (512, 512)
@@ -47,9 +46,7 @@ class TestCamera:
             assert cam3.averaging is None or isinstance(cam3.averaging, int)
 
         with subtests.test("rotation swaps axes"):
-            cam_rot = SimulatedCamera(
-                slm=slm, resolution=(200, 100), rot="90"
-            )
+            cam_rot = SimulatedCamera(slm=slm, resolution=(200, 100), rot="90")
             assert cam_rot.shape == (200, 100)
 
         cam.close()
@@ -65,7 +62,7 @@ class TestCamera:
 
         with subtests.test("has bitresolution"):
             assert hasattr(camera, "bitresolution")
-            assert camera.bitresolution == 2 ** camera.bitdepth
+            assert camera.bitresolution == 2**camera.bitdepth
 
     def test_get_dtype(self, camera, subtests):
         """_get_dtype infers dtype from various get_image callables."""
@@ -87,6 +84,7 @@ class TestCamera:
         try:
             for solution_dtype, fake_dtype, bitdepth in cases:
                 with subtests.test(f"dtype={solution_dtype}, fake={fake_dtype}, bits={bitdepth}"):
+
                     def fake_get_image(_fd=fake_dtype, _sd=solution_dtype):
                         if _fd is False:
                             return camera._get_image_hw_tolerant(timeout_s=1)
@@ -170,19 +168,10 @@ class TestCamera:
     def test_get_image_hdr_analysis(self, subtests):
         """get_image_hdr_analysis produces correct output and validates input."""
         test_img = np.random.rand(10, 10) * 200
-        test_imgs = np.array(
-            [
-                np.minimum(test_img * (2 ** i), 255)
-                for i in range(3)
-            ],
-            dtype=np.uint8
-        )
+        test_imgs = np.array([np.minimum(test_img * (2**i), 255) for i in range(3)], dtype=np.uint8)
 
         with subtests.test("basic analysis"):
-            result = Camera.get_image_hdr_analysis(
-                test_imgs,
-                overexposure_threshold=200
-            )
+            result = Camera.get_image_hdr_analysis(test_imgs, overexposure_threshold=200)
             assert isinstance(result, np.ndarray)
             assert result.shape == (10, 10)
             assert result.dtype in (np.float64, np.float32)
@@ -191,9 +180,7 @@ class TestCamera:
 
         with subtests.test("custom exposure_power list"):
             result = Camera.get_image_hdr_analysis(
-                test_imgs,
-                overexposure_threshold=200,
-                exposure_power=[1.0, 2.0, 4.0]
+                test_imgs, overexposure_threshold=200, exposure_power=[1.0, 2.0, 4.0]
             )
             assert isinstance(result, np.ndarray)
             assert result.shape == (10, 10)
@@ -263,7 +250,7 @@ class TestCamera:
 
         # Determine normal vs rotated orientation once.
         # default_shape is (height, width) for normal, (width, height) for 90/270 rot.
-        normal_orientation = (camera.default_shape[0] == h_max)
+        normal_orientation = camera.default_shape[0] == h_max
 
         def expected_shape(w, h):
             """Return numpy (rows, cols) shape for a WOI of pixel dims (w, h)."""
@@ -278,15 +265,14 @@ class TestCamera:
                 # WOI must stay inside sensor.
                 assert x >= 0, f"OffsetX {x} < 0"
                 assert y >= 0, f"OffsetY {y} < 0"
-                assert x + w <= w_max, f"x+w={x+w} exceeds sensor width {w_max}"
-                assert y + h <= h_max, f"y+h={y+h} exceeds sensor height {h_max}"
+                assert x + w <= w_max, f"x+w={x + w} exceeds sensor width {w_max}"
+                assert y + h <= h_max, f"y+h={y + h} exceeds sensor height {h_max}"
                 assert w > 0 and h > 0, "WOI dimensions must be positive"
 
                 # camera.shape must be consistent with WOI.
                 exp_shape = expected_shape(w, h)
                 assert camera.shape == exp_shape, (
-                    f"camera.shape {camera.shape} != expected {exp_shape} "
-                    f"for woi=({x},{w},{y},{h})"
+                    f"camera.shape {camera.shape} != expected {exp_shape} for woi=({x},{w},{y},{h})"
                 )
 
                 # Captured image must match camera.shape.
@@ -300,42 +286,44 @@ class TestCamera:
             check_woi("full sensor", (0, w_max, 0, h_max))
 
             # Halves
-            check_woi("left half",   (0, w_max // 2, 0, h_max))
-            check_woi("right half",  (w_max // 2, w_max // 2, 0, h_max))
-            check_woi("top half",    (0, w_max, 0, h_max // 2))
+            check_woi("left half", (0, w_max // 2, 0, h_max))
+            check_woi("right half", (w_max // 2, w_max // 2, 0, h_max))
+            check_woi("top half", (0, w_max, 0, h_max // 2))
             check_woi("bottom half", (0, w_max, h_max // 2, h_max // 2))
 
             # Quadrant corners
-            check_woi("top-left quarter",     (0,          w_max // 2, 0,          h_max // 2))
-            check_woi("top-right quarter",    (w_max // 2, w_max // 2, 0,          h_max // 2))
-            check_woi("bottom-left quarter",  (0,          w_max // 2, h_max // 2, h_max // 2))
+            check_woi("top-left quarter", (0, w_max // 2, 0, h_max // 2))
+            check_woi("top-right quarter", (w_max // 2, w_max // 2, 0, h_max // 2))
+            check_woi("bottom-left quarter", (0, w_max // 2, h_max // 2, h_max // 2))
             check_woi("bottom-right quarter", (w_max // 2, w_max // 2, h_max // 2, h_max // 2))
 
             # Centred half-size patch
             check_woi("centred half", (w_max // 4, w_max // 2, h_max // 4, h_max // 2))
 
             # Thin strips
-            check_woi("wide strip (centre rows)",  (0, w_max, h_max * 3 // 8, h_max // 4))
-            check_woi("tall strip (centre cols)",  (w_max * 3 // 8, w_max // 4, 0, h_max))
+            check_woi("wide strip (centre rows)", (0, w_max, h_max * 3 // 8, h_max // 4))
+            check_woi("tall strip (centre cols)", (w_max * 3 // 8, w_max // 4, 0, h_max))
 
             # Small patch (~1/8 sensor), offset to several positions
             sw, sh = w_max // 8, h_max // 8
-            check_woi("small patch ; near origin",        (0,               sw, 0,               sh))
-            check_woi("small patch ; top-right corner",   (w_max - sw,      sw, 0,               sh))
-            check_woi("small patch ; bottom-left corner", (0,               sw, h_max - sh,      sh))
-            check_woi("small patch ; bottom-right corner",(w_max - sw,      sw, h_max - sh,      sh))
-            check_woi("small patch ; centre",             (w_max // 2 - sw // 2, sw,
-                                                           h_max // 2 - sh // 2, sh))
+            check_woi("small patch ; near origin", (0, sw, 0, sh))
+            check_woi("small patch ; top-right corner", (w_max - sw, sw, 0, sh))
+            check_woi("small patch ; bottom-left corner", (0, sw, h_max - sh, sh))
+            check_woi("small patch ; bottom-right corner", (w_max - sw, sw, h_max - sh, sh))
+            check_woi("small patch ; centre", (w_max // 2 - sw // 2, sw, h_max // 2 - sh // 2, sh))
 
             # Asymmetric: very wide but short, and very tall but narrow
-            check_woi("wide thin strip",  (0, w_max, h_max * 2 // 5, h_max // 5))
-            check_woi("narrow tall strip",(w_max * 2 // 5, w_max // 5, 0, h_max))
+            check_woi("wide thin strip", (0, w_max, h_max * 2 // 5, h_max // 5))
+            check_woi("narrow tall strip", (w_max * 2 // 5, w_max // 5, 0, h_max))
 
             # Non-power-of-two offsets (stress-test snapping arithmetic)
-            check_woi("odd offset ; 10% inset",
-                      (w_max // 10, w_max * 4 // 5, h_max // 10, h_max * 4 // 5))
-            check_woi("odd offset ; 30% inset",
-                      (w_max * 3 // 10, w_max * 2 // 5, h_max * 3 // 10, h_max * 2 // 5))
+            check_woi(
+                "odd offset ; 10% inset", (w_max // 10, w_max * 4 // 5, h_max // 10, h_max * 4 // 5)
+            )
+            check_woi(
+                "odd offset ; 30% inset",
+                (w_max * 3 // 10, w_max * 2 // 5, h_max * 3 // 10, h_max * 2 // 5),
+            )
 
         finally:
             # Always restore original WOI so subsequent tests see the full sensor.

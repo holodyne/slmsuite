@@ -2223,7 +2223,6 @@ class FourierSLM(CameraSLM):
                 "This may give unexpected results."
             )
 
-
     ### Superpixel Wavefront Calibration ###
 
     def wavefront_calibrate_superpixel(

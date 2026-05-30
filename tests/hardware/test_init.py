@@ -1,14 +1,15 @@
 """
 Unit tests for the _Picklable base class, which handles object serialization and saving.
 """
-import pytest
-import tempfile
+
 import os
+import tempfile
 
 import h5py
+import pytest
 
-from slmsuite.hardware import _Picklable
 from slmsuite import __version__
+from slmsuite.hardware import _Picklable
 
 
 class _TestPicklableClass(_Picklable):
@@ -83,9 +84,7 @@ class TestPicklable:
     def test_pickle_edge_cases(self, subtests):
         """Test warnings, nested objects, and empty _pickle lists."""
         with subtests.test("missing attribute warns"):
-            with pytest.warns(
-                UserWarning, match="Expected attribute 'nonexistent' not present"
-            ):
+            with pytest.warns(UserWarning, match="Expected attribute 'nonexistent' not present"):
                 result = self.obj.pickle(attributes=["nonexistent"], metadata=False)
             assert "__class__" in result
 

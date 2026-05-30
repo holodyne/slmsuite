@@ -1711,10 +1711,21 @@ def polynomial(grid, weights, terms=None, pathing=None, out=None):
     out : numpy.ndarray OR cupy.ndarray
         Result of the sum.
     """
+    # Parse weights
+    weights = np.array(weights)
+    if weights.ndim == 1:
+        D = len(weights)
+        weights = np.reshape(weights, (-1, 1))
+    elif weights.ndim == 2:
+        D = weights.shape[0]
+    else:
+        raise ValueError("Expected weights to be 1D or 2D.")
+
     # Parse terms
-    terms = np.array(terms)
     if terms is None:
         terms = _inverse_cantor_pairing(np.arange(D))
+    else:
+        terms = np.array(terms)
 
     if terms.ndim == 1:
         terms = _inverse_cantor_pairing(terms)
@@ -1722,20 +1733,8 @@ def polynomial(grid, weights, terms=None, pathing=None, out=None):
     if terms.shape[1] != 2:
         raise ValueError(f"Terms must be of shape (D, 2) or (D,). Found {terms.shape}.")
 
-    D = terms.shape[0]
-
-    # Parse weights
-    weights = np.array(weights)
-    if weights.ndim == 1:
-        if len(weights) == D:
-            weights = np.reshape(weights, (-1, 1))
-        else:
-            raise ValueError("Expected weights to have a common dimension with indices.")
-    elif weights.ndim == 2:
-        if weights.shape[0] != D:
-            raise ValueError("Expected weights to have a common dimension with indices.")
-    else:
-        raise ValueError("Expected weights to be 1D or 2D.")
+    if terms.shape[0] != D:
+        raise ValueError("Expected weights to have a common dimension with indices.")
 
     (D, N) = weights.shape
 
@@ -2015,7 +2014,7 @@ def matheui_gaussian(grid, r, q, w=None):
     raise NotImplementedError()
 
 
-def airy(grid, f=(np.inf, np.inf)):
+def airy(grid, f=(np.inf, np.inf), w=None):
     """
     **(NotImplemented)** Returns the cubic phase farfield for an
     `Airy <http://dx.doi.org/10.1103/PhysRevLett.99.213901>`_ beam.
