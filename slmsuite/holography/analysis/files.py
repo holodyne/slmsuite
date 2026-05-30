@@ -276,7 +276,7 @@ def save_h5(file_path, data, mode="w"):
                     raise ValueError(
                         f"save_h5() does not support saving staggered arrays such as {data[key]!s}. "
                         f"Arrays must be uniform. {e!s}"
-                      ) from e
+                    ) from e
                 except Exception as e:
                     raise e
 

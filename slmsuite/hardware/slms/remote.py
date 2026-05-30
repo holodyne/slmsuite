@@ -13,7 +13,14 @@ class RemoteSLM(_Client, SLM):
     Connects to an SLM on a remote :class:`~slmsuite.hardware.remote.Server`.
     """
 
-    _pickle: ClassVar[list[str]] = [*SLM._pickle, "server_attributes", "host", "port", "timeout", "latency_s"]
+    _pickle: ClassVar[list[str]] = [
+        *SLM._pickle,
+        "server_attributes",
+        "host",
+        "port",
+        "timeout",
+        "latency_s",
+    ]
 
     def __init__(
         self,

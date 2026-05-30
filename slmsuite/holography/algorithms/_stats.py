@@ -479,9 +479,7 @@ class _HologramStats:
                 if np == cp:
                     limits = self._compute_limits(self.target, limit_padding=limit_padding)
                 else:
-                    limits = self._compute_limits(
-                        self.target.get(), limit_padding=limit_padding
-                    )
+                    limits = self._compute_limits(self.target.get(), limit_padding=limit_padding)
 
             if len(title) == 0:
                 title = "Farfield Amplitude"

@@ -209,8 +209,7 @@ class ImagingSource(Camera):
         # Get device count and then iterate through each device
         devicecount = ImagingSource.sdk.IC_GetDeviceCount()
         serial_list = [
-            tis.D(ImagingSource.sdk.IC_GetUniqueNamefromList(i))
-            for i in range(devicecount)
+            tis.D(ImagingSource.sdk.IC_GetUniqueNamefromList(i)) for i in range(devicecount)
         ]
 
         if verbose:

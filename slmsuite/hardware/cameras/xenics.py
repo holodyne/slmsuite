@@ -505,7 +505,9 @@ class Cheetah640(Camera):
                     self.xeneth.XC_GetPropertyValueL(self.cam, property_name, byref(lvalue))
                     if verbose:
                         print(f"Property[{x}]        Type: Bool")
-                        print(f"Property[{x}]       Value: {'True' if lvalue.value == 1 else 'False'}")
+                        print(
+                            f"Property[{x}]       Value: {'True' if lvalue.value == 1 else 'False'}"
+                        )
 
                 # Binary large object (BLOB)
                 elif type_num == XTYPE_BASE_BLOB:

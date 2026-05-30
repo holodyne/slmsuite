@@ -1363,13 +1363,13 @@ class FourierSLM(CameraSLM):
                 and self.calibrations["wavefront_superpixel"]["__timestamp__"]
                 > self.calibrations["fourier"]["__timestamp__"]
             ):
-                    warnings.warn(
-                        f"The wavefront calibration is newer "
-                        f"({self.calibrations['wavefront_superpixel']['__time__']}) "
-                        f"than the Fourier calibration "
-                        f"({self.calibrations['fourier']['__time__']}). "
-                        "The Fourier calibration may be stale."
-                    )
+                warnings.warn(
+                    f"The wavefront calibration is newer "
+                    f"({self.calibrations['wavefront_superpixel']['__time__']}) "
+                    f"than the Fourier calibration "
+                    f"({self.calibrations['fourier']['__time__']}). "
+                    "The Fourier calibration may be stale."
+                )
         except Exception:
             pass
 
@@ -1679,9 +1679,7 @@ class FourierSLM(CameraSLM):
         def fit_term(sweep, result, term, status):
             ddy = np.diff(result, n=2, axis=0)
             a0 = 0.5 * np.mean(ddy, axis=0) / np.square(np.mean(np.diff(sweep)))
-            if (
-                True
-            ):  # Determine whether the system has a + or - x^2 term. For now, we force +.
+            if True:  # Determine whether the system has a + or - x^2 term. For now, we force +.
                 c0 = np.min(result, axis=0)
                 x0 = sweep[np.argmin(result, axis=0)]
             else:
@@ -1797,10 +1795,10 @@ class FourierSLM(CameraSLM):
                 else:
                     metric_stats = []
 
-"""                 if "position_stats" in dat:
-                    position_stats = list(copy.copy(dat["position_stats"]))
-                else:
-                    position_stats = [] """
+                #  if "position_stats" in dat:
+                #     position_stats = list(copy.copy(dat["position_stats"]))
+                # else:
+                #     position_stats = []
 
                 if "weights" in dat:
                     weights = dat["weights"]

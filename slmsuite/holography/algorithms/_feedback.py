@@ -88,7 +88,9 @@ class FeedbackHologram(Hologram):
                     # confuse the rest of the init/etc.
                     self.cameraslm = None
                 except Exception:
-                    raise ValueError("Expected a CameraSLM or SLM to be passed to cameraslm.") from None
+                    raise ValueError(
+                        "Expected a CameraSLM or SLM to be passed to cameraslm."
+                    ) from None
 
         else:
             amp = kwargs.pop("amp", None)

@@ -688,8 +688,10 @@ class Hologram(_HologramStats):
 
         # If slm_shape is actually a SLM.
         elif hasattr(slm_shape, "shape"):
+
             def cameraslm():
                 return 0  # Make a fake cameraslm
+
             cameraslm.slm = slm_shape  # At this point, slm_shape is the SLM.
             slm_shape = cameraslm.slm.shape  # And make the shape variable actually the shape.
 
@@ -1604,12 +1606,12 @@ class Hologram(_HologramStats):
 
                 # Enable based on iterations.
                 if was_not_fixed and self.iter >= self.flags["fix_phase_iteration"] - 1:
-                        previous = self.stats["flags"]["fixed_phase"]
-                        contiguous_falses = all(
-                            not previous[-1 - i] for i in range(self.flags["fix_phase_iteration"])
-                        )
-                        if contiguous_falses:
-                            self.flags["fixed_phase"] = True
+                    previous = self.stats["flags"]["fixed_phase"]
+                    contiguous_falses = all(
+                        not previous[-1 - i] for i in range(self.flags["fix_phase_iteration"])
+                    )
+                    if contiguous_falses:
+                        self.flags["fixed_phase"] = True
 
                 # Save the phase if we are going from unfixed to fixed.
                 if (self.flags["fixed_phase"] and self.phase_ff is None) or was_not_fixed:
@@ -1738,7 +1740,9 @@ class Hologram(_HologramStats):
         try:
             optim_class = getattr(torch.optim, self.flags["optimizer"])
         except Exception:
-            raise ValueError(f"'{self.flags['optimizer']}' is not a valid torch optimizer") from None
+            raise ValueError(
+                f"'{self.flags['optimizer']}' is not a valid torch optimizer"
+            ) from None
 
         self.optimizer = optim_class([phase_torch], **self.flags["optimizer_kwargs"])
 

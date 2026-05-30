@@ -600,7 +600,9 @@ class FLIR(Camera):
                 try:
                     self.cam.BeginAcquisition()
                 except PySpin.SpinnakerException as ex:
-                    raise RuntimeError(f"Failed to restart acquisition after WOI change: {ex}") from ex
+                    raise RuntimeError(
+                        f"Failed to restart acquisition after WOI change: {ex}"
+                    ) from ex
 
     def _get_image_hw(self, timeout_s=1.0):
         """

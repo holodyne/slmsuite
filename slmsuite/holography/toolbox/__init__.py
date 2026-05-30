@@ -834,9 +834,7 @@ def imprint(
     is_float = isinstance(function, REAL_TYPES)
 
     if not is_float and grid is None:
-        raise ValueError(
-            "grid cannot be None if a function is given; None is a float-only option."
-        )
+        raise ValueError("grid cannot be None if a function is given; None is a float-only option.")
 
     # Modify the matrix.
     if imprint_operation == "replace":
@@ -1415,13 +1413,19 @@ def lloyds_points(grid, n_points, iterations=10, plot=False):
         shape = x_grid.shape
 
     vectors = np.vstack(
-        (np.random.default_rng().integers(0, shape[1], n_points), np.random.default_rng().integers(0, shape[0], n_points))
+        (
+            np.random.default_rng().integers(0, shape[1], n_points),
+            np.random.default_rng().integers(0, shape[0], n_points),
+        )
     )
 
     # Regenerate until no overlaps (improve for performance?)
     while smallest_distance(vectors) < 1:
         vectors = np.vstack(
-            (np.random.default_rng().integers(0, shape[1], n_points), np.random.default_rng().integers(0, shape[0], n_points))
+            (
+                np.random.default_rng().integers(0, shape[1], n_points),
+                np.random.default_rng().integers(0, shape[0], n_points),
+            )
         )
 
     grid2 = np.meshgrid(range(shape[1]), range(shape[0]))
@@ -1615,9 +1619,7 @@ def format_shape(shape, expected_dimension=2):
     shape = tuple(np.squeeze(shape))
 
     if expected_dimension is not None and len(shape) != expected_dimension:
-        raise ValueError(
-            f"Expected shape with {expected_dimension} dimensions, got {len(shape)}"
-        )
+        raise ValueError(f"Expected shape with {expected_dimension} dimensions, got {len(shape)}")
 
     for dim in shape:
         if not isinstance(dim, INTEGER_TYPES) or dim <= 0:

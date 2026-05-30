@@ -85,7 +85,9 @@ class Meadowlark(SLM):
 
     # Class attribute that loads each type of SDK library *once* per .dll for all class instances.
     _slm_lib: ClassVar[dict] = {}  # _SDK_Mode : ctypes.cdll
-    _slm_lib_trace: ClassVar[dict] = {}  # _SDK_Mode : (int, int)    # See documentation for _SLM_LIB_TRACES
+    _slm_lib_trace: ClassVar[
+        dict
+    ] = {}  # _SDK_Mode : (int, int)    # See documentation for _SLM_LIB_TRACES
     _sdk_path: ClassVar[dict] = {}  # _SDK_Mode : str
     _number_of_boards: ClassVar[dict] = {}  # _SDK_Mode : int
 
@@ -256,6 +258,7 @@ class Meadowlark(SLM):
             unloader.argtypes = [ctypes.c_void_p]
             unloader.restype = None
         else:
+
             def unloader(x):
                 return True
 

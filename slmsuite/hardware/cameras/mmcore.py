@@ -110,14 +110,9 @@ class MMCore(Camera):
         if pymmcore is None:
             raise ImportError("pymmcore not installed. Install to use Micro-Manager cameras.")
 
-
         # Check if the provided path exists and is a directory.
         if os.path.isdir(path):
-            cfg_files = [
-                file_name
-                for file_name in os.listdir(path)
-                if file_name.endswith(".cfg")
-            ]
+            cfg_files = [file_name for file_name in os.listdir(path) if file_name.endswith(".cfg")]
         else:
             raise ValueError(f"The provided path '{path}' is not a valid directory.")
 

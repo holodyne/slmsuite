@@ -15,7 +15,14 @@ class RemoteCamera(_Client, Camera):
     Connects to a camera on a remote :class:`~slmsuite.hardware.remote.Server`.
     """
 
-    _pickle: ClassVar[list[str]] = [*Camera._pickle, "server_attributes", "host", "port", "timeout", "latency_s"]
+    _pickle: ClassVar[list[str]] = [
+        *Camera._pickle,
+        "server_attributes",
+        "host",
+        "port",
+        "timeout",
+        "latency_s",
+    ]
 
     def __init__(
         self,
