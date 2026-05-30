@@ -241,7 +241,9 @@ class MultiplaneHologram(Hologram):
         for h in self.holograms:
             h.plot_stats(*args, **kwargs)
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
+        if stat_groups is None:
+            stat_groups = []
         # FUTURE: make meta stat group.
         for h in self.holograms:
             h._update_stats(stat_groups)

@@ -28,7 +28,7 @@ from ctypes import (
 import os
 
 STRING = c_char_p
-from ctypes.wintypes import (
+from ctypes.wintypes import (  # noqa: E402
     BOOL,
     BOOLEAN,
     BYTE,

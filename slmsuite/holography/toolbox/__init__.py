@@ -679,7 +679,7 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
         sy = shape[0]
 
         # Use the built-in scipy function to plot a visualization of the windows.
-        fig = voronoi_plot_2d(vor)
+        # fig = voronoi_plot_2d(vor)
 
         # Plot a bounding box corresponding to the grid.
         plt.plot(np.array([0, sx, sx, 0, 0]), np.array([0, 0, sy, sy, 0]), "r")
@@ -833,11 +833,10 @@ def imprint(
     # Decide whether to treat function as a float.
     is_float = isinstance(function, REAL_TYPES)
 
-    if not is_float:
-        if grid is None:
-            raise ValueError(
-                "grid cannot be None if a function is given; None is a float-only option."
-            )
+    if not is_float and grid is None:
+        raise ValueError(
+            "grid cannot be None if a function is given; None is a float-only option."
+        )
 
     # Modify the matrix.
     if imprint_operation == "replace":
@@ -1265,7 +1264,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
     if isinstance(grid, (tuple, list)) and all(isinstance(x, int) for x in grid):
         shape = grid
     else:
-        x_grid, y_grid = _process_grid(grid)
+        x_grid, _y_grid = _process_grid(grid)
         shape = x_grid.shape
     H, W = shape
 
@@ -1319,7 +1318,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
                 x = x1 + (x2 - x1) * (H - y1) / (y2 - y1)
             return [x, y]
 
-        for edge, edge_fn, intersect_fn in [
+        for _edge, edge_fn, intersect_fn in [
             ("left", lambda p: p[0] >= 0, lambda p1, p2: intersect(p1, p2, "left")),
             ("right", lambda p: p[0] <= W, lambda p1, p2: intersect(p1, p2, "right")),
             ("bottom", lambda p: p[1] >= 0, lambda p1, p2: intersect(p1, p2, "bottom")),
@@ -1349,7 +1348,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
             sy = shape[0]
 
             # Use the built-in scipy function to plot a visualization of the windows.
-            fig = voronoi_plot_2d(vor)
+            # fig = voronoi_plot_2d(vor)
 
             # Plot a bounding box corresponding to the grid.
             plt.plot(np.array([0, sx, sx, 0, 0]), np.array([0, 0, sy, sy, 0]), "r")
@@ -1416,13 +1415,13 @@ def lloyds_points(grid, n_points, iterations=10, plot=False):
         shape = x_grid.shape
 
     vectors = np.vstack(
-        (np.random.randint(0, shape[1], n_points), np.random.randint(0, shape[0], n_points))
+        (np.random.default_rng().integers(0, shape[1], n_points), np.random.default_rng().integers(0, shape[0], n_points))
     )
 
     # Regenerate until no overlaps (improve for performance?)
     while smallest_distance(vectors) < 1:
         vectors = np.vstack(
-            (np.random.randint(0, shape[1], n_points), np.random.randint(0, shape[0], n_points))
+            (np.random.default_rng().integers(0, shape[1], n_points), np.random.default_rng().integers(0, shape[0], n_points))
         )
 
     grid2 = np.meshgrid(range(shape[1]), range(shape[0]))
@@ -1615,11 +1614,10 @@ def format_shape(shape, expected_dimension=2):
     """
     shape = tuple(np.squeeze(shape))
 
-    if expected_dimension is not None:
-        if len(shape) != expected_dimension:
-            raise ValueError(
-                f"Expected shape with {expected_dimension} dimensions, got {len(shape)}"
-            )
+    if expected_dimension is not None and len(shape) != expected_dimension:
+        raise ValueError(
+            f"Expected shape with {expected_dimension} dimensions, got {len(shape)}"
+        )
 
     for dim in shape:
         if not isinstance(dim, INTEGER_TYPES) or dim <= 0:

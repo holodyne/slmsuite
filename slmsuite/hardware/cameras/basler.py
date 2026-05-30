@@ -121,7 +121,7 @@ class Basler(Camera):
         try:
             self.cam.ExposureTime.GetValue()
             self._exposure_time_has_abs = False
-        except:
+        except Exception:
             self.cam.ExposureTimeAbs.GetValue()
             self._exposure_time_has_abs = True
 
@@ -195,7 +195,7 @@ class Basler(Camera):
 
     @classmethod
     def close_sdk(cls):
-        """ "
+        """
         Close the :mod:'pylon' instance.
         """
         if cls.sdk is not None:
@@ -204,7 +204,7 @@ class Basler(Camera):
     ### Property Configuration ###
 
     def get_properties(self, properties=None):
-        """ "
+        """
         Print the list of camera properties.
 
         Parameters
@@ -226,17 +226,17 @@ class Basler(Camera):
 
             try:
                 print(prop.get(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_unit(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_description(), end="\n")
-            except:
+            except Exception:
                 print("")
 
     def set_adc_bitdepth(self, bitdepth):

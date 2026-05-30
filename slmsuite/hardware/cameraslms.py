@@ -5,6 +5,7 @@ Datastructures, methods, and calibrations for an SLM monitored by a camera.
 import copy
 import os
 import time
+from typing import ClassVar
 import warnings
 
 import cv2
@@ -72,8 +73,8 @@ class CameraSLM(_Picklable):
         objects at the experiment plane.
     """
 
-    _pickle = ["name", "cam", "slm", "mag"]
-    _pickle_data = []
+    _pickle: ClassVar[list[str]] = ["name", "cam", "slm", "mag"]
+    _pickle_data: ClassVar[list[str]] = []
 
     def __init__(self, cam, slm, mag=1):
         """
@@ -248,8 +249,8 @@ class FourierSLM(CameraSLM):
             between measurement speed and measurement precision.
     """
 
-    _pickle = ["name", "cam", "slm", "mag"]
-    _pickle_data = ["calibrations"]
+    _pickle: ClassVar[list[str]] = ["name", "cam", "slm", "mag"]
+    _pickle_data: ClassVar[list[str]] = ["calibrations"]
 
     def __init__(self, *args, **kwargs):
         r"""See :meth:`CameraSLM.__init__`."""
@@ -465,7 +466,7 @@ class FourierSLM(CameraSLM):
                 )
 
         self.calibrations[calibration_type] = cal = load_h5(file_path)
-        cal_ver = "an unknown version" if "__version__" not in cal else cal["__version__"]
+        cal_ver = cal.get("__version__", "an unknown version")
 
         if cal_ver != __version__:
             warnings.warn(
@@ -587,7 +588,7 @@ class FourierSLM(CameraSLM):
 
         # Fit the date with the function
         params, _ = optimize.curve_fit(exponential_jump, times, results, p0=guess, maxfev=10000)
-        x0, a, b, c = params
+        x0, _a, b, _c = params
         print(params)
 
         relax_time = b
@@ -596,7 +597,7 @@ class FourierSLM(CameraSLM):
 
         # Evaluate the fitting function in the interval
         x_interp = np.linspace(min(times), max(times), 100)
-        g_interp = exponential_jump(x_interp, *guess)
+        # g_interp = exponential_jump(x_interp, *guess)
         y_interp = exponential_jump(x_interp, *params)
 
         if plot:
@@ -759,10 +760,7 @@ class FourierSLM(CameraSLM):
 
         dorder = vectors_ij - center
         dfield = field_ij - center
-        order_ij = []
-
-        for i in range(2 * P):
-            order_ij.append(center + orders * dorder[:, [i]])
+        order_ij = [center + orders * dorder[:, [i]] for i in range(2 * P)]
 
         integration_size = int(
             np.ceil(np.min([np.min(np.max(dorder, axis=1)), np.min(np.max(dfield, axis=1))]))
@@ -843,10 +841,10 @@ class FourierSLM(CameraSLM):
         cal = self.calibrations["pixel"]
         periods = cal["periods"]
         orders = cal["orders"]
-        levels = cal["levels"]
+        # levels = cal["levels"]
         data = cal["data"]
 
-        first_order = np.arange(len(orders))[orders == 1][0]
+        # first_order = np.arange(len(orders))[orders == 1][0]
 
         rolled = data.copy()
 
@@ -1359,11 +1357,12 @@ class FourierSLM(CameraSLM):
         if another error occurs.
         """
         try:
-            if "wavefront_superpixel" in self.calibrations and "fourier" in self.calibrations:
-                if (
-                    self.calibrations["wavefront_superpixel"]["__timestamp__"]
-                    > self.calibrations["fourier"]["__timestamp__"]
-                ):
+            if (
+                "wavefront_superpixel" in self.calibrations
+                and "fourier" in self.calibrations
+                and self.calibrations["wavefront_superpixel"]["__timestamp__"]
+                > self.calibrations["fourier"]["__timestamp__"]
+            ):
                     warnings.warn(
                         f"The wavefront calibration is newer "
                         f"({self.calibrations['wavefront_superpixel']['__time__']}) "
@@ -1371,7 +1370,7 @@ class FourierSLM(CameraSLM):
                         f"({self.calibrations['fourier']['__time__']}). "
                         "The Fourier calibration may be stale."
                     )
-        except:
+        except Exception:
             pass
 
     def get_farfield_spot_size(self, slm_size=None, basis="kxy"):
@@ -1473,7 +1472,7 @@ class FourierSLM(CameraSLM):
             pass
         elif units == "norm":
             f_eff *= np.array(self.cam.pitch_um) / self.slm.wav_um
-        elif units in toolbox.LENGTH_FACTORS.keys():
+        elif units in toolbox.LENGTH_FACTORS:
             f_eff *= np.array(self.cam.pitch_um) / toolbox.LENGTH_FACTORS[units]
         else:
             raise ValueError(f"Unit '{units}' not recognized as a length.")
@@ -1681,7 +1680,7 @@ class FourierSLM(CameraSLM):
             ddy = np.diff(result, n=2, axis=0)
             a0 = 0.5 * np.mean(ddy, axis=0) / np.square(np.mean(np.diff(sweep)))
             if (
-                True or np.mean(a0) >= 0
+                True
             ):  # Determine whether the system has a + or - x^2 term. For now, we force +.
                 c0 = np.min(result, axis=0)
                 x0 = sweep[np.argmin(result, axis=0)]
@@ -1754,7 +1753,6 @@ class FourierSLM(CameraSLM):
         # Parse calibration_points and zernike_indices
         calibration_points_ij = None
         metric_stats = []
-        position_stats = []
         weights = None
         spot_integration_width_ij = None
 
@@ -1799,10 +1797,10 @@ class FourierSLM(CameraSLM):
                 else:
                     metric_stats = []
 
-                if "position_stats" in dat:
+"""                 if "position_stats" in dat:
                     position_stats = list(copy.copy(dat["position_stats"]))
                 else:
-                    position_stats = []
+                    position_stats = [] """
 
                 if "weights" in dat:
                     weights = dat["weights"]
@@ -2010,7 +2008,7 @@ class FourierSLM(CameraSLM):
             result = sweep_term(perturbation, term, pattern, callback, f"Z_{i}")
 
             # Analyze the results by fitting each to a parabola.
-            correction, correction_error, railed = fit_term(
+            correction, _correction_error, _railed = fit_term(
                 perturbation, result, i, calibration_points[j, :]
             )
 
@@ -2040,7 +2038,7 @@ class FourierSLM(CameraSLM):
 
         # return hologram
 
-        del hologram
+        hologram = None
 
         return self.calibrations["wavefront_zernike"]
 
@@ -2680,7 +2678,7 @@ class FourierSLM(CameraSLM):
 
         for key in keys:
             calibration_dict.update(
-                {key: np.full((num_points,) + slm_supershape, np.nan, dtype=np.float32)}
+                {key: np.full((num_points, *slm_supershape), np.nan, dtype=np.float32)}
             )
 
         def superpixels(
@@ -3115,22 +3113,22 @@ class FourierSLM(CameraSLM):
                                 fig.canvas.tostring_rgb(), dtype=np.uint8
                             )
                             image_from_plot = image_from_plot.reshape(
-                                fig.canvas.get_width_height()[::-1] + (3,)
+                                (*fig.canvas.get_width_height()[::-1], 3)
                             )
-                        except:
+                        except Exception:
                             image_from_plot = np.frombuffer(
                                 fig.canvas.buffer_rgba(), dtype=np.uint8
                             )
                             image_from_plot = image_from_plot.reshape(
-                                fig.canvas.get_width_height()[::-1] + (4,)
+                                (*fig.canvas.get_width_height()[::-1], 4)
                             )[:, :, :3]
-                    except:
+                    except Exception:
                         warnings.warn(
                             "Failed to convert figure to image for wavefront_calibrate movie. "
                             "Returning a blank image instead."
                         )
                         image_from_plot = np.zeros(
-                            fig.canvas.get_width_height()[::-1] + (3,), dtype=np.uint8
+                            (*fig.canvas.get_width_height()[::-1], 3), dtype=np.uint8
                         )
 
                     plt.close()
@@ -3395,7 +3393,7 @@ class FourierSLM(CameraSLM):
             coords = index2coord(schedule)
             for i in range(num_points):
                 if schedule[i] != -1:
-                    for key in measurement.keys():
+                    for key in measurement:
                         result = measurement[key]
                         if np.size(result) > 1:
                             result = result[i]
@@ -3893,7 +3891,7 @@ class FourierSLM(CameraSLM):
         kx[r2s < r2_threshold] = 0
         ky[r2s < r2_threshold] = 0
         offset[r2s < r2_threshold] = 0
-        phase_maybe = np.zeros_like(offset)
+        np.zeros_like(offset)
         pathing = 0 * r2s - 100
 
         # Step 3.1: Infer phase for superpixels which do satisfy the R^2 threshold.

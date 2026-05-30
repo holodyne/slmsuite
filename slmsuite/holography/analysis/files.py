@@ -120,7 +120,7 @@ def generate_path(path, name, extension=None, kind="file", digit_count=5, path_c
     if path_count == 1:
         ret = name_augmented
     else:
-        ret = list()
+        ret = []
         for path_idx in range(path_count):
             name_augmented = name_format.format(name, max_numeric_id + 1 + path_idx)
             if extension is not None and kind == "file":
@@ -198,7 +198,7 @@ def load_h5(file_path, decode_bytes=True):
     def recurse(group):
         data = {}
 
-        for key in group.keys():
+        for key in group:
             if isinstance(group[key], h5py.Group):
                 data[key] = recurse(group[key])
             else:
@@ -261,7 +261,7 @@ def save_h5(file_path, data, mode="w"):
     """
 
     def recurse(group, data):
-        for key in data.keys():
+        for key in data:
             if isinstance(data[key], dict):
                 new_group = group.create_group(key)
                 recurse(new_group, data[key])
@@ -276,7 +276,7 @@ def save_h5(file_path, data, mode="w"):
                     raise ValueError(
                         f"save_h5() does not support saving staggered arrays such as {data[key]!s}. "
                         f"Arrays must be uniform. {e!s}"
-                    )
+                      ) from e
                 except Exception as e:
                     raise e
 
@@ -449,8 +449,8 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
     # Check that imageio is there and write the data
     try:
         from imageio import imsave, mimsave
-    except:
-        raise ValueError("imageio is required for save_image().")
+    except Exception:
+        raise ValueError("imageio is required for save_image().") from None
 
     if images.shape[0] == 1:
         imsave(file_path, images[0], **kwargs)

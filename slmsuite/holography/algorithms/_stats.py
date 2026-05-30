@@ -108,10 +108,12 @@ class _HologramStats:
 
         return final_stats
 
-    def _calculate_stats_computational(self, stats, stat_groups=[]):
+    def _calculate_stats_computational(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`Hologram._update_stats()`.
         """
+        if stat_groups is None:
+            stat_groups = []
         if "computational" in stat_groups:
             stats["computational"] = self._calculate_stats(
                 self.amp_ff,
@@ -155,7 +157,7 @@ class _HologramStats:
         # Update stats
         grouplist = set(stats.keys()).union(set(self.stats["stats"].keys()))
         if len(grouplist) > 0:
-            statlists = [set(stats[group].keys()) for group in stats.keys()]
+            statlists = [set(stats[group].keys()) for group in stats]
             if len(self.stats["stats"].keys()) > 0:
                 key = next(iter(self.stats["stats"]))
                 statlists.append(set(self.stats["stats"][key].keys()))
@@ -179,7 +181,7 @@ class _HologramStats:
                                 )
 
                         # Update stat
-                        if group in stats.keys() and stat in stats[group].keys():
+                        if group in stats and stat in stats[group]:
                             self.stats["stats"][group][stat][self.iter] = stats[group][stat]
 
         # Rawest stats
@@ -198,7 +200,7 @@ class _HologramStats:
 
             self.stats["raw_farfield"][self.iter] = farfield
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         """
         Calculate statistics corresponding to the desired ``stat_groups``.
 
@@ -207,6 +209,8 @@ class _HologramStats:
         stat_groups : list of str
             Which groups or types of statistics to analyze.
         """
+        if stat_groups is None:
+            stat_groups = []
         stats = {}
 
         self._calculate_stats_computational(stats, stat_groups)
@@ -288,7 +292,7 @@ class _HologramStats:
                 )
 
             is_cupy = ["phase", "amp", "target", "weights", "phase_ff"]
-            for key in from_save.keys():
+            for key in from_save:
                 if key != "stats":
                     if key in is_cupy:
                         setattr(
@@ -363,7 +367,7 @@ class _HologramStats:
             try:
                 amp = cp.abs(source).get()
                 phase = cp.angle(source).get()
-            except:
+            except Exception:
                 amp = np.abs(source)
                 phase = np.angle(source)
 
@@ -471,14 +475,13 @@ class _HologramStats:
             if source is None or len(source.shape) == 1:
                 source = self.get_farfield(get=False)
 
-            if limits is None:
-                if len(self.target.shape) == 2:
-                    if np == cp:
-                        limits = self._compute_limits(self.target, limit_padding=limit_padding)
-                    else:
-                        limits = self._compute_limits(
-                            self.target.get(), limit_padding=limit_padding
-                        )
+            if limits is None and len(self.target.shape) == 2:
+                if np == cp:
+                    limits = self._compute_limits(self.target, limit_padding=limit_padding)
+                else:
+                    limits = self._compute_limits(
+                        self.target.get(), limit_padding=limit_padding
+                    )
 
             if len(title) == 0:
                 title = "Farfield Amplitude"
@@ -488,14 +491,14 @@ class _HologramStats:
         if isphase:
             try:
                 npsource = source.get()
-            except:
+            except Exception:
                 npsource = source
 
             npsource = np.mod(npsource, 2 * np.pi)
         else:
             try:
                 npsource = cp.abs(source).get()
-            except:
+            except Exception:
                 npsource = np.abs(source)
 
         # Check units
@@ -560,7 +563,7 @@ class _HologramStats:
         # Helper function: calculate extent for the given units
         try:
             slm = self.cameraslm
-        except:
+        except Exception:
             slm = None
             units = "knm"
 
@@ -720,7 +723,7 @@ class _HologramStats:
 
         return limits
 
-    def plot_stats(self, stats_dict=None, stat_groups=[], ylim=None, show=False):
+    def plot_stats(self, stats_dict=None, stat_groups=None, ylim=None, show=False):
         """
         Plots the statistics contained in the given dictionary.
 
@@ -737,6 +740,8 @@ class _HologramStats:
         show : bool
             Whether or not to immediately show the plot. Defaults to false.
         """
+        if stat_groups is None:
+            stat_groups = []
         if stats_dict is None:
             stats_dict = self.stats
 
@@ -763,7 +768,7 @@ class _HologramStats:
                 if i < 2:
                     y = 1 - np.array(y)
 
-                color = "C%d" % ls_num
+                color = f"C{ls_num}"
                 line = ax.scatter(
                     niter, y, marker=markers[i], ec=color, fc="None" if i >= 1 else color
                 )
@@ -775,11 +780,10 @@ class _HologramStats:
 
         # Make the linestyle legend.
         # Inspired from https://stackoverflow.com/a/46214879
-        dummylines_keys = []
-        for i in range(len(stats)):
-            dummylines_keys.append(
-                ax.scatter([], [], marker=markers[i], ec="k", fc="None" if i >= 1 else "k")
-            )
+        dummylines_keys = [
+            ax.scatter([], [], marker=markers[i], ec="k", fc="None" if i >= 1 else "k")
+            for i in range(len(stats))
+        ]
 
         ax.set_xlabel("Iteration")
         ax.set_ylabel("Relative Metrics")
@@ -788,7 +792,7 @@ class _HologramStats:
         plt.grid()
         try:  # This fails under all nan or other conditions. Fail elegantly.
             plt.tight_layout()
-        except:
+        except Exception:
             pass
         if ylim is not None:
             ax.set_ylim(ylim)

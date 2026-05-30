@@ -13,6 +13,7 @@ except ImportError:
     cp = np
 from abc import ABC, abstractmethod
 import inspect
+from typing import ClassVar
 import warnings
 
 import matplotlib.pyplot as plt
@@ -117,7 +118,7 @@ class SLM(_Picklable, ABC):
         Default behavior for the ``phase_correct`` argument of :meth:`set_phase()`. Defaults to ``True``.
     """
 
-    _pickle = [
+    _pickle: ClassVar[list[str]] = [
         "name",
         "shape",
         "bitdepth",
@@ -129,7 +130,7 @@ class SLM(_Picklable, ABC):
         "wav_design_um",
         "phase_scaling",
     ]
-    _pickle_data = [
+    _pickle_data: ClassVar[list[str]] = [
         "source",
         "phase",
         "display",
@@ -241,7 +242,7 @@ class SLM(_Picklable, ABC):
     def __del__(self):
         try:
             self.close()
-        except:
+        except Exception:
             pass
 
     @staticmethod
@@ -441,10 +442,10 @@ class SLM(_Picklable, ABC):
     def set_phase(
         self,
         phase,
-        phase_correct: bool = None,
-        settle: bool = None,
-        execute: bool = None,
-        block: bool = None,
+        phase_correct: bool | None = None,
+        settle: bool | None = None,
+        execute: bool | None = None,
+        block: bool | None = None,
         **kwargs,
     ):
         r"""
@@ -950,7 +951,7 @@ class SLM(_Picklable, ABC):
             scaling = [g.max() - g.min() for g in self.grid]
         # Physical units
         else:
-            if units in toolbox.LENGTH_FACTORS.keys():
+            if units in toolbox.LENGTH_FACTORS:
                 factor = toolbox.LENGTH_FACTORS[units]
             else:
                 raise RuntimeError(f"Did not recognize units '{units}'")
@@ -1390,7 +1391,7 @@ class SLM(_Picklable, ABC):
 
         # Benchmark set_phase.
         n_iter = 20
-        phase = np.random.rand(n_iter, *self.shape) * 2 * np.pi
+        phase = np.random.default_rng().random((n_iter, *self.shape)) * 2 * np.pi
         t0 = time.time()
         for i in range(n_iter):
             self.set_phase(phase[i, :, :], phase_correct=False)

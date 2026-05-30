@@ -48,7 +48,7 @@ def _coordinates(width, centered=False):
 
 
 def _generate_grid(w_x, w_y, centered=False, integer=False):
-    """ """
+    """Generate a grid of coordinate arrays."""
     xs = np.reshape(np.arange(w_x, dtype=float), (1, 1, w_x))
     ys = np.reshape(np.arange(w_y, dtype=float), (1, w_y, 1))
     if centered:
@@ -191,7 +191,7 @@ def take(
         if clip:  # Set values that were out of range to nan instead of erroring.
             try:  # If the datatype of result is incompatible with nan, set to zero instead.
                 result[:, mask] = np.nan
-            except:
+            except Exception:
                 result[:, mask] = 0
         else:
             pass
@@ -1125,7 +1125,7 @@ def image_zernike_fit(
         try:
             from skimage.restoration import unwrap_phase
         except ImportError:
-            raise ImportError("Phase unwrapping requires scikit-image.")
+            raise ImportError("Phase unwrapping requires scikit-image.") from None
 
         phase_images = [unwrap_phase(im) for im in phase_images]
 
@@ -1164,8 +1164,8 @@ def image_zernike_fit(
 
         for j in range(image_count):
             # Lambda to build the function from test parameters.
-            def zsum(grid, *p):
-                p = np.reshape(p, vectors_zernike.shape)
+            def zsum(grid, *p, shape=vectors_zernike.shape):
+                p = np.reshape(p, shape)
 
                 return zernike_sum(grid, indices_ansi[np.newaxis, :], p, use_mask=True, **kwargs)
 
@@ -1543,7 +1543,7 @@ def fit_affine(x, y, guess_affine=None, plot=False):
 
         M = np.array([[p[0], p[1]], [p[2], p[3]]])
         b = format_2vectors([p[4], p[5]])
-    except:  # Fail elegantly (warn the user?).
+    except Exception:  # Fail elegantly (warn the user?).
         M = M_guess
         b = b_guess
 
@@ -1665,13 +1665,13 @@ def blob_detect(img, filter=None, plot=False, **kwargs):
         blob_xmax = np.max(blob_xs)
         blob_ymin = np.min(blob_ys)
         blob_ymax = np.max(blob_ys)
-        zoom_padx = 2 * (blob_xmax - blob_xmin) / blob_count
-        zoom_pady = 2 * (blob_ymax - blob_ymin) / blob_count
+        2 * (blob_xmax - blob_xmin) / blob_count
+        2 * (blob_ymax - blob_ymin) / blob_count
 
         # Full image.
         vmin = np.min(img_8bit)
         vmax = np.max(img_8bit)
-        im = plt.imshow(img_8bit, vmin=vmin, vmax=vmax)
+        plt.imshow(img_8bit, vmin=vmin, vmax=vmax)
         ax = plt.gca()
         plt.colorbar()
 
@@ -2125,7 +2125,7 @@ def blob_array_detect(
         try:
             res = cv2.matchTemplate(img_8bit, mask, cv2.TM_CCOEFF)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        except:
+        except Exception:
             max_val = 0
             max_loc = [0, 0]
 
@@ -2387,11 +2387,11 @@ def get_orientation_transformation(rot="0", fliplr=False, flipud=False):
     function (array_like) -> numpy.ndarray
         Compiled image transformation.
     """
-    transforms = list()
+    transforms = []
 
-    if fliplr == True:
+    if fliplr:
         transforms.append(np.fliplr)
-    if flipud == True:
+    if flipud:
         transforms.append(np.flipud)
 
     if rot == "90" or rot == 1:

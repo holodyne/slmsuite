@@ -121,7 +121,7 @@ class Hamamatsu(SLM):
         if verbose:
             print("Initializing Hamamatsu SDK...", end="")
         n_dev, board_ids = self._Open_Device(bID_size=1)
-        self.board_id = list(board_ids)[0]
+        self.board_id = next(iter(board_ids))
 
         if n_dev == 0:
             raise RuntimeError("No Hamamatsu devices found!")

@@ -42,7 +42,7 @@ try:
             return pyglet.display.get_display()
         else:
             return pyglet.canvas.get_display()
-except:
+except Exception:
     pyglet = None
     gl = None
     __Window = object
@@ -291,7 +291,7 @@ class _Window(__Window):
             B = 4
 
             # Setup buffers (texbuffer is power of 2 padded to init the memory in OpenGL)
-            self.buffer = np.zeros(shape + (B,), dtype=np.uint8)
+            self.buffer = np.zeros((*shape, B), dtype=np.uint8)
             self.buffer[:, :, 3] = 255  # Opaque alpha
             N = int(shape[0] * shape[1] * B)
             self.cbuffer = (gl.GLubyte * N).from_buffer(self.buffer)
@@ -364,11 +364,11 @@ class _Window(__Window):
             B = 4
 
             # Setup buffers (texbuffer is power of 2 padded to init the memory in OpenGL).
-            self.buffer = np.zeros(shape + (B,), dtype=np.uint8)
+            self.buffer = np.zeros((*shape, B), dtype=np.uint8)
             N = int(shape[0] * shape[1] * B)
             self.cbuffer = (gl.GLubyte * N).from_buffer(self.buffer)
 
-            texbuffer = np.zeros(texture_shape + (B,), dtype=np.uint8)
+            texbuffer = np.zeros((*texture_shape, B), dtype=np.uint8)
             Nt = int(texture_shape[0] * texture_shape[1] * B)
             texcbuffer = (gl.GLubyte * Nt).from_buffer(texbuffer)
 
@@ -529,9 +529,7 @@ class _Window(__Window):
 
         default_str = parse_screen(default)
 
-        window_strs = []
-        for window in windows:
-            window_strs.append(parse_window(window))
+        window_strs = [parse_window(window) for window in windows]
 
         if verbose:
             print("Display Positions:")

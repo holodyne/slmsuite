@@ -38,7 +38,7 @@ except ImportError:
 
 try:
     import torch
-except:
+except Exception:
     torch = None
 
 # Import helper functions

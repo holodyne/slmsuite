@@ -1,4 +1,4 @@
-"""
+r"""
 Hardware control for modern Thorlabs cameras via :mod:`TLCameraSDK`.
 The :mod:`thorlabs_tsi_sdk` module must
 be installed
@@ -63,7 +63,7 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
     if hasattr(os, "add_dll_directory"):
         try:
             os.add_dll_directory(dll_path)
-        except:
+        except Exception:
             if dll_path == DEFAULT_DLL_PATH:
                 warnings.warn(
                     "thorlabs_tsi_sdk DLLs not found at default path. "
@@ -134,14 +134,14 @@ class ThorCam(Camera):
                 print("TLCameraSDK initializing... ", end="")
             try:
                 ThorCam.sdk = TLCameraSDK()
-            except:
+            except Exception:
                 print("failure")
                 raise RuntimeError(
                     "TLCameraSDK() open failed. "
                     "Is thorlabs_tsi_sdk installed? "
                     "Are the .dlls in the directory added by _configure_tlcam_dll_path? "
                     "Sometimes adding the .dlls to the working directory can help."
-                )
+                ) from None
             if verbose:
                 print("success")
 
@@ -223,13 +223,13 @@ class ThorCam(Camera):
         if ThorCam.sdk is None:
             try:
                 ThorCam.sdk = TLCameraSDK()
-            except:
+            except Exception:
                 raise RuntimeError(
                     "TLCameraSDK() open failed. "
                     "Is thorlabs_tsi_sdk installed? "
                     "Are the .dlls in the directory added by _configure_tlcam_dll_path? "
                     "Sometimes adding the .dlls to the working directory can help."
-                )
+                ) from None
             close_sdk = True
         else:
             close_sdk = False

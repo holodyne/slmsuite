@@ -465,15 +465,15 @@ class Santec(SLM):
         )
 
         # Check the resulting bitstrings for errors (0 ==> all good).
-        errors = []
-
-        for drive_error_bit in slm_funcs.SLM_DRIVEBOARD_ERROR.keys():
-            if drive_error.value & drive_error_bit:
-                errors.append(slm_funcs.SLM_DRIVEBOARD_ERROR[drive_error_bit])
-
-        for option_error_bit in slm_funcs.SLM_OPTIONBOARD_ERROR.keys():
-            if option_error.value & option_error_bit:
-                errors.append(slm_funcs.SLM_OPTIONBOARD_ERROR[option_error_bit])
+        errors = [
+            slm_funcs.SLM_DRIVEBOARD_ERROR[drive_error_bit]
+            for drive_error_bit in slm_funcs.SLM_DRIVEBOARD_ERROR
+            if drive_error.value & drive_error_bit
+        ] + [
+            slm_funcs.SLM_OPTIONBOARD_ERROR[option_error_bit]
+            for option_error_bit in slm_funcs.SLM_OPTIONBOARD_ERROR
+            if option_error.value & option_error_bit
+        ]
 
         if raise_error and len(errors) > 0:
             error = "Santec error: " + ", ".join(["'" + err + "'" for err in errors])
@@ -524,7 +524,7 @@ class Santec(SLM):
         # Parse status
         status = int(status)
 
-        if status not in slm_funcs.SLM_STATUS_DICT.keys():
+        if status not in slm_funcs.SLM_STATUS_DICT:
             raise ValueError(f"SLM status '{status}' not recognized.")
 
         # Recover the meaning of status

@@ -9,7 +9,7 @@ import numpy as np
 try:
     import cupy as cp
     from cupyx.scipy.ndimage import map_coordinates
-except:
+except Exception:
     cp = np
     from scipy.ndimage import map_coordinates
 
@@ -64,8 +64,8 @@ class SimulatedCamera(Camera):
         .. code-block:: python
 
             self.noise = {
-                "dark": lambda img: np.random.normal(0.5 * img, 0.05 * img),
-                "read": lambda img: np.random.poisson(0.2 * img),
+                "dark": lambda img: np.random.default_rng().normal(0.5 * img, 0.05 * img),
+                "read": lambda img: np.random.default_rng().poisson(0.2 * img),
             }
 
     """
@@ -103,7 +103,7 @@ class SimulatedCamera(Camera):
 
         if resolution is None:
             resolution = slm.shape[::-1]
-        elif any([r != s for r, s in zip(resolution, slm.shape[::-1])]):
+        elif any(r != s for r, s in zip(resolution, slm.shape[::-1])):
             self._interpolate = True
 
         # dtype and other parameters are set here in init.
@@ -315,7 +315,7 @@ class SimulatedCamera(Camera):
                 raise ValueError(f"cam_pitch_um is required for unit '{units}'")
 
             f_eff *= wav_um / np.squeeze(cam_pitch_um)
-        elif units in toolbox.LENGTH_FACTORS.keys():
+        elif units in toolbox.LENGTH_FACTORS:
             if cam_pitch_um is None or cam_pitch_um[0] is None:
                 raise ValueError(f"cam_pitch_um is required for unit '{units}'")
 
@@ -391,7 +391,7 @@ class SimulatedCamera(Camera):
 
         # Basic noise sources.
         if self.noise is not None:
-            for key in self.noise.keys():
+            for key in self.noise:
                 if key == "dark":
                     # Background/dark current - exposure dependent
                     dark = (
@@ -403,7 +403,7 @@ class SimulatedCamera(Camera):
                     read = self.noise["read"](np.ones_like(img) * self.bitresolution)
                     img = img + read
                 else:
-                    raise RuntimeError("Unknown noise source %s specified!" % (key))
+                    raise RuntimeError(f"Unknown noise source {key} specified!")
 
         # Truncate to maximum readout value
         img[img > self.bitresolution - 1] = self.bitresolution - 1

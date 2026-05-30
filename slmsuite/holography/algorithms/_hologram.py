@@ -1,10 +1,12 @@
+from typing import ClassVar
+
 from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._stats import _HologramStats
 
 if torch is not None:
 
     class ComplexMSELoss(torch.nn.modules.loss._Loss):
-        __constants__ = ["reduction"]
+        __constants__: ClassVar[list[str]] = ["reduction"]
 
         def __init__(self, size_average=None, reduce=None, reduction: str = "mean") -> None:
             super().__init__(size_average, reduce, reduction)
@@ -16,7 +18,7 @@ if torch is not None:
             )
 
     class MaxUniformLoss(torch.nn.modules.loss._Loss):
-        __constants__ = ["reduction"]
+        __constants__: ClassVar[list[str]] = ["reduction"]
 
         def __init__(self, size_average=None, reduce=None, reduction: str = "mean") -> None:
             super().__init__(size_average, reduce, reduction)
@@ -315,14 +317,14 @@ class Hologram(_HologramStats):
                     amp = slm_shape.slm._get_source_amplitude()
                     amp_shape = amp.shape
                 slm_shape = slm_shape.slm.shape
-            except:
+            except Exception:
                 try:  # Check if slm_shape is an SLM
                     if amp is None:
                         amp = slm_shape._get_source_amplitude()
                         amp_shape = amp.shape
                     slm_shape = slm_shape.shape
 
-                except:  # (int, int) case
+                except Exception:  # (int, int) case
                     pass
 
             if len(slm_shape) != 2:
@@ -336,24 +338,21 @@ class Hologram(_HologramStats):
         else:
             self.slm_shape = np.rint(np.nanmean(stack, axis=0)).astype(int)
 
-            if amp_shape[0] is not np.nan:
-                if not np.all(self.slm_shape == np.array(amp_shape)):
-                    raise ValueError(
-                        "The shape of amplitude (via `amp` or SLM) is not equal to the "
-                        "shapes of the provided initial phase (`phase`) or SLM (via `target` or `slm_shape`)"
-                    )
-            if phase_shape[0] is not np.nan:
-                if not np.all(self.slm_shape == np.array(phase_shape)):
-                    raise ValueError(
-                        "The shape of the initial phase (`phase`) is not equal to the "
-                        "shapes of the provided amplitude (via `amp` or SLM) or SLM (via `target` or `slm_shape`)"
-                    )
-            if slm_shape[0] is not np.nan:
-                if not np.all(self.slm_shape == np.array(slm_shape)):
-                    raise ValueError(
-                        "The shape of SLM (via `target` or `slm_shape`) is not equal to the "
-                        "shapes of the provided initial phase (`phase`) or amplitude (via `amp` or SLM)"
-                    )
+            if amp_shape[0] is not np.nan and not np.all(self.slm_shape == np.array(amp_shape)):
+                raise ValueError(
+                    "The shape of amplitude (via `amp` or SLM) is not equal to the "
+                    "shapes of the provided initial phase (`phase`) or SLM (via `target` or `slm_shape`)"
+                )
+            if phase_shape[0] is not np.nan and not np.all(self.slm_shape == np.array(phase_shape)):
+                raise ValueError(
+                    "The shape of the initial phase (`phase`) is not equal to the "
+                    "shapes of the provided amplitude (via `amp` or SLM) or SLM (via `target` or `slm_shape`)"
+                )
+            if slm_shape[0] is not np.nan and not np.all(self.slm_shape == np.array(slm_shape)):
+                raise ValueError(
+                    "The shape of SLM (via `target` or `slm_shape`) is not equal to the "
+                    "shapes of the provided initial phase (`phase`) or amplitude (via `amp` or SLM)"
+                )
 
             self.slm_shape = tuple(self.slm_shape)
 
@@ -414,7 +413,7 @@ class Hologram(_HologramStats):
         if propagation_kernel is None:
             self.propagation_kernel = None
         elif isinstance(propagation_kernel, REAL_TYPES):
-            self.propagation_kernel
+            self.propagation_kernel = propagation_kernel
         else:
             self.propagation_kernel = cp.array(
                 propagation_kernel,
@@ -444,7 +443,7 @@ class Hologram(_HologramStats):
                 self._update_weights_generic_cuda_kernel = cp.RawKernel(
                     CUDA_KERNELS, "update_weights_generic"
                 )
-            except:
+            except Exception:
                 pass
 
     # Initialization helper functions.
@@ -689,7 +688,8 @@ class Hologram(_HologramStats):
 
         # If slm_shape is actually a SLM.
         elif hasattr(slm_shape, "shape"):
-            cameraslm = lambda: 0  # Make a fake cameraslm
+            def cameraslm():
+                return 0  # Make a fake cameraslm
             cameraslm.slm = slm_shape  # At this point, slm_shape is the SLM.
             slm_shape = cameraslm.slm.shape  # And make the shape variable actually the shape.
 
@@ -1116,7 +1116,7 @@ class Hologram(_HologramStats):
         verbose=True,
         callback=None,
         feedback=None,
-        stat_groups=[],
+        stat_groups=None,
         **kwargs,
     ):
         r"""
@@ -1385,6 +1385,8 @@ class Hologram(_HologramStats):
             Various weight keywords and values to pass depending on the weight method.
             These are passed into :attr:`flags`. See options documented in the constructor.
         """
+        if stat_groups is None:
+            stat_groups = []
         # 1) Update flags based upon the arguments.
         name = kwargs.pop("name", None)
         self._update_flags(method, verbose, feedback, stat_groups, **kwargs)
@@ -1502,7 +1504,8 @@ class Hologram(_HologramStats):
             # (B) Midloop Farfield Routines
             # (B.1) Run step function if present and check termination conditions.
             if callback is not None:
-                if callback(self):
+                ret = callback(self)
+                if ret:
                     break
 
             # (B.2) Update statistics based on the current farfield and potentially current
@@ -1548,7 +1551,7 @@ class Hologram(_HologramStats):
                 self.zero_weights = cp.zeros((Z,), dtype=self.dtype_complex)
 
         signal_region = cp.logical_not(cp.logical_or(noise_region, zero_region))
-        mraf_factor = self.flags.get("mraf_factor", None)
+        # mraf_factor = self.flags.get("mraf_factor", None)
         # if mraf_factor is not None:
         #     if mraf_factor < 0:
         #         raise ValueError("mraf_factor={} should not be negative.".format(mraf_factor))
@@ -1559,16 +1562,16 @@ class Hologram(_HologramStats):
             test = cp.arange(10)
             cp.multiply(test, test, where=test > 5)
             where_working = True
-        except:
+        except Exception:
             try:
                 test = cp.arange(10)
                 cp.multiply(test, test, _where=test > 5)
                 where_working = False
-            except:
+            except Exception:
                 raise Exception(
                     "MRAF not supported on this system. Arithmetic `where=` is needed. "
                     "See https://github.com/cupy/cupy/pull/7281."
-                )
+                ) from None
 
         return {
             "mraf_enabled": mraf_enabled,
@@ -1600,11 +1603,10 @@ class Hologram(_HologramStats):
                         self.flags["fixed_phase"] = True
 
                 # Enable based on iterations.
-                if was_not_fixed:
-                    if self.iter >= self.flags["fix_phase_iteration"] - 1:
+                if was_not_fixed and self.iter >= self.flags["fix_phase_iteration"] - 1:
                         previous = self.stats["flags"]["fixed_phase"]
                         contiguous_falses = all(
-                            [not previous[-1 - i] for i in range(self.flags["fix_phase_iteration"])]
+                            not previous[-1 - i] for i in range(self.flags["fix_phase_iteration"])
                         )
                         if contiguous_falses:
                             self.flags["fixed_phase"] = True
@@ -1735,8 +1737,8 @@ class Hologram(_HologramStats):
         # Create the optimizer.
         try:
             optim_class = getattr(torch.optim, self.flags["optimizer"])
-        except:
-            raise ValueError(f"'{self.flags['optimizer']}' is not a valid torch optimizer")
+        except Exception:
+            raise ValueError(f"'{self.flags['optimizer']}' is not a valid torch optimizer") from None
 
         self.optimizer = optim_class([phase_torch], **self.flags["optimizer_kwargs"])
 
@@ -1764,7 +1766,8 @@ class Hologram(_HologramStats):
             # (B) Midloop Routines
             # (B.1) Run step function if present and check termination conditions.
             if callback is not None:
-                if callback(self):
+                ret = callback(self)
+                if ret:
                     break
 
             # (B.2) Update statistics.
@@ -2038,9 +2041,8 @@ class Hologram(_HologramStats):
         float
             The result.
         """
-        if torch is not None:
-            if torch.is_tensor(matrix):
-                xp = torch
+        if torch is not None and torch.is_tensor(matrix):
+            xp = torch
 
         if xp is torch:
             is_complex = torch.is_complex(matrix)

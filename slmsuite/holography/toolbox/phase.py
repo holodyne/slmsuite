@@ -32,7 +32,7 @@ def _load_cuda():
 
 try:
     CUDA_KERNELS = _load_cuda()
-except:
+except Exception:
     warnings.warn("Unable to load toolbox/cuda.cu; cannot use custom GPU kernels.")
     CUDA_KERNELS = None
 
@@ -213,14 +213,14 @@ def binary(
     :return:
         The phase for this function.
     """
-    grid = (x_grid, y_grid) = _process_grid(grid)
+    grid = (x_grid, _y_grid) = _process_grid(grid)
     dtype = x_grid.dtype
     duty_cycle = np.clip(float(duty_cycle), 0, 1)
 
     # Check if we're in pixel period mode.
     if np.any(np.abs(vector) > 1):
         # This is not computationally efficient.
-        grid = (x_grid, y_grid) = np.meshgrid(
+        grid = (x_grid, _y_grid) = np.meshgrid(
             np.arange(x_grid.shape[1]).astype(float), np.arange(x_grid.shape[0]).astype(float)
         )
         vector = (
@@ -231,9 +231,8 @@ def binary(
     # Check if we're in an orthogonal case.
     if vector[0] == 0 and vector[1] == 0:
         phase = b
-        if shift != 0:
-            if np.mod(shift, 2 * np.pi) > (2 * np.pi * duty_cycle):
-                phase = a
+        if shift != 0 and np.mod(shift, 2 * np.pi) > (2 * np.pi * duty_cycle):
+            phase = a
         return np.full(x_grid.shape, phase, dtype=dtype)
     elif vector[0] != 0 and vector[1] != 0:
         pass  # xor the next case.
@@ -274,7 +273,7 @@ def _quadrants(
         raise ValueError(f"Expected four 2-vectors (2,4). Found {vectors.shape}.")
 
     # Parse grid.
-    grid = (x_grid, y_grid) = _process_grid(grid)
+    grid = (x_grid, _y_grid) = _process_grid(grid)
     canvas = np.zeros_like(x_grid)
 
     # Fill the quadrants.
@@ -1179,7 +1178,7 @@ def zernike_pyramid_plot(
     grid,
     order,
     scale=1,
-    titles=["ansi", "radial", "latex", "name"],
+    titles=None,
     cmap="twilight_shifted",
     noborder=False,
     **kwargs,
@@ -1215,9 +1214,11 @@ def zernike_pyramid_plot(
         Passed to :meth:`.zernike()`.
     """
     order = int(order + 1)
+    if titles is None:
+        titles = ["ansi", "radial", "latex", "name"]
     indices_ansi = np.arange((order * (order + 1)) // 2)
     indices_radial = zernike_convert_index(indices_ansi, from_index="ansi", to_index="radial")
-    derivative = kwargs["derivative"] if "derivative" in kwargs else (0, 0)
+    derivative = kwargs.get("derivative", (0, 0))
 
     # Get the pitch of the subplots for later.
     a1 = plt.subplot(order, order, 1)
@@ -1303,7 +1304,7 @@ def _zernike_overlap(grid, indices, aperture=None, use_mask=True):
     if len(indices) == 1:
         return [[1]]
 
-    (x_grid, y_grid) = _process_grid(grid)
+    (x_grid, _y_grid) = _process_grid(grid)
 
     # Check if it's a cameraSLM, then default to the SLM.
     if not hasattr(grid, "source") and hasattr(grid, "slm"):
@@ -1443,7 +1444,7 @@ def _zernike_coefficients(index):
 
 def _zernike_populate_basis_map(indices):
     """
-    This generates helper maps ``c_md``, ``i_md``, ``pxy_m`` for use in GPU kernels
+    Generate helper maps ``c_md``, ``i_md``, ``pxy_m`` for use in GPU kernels
     (see ``populate_basis`` in cuda.cu).
     """
     indices = np.squeeze(indices)
@@ -1492,7 +1493,7 @@ def _zernike_populate_basis_map(indices):
 
 try:
     _zernike_test_kernel = cp.RawKernel(CUDA_KERNELS, "zernike_test")
-except:
+except Exception:
     _zernike_test_kernel = None
 
 
@@ -1993,7 +1994,7 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
 
     factor = 1 / (w * np.sqrt(ellipticity / 2))
 
-    elliptic_grid = np.arccosh(complex_grid * factor)
+    # elliptic_grid = np.arccosh(complex_grid * factor)
 
     raise NotImplementedError()
 
@@ -2008,8 +2009,8 @@ def matheui_gaussian(grid, r, q, w=None):
     numpy.ndarray
         The phase for this function.
     """
-    (x_grid, y_grid) = _process_grid(grid)
-    w = _determine_source_radius(grid, w)
+    # (x_grid, y_grid) = _process_grid(grid)
+    # w = _determine_source_radius(grid, w)
 
     raise NotImplementedError()
 
@@ -2031,7 +2032,7 @@ def airy(grid, f=(np.inf, np.inf), w=None):
     numpy.ndarray
         The phase for this function.
     """
-    (x_grid, y_grid) = _process_grid(grid)
-    w = _determine_source_radius(grid, w)
+    # (_x_grid, _y_grid) = _process_grid(grid)
+    # w = _determine_source_radius(grid, w)
 
     raise NotImplementedError()

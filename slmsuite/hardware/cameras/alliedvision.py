@@ -140,18 +140,18 @@ class AlliedVision(Camera):
         try:
             self.cam.BinningHorizontal.set(1)
             self.cam.BinningVertical.set(1)
-        except:
+        except Exception:
             print("Warning: failed to set binning to 1.")
 
         try:
             self.cam.GainAuto.set("Off")
-        except:
+        except Exception:
             print("Warning: failed to turn autogain off.")
 
         try:
             self.cam.ExposureAuto.set("Off")
             self.cam.ExposureMode.set("Timed")
-        except:
+        except Exception:
             print("Warning: failed to set exposure mode to timed.")
 
         try:
@@ -162,7 +162,7 @@ class AlliedVision(Camera):
             self.cam.TriggerMode.set("Off")
             self.cam.TriggerActivation.set("RisingEdge")
             self.cam.TriggerSource.set("Software")
-        except:
+        except Exception:
             print("Warning: failed to set acquisition and trigger configuration.")
 
         # Cache whether the camera has ExposureTimeAbs or ExposureTime, for use
@@ -273,17 +273,17 @@ class AlliedVision(Camera):
 
             try:
                 print(prop.get(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_unit(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_description(), end="\n")
-            except:
+            except Exception:
                 print("")
 
     def set_adc_bitdepth(self, bitdepth):

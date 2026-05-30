@@ -54,7 +54,7 @@ class SimulatedSLM(SLM):
             self.source.update(source)
 
             # Handle case where `source` only has real values from experiment
-            if "amplitude_sim" not in source.keys():
+            if "amplitude_sim" not in source:
                 self.source["amplitude_sim"] = self.source["amplitude"]
                 self.source["phase_sim"] = -self.source["phase"]
 

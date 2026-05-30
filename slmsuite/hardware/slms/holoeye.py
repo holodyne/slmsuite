@@ -1,4 +1,4 @@
-"""
+r"""
 Hardware control for Holoeye SLMs.
 Created for SLM Display SDK (Python) v4.0.0.
 Tested with Holoeye SLM ERIS-NIR-153.
@@ -25,7 +25,7 @@ try:
     importpath_HEDS = os.path.join(env_path, "examples")
     sys.path.append(importpath_api)
     sys.path.append(importpath_HEDS)
-except:
+except Exception:
     pass
 
 # Load Holoeye's SDK module.

@@ -18,7 +18,7 @@ from slmsuite.hardware.cameras.camera import Camera
 
 try:
     import tisgrabber as tis
-except:
+except Exception:
     tis = None
     warnings.warn("tisgrabber not installed. Install to use ImagingSource cameras.")
 
@@ -208,9 +208,10 @@ class ImagingSource(Camera):
 
         # Get device count and then iterate through each device
         devicecount = ImagingSource.sdk.IC_GetDeviceCount()
-        serial_list = []
-        for i in range(devicecount):
-            serial_list.append(tis.D(ImagingSource.sdk.IC_GetUniqueNamefromList(i)))
+        serial_list = [
+            tis.D(ImagingSource.sdk.IC_GetUniqueNamefromList(i))
+            for i in range(devicecount)
+        ]
 
         if verbose:
             print(serial_list)

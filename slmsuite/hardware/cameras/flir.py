@@ -112,7 +112,7 @@ class FLIR(Camera):
         try:
             self.cam.Init()
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Failed to initialize camera: {ex}")
+            raise RuntimeError(f"Failed to initialize camera: {ex}") from ex
 
         # If the camera was left streaming from a previous crashed session,
         # PixelFormat becomes RO while streaming, preventing format changes.
@@ -205,7 +205,7 @@ class FLIR(Camera):
         try:
             self.cam.BeginAcquisition()
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Failed to begin acquisition: {ex}")
+            raise RuntimeError(f"Failed to begin acquisition: {ex}") from ex
 
         super().__init__(
             (self.cam.WidthMax.GetValue(), self.cam.HeightMax.GetValue()),
@@ -300,7 +300,7 @@ class FLIR(Camera):
             del camera_list
 
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Failed to enumerate cameras: {ex}")
+            raise RuntimeError(f"Failed to enumerate cameras: {ex}") from ex
 
         return serial_list
 
@@ -452,19 +452,19 @@ class FLIR(Camera):
                             # Try to get value as string
                             try:
                                 value = node.ToString()
-                            except:
+                            except Exception:
                                 value = "N/A"
 
                             # Try to get unit
                             try:
                                 unit = node.GetUnit()
-                            except:
+                            except Exception:
                                 unit = ""
 
                             # Try to get description
                             try:
                                 description = node.GetToolTip()
-                            except:
+                            except Exception:
                                 description = ""
 
                             properties[name] = value
@@ -593,14 +593,14 @@ class FLIR(Camera):
             self._configure_frame_rate(verbose=False)
 
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Failed to set WOI: {ex}")
+            raise RuntimeError(f"Failed to set WOI: {ex}") from ex
 
         finally:
             if acquisition_active:
                 try:
                     self.cam.BeginAcquisition()
                 except PySpin.SpinnakerException as ex:
-                    raise RuntimeError(f"Failed to restart acquisition after WOI change: {ex}")
+                    raise RuntimeError(f"Failed to restart acquisition after WOI change: {ex}") from ex
 
     def _get_image_hw(self, timeout_s=1.0):
         """
@@ -643,4 +643,4 @@ class FLIR(Camera):
             return image_data
 
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Camera acquisition failed: {ex}")
+            raise RuntimeError(f"Camera acquisition failed: {ex}") from ex

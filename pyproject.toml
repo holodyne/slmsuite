@@ -155,6 +155,8 @@ select = [
     "D",    # pydocstyle (numpy convention — see ignores below)
 ]
 ignore = [
+    "B028",    # no-explicit-stacklevel
+    "SIM105",  # suppressible-exception (try-except-pass)
     "E501",    # line too long — formatter handles; docstrings/URLs may exceed
     "E741",    # ambiguous var name (l, I, O) — common in math/holography
     "B008",    # function call in default arg — np.array(...) defaults are fine

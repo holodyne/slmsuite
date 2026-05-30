@@ -18,7 +18,7 @@ from slmsuite.hardware.cameras.camera import Camera
 
 try:
     import mvsdk as _mvsdk
-except:
+except Exception:
     _mvsdk = None
     warnings.warn("mvsdk not installed.")
 

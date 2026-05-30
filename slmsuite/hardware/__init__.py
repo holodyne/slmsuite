@@ -1,6 +1,7 @@
 """Interface to experimental devices."""
 
 import datetime
+from typing import ClassVar
 import warnings
 
 from slmsuite import __version__
@@ -12,8 +13,8 @@ class _Picklable:
     Class for hardware objects to handle state saving.
     """
 
-    _pickle = []  # Baseline parameters to pickle.
-    _pickle_data = []  #
+    _pickle: ClassVar[list] = []  # Baseline parameters to pickle.
+    _pickle_data: ClassVar[list] = []  #
 
     def pickle(self, attributes=True, metadata=True):
         """

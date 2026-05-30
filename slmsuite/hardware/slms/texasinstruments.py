@@ -17,7 +17,7 @@ and :mod:`numpy` (CPU) for maximum performance and compatibility.
     plm = PLM("p47", display_number=1)
 
     # Set phase pattern
-    phase = np.random.rand(540, 960) * 2 * np.pi
+    phase = np.random.default_rng().random((540, 960)) * 2 * np.pi
     plm.write(phase)
 
 The USB configuration is accomplished by :class:`DLPC900`,
@@ -490,7 +490,7 @@ class PLM(ScreenMirrored):
 
         # Rearrange axes and reshape to interleave electrode bits
         elec_h, elec_w = self.electrode_layout.shape
-        new_shape = memory.shape[:-2] + (memory.shape[-2] * elec_h, memory.shape[-1] * elec_w)
+        new_shape = (*memory.shape[:-2], memory.shape[-2] * elec_h, memory.shape[-1] * elec_w)
         out = xp.swapaxes(out, -2, -3).reshape(new_shape)
 
         # Apply data flip if specified
@@ -722,7 +722,7 @@ class DLPC900:
 
         # hidapi write: prepend report ID 0x00
         # print(" ".join(f"{b:02X}" for b in buf))
-        self._dev.write([0x00] + buf)
+        self._dev.write([0, *buf])
 
         # Multi-packet payload (>58 bytes)
         remaining = payload[58:]
@@ -730,7 +730,7 @@ class DLPC900:
             chunk = remaining[:64]
             remaining = remaining[64:]
             padded = chunk + [0x00] * (64 - len(chunk))
-            self._dev.write([0x00] + padded)
+            self._dev.write([0, *padded])
 
         if mode == "r":
             try:
@@ -900,7 +900,7 @@ class DLPC900:
             val = DisplayMode[name]
         except KeyError:
             valid = [m.name.lower().replace("_", "-") for m in DisplayMode]
-            raise ValueError(f"Unknown mode '{mode}'. Valid: {valid}")
+            raise ValueError(f"Unknown mode '{mode}'. Valid: {valid}") from None
         self._send("w", DLPC900Command.DISPLAY_MODE, [int(val)])
 
     def get_display_mode(self):
@@ -916,7 +916,7 @@ class DLPC900:
         try:
             return DisplayMode(b)
         except ValueError:
-            raise ValueError(f"Unknown display mode byte: {b}")
+            raise ValueError(f"Unknown display mode byte: {b}") from None
 
     def start_pattern(self):
         """Start the pattern display sequence."""

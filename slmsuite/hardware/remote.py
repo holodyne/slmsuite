@@ -79,7 +79,7 @@ import socket
 import sys
 import time
 import traceback
-from typing import Any, Dict, List, Tuple
+from typing import Any
 import urllib.parse as urllib
 import warnings
 import zlib
@@ -178,7 +178,7 @@ class Server:
         hardware: list[object],
         port: int = DEFAULT_PORT,
         timeout: float = SERVER_WAIT_TIMEOUT,
-        allowlist: list[str] = None,
+        allowlist: list[str] | None = None,
     ):
         """
         Initializes a server to host slmsuite hardware: cameras and SLMs.
@@ -308,7 +308,7 @@ class Server:
                 print("Closing server! Goodbye!")
             try:
                 connection.close()
-            except:
+            except Exception:
                 pass
             sock.close()
         except Exception as e:
@@ -318,13 +318,13 @@ class Server:
                 print(traceback.format_exc())
             try:
                 connection.close()
-            except:
+            except Exception:
                 pass
             sock.close()
             raise e
 
     def _handle(
-        self, message: str, client_addr: str = None, verbose: bool = False
+        self, message: str, client_addr: str | None = None, verbose: bool = False
     ) -> tuple[bool, Any]:
         """
         Handle a message from a client.
@@ -333,7 +333,7 @@ class Server:
             name = message.pop("name", None)
             command = message.pop("command", None)
             args = message.pop("args", [])
-            kwargs = message.pop("kwargs", dict())
+            kwargs = message.pop("kwargs", {})
 
             instrument = f"{name}.{command}"
 
@@ -362,7 +362,7 @@ class Server:
                     return False, f"{instrument} is not callable."
             else:
                 return False, f"{instrument} not present."
-        except:
+        except Exception:
             return False, traceback.format_exc()
 
 
@@ -399,12 +399,12 @@ class _Client(_Picklable):
 
         try:
             t = time.perf_counter()
-            pickled = self._com(command="pickle", kwargs=dict(attributes=False, metadata=True))
+            pickled = self._com(command="pickle", kwargs={"attributes": False, "metadata": True})
             t = time.perf_counter() - t
-        except:
+        except Exception:
             raise RuntimeError(
                 f"Could not connect to '{self.name}' at {self.host}:{self.port}. Options: {hardware}."
-            )
+            ) from None
 
         self.latency_s = t
         self.server_attributes = pickled
@@ -422,10 +422,14 @@ class _Client(_Picklable):
     def _com(
         self,
         command: str = "ping",
-        args: list = [],
-        kwargs: dict = {},
+        args: list | None = None,
+        kwargs: dict | None = None,
     ):
         """Helper function to _com without having to put all the name/host information in."""
+        if args is None:
+            args = []
+        if kwargs is None:
+            kwargs = {}
         return _Client.__com(self.name, self.host, self.port, self.timeout, command, args, kwargs)
 
     @staticmethod
@@ -435,17 +439,21 @@ class _Client(_Picklable):
         port: int = DEFAULT_PORT,
         timeout: float = DEFAULT_TIMEOUT,
         command: str = "ping",
-        args: list = [],
-        kwargs: dict = {},
+        args: list | None = None,
+        kwargs: dict | None = None,
     ):
         """Generalized function to communicate with a server."""
+        if args is None:
+            args = []
+        if kwargs is None:
+            kwargs = {}
         # Create a TCP/IP socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         try:
             sock.connect((host, port))
-        except (TimeoutError, ConnectionRefusedError):
-            raise ValueError(f"An slmsuite server is not active at {host}:{port}.")
+        except (TimeoutError, ConnectionRefusedError) as e:
+            raise ValueError(f"An slmsuite server is not active at {host}:{port}.") from e
         except Exception as e:
             raise e
 
@@ -465,7 +473,7 @@ class _Client(_Picklable):
         # Wait for a reply.
         try:
             success, reply = _recv(sock, timeout)
-            if success == False:
+            if not success:
                 raise RuntimeError(f"Server {host}:{port} communication failed. Message:\n{reply}")
         except Exception as e:
             sock.close()
@@ -502,8 +510,8 @@ class _Client(_Picklable):
         """
         try:
             hardware = _Client.__com(None, host, port, timeout, command="ping")
-        except (TimeoutError, ConnectionRefusedError):
-            raise TimeoutError(f"Did not find a server at {host}:{port}.")
+        except (TimeoutError, ConnectionRefusedError) as e:
+            raise TimeoutError(f"Did not find a server at {host}:{port}.") from e
         except Exception as e:
             raise e
 

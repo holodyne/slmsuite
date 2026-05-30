@@ -141,10 +141,12 @@ class _AbstractSpotHologram(FeedbackHologram):
 
         return shift_vectors
 
-    def _calculate_stats_experimental_spot(self, stats, stat_groups=[]):
+    def _calculate_stats_experimental_spot(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`._update_stats()`.
         """
+        if stat_groups is None:
+            stat_groups = []
         if "experimental_spot" in stat_groups:
             self.measure(basis="ij")
 
@@ -418,7 +420,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 self.spot_ij = toolbox.convert_vector(
                     spot_vectors, from_units=basis, to_units="ij", hardware=cameraslm
                 )
-            except:
+            except Exception:
                 self.spot_ij = None
         else:
             self.spot_zernike = toolbox.convert_vector(
@@ -1023,10 +1025,12 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             nan_checks=True,
         )
 
-    def _calculate_stats_computational_spot(self, stats, stat_groups=[]):
+    def _calculate_stats_computational_spot(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`SpotHologram._update_stats()`.
         """
+        if stat_groups is None:
+            stat_groups = []
         if "computational_spot" in stat_groups:
             stats["computational_spot"] = self._calculate_stats(
                 self.amp_ff,
@@ -1036,7 +1040,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 raw="raw_stats" in self.flags and self.flags["raw_stats"],
             )
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         """
         Calculate statistics corresponding to the desired ``stat_groups``.
 
@@ -1045,6 +1049,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         stat_groups : list of str
             Which groups or types of statistics to analyze.
         """
+        if stat_groups is None:
+            stat_groups = []
         stats = {}
 
         # self._calculate_stats_computational_spot(stats, stat_groups)
@@ -1649,10 +1655,12 @@ class SpotHologram(_AbstractSpotHologram):
                 )
             )
 
-    def _calculate_stats_computational_spot(self, stats, stat_groups=[]):
+    def _calculate_stats_computational_spot(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`SpotHologram._update_stats()`.
         """
+        if stat_groups is None:
+            stat_groups = []
         if "computational_spot" in stat_groups:
             if self.shape == self.slm_shape:
                 # Spot size is one pixel wide: no integration required.
@@ -1703,7 +1711,7 @@ class SpotHologram(_AbstractSpotHologram):
                         raw="raw_stats" in self.flags and self.flags["raw_stats"],
                     )
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         """
         Calculate statistics corresponding to the desired ``stat_groups``.
 
@@ -1712,6 +1720,8 @@ class SpotHologram(_AbstractSpotHologram):
         stat_groups : list of str
             Which groups or types of statistics to analyze.
         """
+        if stat_groups is None:
+            stat_groups = []
         stats = {}
 
         self._calculate_stats_computational(stats, stat_groups)

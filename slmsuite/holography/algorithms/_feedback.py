@@ -78,7 +78,7 @@ class FeedbackHologram(Hologram):
             try:
                 amp = self.cameraslm.slm._get_source_amplitude()
                 slm_shape = self.cameraslm.slm.shape
-            except:
+            except Exception:
                 # See if an SLM was passed.
                 try:
                     amp = self.cameraslm._get_source_amplitude()
@@ -87,8 +87,8 @@ class FeedbackHologram(Hologram):
                     # We don't have access to all the calibration stuff, so don't
                     # confuse the rest of the init/etc.
                     self.cameraslm = None
-                except:
-                    raise ValueError("Expected a CameraSLM or SLM to be passed to cameraslm.")
+                except Exception:
+                    raise ValueError("Expected a CameraSLM or SLM to be passed to cameraslm.") from None
 
         else:
             amp = kwargs.pop("amp", None)
@@ -376,10 +376,12 @@ class FeedbackHologram(Hologram):
             self.measure("knm")  # Make sure data is there.
             self._update_weights_generic(self.weights, self.img_knm, self.target)
 
-    def _calculate_stats_experimental(self, stats, stat_groups=[]):
+    def _calculate_stats_experimental(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`FeedbackHologram._update_stats()`.
         """
+        if stat_groups is None:
+            stat_groups = []
         if "experimental_knm" in stat_groups:
             self.measure("knm")  # Make sure data is there.
 
@@ -400,7 +402,7 @@ class FeedbackHologram(Hologram):
                 raw="raw_stats" in self.flags and self.flags["raw_stats"],
             )
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         """
         Calculate statistics corresponding to the desired ``stat_groups``.
 
@@ -409,6 +411,8 @@ class FeedbackHologram(Hologram):
         stat_groups : list of str
             Which groups or types of statistics to analyze.
         """
+        if stat_groups is None:
+            stat_groups = []
         stats = {}
 
         self._calculate_stats_computational(stats, stat_groups)

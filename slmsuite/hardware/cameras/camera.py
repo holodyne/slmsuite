@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import asyncio
 import io
 import time
+from typing import ClassVar
 import warnings
 
 import matplotlib.pyplot as plt
@@ -85,7 +86,7 @@ class Camera(_Picklable, ABC):
         Is ``None`` if no image has ever been taken.
     """
 
-    _pickle = [
+    _pickle: ClassVar[list] = [
         "name",
         "shape",
         "bitdepth",
@@ -98,7 +99,7 @@ class Camera(_Picklable, ABC):
         "woi",
         "default_shape",
     ]
-    _pickle_data = [
+    _pickle_data: ClassVar[list] = [
         "last_image",
     ]
 
@@ -244,7 +245,7 @@ class Camera(_Picklable, ABC):
     def __del__(self):
         try:
             self.close()
-        except:
+        except Exception:
             pass
 
     @staticmethod
@@ -449,8 +450,8 @@ class Camera(_Picklable, ABC):
         raise err
 
     def _get_images_hw_tolerant(self, *args, **kwargs):
-        e = None
         failures = 0
+        err = None
 
         for _ in range(self.capture_attempts):
             try:
@@ -482,9 +483,9 @@ class Camera(_Picklable, ABC):
             self.dtype = np.dtype(
                 np.array(get_image_function()).dtype
             )  # Future: check if cameras change dtype after init.
-        except:
+        except Exception:
             if self.bitdepth <= 0:
-                raise ValueError("Non-positive bitdepth does not make sense.")
+                raise ValueError("Non-positive bitdepth does not make sense.") from None
             elif self.bitdepth <= 8:
                 self.dtype = np.dtype(np.uint8)
             elif self.bitdepth <= 16:
@@ -511,7 +512,7 @@ class Camera(_Picklable, ABC):
                     f"Camera '{self.name}' bitdepth of {self.bitdepth} does not conform "
                     f"with the image type {self.dtype} with {self.dtype.itemsize} bytes."
                 )
-        except:  # The above sometimes fails for non-numpy datatypes.
+        except Exception:  # The above sometimes fails for non-numpy datatypes.
             pass
 
         return self.dtype
@@ -938,8 +939,6 @@ class Camera(_Picklable, ABC):
 
         # Test 2: Capture methods (requires concrete implementation)
         print("  Testing capture methods...")
-        orig_averaging = self.averaging
-        orig_hdr = self.hdr
 
         self.averaging = None
         self.hdr = None
@@ -1160,7 +1159,7 @@ class Camera(_Picklable, ABC):
             from IPython.display import display
             from ipywidgets import Image
         except ImportError:
-            raise ImportError("jupyter must be installed to use .live().")
+            raise ImportError("jupyter must be installed to use .live().") from None
 
         if (self.viewer is None and activate is None) or activate:
             if self.viewer is not None:
@@ -1383,14 +1382,14 @@ class Camera(_Picklable, ABC):
                 img = self.get_image()
                 imlist.append(np.copy(img))
                 counts[i] = metric(img)
-            except:
+            except Exception:
                 pass
 
         # Handle the case where everything failed.
         if np.all(np.isnan(counts)):
             try:
                 set_z(z_base)
-            except:
+            except Exception:
                 pass
             raise RuntimeError("Autofocus failed; no valid images captured.")
 
@@ -1474,22 +1473,24 @@ class _CameraViewer:
         cmap=True,
         scale=1,
         border=None,
-        cmap_options=[
-            "default",
-            "gray",
-            "Blues",
-            "turbo",
-            "viridis",
-            "plasma",
-            "inferno",
-            "magma",
-            "cividis",
-        ],
+        cmap_options=None,
         crosshair=False,
         centroid=False,
     ):
         self.cam = cam
         self.backend = backend
+        if cmap_options is None:
+            cmap_options = [
+                "default",
+                "gray",
+                "Blues",
+                "turbo",
+                "viridis",
+                "plasma",
+                "inferno",
+                "magma",
+                "cividis",
+            ]
 
         # Parse range.
         if min is None:
@@ -1616,7 +1617,7 @@ class _CameraViewer:
         if self.task is not None:
             try:
                 self.task.cancel()
-            except:
+            except Exception:
                 pass
 
         if not state:
@@ -1802,7 +1803,7 @@ class _CameraViewer:
         try:
             self.task.cancel()
             self.task = None
-        except:
+        except Exception:
             pass
 
         for w in self.widgets.values():

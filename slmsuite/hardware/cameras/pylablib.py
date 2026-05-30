@@ -32,7 +32,7 @@ from slmsuite.hardware.cameras.camera import Camera
 
 try:
     from pylablib.devices.interface.camera import ICamera
-except:
+except Exception:
     ICamera = None
     warnings.warn("pylablib not installed. Install to use PyLabLib cameras.")
 
@@ -133,8 +133,8 @@ class PyLabLib(Camera):
         """
         try:
             self.cam.close()
-        except:
-            raise RuntimeError("This instrumental camera does not support .close().")
+        except Exception:
+            raise RuntimeError("This instrumental camera does not support .close().") from None
 
     @staticmethod
     def info(verbose=True):

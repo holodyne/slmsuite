@@ -21,7 +21,7 @@ from enum import IntEnum
 import os
 from pathlib import Path
 from platform import system
-from typing import List, Optional, Tuple, Union
+from typing import ClassVar, Optional, Union
 import warnings
 
 import numpy as np
@@ -84,10 +84,10 @@ class Meadowlark(SLM):
     """
 
     # Class attribute that loads each type of SDK library *once* per .dll for all class instances.
-    _slm_lib = {}  # _SDK_Mode : ctypes.cdll
-    _slm_lib_trace = {}  # _SDK_Mode : (int, int)    # See documentation for _SLM_LIB_TRACES
-    _sdk_path = {}  # _SDK_Mode : str
-    _number_of_boards = {}  # _SDK_Mode : int
+    _slm_lib: ClassVar[dict] = {}  # _SDK_Mode : ctypes.cdll
+    _slm_lib_trace: ClassVar[dict] = {}  # _SDK_Mode : (int, int)    # See documentation for _SLM_LIB_TRACES
+    _sdk_path: ClassVar[dict] = {}  # _SDK_Mode : str
+    _number_of_boards: ClassVar[dict] = {}  # _SDK_Mode : int
 
     def __init__(
         self,
@@ -256,7 +256,8 @@ class Meadowlark(SLM):
             unloader.argtypes = [ctypes.c_void_p]
             unloader.restype = None
         else:
-            unloader = lambda x: True
+            def unloader(x):
+                return True
 
         try:
             Meadowlark._slm_lib[self.sdk_mode].Delete_SDK()
@@ -272,7 +273,7 @@ class Meadowlark(SLM):
 
     # General SDK inspection methods.
     @staticmethod
-    def info(verbose: bool = True, sdk_path: str = None) -> list[tuple[int, str]]:
+    def info(verbose: bool = True, sdk_path: str | None = None) -> list[tuple[int, str]]:
         """
         Discover the SLMs connected to the selected SDK.
         Note that for HDMI, the SLM's display window will open at this stage.
@@ -583,9 +584,8 @@ class Meadowlark(SLM):
                         stacklevel=2,
                     )
                 # Handled with _output_pulse_image_flip in _set_phase_hw
-            elif self.sdk_mode == _SDK_MODE.PCIE_MODERN_8:
-                if on_refresh is not None:
-                    self._output_pulse_image_refresh = on_refresh
+            elif self.sdk_mode == _SDK_MODE.PCIE_MODERN_8 and on_refresh is not None:
+                self._output_pulse_image_refresh = on_refresh
                 # Handled with _output_pulse_image_flip in _set_phase_hw
 
             self._output_pulse_image_flip = on
@@ -690,7 +690,7 @@ class Meadowlark(SLM):
 
     # Load library helpers
     @staticmethod
-    def _load_lib(sdk_path: str = None) -> int:
+    def _load_lib(sdk_path: str | None = None) -> int:
         """
         Infers the location of the Meadowlark SDK's dynamic linked library.
 
@@ -858,7 +858,7 @@ class Meadowlark(SLM):
                         trace.append(0)
                     else:
                         trace.append(len(split2.split(",")))
-                except:
+                except Exception:
                     trace = None
                     break
 
@@ -985,7 +985,7 @@ class Meadowlark(SLM):
         FileNotFoundError
             If no .lut files are found in provided path.
         """
-        files = {file for file in Path(search_path).rglob("*.lut")}
+        files = set(Path(search_path).rglob("*.lut"))
 
         if len(files) == 1:
             return str(files.pop())
