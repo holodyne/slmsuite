@@ -440,7 +440,7 @@ class TestDifferentiableSpots:
             import cupy as cp
         except ImportError:
             cp = np
-        device = 'cuda' if cp is not np else 'cpu'
+        device = 'cuda' if (cp is not np and torch.cuda.is_available()) else 'cpu'
         
         # Test out-of-place autograd-preserving path
         phase = torch.randn(N, N, dtype=torch.float64, device=device, requires_grad=True)
@@ -506,7 +506,7 @@ class TestDifferentiableSpots:
                 import cupy as cp
             except ImportError:
                 cp = np
-            device = 'cuda' if cp is not np else 'cpu'
+            device = 'cuda' if (cp is not np and torch.cuda.is_available()) else 'cpu'
             
             phase = torch.randn(N, N, dtype=torch.float64, device=device, requires_grad=True)
             holo.phase = phase
@@ -552,7 +552,7 @@ class TestDifferentiableSpots:
             import cupy as cp
         except ImportError:
             cp = np
-        device = 'cuda' if cp is not np else 'cpu'
+        device = 'cuda' if (cp is not np and torch.cuda.is_available()) else 'cpu'
         
         # Test computational spot weighting path
         holo.amp_ff = torch.randn(N, N, dtype=torch.float64, device=device, requires_grad=True)
@@ -598,4 +598,85 @@ class TestWGSWeightingTorch:
         assert backend.is_torch(updated) and updated.requires_grad
         updated.sum().backward()
         assert feedback.grad is not None and torch.isfinite(feedback.grad).all()
+
+
+# ---------------------------------------------------------------------------
+# Backend speed benchmark (CuPy vs PyTorch CUDA performance capture)
+# ---------------------------------------------------------------------------
+@pytest.mark.gpu
+def test_backend_performance_recording(capsys):
+    """Runs a non-failing speed test comparing CuPy and PyTorch CUDA and records results."""
+    import time
+    cp = pytest.importorskip("cupy")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA GPU required for performance speed test.")
+    try:
+        if cp.cuda.runtime.getDeviceCount() < 1:
+            pytest.skip("No cupy-visible GPU.")
+    except Exception:
+        pytest.skip("cupy GPU unavailable.")
+
+    from slmsuite.holography.algorithms import SpotHologram
+
+    slm_size = (1024, 1024)
+
+    # 1. Warm up & Benchmark CuPy
+    array_holo_cupy = SpotHologram.make_rectangular_array(
+        slm_size,
+        array_shape=(10, 10),
+        array_pitch=(10, 10),
+        basis='knm',
+        backend='cupy'
+    )
+    # Warm up
+    array_holo_cupy.optimize(method="GS", maxiter=2, stat_groups=[], verbose=False)
+    cp.cuda.runtime.deviceSynchronize()
+
+    # Benchmark
+    t0 = time.time()
+    array_holo_cupy.optimize(method="GS", maxiter=20, stat_groups=[], verbose=False)
+    cp.cuda.runtime.deviceSynchronize()
+    t_cupy = time.time() - t0
+    cupy_ms = t_cupy * 1000 / 20
+
+    del array_holo_cupy
+    import gc
+    gc.collect()
+    cp.get_default_memory_pool().free_all_blocks()
+    cp.get_default_pinned_memory_pool().free_all_blocks()
+    torch.cuda.empty_cache()
+
+    # 2. Warm up & Benchmark PyTorch
+    array_holo_torch = SpotHologram.make_rectangular_array(
+        slm_size,
+        array_shape=(10, 10),
+        array_pitch=(10, 10),
+        basis='knm',
+        backend='torch',
+        device='cuda'
+    )
+    # Warm up
+    array_holo_torch.optimize(method="GS", maxiter=2, stat_groups=[], verbose=False)
+    torch.cuda.synchronize()
+
+    # Benchmark
+    t0 = time.time()
+    array_holo_torch.optimize(method="GS", maxiter=20, stat_groups=[], verbose=False)
+    torch.cuda.synchronize()
+    t_torch = time.time() - t0
+    torch_ms = t_torch * 1000 / 20
+
+    del array_holo_torch
+    gc.collect()
+    cp.get_default_memory_pool().free_all_blocks()
+    cp.get_default_pinned_memory_pool().free_all_blocks()
+    torch.cuda.empty_cache()
+
+    # Report results via pytest stdout
+    print("\n================== BACKEND SPEED BENCHMARK ==================")
+    print(f"CuPy Speed: {t_cupy:.4f} seconds ({cupy_ms:.2f} ms/iter)")
+    print(f"PyTorch CUDA Speed: {t_torch:.4f} seconds ({torch_ms:.2f} ms/iter)")
+    print(f"Overhead Ratio (Torch/CuPy): {torch_ms / cupy_ms:.2f}x")
+    print("=============================================================")
+
 

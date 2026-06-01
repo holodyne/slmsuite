@@ -936,9 +936,11 @@ class Hologram(_HologramStats):
         # ``xp`` is the array namespace backing the current phase: numpy, cupy, or (when
         # autograd is desired) torch. For numpy/cupy this is identical to the historical
         # ``cp.`` calls; the torch branch keeps the complex farfield in the graph.
+        # The centered DFT itself goes through ``toolbox.farfield`` (the single source of
+        # truth for the fftshift/ortho convention; backend-transparent and autograd-safe).
         xp = get_module(self.phase)
         nearfield = toolbox.pad(self.amp * xp.exp(1j * (self.phase + propagation_kernel)), shape)
-        farfield = xp.fft.fftshift(xp.fft.fft2(xp.fft.fftshift(nearfield), norm="ortho"))
+        farfield = toolbox.farfield(nearfield)
 
         # Populate the farfield amp/phase caches. Skipped on the torch backend, where these
         # in-place ``out=`` writes would sever the autograd graph (and are unnecessary: the
@@ -953,7 +955,7 @@ class Hologram(_HologramStats):
                 raise NotImplementedError(
                     "Affine farfield transforms are not yet supported on the torch backend."
                 )
-            return farfield
+            return backend.to_numpy(farfield) if get else farfield
         else:
             # numpy / cupy: dispatch the affine transform on the farfield's actual backend
             # (not the global ``cp != np``), so an explicitly-numpy hologram on a cupy-enabled
@@ -1075,7 +1077,7 @@ class Hologram(_HologramStats):
         autograd-safe on torch (no ``.detach()``, no buffer aliasing). Overloaded by subclasses.
         """
         nearfield = self._build_nearfield()
-        self.farfield = backend.fftshift(backend.fft2(backend.fftshift(nearfield), norm="ortho"))
+        self.farfield = toolbox.farfield(nearfield)
 
         # Maintain the farfield amplitude cache only on numpy/cupy. On torch this in-place
         # ``out=`` write would sever the autograd graph; callers read self.farfield directly.
@@ -1098,7 +1100,7 @@ class Hologram(_HologramStats):
             Whether to extract data into the :attr:`phase` variable. This is not used
             for :class:`MultiplaneHologram`.
         """
-        self.nearfield = backend.ifftshift(backend.ifft2(backend.ifftshift(self.farfield), norm="ortho"))
+        self.nearfield = toolbox.nearfield(self.farfield)
 
         if extract:
             self._nearfield_extract()

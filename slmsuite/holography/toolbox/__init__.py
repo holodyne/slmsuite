@@ -1727,3 +1727,70 @@ def unpad(matrix, shape):
         raise RuntimeError("Unpadded result should have desired shape.")
 
     return unpadded
+
+
+def farfield(field, norm="ortho", axes=(-2, -1)):
+    r"""
+    Centered near-field :math:`\rightarrow` far-field discrete Fourier transform:
+    ``fftshift(fft2(fftshift(field)))`` with orthonormal normalization.
+
+    This is the single source of truth for the optical Fourier convention used throughout
+    :mod:`slmsuite` (centered input, centered output, energy-preserving ``"ortho"`` norm).
+    It is backend-transparent (numpy / cupy / torch, dispatched through
+    :mod:`slmsuite.misc.backend`) and autograd-safe, and it operates on the trailing two
+    axes by default so both a single ``(h, w)`` field and a batched ``(s, h, w)`` stack of
+    fields are handled identically.
+
+    The ``field`` is expected to already be padded / embedded to the desired DFT shape
+    (e.g. via :func:`pad`); this helper performs only the centered transform, leaving
+    padding, propagation kernels, and apertures to the caller.
+
+    Parameters
+    ----------
+    field : numpy.ndarray OR cupy.ndarray OR torch.Tensor
+        Complex near-field, of shape ``(h, w)`` or ``(..., h, w)``.
+    norm : str
+        Normalization passed to the underlying FFT; defaults to ``"ortho"``.
+    axes : (int, int)
+        The two transform axes; defaults to the trailing two ``(-2, -1)``.
+
+    Returns
+    -------
+    Complex far-field, same backend and shape as ``field``.
+
+    See Also
+    --------
+    nearfield : The inverse transform.
+    pad : Centered zero-pad to set the DFT resolution before transforming.
+    """
+    shifted = _backend.fftshift(field, axes=axes)
+    return _backend.fftshift(_backend.fft2(shifted, norm=norm), axes=axes)
+
+
+def nearfield(field, norm="ortho", axes=(-2, -1)):
+    r"""
+    Centered far-field :math:`\rightarrow` near-field inverse discrete Fourier transform:
+    ``ifftshift(ifft2(ifftshift(field)))`` with orthonormal normalization.
+
+    Exact inverse of :func:`farfield`, sharing its backend-transparency, autograd-safety,
+    and trailing-two-axes batching semantics.
+
+    Parameters
+    ----------
+    field : numpy.ndarray OR cupy.ndarray OR torch.Tensor
+        Complex far-field, of shape ``(h, w)`` or ``(..., h, w)``.
+    norm : str
+        Normalization passed to the underlying inverse FFT; defaults to ``"ortho"``.
+    axes : (int, int)
+        The two transform axes; defaults to the trailing two ``(-2, -1)``.
+
+    Returns
+    -------
+    Complex near-field, same backend and shape as ``field``.
+
+    See Also
+    --------
+    farfield : The forward transform.
+    """
+    shifted = _backend.ifftshift(field, axes=axes)
+    return _backend.ifftshift(_backend.ifft2(shifted, norm=norm), axes=axes)

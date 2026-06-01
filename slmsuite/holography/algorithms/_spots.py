@@ -1046,10 +1046,11 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         Wrapped by :meth:`CompressedSpotHologram._update_stats()`.
         """
         if "computational_spot" in stat_groups:
+            amp_ff = self.amp_ff if self.amp_ff is not None else backend.abs(self.farfield)
             stats["computational_spot"] = self._calculate_stats(
-                self.amp_ff,
+                amp_ff,
                 self.target,
-                xp=cp,
+                xp=self._xp,
                 efficiency_compensation=False,
                 raw="raw_stats" in self.flags and self.flags["raw_stats"]
             )
@@ -1567,10 +1568,16 @@ class SpotHologram(_AbstractSpotHologram):
 
         # Erase previous target in-place.
         if self.null_knm is None:
-            self.target.fill(0)
+            if hasattr(self.target, "fill"):
+                self.target.fill(0)
+            else:
+                self.target.fill_(0)
         else:
             # By default, everywhere is "amplitude free", denoted by nan.
-            self.target.fill(np.nan)
+            if hasattr(self.target, "fill"):
+                self.target.fill(np.nan)
+            else:
+                self.target.fill_(float('nan'))
 
             # Now we start setting areas where null is desired. First, zero the blanket region.
             if self.null_region_knm is not None:
@@ -1591,7 +1598,7 @@ class SpotHologram(_AbstractSpotHologram):
                     )
 
         # Set all the target pixels to the appropriate amplitude.
-        self.target[self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]] = self.spot_amp
+        self.target[self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]] = backend.to_backend(self.spot_amp, self.target)
 
         self.target /= Hologram._norm(self.target)
 
@@ -1717,38 +1724,41 @@ class SpotHologram(_AbstractSpotHologram):
         """
 
         if "computational_spot" in stat_groups:
+            amp_ff = self.amp_ff if self.amp_ff is not None else backend.abs(self.farfield)
+
             if self.shape == self.slm_shape:
                 # Spot size is one pixel wide: no integration required.
                 stats["computational_spot"] = self._calculate_stats(
-                    self.amp_ff[self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]],
+                    amp_ff[self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]],
                     self.spot_amp,
+                    xp=self._xp,
                     efficiency_compensation=False,
-                    total=cp.sum(cp.square(self.amp_ff)),
+                    total=self._xp.sum(self._xp.square(amp_ff)),
                     raw="raw_stats" in self.flags and self.flags["raw_stats"],
                 )
             else:
                 # Spot size is wider than a pixel: integrate a window around each spot
-                if cp != np:
-                    pwr_ff = cp.square(self.amp_ff)
+                if self._xp != np:
+                    pwr_ff = self._xp.square(amp_ff)
                     pwr_feedback = analysis.take(
                         pwr_ff,
                         self.spot_knm,
                         self.spot_integration_width_knm,
                         centered=True,
                         integrate=True,
-                        xp=cp,
+                        xp=self._xp,
                     )
 
                     stats["computational_spot"] = self._calculate_stats(
-                        cp.sqrt(pwr_feedback),
+                        self._xp.sqrt(pwr_feedback),
                         self.spot_amp,
-                        xp=cp,
+                        xp=self._xp,
                         efficiency_compensation=False,
-                        total=cp.sum(pwr_ff),
+                        total=self._xp.sum(pwr_ff),
                         raw="raw_stats" in self.flags and self.flags["raw_stats"],
                     )
                 else:
-                    pwr_ff = np.square(self.amp_ff)
+                    pwr_ff = np.square(amp_ff)
                     pwr_feedback = analysis.take(
                         pwr_ff,
                         self.spot_knm,

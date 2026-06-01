@@ -679,6 +679,21 @@ def test_zernike_basis(normalized_grid, subtests):
         with pytest.raises(ValueError, match="derivative"):
             phase.zernike_sum(basis, None, weights, derivative=(1, 0))
 
+    with subtests.test("torch weights synthesize a differentiable sum"):
+        torch = pytest.importorskip("torch")
+        w_torch = torch.as_tensor(weights, dtype=torch.float64).requires_grad_(True)
+        from_torch = phase.zernike_sum(basis, None, w_torch)
+        # Backend-aware: returns a torch tensor matching the numpy synthesis.
+        assert isinstance(from_torch, torch.Tensor)
+        assert np.allclose(from_torch.detach().cpu().numpy(), from_basis, atol=1e-9)
+        # Gradient flows from the synthesized phase back to the weights.
+        from_torch.sum().backward()
+        assert w_torch.grad is not None
+        assert torch.isfinite(w_torch.grad).all()
+        # d(sum Z·w)/dw_k = sum(Z_k), i.e. the per-mode basis sum (matches numpy).
+        expected = basis.basis_flat.sum(axis=1)
+        assert np.allclose(w_torch.grad.cpu().numpy(), np.asarray(expected), atol=1e-6)
+
 
 def test_polynomial(simple_grid, subtests):
     """Test polynomial() monomial summation."""

@@ -206,13 +206,14 @@ class FeedbackHologram(Hologram):
         cp.abs(cp_img, out=cp_img)
 
         # Perform affine.
+        out_target = None if backend.is_torch(out) else out
         target = cp_affine_transform(
             input=cp_img,
             matrix=M,
             offset=b,
             output_shape=self.shape,
             order=order,
-            output=out,
+            output=out_target,
             mode="constant",
             cval=np.nan,
         )
@@ -231,6 +232,9 @@ class FeedbackHologram(Hologram):
                 "Check transformations."
             )
 
+        if backend.is_torch(out):
+            out[:] = backend.to_backend(target, out)[:]
+            return out
         return target
 
     # Measurement.
@@ -330,7 +334,7 @@ class FeedbackHologram(Hologram):
         self.ijcam_to_knmslm(new_target_ij, out=self.target, order=0)
 
         # Set the null region.
-        undefined = cp.isnan(self.target)
+        undefined = self._xp.isnan(self.target)
 
         if null_region_radius_frac is None:
             null_region_radius_frac = 1
@@ -338,19 +342,19 @@ class FeedbackHologram(Hologram):
         if null_region_radius_frac < 1:
             # Build up the null region pattern if we have not already done the transform above.
             if null_region is None:
-                null_region = cp.zeros(self.shape, dtype=bool)
+                null_region = self._xp.zeros(self.shape, dtype=bool)
 
             # Make a circle, outside of which the null_region is active.
-            xl = cp.linspace(-1, 1, null_region.shape[1])
-            yl = cp.linspace(-1, 1, null_region.shape[0])
-            (xg, yg) = cp.meshgrid(xl, yl)
-            mask = cp.square(xg) + cp.square(yg) > null_region_radius_frac**2
+            xl = self._xp.linspace(-1, 1, null_region.shape[1])
+            yl = self._xp.linspace(-1, 1, null_region.shape[0])
+            (xg, yg) = self._xp.meshgrid(xl, yl)
+            mask = self._xp.square(xg) + self._xp.square(yg) > null_region_radius_frac**2
             null_region[mask] = True
 
         if null_region_radius_frac >= 1:
             self.target[undefined] = 0
         else:
-            self.target[cp.logical_and(undefined, null_region)] = 0
+            self.target[self._xp.logical_and(undefined, null_region)] = 0
 
         if reset_weights:
             self.reset_weights()

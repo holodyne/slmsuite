@@ -34,7 +34,7 @@ class MultiplaneHologram(Hologram):
         in intensity between target patterns cannot be relied upon.
     """
 
-    def __init__(self, holograms, weights=None):
+    def __init__(self, holograms, weights=None, backend=None, device=None):
         """
         Initializes a 'meta' hologram consisting of several sub-holograms optimizing at
         the same time.
@@ -46,6 +46,12 @@ class MultiplaneHologram(Hologram):
         weights : array_like of float OR None
             List of ``N`` floats.
             If ``None``, defaults to even power.
+        backend : str OR None
+            Which array backend stores this hologram's arrays. If ``None``, inherits
+            from the first child hologram.
+        device : str OR torch.device OR None
+            The device for the stored tensors. If ``None``, inherits from the first
+            child hologram.
         """
         self.holograms = holograms
 
@@ -58,6 +64,18 @@ class MultiplaneHologram(Hologram):
                     f"Multiplane hologram must be provided child holograms, not {type(h)}"
                 )
 
+        # Inherit backend / device from first child if not specified.
+        if backend is None:
+            backend_xp = holograms[0]._xp
+            if backend_xp is torch:
+                backend = "torch"
+            elif backend_xp is cp:
+                backend = "cupy"
+            else:
+                backend = "numpy"
+        if device is None:
+            device = holograms[0]._device
+
         # Construct the parent hologram with empty goals but complete context.
         super().__init__(
             target=holograms[0].slm_shape,  # This hologram has a fake target.
@@ -65,6 +83,8 @@ class MultiplaneHologram(Hologram):
             phase=holograms[0].phase,
             slm_shape=holograms[0].slm_shape,
             dtype=holograms[0].dtype,
+            backend=backend,
+            device=device,
         )
         self.target = None
 
@@ -96,11 +116,15 @@ class MultiplaneHologram(Hologram):
 
     def _can_batch(self):
         """Whether the children can share a single batched FFT2 call."""
-        if cp is np:
-            return False
         if len(self.holograms) < 2:
             return False
         h0 = self.holograms[0]
+        xp = h0._xp
+        for h in self.holograms[1:]:
+            if h._xp is not xp:
+                return False
+        if xp is np:
+            return False
         for h in self.holograms[1:]:
             if tuple(h.shape) != tuple(h0.shape):
                 return False
@@ -125,20 +149,22 @@ class MultiplaneHologram(Hologram):
         shape = tuple(h0.shape)
         complex_dtype = h0.dtype_complex
         real_dtype = h0.dtype
+        xp = h0._xp
+        device = h0._device
 
-        self._batched_nearfield = cp.zeros((S,) + shape, dtype=complex_dtype)
-        self._batched_amp_ff = cp.zeros((S,) + shape, dtype=real_dtype)
-        self._batched_phase_ff = cp.zeros((S,) + shape, dtype=real_dtype)
+        self._batched_nearfield = backend.zeros((S,) + shape, xp, complex_dtype, device)
+        self._batched_amp_ff = backend.zeros((S,) + shape, xp, real_dtype, device)
+        self._batched_phase_ff = backend.zeros((S,) + shape, xp, real_dtype, device)
         # _batched_farfield gets reassigned by every cp.fft.fft2 call; init it
         # so children can be rebound before the first FFT (e.g. for tests).
-        self._batched_farfield = cp.zeros((S,) + shape, dtype=complex_dtype)
+        self._batched_farfield = backend.zeros((S,) + shape, xp, complex_dtype, device)
 
         # Kernel cache: stacked propagation_kernels and their phasor. Invalidated
         # by id() check on each child's propagation_kernel attribute.
         self._batched_kernel_ids = [None] * S
         self._batched_kernel_phasor = None  # (S, slm_h, slm_w) complex
 
-        # Cache the meta weights on GPU; refreshed if self.weights changes.
+        # Cache the meta weights on the active backend; refreshed if self.weights changes.
         self._batched_weights_cp = None
         self._batched_weights_id = None
 
@@ -158,25 +184,31 @@ class MultiplaneHologram(Hologram):
         complex_dtype = h0.dtype_complex
         real_dtype = h0.dtype
         S = len(self.holograms)
+        xp = h0._xp
+        device = h0._device
 
-        kernels = cp.zeros((S,) + slm_shape, dtype=real_dtype)
+        kernels = backend.zeros((S,) + slm_shape, xp, real_dtype, device)
         for i, h in enumerate(self.holograms):
             pk = h.propagation_kernel
             if pk is None:
                 pass  # leave zeros -> phasor is 1
             else:
                 # Broadcasting handles both scalars and (slm_h, slm_w) arrays.
-                kernels[i] = pk
+                kernels[i] = backend.asarray(pk, xp, real_dtype, device)
             self._batched_kernel_ids[i] = id(pk)
         # Cache exp(1j * kernel). Used in both _nearfield2farfield (forward)
         # and _farfield2nearfield (via cp.conj on the same tensor).
-        self._batched_kernel_phasor = cp.exp(1j * kernels.astype(complex_dtype))
+        kernels_complex = backend.asarray(kernels, xp, complex_dtype, device)
+        self._batched_kernel_phasor = xp.exp(1j * kernels_complex)
 
     def _refresh_batched_weights(self):
-        """Mirror self.weights (numpy) onto the GPU."""
+        """Mirror self.weights (numpy) onto the active backend."""
         if self._batched_weights_id != id(self.weights):
-            self._batched_weights_cp = cp.asarray(
-                self.weights, dtype=self.holograms[0].dtype_complex
+            h0 = self.holograms[0]
+            xp = h0._xp
+            device = h0._device
+            self._batched_weights_cp = backend.asarray(
+                self.weights, xp, h0.dtype_complex, device
             )
             self._batched_weights_id = id(self.weights)
 
@@ -393,7 +425,11 @@ class MultiplaneHologram(Hologram):
             self._farfield2nearfield_batched()
             return
 
-        self.nearfield.fill(0)
+        xp = self._xp
+        if xp is torch:
+            self.nearfield.zero_()
+        else:
+            self.nearfield.fill(0)
 
         for h, w in zip(self.holograms, self.weights):
             h._farfield2nearfield(extract=False)  # Avoid individually extracting phase.
@@ -406,7 +442,7 @@ class MultiplaneHologram(Hologram):
             else:
                 # Remove the propagation kernel if necessary.
                 self.nearfield += (
-                    w * h.nearfield[i0:i1, i2:i3] * cp.exp(-1j * h.propagation_kernel)
+                    w * h.nearfield[i0:i1, i2:i3] * xp.exp(-1j * h.propagation_kernel)
                 )
             h.iter = self.iter
 
@@ -419,29 +455,26 @@ class MultiplaneHologram(Hologram):
 
         h0 = self.holograms[0]
         (i0, i1, i2, i3) = toolbox.unpad(h0.shape, h0.slm_shape)
+        xp = h0._xp
 
         # Build the batched nearfield in place. base = amp * exp(1j * phase),
         # broadcast across the S child planes; multiplication by the cached
         # exp(1j * propagation_kernel) gives each plane's nearfield.
-        self._batched_nearfield.fill(0)
-        base = (self.amp * cp.exp(1j * self.phase)).astype(
-            self._batched_nearfield.dtype
-        )
+        if xp is torch:
+            self._batched_nearfield.zero_()
+        else:
+            self._batched_nearfield.fill(0)
+
+        base = self.amp * xp.exp(1j * self.phase)
+        base_complex = backend.asarray(base, xp, h0.dtype_complex, h0._device)
         self._batched_nearfield[:, i0:i1, i2:i3] = (
-            base[None, :, :] * self._batched_kernel_phasor
+            base_complex[None, :, :] * self._batched_kernel_phasor
         )
 
-        # One batched FFT2 over the trailing axes.
-        self._batched_farfield = cp.fft.fftshift(
-            cp.fft.fft2(
-                cp.fft.fftshift(self._batched_nearfield, axes=(-2, -1)),
-                axes=(-2, -1),
-                norm="ortho",
-            ),
-            axes=(-2, -1),
-        )
+        # One batched FFT2 over the trailing axes (shared centered-DFT convention).
+        self._batched_farfield = toolbox.farfield(self._batched_nearfield, axes=(-2, -1))
         # Update farfield amplitudes (in-place into the batched scratch tensor).
-        cp.abs(self._batched_farfield, out=self._batched_amp_ff)
+        self._batched_amp_ff = backend.abs(self._batched_farfield, out=self._batched_amp_ff)
 
         # Rebind child views so `_gs_farfield_routines`' in-place writes land
         # in the batched tensors. Re-done every iter because cp.fft.fft2
@@ -456,14 +489,7 @@ class MultiplaneHologram(Hologram):
         """Batched IFFT2 + weighted reduction back to the shared nearfield."""
         # One batched IFFT2; reads from self._batched_farfield, which the
         # children may have mutated in `_gs_farfield_routines`.
-        self._batched_nearfield = cp.fft.ifftshift(
-            cp.fft.ifft2(
-                cp.fft.ifftshift(self._batched_farfield, axes=(-2, -1)),
-                axes=(-2, -1),
-                norm="ortho",
-            ),
-            axes=(-2, -1),
-        )
+        self._batched_nearfield = toolbox.nearfield(self._batched_farfield, axes=(-2, -1))
         # Rebind child views (ifft2 returns a new allocation).
         for i, h in enumerate(self.holograms):
             h.nearfield = self._batched_nearfield[i]
@@ -473,6 +499,7 @@ class MultiplaneHologram(Hologram):
         h0 = self.holograms[0]
         (i0, i1, i2, i3) = toolbox.unpad(h0.shape, h0.slm_shape)
         self._refresh_batched_weights()
+        xp = h0._xp
 
         # cupy.einsum does not support out=, so use a tensordot-style reduction.
         # weighted = weights[:, None, None] * nf[:, slice] * conj(phasor) -> (S, slm_h, slm_w)
@@ -480,9 +507,12 @@ class MultiplaneHologram(Hologram):
         weighted = (
             self._batched_weights_cp[:, None, None]
             * self._batched_nearfield[:, i0:i1, i2:i3]
-            * cp.conj(self._batched_kernel_phasor)
+            * xp.conj(self._batched_kernel_phasor)
         )
-        cp.sum(weighted, axis=0, out=self.nearfield)
+        if xp is torch:
+            self.nearfield = xp.sum(weighted, dim=0)
+        else:
+            xp.sum(weighted, axis=0, out=self.nearfield)
 
         # Extract meta self.phase from self.nearfield.
         self._nearfield_extract()
@@ -493,6 +523,10 @@ class MultiplaneHologram(Hologram):
     def _gs_farfield_routines(self, mraf_variables):
         for h, mraf in zip(self.holograms, mraf_variables):
             h._gs_farfield_routines(mraf)
+        
+        h0 = self.holograms[0]
+        if is_torch(h0.farfield):
+            self._batched_farfield = torch.stack([h.farfield for h in self.holograms], dim=0)
 
     def _remove_vortices(self):
         for h in self.holograms:

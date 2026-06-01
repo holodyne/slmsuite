@@ -17,6 +17,7 @@ try:
 except ImportError:
     cp = np
 
+from slmsuite.misc import backend
 from slmsuite.holography.toolbox import format_2vectors, _process_grid
 from slmsuite.holography.toolbox.phase import zernike_sum, laguerre_gaussian, ZernikeBasis
 from slmsuite.misc.math import REAL_TYPES
@@ -148,7 +149,10 @@ def take(
     integration_y = np.add(region_y.ravel()[:, np.newaxis].T, vectors[:][1][:, np.newaxis])
 
     # Parse images and shape.
-    shape = xp.shape(images)
+    if hasattr(images, "shape"):
+        shape = images.shape
+    else:
+        shape = xp.shape(images)
 
     if shape == (2,):
         shape = (int(images[0]), int(images[1]))
@@ -184,7 +188,12 @@ def take(
 
         return canvas
     else:
-        images = xp.array(images, copy=(False if np.__version__[0] == '1' else None))
+        if hasattr(xp, "array"):
+            images = xp.array(images, copy=(False if np.__version__[0] == '1' else None))
+        else:
+            import torch as _t
+            if not isinstance(images, _t.Tensor):
+                images = _t.as_tensor(images)
 
         # Take the data, depending on the shape of the images.
         if len(shape) == 2:
@@ -1207,7 +1216,7 @@ def image_zernike_fit(
         basis = ZernikeBasis(grid, indices_ansi, aperture=aperture, use_mask=use_mask)
 
     # Work on the basis's array module (GPU when the basis is GPU-resident).
-    xp = _get_module(basis.basis_flat)
+    xp = backend.get_module(basis.basis_flat)
     phase_images = xp.asarray(phase_images)
 
     if gradient:
@@ -1257,13 +1266,6 @@ def image_zernike_fit(
     return vectors_zernike
 
 
-def _get_module(matrix):
-    if np == cp:
-        return np
-    else:
-        return cp.get_array_module(matrix)
-
-
 def image_vortices(phase_image):
     """
     Find the coordinates of phase vortices inside a phase image by computing the
@@ -1279,7 +1281,7 @@ def image_vortices(phase_image):
     winding_number
         Image with the integer winding number at each pixel.
     """
-    xp = _get_module(phase_image)
+    xp = backend.get_module(phase_image)
 
     # Discrete derivatives, with appropriate wrapping.
     dd = [
@@ -1314,7 +1316,7 @@ def image_vortices_coordinates(phase_image, mask=None):
     coordinates, weights
         The coordinates and winding number of each coordinate.
     """
-    xp = _get_module(phase_image)
+    xp = backend.get_module(phase_image)
 
     winding_number = image_vortices(phase_image)
 
@@ -1348,7 +1350,7 @@ def image_remove_vortices(phase_image, mask=None, return_vortices_negative=False
     phase_image
         The image or vortices, depending upon ``return_vortices_negative``
     """
-    xp = _get_module(phase_image)
+    xp = backend.get_module(phase_image)
 
     if mask is not None:
         mask_eroded = binary_erosion(mask, np.ones((5,5)))

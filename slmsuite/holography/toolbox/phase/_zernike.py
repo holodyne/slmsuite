@@ -16,6 +16,7 @@ from typing import Tuple, Union, Callable
 
 
 from slmsuite.misc.math import REAL_TYPES
+from slmsuite.misc import backend
 from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
 
 # Load CUDA code. This is used for cupy.RawKernels in this file and elsewhere.
@@ -495,13 +496,6 @@ def _zernike_indices_parse(indices=None, D=None, smaller_okay=False):
     return indices
 
 
-def _zernike_xp(array):
-    """Return the array module (``cupy`` or ``numpy``) backing ``array``."""
-    if cp is not np and isinstance(array, cp.ndarray):
-        return cp
-    return np
-
-
 class ZernikeBasis:
     r"""
     A precomputed, reusable basis of Zernike polynomial images.
@@ -552,7 +546,7 @@ class ZernikeBasis:
     def __init__(self, grid, indices, aperture=None, use_mask=True):
         indices = np.ravel(_zernike_indices_parse(indices))
         (x_grid, _) = _process_grid(grid)
-        xp = _zernike_xp(x_grid)
+        xp = backend.get_module(x_grid)
         D = len(indices)
 
         # One single-mode Zernike image per basis index, stacked as (D, h, w).
@@ -582,6 +576,8 @@ class ZernikeBasis:
         self._grad_gram_inv = None
         self._grad_idx_x = None
         self._grad_idx_y = None
+        # Per-(device, dtype) cache of basis_flat moved to the torch backend; see basis_flat_as.
+        self._torch_basis_flat = {}
 
     @property
     def gram(self):
@@ -709,13 +705,60 @@ class ZernikeBasis:
         sub._grad_gram_inv = None
         sub._grad_idx_x = None
         sub._grad_idx_y = None
+        sub._torch_basis_flat = {}
         return sub
+
+    def basis_flat_as(self, ref):
+        """
+        Return :attr:`basis_flat` on the backend / device / dtype of a reference array,
+        caching the torch conversion so repeated calls do not re-upload the basis.
+
+        :attr:`basis_flat` natively lives on this basis's own module (numpy/cupy). When a
+        differentiable :class:`torch.Tensor` ``ref`` is given (e.g. the ``weights`` of an
+        autograd inner loop), the full-resolution basis must be moved to torch -- an expensive
+        host/device upload. This accessor caches that result per ``(device, dtype)`` so any torch
+        caller (``zernike_sum``, the CRLB Jacobian, ...) hits a warm cache instead of re-uploading
+        every call. The basis images are immutable after construction, so the cache never goes
+        stale. Non-torch references fall through to a plain :func:`~slmsuite.misc.backend.to_backend`
+        (numpy/cupy stay in their own module; no caching needed).
+
+        Parameters
+        ----------
+        ref : numpy.ndarray OR cupy.ndarray OR torch.Tensor
+            Witness whose backend/device/dtype the returned basis is matched to.
+
+        Returns
+        -------
+        basis_flat matched to ``ref``'s backend.
+        """
+        if not backend.is_torch(ref):
+            return backend.to_backend(self.basis_flat, ref)
+        key = (str(ref.device), str(ref.dtype))
+        cached = self._torch_basis_flat.get(key)
+        if cached is None:
+            cached = backend.to_backend(self.basis_flat, ref)
+            self._torch_basis_flat[key] = cached
+        return cached
 
 
 def _zernike_sum_from_basis(basis, weights, out=None):
-    """Synthesize a weighted sum of polynomials from a precomputed :class:`ZernikeBasis`."""
-    xp = basis._xp
-    weights = xp.asarray(weights)
+    """Synthesize a weighted sum of polynomials from a precomputed :class:`ZernikeBasis`.
+
+    Backend-aware: the synthesis is a single matrix product, dispatched on ``weights``
+    (see :mod:`slmsuite.misc.backend`). When ``weights`` is a :class:`torch.Tensor`, the
+    cached basis images are coerced to its backend/device/dtype so the product stays on the
+    autograd graph -- letting callers differentiate a Zernike sum w.r.t. its weights without
+    a torch-specific code path here.
+    """
+    # Dispatch on the weights' backend. The cached basis lives on ``basis._xp``
+    # (numpy/cupy). For a torch ``weights`` we coerce the basis to its backend/device/dtype
+    # so the matrix product stays on the autograd graph; otherwise we preserve the original
+    # behavior of evaluating in the basis's own module.
+    if backend.is_torch(weights):
+        basis_flat = basis.basis_flat_as(weights)
+    else:
+        weights = basis._xp.asarray(weights)
+        basis_flat = basis.basis_flat
     D = len(basis)
 
     if weights.ndim == 0:
@@ -733,7 +776,7 @@ def _zernike_sum_from_basis(basis, weights, out=None):
     N = weights.shape[1]
 
     # (N, D) @ (D, h*w) -> (N, h*w).
-    result = weights.T @ basis.basis_flat
+    result = weights.T @ basis_flat
     if N == 1:
         result = result.reshape(basis.grid_shape)
     else:
@@ -883,7 +926,7 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     # Parse passed simple values.
     (x_grid, y_grid) = _process_grid(grid)
     (x_scale, y_scale) = zernike_aperture(grid, aperture)
-    xp = _zernike_xp(x_grid)
+    xp = backend.get_module(x_grid)
 
     # Parse weights.
     weights = np.squeeze(weights)

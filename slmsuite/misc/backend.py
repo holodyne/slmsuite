@@ -155,13 +155,51 @@ def to_numpy(array):
     return np.asarray(array)
 
 
+def _resolve_like(like_array):
+    """
+    Resolve the backend target for :func:`to_backend` from either a *witness array* or a
+    ``(module, device)`` *spec* (as returned by :func:`resolve_backend`).
+
+    Returns ``(xp, device, dtype)`` where ``dtype`` is the witness array's dtype, or ``None``
+    when a bare spec is given (signalling "keep the data's own dtype, just move backend/device").
+    """
+    if (
+        isinstance(like_array, tuple)
+        and len(like_array) == 2
+        and like_array[0] in (np, cp, torch)
+    ):
+        module, device = like_array
+        return module, device, None
+    xp = get_module(like_array)
+    if xp is torch:
+        return torch, like_array.device, like_array.dtype
+    return xp, None, like_array.dtype
+
+
 def to_backend(data, like_array):
     """
-    Converts data to match the backend, device, and dtype of the reference like_array.
+    Convert ``data`` to match the backend (numpy/cupy/torch), device, and dtype of a reference.
+
+    Parameters
+    ----------
+    data : array_like OR scalar OR None
+        The value to convert. Python/numpy scalars and ``None`` are returned unchanged
+        (no array allocation or device transfer).
+    like_array : numpy.ndarray OR cupy.ndarray OR torch.Tensor OR (module, device)
+        Either a *witness array* whose backend/device/dtype is matched, or a ``(module, device)``
+        *spec* as returned by :func:`resolve_backend`. With a spec, ``data`` keeps its own dtype
+        (mapped onto the target backend) and only the backend/device are changed -- so callers no
+        longer need to fabricate a dummy witness tensor just to name a backend.
+
+    See Also
+    --------
+    asarray : Convert with an *explicit* ``(xp, dtype, device)``, e.g. ``asarray(x, torch, dtype, device)``.
+    zeros : Allocate a fresh zero array on a named backend.
+    resolve_backend : Produce the ``(module, device)`` spec accepted here as ``like_array``.
     """
     if data is None:
         return None
-    
+
     # Fast path: If data is already a standard Python scalar or a numpy scalar
     # (which we convert to a Python scalar via .item()), return it directly.
     # This avoids expensive 0D array/tensor creation and device transfers.
@@ -169,25 +207,46 @@ def to_backend(data, like_array):
         return data
     if isinstance(data, (np.number, np.bool_)):
         return data.item()
-    
-    xp = get_module(like_array)
-    if xp is torch:
+
+    # Highly optimized fast path for standard array inputs to bypass _resolve_like call/tuple overhead
+    if isinstance(like_array, torch.Tensor):
         if isinstance(data, torch.Tensor):
-            # Fast path: already on the target device/dtype -> return as-is. ``.to()`` is not free
-            # and the binary op factories call this on both operands every iteration of a GS/WGS
-            # loop, where one operand is invariably already the reference tensor.
             if data.device == like_array.device and data.dtype == like_array.dtype:
                 return data
             return data.to(device=like_array.device, dtype=like_array.dtype)
         t = _get_torch_tensor_from_cupy(data)
         return t.to(device=like_array.device, dtype=like_array.dtype)
+    elif isinstance(like_array, np.ndarray):
+        if is_torch(data):
+            data = to_numpy(data)
+        return np.asarray(data, dtype=like_array.dtype)
+    elif cp is not np and isinstance(like_array, cp.ndarray):
+        if is_torch(data):
+            data = to_numpy(data)
+        return cp.asarray(data, dtype=like_array.dtype)
+
+    xp, device, dtype = _resolve_like(like_array)
+    if xp is torch:
+        if isinstance(data, torch.Tensor):
+            # Fast path: already on the target device/dtype -> return as-is. ``.to()`` is not free
+            # and the binary op factories call this on both operands every iteration of a GS/WGS
+            # loop, where one operand is invariably already the reference tensor.
+            tgt_dtype = data.dtype if dtype is None else dtype
+            if data.device == device and data.dtype == tgt_dtype:
+                return data
+            return data.to(device=device, dtype=tgt_dtype)
+        t = _get_torch_tensor_from_cupy(data)
+        if dtype is None:
+            return t.to(device=device)
+        return t.to(device=device, dtype=dtype)
     else:
         if is_torch(data):
             data = to_numpy(data)
+        # ``dtype=None`` preserves the data's own dtype on both numpy and cupy.
         if xp is cp:
-            return cp.asarray(data, dtype=like_array.dtype)
+            return cp.asarray(data, dtype=dtype)
         else:
-            return np.asarray(data, dtype=like_array.dtype)
+            return np.asarray(data, dtype=dtype)
 
 
 def resolve_backend(name=None, device=None):
@@ -228,7 +287,14 @@ def resolve_backend(name=None, device=None):
 
 
 def zeros(shape, xp, dtype, device=None):
-    """Backend-aware zero array of ``dtype`` (a numpy dtype) in namespace ``xp``."""
+    """
+    Backend-aware zero array of ``dtype`` (a numpy dtype) in namespace ``xp``.
+
+    See Also
+    --------
+    asarray : Convert existing data onto a named backend.
+    to_backend : Match an existing array's (or spec's) backend/device/dtype.
+    """
     if xp is torch:
         return torch.zeros(tuple(shape), dtype=_torch_dtype(dtype), device=device)
     return xp.zeros(shape, dtype=dtype)
@@ -238,6 +304,12 @@ def asarray(data, xp, dtype, device=None):
     """
     Create/convert ``data`` as an array in namespace ``xp`` with numpy ``dtype`` (on ``device``
     for torch). Bridges numpy<->cupy<->torch via :func:`to_numpy`/dlpack as needed.
+
+    See Also
+    --------
+    to_backend : Match a witness array (or ``(module, device)`` spec) without naming dtype explicitly.
+    zeros : Allocate a fresh zero array on a named backend.
+    resolve_backend : Resolve a backend selector string to the ``(xp, device)`` used here.
     """
     if xp is torch:
         td = _torch_dtype(dtype)
@@ -280,6 +352,8 @@ def _get_torch_tensor_from_cupy(array):
     if cp is np or not isinstance(array, cp.ndarray):
         return torch.from_numpy(np.asarray(array))
     else:
+        if not torch.cuda.is_available():
+            return torch.from_numpy(array.get())
         if not array.flags.c_contiguous:
             array = cp.ascontiguousarray(array)
         # Use standard modern from_dlpack directly to avoid deprecation warnings
@@ -306,6 +380,18 @@ def _torch_dtype(dtype):
 def _coerce_pair(a, b):
     """Coerce ``(a, b)`` onto the torch tensor's device/dtype when either operand is torch."""
     ref = a if is_torch(a) else b
+    if is_complex(a) or is_complex(b):
+        if is_torch(ref):
+            if ref.dtype == torch.float32:
+                ref = ref.to(dtype=torch.complex64)
+            elif ref.dtype == torch.float64:
+                ref = ref.to(dtype=torch.complex128)
+        else:
+            xp = get_module(ref)
+            if ref.dtype == xp.float32:
+                ref = ref.astype(xp.complex64)
+            elif ref.dtype == xp.float64:
+                ref = ref.astype(xp.complex128)
     return to_backend(a, ref), to_backend(b, ref)
 
 
