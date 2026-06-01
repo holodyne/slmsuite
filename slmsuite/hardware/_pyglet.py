@@ -11,11 +11,13 @@ window's message queue is bound to the thread that created it). This prevents
 windows from freezing between :meth:`~slmsuite.hardware.slms.slm.SLM.set_phase`
 calls.
 """
-import os
-import ctypes
-import threading
-import queue
+
 import atexit
+import ctypes
+import os
+import queue
+import threading
+
 import numpy as np
 from packaging.version import Version
 
@@ -25,7 +27,7 @@ try:
     from pyglet.window import Window as __Window
 
     # Helper to get display/canvas depending on pyglet version
-    PYGLET_VERSION = Version(getattr(pyglet, '__version__', '0'))
+    PYGLET_VERSION = Version(getattr(pyglet, "__version__", "0"))
 
     def get_pyglet_display():
         """
@@ -36,17 +38,19 @@ try:
         pyglet.display.Display or pyglet.canvas.Display
             The platform display object.
         """
-        if PYGLET_VERSION >= Version('2.1.0'):
+        if Version("2.1.0") <= PYGLET_VERSION:
             return pyglet.display.get_display()
         else:
             return pyglet.canvas.get_display()
-except:
+except Exception:
     pyglet = None
     gl = None
     __Window = object
     PYGLET_VERSION = None
+
     def get_pyglet_display():
         raise ImportError("pyglet not installed.")
+
 
 # Try to import CuPy for optimized GPU transfers
 try:
@@ -105,13 +109,8 @@ class _Window(__Window):
             display = get_pyglet_display()
             screen = display.get_default_screen()
 
-        if shape is None:   # Fullscreen
-            super().__init__(
-                screen=screen,
-                fullscreen=True,
-                vsync=True,
-                caption=caption
-            )
+        if shape is None:  # Fullscreen
+            super().__init__(screen=screen, fullscreen=True, vsync=True, caption=caption)
             self.set_mouse_visible(False)
             self.flip()
         else:
@@ -123,7 +122,7 @@ class _Window(__Window):
                 fullscreen=False,
                 vsync=True,
                 caption=caption,
-                style=pyglet.window.Window.WINDOW_STYLE_DEFAULT
+                style=pyglet.window.Window.WINDOW_STYLE_DEFAULT,
             )
             self.set_visible(False)
             self.flip()
@@ -133,12 +132,10 @@ class _Window(__Window):
         try:
             # Icons. Currently hardcoded. Feel free to implement custom icons.
             path, _ = os.path.split(os.path.realpath(__file__))
-            path = os.path.join(
-                path, '..', '..', 'docs', 'source', 'static', 'slmsuite-notext-'
-            )
-            img16x16 =      pyglet.image.load(path + '16x16.png')
-            img32x32 =      pyglet.image.load(path + '32x32.png')
-            img512x512 =    pyglet.image.load(path + '512x512.png')
+            path = os.path.join(path, "..", "..", "docs", "source", "static", "slmsuite-notext-")
+            img16x16 = pyglet.image.load(path + "16x16.png")
+            img32x32 = pyglet.image.load(path + "32x32.png")
+            img512x512 = pyglet.image.load(path + "512x512.png")
             self.set_icon(img16x16, img32x32, img512x512)
         except Exception as e:
             print(e)
@@ -205,17 +202,15 @@ class _Window(__Window):
 
         if sys.platform == "win32":
             import ctypes
-            from pyglet.libs.win32 import _user32
-            from pyglet.libs.win32 import constants
+
+            from pyglet.libs.win32 import _user32, constants
             from pyglet.libs.win32.types import MSG
 
             self._allow_dispatch_event = True
             self.dispatch_pending_events()
 
             msg = MSG()
-            while _user32.PeekMessageW(
-                ctypes.byref(msg), 0, 0, 0, constants.PM_REMOVE
-            ):
+            while _user32.PeekMessageW(ctypes.byref(msg), 0, 0, 0, constants.PM_REMOVE):
                 _user32.TranslateMessage(ctypes.byref(msg))
                 _user32.DispatchMessageW(ctypes.byref(msg))
             self._allow_dispatch_event = False
@@ -237,11 +232,14 @@ class _Window(__Window):
         if sys.platform == "win32":
             try:
                 from pyglet.libs.win32 import _user32, constants
+
+                # fmt: off
                 _user32.SetWindowPos(
                     self._hwnd, constants.HWND_TOPMOST,
                     0, 0, 0, 0,
                     constants.SWP_NOMOVE | constants.SWP_NOSIZE
                 )
+                # fmt: on
             except (ImportError, AttributeError):
                 pass
         elif sys.platform == "linux":
@@ -288,12 +286,12 @@ class _Window(__Window):
         """
         shape = self.shape
 
-        if gl.base.gl_info.have_version(3,0):       # Pyglet >= 2.0.0
+        if gl.base.gl_info.have_version(3, 0):  # Pyglet >= 2.0.0
             # Channels: R+G+B+A=4
             B = 4
 
             # Setup buffers (texbuffer is power of 2 padded to init the memory in OpenGL)
-            self.buffer = np.zeros(shape + (B,), dtype=np.uint8)
+            self.buffer = np.zeros((*shape, B), dtype=np.uint8)
             self.buffer[:, :, 3] = 255  # Opaque alpha
             N = int(shape[0] * shape[1] * B)
             self.cbuffer = (gl.GLubyte * N).from_buffer(self.buffer)
@@ -307,12 +305,14 @@ class _Window(__Window):
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
 
             # Malloc the OpenGL memory
+            # fmt: off
             gl.glTexImage2D(
                 gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8,
                 shape[1], shape[0],
                 0, gl.GL_BGRA, gl.GL_UNSIGNED_BYTE,
                 self.cbuffer
             )
+            # fmt: on
 
             # Use the default pyglet shader; this is required in 2.0+.
             self.shader = pyglet.graphics.get_default_blit_shader()
@@ -320,6 +320,7 @@ class _Window(__Window):
 
             # Also allocate the quadrangle using pyglet 2.0+ formalism.
             self.batch = pyglet.graphics.Batch()
+            # fmt: off
             self.vertex_list = self.shader.vertex_list(
                 4,
                 gl.GL_TRIANGLE_STRIP,
@@ -344,31 +345,30 @@ class _Window(__Window):
                     ]
                 )
             )
+            # fmt: on
 
             # Cleanup.
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
             gl.glFlush()
-        elif gl.base.gl_info.have_version(2,0):     # Pyglet < 2.0.0
+        elif gl.base.gl_info.have_version(2, 0):  # Pyglet < 2.0.0
             # Set the viewpoint.
             proj = pyglet.window.Projection2D()
             proj.set(shape[1], shape[0], shape[1], shape[0])
 
             # Setup shapes.
-            texture_shape = tuple(
-                np.power(2, np.ceil(np.log2(shape))).astype(np.int64)
-            )
+            texture_shape = tuple(np.power(2, np.ceil(np.log2(shape))).astype(np.int64))
             self.tex_shape_ratio = (
-                float(shape[0])/float(texture_shape[0]),
-                float(shape[1])/float(texture_shape[1])
+                float(shape[0]) / float(texture_shape[0]),
+                float(shape[1]) / float(texture_shape[1]),
             )
             B = 4
 
             # Setup buffers (texbuffer is power of 2 padded to init the memory in OpenGL).
-            self.buffer = np.zeros(shape + (B,), dtype=np.uint8)
+            self.buffer = np.zeros((*shape, B), dtype=np.uint8)
             N = int(shape[0] * shape[1] * B)
             self.cbuffer = (gl.GLubyte * N).from_buffer(self.buffer)
 
-            texbuffer = np.zeros(texture_shape + (B,), dtype=np.uint8)
+            texbuffer = np.zeros((*texture_shape, B), dtype=np.uint8)
             Nt = int(texture_shape[0] * texture_shape[1] * B)
             texcbuffer = (gl.GLubyte * Nt).from_buffer(texbuffer)
 
@@ -383,6 +383,7 @@ class _Window(__Window):
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
 
             # Malloc the OpenGL memory.
+            # fmt: off
             gl.glTexImage2D(
                 gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8,
                 texture_shape[1], texture_shape[0],
@@ -397,6 +398,7 @@ class _Window(__Window):
                 gl.GL_BGRA, gl.GL_UNSIGNED_BYTE,
                 self.cbuffer
             )
+            # fmt: on
 
             # Cleanup.
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
@@ -426,22 +428,24 @@ class _Window(__Window):
 
         shape = self.shape
 
-        if gl.base.gl_info.have_version(3,0):       # Pyglet >= 2.0.0
+        if gl.base.gl_info.have_version(3, 0):  # Pyglet >= 2.0.0
             self.shader.use()
 
             # Bind texture.
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
+            # fmt: off
             gl.glTexSubImage2D(
                 gl.GL_TEXTURE_2D, 0, 0, 0,
                 shape[1], shape[0],
                 gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
                 self.cbuffer
             )
+            # fmt: on
 
             # Draw the quad.
             self.vertex_list.draw(gl.GL_TRIANGLE_STRIP)
-        elif gl.base.gl_info.have_version(2,0):     # Pyglet < 2.0.0
+        elif gl.base.gl_info.have_version(2, 0):  # Pyglet < 2.0.0
             # Setup texture variables.
             x1 = 0
             y1 = 0
@@ -453,6 +457,7 @@ class _Window(__Window):
             xb = self.tex_shape_ratio[1]
             yb = self.tex_shape_ratio[0]
 
+            # fmt: off
             array = (gl.GLfloat * 32)(
                 xa, ya, 0., 1.,         # tex coord,
                 x1, y1, 0., 1.,         # real coord, ...
@@ -463,16 +468,19 @@ class _Window(__Window):
                 xa, yb, 0., 1.,
                 x1, y2, 0., 1.
             )
+            # fmt: on
 
             # Update the texture with the cbuffer.
             gl.glEnable(gl.GL_TEXTURE_2D)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
+            # fmt: off
             gl.glTexSubImage2D(
                 gl.GL_TEXTURE_2D, 0, 0, 0,
                 shape[1], shape[0],
                 gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
                 self.cbuffer
             )
+            # fmt: on
 
             # Blit the texture.
             gl.glPushClientAttrib(gl.GL_CLIENT_VERTEX_ARRAY_BIT)
@@ -510,28 +518,22 @@ class _Window(__Window):
         windows = display.get_windows()
 
         def parse_screen(screen):
-            return (
-                "x={}, y={}, width={}, height={}"
-                .format(screen.x, screen.y, screen.width, screen.height)
-            )
+            return f"x={screen.x}, y={screen.y}, width={screen.width}, height={screen.height}"
+
         def parse_screen_int(screen):
             return (screen.x, screen.y, screen.width, screen.height)
+
         def parse_window(window):
             x, y = window.get_location()
-            return (
-                "x={}, y={}, width={}, height={}"
-                .format(x, y, window.width, window.height)
-            )
+            return f"x={x}, y={y}, width={window.width}, height={window.height}"
 
         default_str = parse_screen(default)
 
-        window_strs = []
-        for window in windows:
-            window_strs.append(parse_window(window))
+        window_strs = [parse_window(window) for window in windows]
 
         if verbose:
-            print('Display Positions:')
-            print('#,  Position')
+            print("Display Positions:")
+            print("#,  Position")
 
         screen_list = []
 
@@ -545,20 +547,15 @@ class _Window(__Window):
 
             if screen_str == default_str:
                 main_bool = True
-                screen_str += ' (main)'
+                screen_str += " (main)"
             if screen_str in window_strs:
                 window_bool = True
-                screen_str += ' (has ScreenMirrored)'
+                screen_str += " (has ScreenMirrored)"
 
             if verbose:
-                print('{},  {}'.format(x, screen_str))
+                print(f"{x},  {screen_str}")
 
-            screen_list.append((
-                x,
-                parse_screen_int(screen),
-                main_bool,
-                window_bool
-            ))
+            screen_list.append((x, parse_screen_int(screen), main_bool, window_bool))
 
         return screen_list
 
@@ -637,16 +634,12 @@ class _WindowThread:
         """Start the background thread and wait for window creation."""
         self._running = True
         self._thread = threading.Thread(
-            target=self._loop,
-            daemon=True,
-            name="slmsuite-pyglet-{}".format(self._init_args[2])
+            target=self._loop, daemon=True, name=f"slmsuite-pyglet-{self._init_args[2]}"
         )
         self._thread.start()
 
         if not self._ready.wait(timeout=10.0):
-            raise RuntimeError(
-                "Window thread failed to start within 10s: {}".format(self._error)
-            )
+            raise RuntimeError(f"Window thread failed to start within 10s: {self._error}")
         if self._error is not None:
             raise self._error
 
@@ -686,6 +679,7 @@ class _WindowThread:
             _saved_have_context = None
             try:
                 from pyglet.gl import gl_info as _gli
+
                 _saved_have_context = _gli._gl_info._have_context
                 _gli._gl_info._have_context = False
             except AttributeError:
@@ -722,13 +716,13 @@ class _WindowThread:
                     func, args, kwargs, future = cmd
                     try:
                         result = func(*args, **kwargs)
-                        future['result'] = result
-                        future['error'] = None
+                        future["result"] = result
+                        future["error"] = None
                     except Exception as e:
-                        future['result'] = None
-                        future['error'] = e
+                        future["result"] = None
+                        future["error"] = e
                     finally:
-                        future['event'].set()
+                        future["event"].set()
                 except queue.Empty:
                     break
 
@@ -789,7 +783,7 @@ class _WindowThread:
         if not self._running:
             raise RuntimeError("Window thread is not running.")
 
-        future = {'event': threading.Event(), 'result': None, 'error': None}
+        future = {"event": threading.Event(), "result": None, "error": None}
         self._command_queue.put((func, args, kwargs, future))
         self._command_event.set()
         return future
@@ -815,10 +809,10 @@ class _WindowThread:
             Re-raises any exception that occurred during execution on
             the window thread.
         """
-        future['event'].wait()
-        if future['error'] is not None:
-            raise future['error']
-        return future['result']
+        future["event"].wait()
+        if future["error"] is not None:
+            raise future["error"]
+        return future["result"]
 
     @property
     def window(self):
@@ -854,6 +848,7 @@ class _WindowManager:
     _threads : list of _WindowThread
         All active window threads managed by this instance.
     """
+
     _instance = None
     _lock = threading.Lock()
 

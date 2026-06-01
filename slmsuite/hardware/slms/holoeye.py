@@ -1,4 +1,4 @@
-"""
+r"""
 Hardware control for Holoeye SLMs.
 Created for SLM Display SDK (Python) v4.0.0.
 Tested with Holoeye SLM ERIS-NIR-153.
@@ -9,31 +9,35 @@ Check that the SLM Display SDK is in the default folder
 ``C:\\Program Files\\HOLOEYE Photonics\\SLM Display SDK`` (Python) v4.0.0
 or otherwise add the installation folder to your python path.
 """
-import warnings
-from .slm import SLM
 
 # Set the path for the SLM Display SDK
 import os
 import sys
+import warnings
+
+from .slm import SLM
+
 try:
     env_path = os.getenv("HEDS_4_0_PYTHON")
     if env_path is None or not os.path.isdir(env_path):
         env_path = os.path.abspath("../..")
-    importpath_api =  os.path.join(env_path, "api", "python")
-    importpath_HEDS =  os.path.join(env_path, "examples")
+    importpath_api = os.path.join(env_path, "api", "python")
+    importpath_HEDS = os.path.join(env_path, "examples")
     sys.path.append(importpath_api)
     sys.path.append(importpath_HEDS)
-except:
+except Exception:
     pass
 
 # Load Holoeye's SDK module.
 try:
     import HEDS
+
     # from hedslib.heds_types import *
     from hedslib import heds_types
 except ImportError:
     HEDS = None
     warnings.warn("Holoeye SDK HEDS not installed. Install to use Holoeye SLMs.")
+
 
 class Holoeye(SLM):
     """
@@ -47,13 +51,7 @@ class Holoeye(SLM):
         Preselect string for the SLM. Used to identify the SLM.
     """
 
-    def __init__(
-        self,
-        preselect=None,
-        wav_um=1,
-        verbose=True,
-        **kwargs
-    ):
+    def __init__(self, preselect=None, wav_um=1, verbose=True, **kwargs):
         r"""
         Initializes an instance of a Holoeye SLM.
 
@@ -85,15 +83,17 @@ class Holoeye(SLM):
             raise ImportError("SDK HEDS not installed. Install to use Holoeye SLMs.")
 
         # Initialize the SDK and check that version 4.0 of the SDK is being used.
-        error = HEDS.SDK.Init(4,0)
+        error = HEDS.SDK.Init(4, 0)
         self._handle_error(error)
 
         # Connect and open the SLM
-        if verbose: print("Opening SLM ...", end="")
+        if verbose:
+            print("Opening SLM ...", end="")
         self.preselect = preselect
         self.slm_lib = HEDS.SLM.Init(preselect=self.preselect)
         self._handle_error(self.slm_lib.errorCode())
-        if verbose: print("success")
+        if verbose:
+            print("success")
 
         # Set the SLM's operating wavelength (wav_um) in nm.
         error = self.slm_lib.setWavelength(wav_um * 1000)
@@ -105,13 +105,7 @@ class Holoeye(SLM):
         height = self.slm_lib.height_px()
 
         # Instantiate the superclass
-        super().__init__(
-            (width, height),
-            bitdepth=8,
-            wav_um=wav_um,
-            pitch_um=pitch_um,
-            **kwargs
-        )
+        super().__init__((width, height), bitdepth=8, wav_um=wav_um, pitch_um=pitch_um, **kwargs)
 
         # Zero the display using the superclass `set_phase()` function.
         self.set_phase(None)
@@ -149,7 +143,9 @@ class Holoeye(SLM):
         ------
         NotImplementedError
         """
-        raise NotImplementedError("This functionality is not supported by Holoeye. Use the EDID device detection GUI instead.")
+        raise NotImplementedError(
+            "This functionality is not supported by Holoeye. Use the EDID device detection GUI instead."
+        )
 
     def close(self):
         """
@@ -186,8 +182,7 @@ class Holoeye(SLM):
         """
         # Enable wavefront compensation visualization in SLM preview window and stay with SLM preview scale "Fit"
         error = self.slm_lib.preview().setSettings(
-            flags=heds_types.HEDSSLMPF_ShowWavefrontCompensation,
-            zoom=0.0
+            flags=heds_types.HEDSSLMPF_ShowWavefrontCompensation, zoom=0.0
         )
         self._handle_error(error)
 

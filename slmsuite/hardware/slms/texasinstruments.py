@@ -17,7 +17,7 @@ and :mod:`numpy` (CPU) for maximum performance and compatibility.
     plm = PLM("p47", display_number=1)
 
     # Set phase pattern
-    phase = np.random.rand(540, 960) * 2 * np.pi
+    phase = np.random.default_rng().random((540, 960)) * 2 * np.pi
     plm.write(phase)
 
 The USB configuration is accomplished by :class:`DLPC900`,
@@ -27,12 +27,14 @@ through TI's DLPC900 GUI software. For further information, refer to the
 `DLPC900 Programmer's Guide <https://www.ti.com/lit/ug/dlpu018j/dlpu018j.pdf>`_.
 """
 
-import yaml
+from enum import IntEnum
 import os
 import time
 import warnings
-from enum import IntEnum
+
 import numpy as np
+import yaml
+
 from slmsuite.hardware._pyglet import _WindowThread
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
 
@@ -41,33 +43,36 @@ try:
 except ImportError:
     cp = np
     warnings.warn(
-        "cupy is not installed; using numpy. "
-        "Install cupy for GPU-accelerated PLM control.",
+        "cupy is not installed; using numpy. Install cupy for GPU-accelerated PLM control.",
     )
 
 # HID availability (for DLPC900 USB control)
 try:
     import hid as _hid
+
     HID_AVAILABLE = True
 except ImportError:
     _hid = None
     HID_AVAILABLE = False
 
 # PLM Constants
-LUT_SIZE = 1 << 16 # Size of quantization LUT (64 KB for 2^16 entries)
+LUT_SIZE = 1 << 16  # Size of quantization LUT (64 KB for 2^16 entries)
 MODEL_DB_PATH = os.path.join(os.path.dirname(__file__), "texas_instruments.yaml")
 DLPC900_VENDOR_ID = 0x0451
 DLPC900_PRODUCT_ID = 0xC900
 DLPC900_EXPOSURE_US = 694
 
+
 class DisplayMode(IntEnum):
     """
     DLPC900 display modes.
     """
-    VIDEO         = 0
-    PATTERN       = 1
+
+    VIDEO = 0
+    PATTERN = 1
     VIDEO_PATTERN = 2
-    OTF           = 3
+    OTF = 3
+
 
 class DLPC900Command(IntEnum):
     """
@@ -77,18 +82,19 @@ class DLPC900Command(IntEnum):
     the `DLPC900 Programmer's Guide (DLPU018J)
     <https://www.ti.com/lit/ug/dlpu018j/dlpu018j.pdf>`_.
     """
-                              # Programmer Guide Sections
-    POWER_MODE     = 0x0200   # 2.2.1 — Standby / wakeup / reset
-    VERSION        = 0x0206   # 2.1.5 — Firmware version info
-    HW_STATUS      = 0x1A0A   # 2.1.1 — Hardware status register
-    MAIN_STATUS    = 0x1A0C   # 2.1.3 — Main status register
-    INPUT_SOURCE   = 0x1A00   # 2.3.1 — Input source selection
-    IT6535_POWER   = 0x1A01   # 2.3.2 — IT6535 receiver power mode
-    PORT_CLOCK     = 0x1A03   # 2.3.3 — Port and clock configuration
-    DISPLAY_MODE   = 0x1A1B   # 2.4.1 — Display mode selection
-    PAT_STARTSTOP  = 0x1A24   # 2.4.4.3.1 — Pattern start / stop / pause
-    PAT_LUT_CONFIG = 0x1A31   # 2.4.4.3.3 — Pattern LUT configuration
-    PAT_LUT_DEFINE = 0x1A34   # 2.4.4.3.5 — Pattern LUT entry definition
+
+    # Programmer Guide Sections
+    POWER_MODE = 0x0200  # 2.2.1 — Standby / wakeup / reset
+    VERSION = 0x0206  # 2.1.5 — Firmware version info
+    HW_STATUS = 0x1A0A  # 2.1.1 — Hardware status register
+    MAIN_STATUS = 0x1A0C  # 2.1.3 — Main status register
+    INPUT_SOURCE = 0x1A00  # 2.3.1 — Input source selection
+    IT6535_POWER = 0x1A01  # 2.3.2 — IT6535 receiver power mode
+    PORT_CLOCK = 0x1A03  # 2.3.3 — Port and clock configuration
+    DISPLAY_MODE = 0x1A1B  # 2.4.1 — Display mode selection
+    PAT_STARTSTOP = 0x1A24  # 2.4.4.3.1 — Pattern start / stop / pause
+    PAT_LUT_CONFIG = 0x1A31  # 2.4.4.3.3 — Pattern LUT configuration
+    PAT_LUT_DEFINE = 0x1A34  # 2.4.4.3.5 — Pattern LUT entry definition
 
 
 class PLM(ScreenMirrored):
@@ -127,7 +133,7 @@ class PLM(ScreenMirrored):
         usb_vendor_id=None,
         usb_product_id=None,
         gpu=None,
-        **kwargs
+        **kwargs,
     ):
         """
         Initialize the PLM interface.
@@ -198,8 +204,7 @@ class PLM(ScreenMirrored):
 
         # USB pre-config: set up PLM as display
         if configure_usb:
-            self.dlpc900 = DLPC900(vendor_id=usb_vendor_id,
-                                   product_id=usb_product_id)
+            self.dlpc900 = DLPC900(vendor_id=usb_vendor_id, product_id=usb_product_id)
             self._usb_pre_configure(video_input, pixel_mode, display_number, verbose)
 
         # Compute bitdepth from number of displacement ratios
@@ -215,12 +220,15 @@ class PLM(ScreenMirrored):
             bitdepth=bitdepth,
             pitch_um=pitch_um,
             name=kwargs.pop("name", model_name),
-            **kwargs
+            **kwargs,
         )
 
         # Calculate display shape after electrode mapping
         elec_shape = self._electrode_layout_raw.shape
-        self.display_shape = (self.model_shape[0] * elec_shape[0], self.model_shape[1] * elec_shape[1])
+        self.display_shape = (
+            self.model_shape[0] * elec_shape[0],
+            self.model_shape[1] * elec_shape[1],
+        )
 
         # Update window shape and recreate buffers for electrode-mapped output.
         # Must run on the window thread to satisfy OpenGL context thread affinity.
@@ -267,15 +275,12 @@ class PLM(ScreenMirrored):
         ValueError
             If model not found in database
         """
-        with open(MODEL_DB_PATH, 'r') as f:
+        with open(MODEL_DB_PATH) as f:
             model_db = yaml.safe_load(f)
 
         if model_name not in model_db:
             available = list(model_db.keys())
-            raise ValueError(
-                f"Model '{model_name}' not found. "
-                f"Available models: {available}"
-            )
+            raise ValueError(f"Model '{model_name}' not found. Available models: {available}")
 
         return model_db[model_name]
 
@@ -337,7 +342,8 @@ class PLM(ScreenMirrored):
         # Wait for external source lock
         DLPC900._poll_until(
             lambda: dlpc.get_main_status()["source_locked"],
-            error_msg=("DLPC900: Video source failed to lock. "))
+            error_msg=("DLPC900: Video source failed to lock. "),
+        )
 
         if verbose:
             print("DLPC900 source locked, switching to video-pattern mode...")
@@ -359,7 +365,7 @@ class PLM(ScreenMirrored):
         dlpc.define_pattern(
             index=0,
             bitdepth=1,
-            color=7, #white
+            color=7,  # white
             clear_after_exposure=False,
             wait_for_trigger=False,
             dark_time_us=0,
@@ -370,7 +376,7 @@ class PLM(ScreenMirrored):
 
         # Configure LUT: 1 entry, repeat indefinitely
         dlpc.configure_pattern_lut(num_entries=1, num_repeats=0)
-        time.sleep(1) # Wait for small unresponsive time window
+        time.sleep(1)  # Wait for small unresponsive time window
 
         # Start the pattern sequence and wait for confirmation
         dlpc.start_pattern()
@@ -407,7 +413,6 @@ class PLM(ScreenMirrored):
         with a single array index at runtime. The LUT has 2^16 entries (64 KB),
         built once from the model's non-uniform displacement ratios.
         """
-
         displacement_ratios = np.array(self.model_config["displacement_ratios"])
 
         # Scale displacement ratios to (bitresolution - 1) / bitresolution
@@ -423,7 +428,7 @@ class PLM(ScreenMirrored):
         # Build LUT: map each of the uniformly-spaced phase values to a state
         self._phase_to_lut = np.float64(LUT_SIZE / (2 * np.pi))
         grid = np.arange(LUT_SIZE, dtype=np.float64) * (2 * np.pi / LUT_SIZE)
-        lut = np.searchsorted(phase_buckets, grid, side='right')
+        lut = np.searchsorted(phase_buckets, grid, side="right")
         lut = (lut & (self.bitresolution - 1)).astype(np.uint8)
         self._quantize_lut = self.xp.asarray(lut)
 
@@ -481,13 +486,11 @@ class PLM(ScreenMirrored):
         # memory[..., None, None] adds 2 dims: (..., rows, cols, 1, 1)
         # electrode_layout has shape (elec_rows, elec_cols)
         # Result has shape (..., rows, cols, elec_rows, elec_cols)
-        out = xp.right_shift(
-            memory[..., None, None],
-            self.electrode_layout) & 1
+        out = xp.right_shift(memory[..., None, None], self.electrode_layout) & 1
 
         # Rearrange axes and reshape to interleave electrode bits
         elec_h, elec_w = self.electrode_layout.shape
-        new_shape = memory.shape[:-2] + (memory.shape[-2] * elec_h, memory.shape[-1] * elec_w)
+        new_shape = (*memory.shape[:-2], memory.shape[-2] * elec_h, memory.shape[-1] * elec_w)
         out = xp.swapaxes(out, -2, -3).reshape(new_shape)
 
         # Apply data flip if specified
@@ -534,8 +537,7 @@ class PLM(ScreenMirrored):
             expected_shape = self.model_shape
             if len(phase.shape) < 2 or phase.shape[-2:] != expected_shape:
                 raise ValueError(
-                    f"Phase map shape {phase.shape} does not match "
-                    f"model shape {expected_shape}"
+                    f"Phase map shape {phase.shape} does not match model shape {expected_shape}"
                 )
 
         # Coerce input to match backend (e.g. numpy→cupy if gpu=True)
@@ -586,6 +588,7 @@ class PLM(ScreenMirrored):
         """
         # Determine backend from input arrays
         from slmsuite.hardware.slms.slm import _xp
+
         xp = _xp(bitmaps[0]) if bitmaps else np
 
         # Ensure all bitmaps are on same device
@@ -602,7 +605,7 @@ class PLM(ScreenMirrored):
             # RGB output (3 channels, 8 bits each)
             rgb = []
             for n in range(3):
-                channel_bitmaps = bitmaps[n*8:(n+1)*8]
+                channel_bitmaps = bitmaps[n * 8 : (n + 1) * 8]
                 stacked = xp.stack(channel_bitmaps) & 1
                 shifts = xp.arange(8)[:, None, None]
                 shifted = xp.left_shift(stacked.astype(xp.uint8), shifts.astype(xp.uint8))
@@ -610,9 +613,7 @@ class PLM(ScreenMirrored):
             result = xp.stack(rgb)
 
         else:
-            raise ValueError(
-                f"Bitpack requires 8 or 24 bitmaps, got {len(bitmaps)}"
-            )
+            raise ValueError(f"Bitpack requires 8 or 24 bitmaps, got {len(bitmaps)}")
 
         # Convert back to NumPy if input was on GPU
         if xp is not np:
@@ -630,7 +631,7 @@ class PLM(ScreenMirrored):
         list of str
             Model identifiers available in texas_instruments.yaml
         """
-        with open(MODEL_DB_PATH, 'r') as f:
+        with open(MODEL_DB_PATH) as f:
             model_db = yaml.safe_load(f)
 
         return list(model_db.keys())
@@ -672,8 +673,7 @@ class DLPC900:
         """
         if not HID_AVAILABLE:
             raise ImportError(
-                "hidapi is required for DLPC900 USB control. "
-                "Install with: pip install hidapi"
+                "hidapi is required for DLPC900 USB control. Install with: pip install hidapi"
             )
 
         vid = vendor_id if vendor_id is not None else DLPC900_VENDOR_ID
@@ -716,13 +716,13 @@ class DLPC900:
         length = len(payload) + 2
 
         # Build 64-byte packet: [flag, seq, len_lo, len_hi, cmd_lo, cmd_hi, ...data...]
-        flag = 0xC0 if mode == 'r' else 0x00
-        header = bytes([flag, self._seq]) + length.to_bytes(2, 'little') + cmd.to_bytes(2, 'little')
+        flag = 0xC0 if mode == "r" else 0x00
+        header = bytes([flag, self._seq]) + length.to_bytes(2, "little") + cmd.to_bytes(2, "little")
         buf = list(header) + payload[:58] + [0] * (58 - len(payload[:58]))
 
         # hidapi write: prepend report ID 0x00
         # print(" ".join(f"{b:02X}" for b in buf))
-        self._dev.write([0x00] + buf)
+        self._dev.write([0, *buf])
 
         # Multi-packet payload (>58 bytes)
         remaining = payload[58:]
@@ -730,9 +730,9 @@ class DLPC900:
             chunk = remaining[:64]
             remaining = remaining[64:]
             padded = chunk + [0x00] * (64 - len(chunk))
-            self._dev.write([0x00] + padded)
+            self._dev.write([0, *padded])
 
-        if mode == 'r':
+        if mode == "r":
             try:
                 ret = self._dev.read(64, timeout_ms=1000)
                 # print(" ".join(f"{b:02X}" for b in ret))
@@ -747,7 +747,7 @@ class DLPC900:
 
     def _read_byte(self, cmd):
         """Read a single status byte (response byte 5) for a command."""
-        ans = self._send('r', cmd)
+        ans = self._send("r", cmd)
         return ans[4] if ans else None
 
     @staticmethod
@@ -791,9 +791,9 @@ class DLPC900:
         """
         b = self._read_byte(DLPC900Command.HW_STATUS)
         return {
-            "init_done":       bool(b & 0x01),
-            "drc_error":       bool(b & 0x04),
-            "forced_swap":     bool(b & 0x08),
+            "init_done": bool(b & 0x01),
+            "drc_error": bool(b & 0x04),
+            "forced_swap": bool(b & 0x08),
             "sequencer_abort": bool(b & 0x40),
             "sequencer_error": bool(b & 0x80),
         }
@@ -811,10 +811,10 @@ class DLPC900:
         """
         b = self._read_byte(DLPC900Command.MAIN_STATUS)
         return {
-            "mirrors_parked":    bool(b & 0x01),
+            "mirrors_parked": bool(b & 0x01),
             "sequencer_running": bool(b & 0x02),
-            "video_frozen":      bool(b & 0x04),
-            "source_locked":     bool(b & 0x08),
+            "video_frozen": bool(b & 0x04),
+            "source_locked": bool(b & 0x08),
             "port1_syncs_valid": bool(b & 0x10),
             "port2_syncs_valid": bool(b & 0x20),
         }
@@ -829,15 +829,15 @@ class DLPC900:
             Keys: ``app_version``, ``api_version``, ``sw_patch``,
             ``sw_minor``, ``sw_major``.
         """
-        ans = self._send('r', DLPC900Command.VERSION)
+        ans = self._send("r", DLPC900Command.VERSION)
         if not ans or len(ans) < 10:
             return {}
         return {
             "app_version": ans[6],
             "api_version": ans[7],
-            "sw_patch":    ans[8],
-            "sw_minor":    ans[9],
-            "sw_major":    ans[10] if len(ans) > 10 else 0,
+            "sw_patch": ans[8],
+            "sw_minor": ans[9],
+            "sw_major": ans[10] if len(ans) > 10 else 0,
         }
 
     def set_input_source(self, source=0, bitdepth=0):
@@ -851,8 +851,7 @@ class DLPC900:
         bitdepth : int
             0 = 30-bit, 1 = 24-bit, 2 = 20-bit, 3 = 16-bit.
         """
-        self._send('w', DLPC900Command.INPUT_SOURCE,
-                   [source & 0x07 | (bitdepth & 0x03) << 3])
+        self._send("w", DLPC900Command.INPUT_SOURCE, [source & 0x07 | (bitdepth & 0x03) << 3])
 
     def set_port_clock(self, data_port, px_clock=0, data_enable=0, vhsync=0):
         """
@@ -869,12 +868,16 @@ class DLPC900:
         vhsync : int
             0 = P1 sync, 1 = P2 sync.
         """
-        self._send('w', DLPC900Command.PORT_CLOCK, [
-            data_port & 0x03
-            | (px_clock & 0x03) << 2
-            | (data_enable & 0x01) << 4
-            | (vhsync & 0x01) << 5
-        ])
+        self._send(
+            "w",
+            DLPC900Command.PORT_CLOCK,
+            [
+                data_port & 0x03
+                | (px_clock & 0x03) << 2
+                | (data_enable & 0x01) << 4
+                | (vhsync & 0x01) << 5
+            ],
+        )
 
     def set_display_mode(self, mode):
         """
@@ -888,7 +891,7 @@ class DLPC900:
             to ``"video-pattern"``.
         """
         if isinstance(mode, DisplayMode):
-            self._send('w', DLPC900Command.DISPLAY_MODE, [int(mode)])
+            self._send("w", DLPC900Command.DISPLAY_MODE, [int(mode)])
             return
 
         # Accept string with underscore or hyphen
@@ -897,10 +900,8 @@ class DLPC900:
             val = DisplayMode[name]
         except KeyError:
             valid = [m.name.lower().replace("_", "-") for m in DisplayMode]
-            raise ValueError(
-                f"Unknown mode '{mode}'. Valid: {valid}"
-            )
-        self._send('w', DLPC900Command.DISPLAY_MODE, [int(val)])
+            raise ValueError(f"Unknown mode '{mode}'. Valid: {valid}") from None
+        self._send("w", DLPC900Command.DISPLAY_MODE, [int(val)])
 
     def get_display_mode(self):
         """
@@ -915,15 +916,15 @@ class DLPC900:
         try:
             return DisplayMode(b)
         except ValueError:
-            raise ValueError(f"Unknown display mode byte: {b}")
+            raise ValueError(f"Unknown display mode byte: {b}") from None
 
     def start_pattern(self):
         """Start the pattern display sequence."""
-        self._send('w', DLPC900Command.PAT_STARTSTOP, [0x02])
+        self._send("w", DLPC900Command.PAT_STARTSTOP, [0x02])
 
     def stop_pattern(self):
         """Stop the pattern display sequence."""
-        self._send('w', DLPC900Command.PAT_STARTSTOP, [0x00])
+        self._send("w", DLPC900Command.PAT_STARTSTOP, [0x00])
 
     def configure_pattern_lut(self, num_entries, num_repeats=0):
         """
@@ -937,16 +938,22 @@ class DLPC900:
             Repeat count (0 = infinite).
         """
         self._send(
-            'w', DLPC900Command.PAT_LUT_CONFIG,
-            list(num_entries.to_bytes(2, 'little'))
-            + list(num_repeats.to_bytes(4, 'little'))
+            "w",
+            DLPC900Command.PAT_LUT_CONFIG,
+            list(num_entries.to_bytes(2, "little")) + list(num_repeats.to_bytes(4, "little")),
         )
 
     def define_pattern(
-        self, index, bitdepth=1, color=7,
-        clear_after_exposure=False, wait_for_trigger=False,
-        dark_time_us=0, trigger_out2=False,
-        image_index=0, bit_position=0,
+        self,
+        index,
+        bitdepth=1,
+        color=7,
+        clear_after_exposure=False,
+        wait_for_trigger=False,
+        dark_time_us=0,
+        trigger_out2=False,
+        image_index=0,
+        bit_position=0,
     ):
         """
         Define a single pattern LUT entry.
@@ -983,16 +990,17 @@ class DLPC900:
         )
 
         self._send(
-            'w', DLPC900Command.PAT_LUT_DEFINE,
-            list(index.to_bytes(2, 'little'))
-            + list(DLPC900_EXPOSURE_US.to_bytes(3, 'little'))
+            "w",
+            DLPC900Command.PAT_LUT_DEFINE,
+            list(index.to_bytes(2, "little"))
+            + list(DLPC900_EXPOSURE_US.to_bytes(3, "little"))
             + [options]
-            + list(dark_time_us.to_bytes(3, 'little'))
+            + list(dark_time_us.to_bytes(3, "little"))
             + [
                 int(trigger_out2) & 0x01,
                 image_index & 0xFF,
-                (image_index >> 8) & 0x07 | (bit_position & 0x1F) << 3
-            ]
+                (image_index >> 8) & 0x07 | (bit_position & 0x1F) << 3,
+            ],
         )
 
     def set_it6535_power(self, mode):
@@ -1014,7 +1022,7 @@ class DLPC900:
         if mode not in modes.values():
             raise ValueError(f"Invalid IT6535 power mode: {mode}")
         else:
-            self._send('w', DLPC900Command.IT6535_POWER, [mode & 0x03])
+            self._send("w", DLPC900Command.IT6535_POWER, [mode & 0x03])
 
     def standby(self):
         """Put the IT6535 receiver into power-down mode."""
@@ -1022,4 +1030,4 @@ class DLPC900:
 
     def reset(self):
         """Reset the DLPC900."""
-        self._send('w', DLPC900Command.POWER_MODE, [0x02])
+        self._send("w", DLPC900Command.POWER_MODE, [0x02])

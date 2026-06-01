@@ -17,19 +17,26 @@ Automatic Features:
 - slmsuite package logging: INFO level
 - External packages logging: WARNING level and above only
 """
-import pytest
-import numpy as np
-import tempfile
-import sys, os
-import json
+
+from datetime import datetime
 import importlib
+import json
 import logging
+import os
+from pathlib import Path
+import sys
+import tempfile
+
 import matplotlib
 import matplotlib.pyplot as plt
-from pathlib import Path
-from datetime import datetime
+import numpy as np
+import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from slmsuite.hardware.cameras.simulated import SimulatedCamera
+from slmsuite.hardware.cameraslms import FourierSLM
+from slmsuite.hardware.slms.simulated import SimulatedSLM
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Globals
 
@@ -43,6 +50,7 @@ def get_test_run_output_dir():
 
 try:
     import cupy as cp
+
     HAS_CUPY = True
 except ImportError:
     cp = np
@@ -69,10 +77,11 @@ def random_seed():
         Random seed value for this test session
     """
     import random
+
     seed = random.randint(0, 2**32 - 1)
 
     # Set numpy's random seed
-    np.random.seed(seed)
+    np.random.seed(seed)  # noqa: NPY002
 
     # Set CuPy's random seed if available
     if HAS_CUPY:
@@ -87,10 +96,6 @@ def random_seed():
 
 
 # Fixtures for SLM and Camera instances, with dynamic configuration via environment variables.
-
-from slmsuite.hardware.cameras.simulated import SimulatedCamera
-from slmsuite.hardware.slms.simulated import SimulatedSLM
-from slmsuite.hardware.cameraslms import FourierSLM
 
 _TEST_SMALL_RESOLUTION = (128, 128)
 
@@ -109,7 +114,7 @@ def _get_class_from_string(class_path):
     class
         The imported class
     """
-    module_path, class_name = class_path.rsplit('.', 1)
+    module_path, class_name = class_path.rsplit(".", 1)
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
 
@@ -127,7 +132,7 @@ def slm_class():
     class
         SLM subclass to instantiate
     """
-    class_path = os.environ.get('SLMSUITE_TEST_SLM_CLASS', None)
+    class_path = os.environ.get("SLMSUITE_TEST_SLM_CLASS", None)
     if class_path:
         return _get_class_from_string(class_path)
     return SimulatedSLM
@@ -146,17 +151,12 @@ def slm_kwargs():
     dict
         Keyword arguments for SLM constructor
     """
-    args_json = os.environ.get('SLMSUITE_TEST_SLM_ARGS', None)
+    args_json = os.environ.get("SLMSUITE_TEST_SLM_ARGS", None)
     if args_json:
         return json.loads(args_json)
 
     # Default args for SimulatedSLM
-    return {
-        'resolution': (1920, 1080),
-        'pitch_um': (8.0, 8.0),
-        'bitdepth': 8,
-        'wav_um': 0.78
-    }
+    return {"resolution": (1920, 1080), "pitch_um": (8.0, 8.0), "bitdepth": 8, "wav_um": 0.78}
 
 
 @pytest.fixture
@@ -180,7 +180,7 @@ def slm_small(slm_kwargs):
     Fixture providing an SLM instance for testing.
     """
     kwargs = slm_kwargs.copy()
-    kwargs['resolution'] = _TEST_SMALL_RESOLUTION
+    kwargs["resolution"] = _TEST_SMALL_RESOLUTION
     slm_instance = SimulatedSLM(**kwargs)
     yield slm_instance
 
@@ -204,7 +204,7 @@ def camera_class():
     class
         Camera subclass to instantiate
     """
-    class_path = os.environ.get('SLMSUITE_TEST_CAMERA_CLASS', None)
+    class_path = os.environ.get("SLMSUITE_TEST_CAMERA_CLASS", None)
     if class_path:
         return _get_class_from_string(class_path)
     return SimulatedCamera
@@ -228,17 +228,12 @@ def camera_kwargs(slm):
     dict
         Keyword arguments for Camera constructor
     """
-    args_json = os.environ.get('SLMSUITE_TEST_CAMERA_ARGS', None)
+    args_json = os.environ.get("SLMSUITE_TEST_CAMERA_ARGS", None)
     if args_json:
         return json.loads(args_json)
 
     # Default args for SimulatedCamera
-    return {
-        'slm': slm,
-        'resolution': (512, 512),
-        'pitch_um': (5.5, 5.5),
-        'bitdepth': 8
-    }
+    return {"slm": slm, "resolution": (512, 512), "pitch_um": (5.5, 5.5), "bitdepth": 8}
 
 
 @pytest.fixture
@@ -276,6 +271,7 @@ def camera_small(slm_small, camera_kwargs):
     except Exception:
         pass
 
+
 @pytest.fixture
 def fourierslm(camera, slm):
     """
@@ -291,6 +287,7 @@ def fourierslm(camera, slm):
     except Exception:
         pass
 
+
 @pytest.fixture
 def fourierslm_calibrated(fourierslm):
     """FourierSLM with a completed Fourier calibration."""
@@ -299,6 +296,7 @@ def fourierslm_calibrated(fourierslm):
 
 
 # Matplotlib configuration (saving of plots)
+
 
 @pytest.fixture(scope="session", autouse=True)
 def configure_matplotlib_for_testing(request):
@@ -334,36 +332,36 @@ def configure_matplotlib_for_testing(request):
             output_dir = get_test_run_output_dir()
             if output_dir is None:
                 print("Warning: Test run output directory not initialized")
-                plt.close('all')
+                plt.close("all")
                 return
 
             # Get current test info from pytest environment variable
-            test_name = os.environ.get('PYTEST_CURRENT_TEST', '')
+            test_name = os.environ.get("PYTEST_CURRENT_TEST", "")
 
             if not test_name:
                 # Fallback if called outside test context
                 filename = output_dir / f"unknown_fig_{len(test_fig_counts)}.png"
                 figs = [plt.figure(n) for n in plt.get_fignums()]
                 for fig in figs:
-                    fig.savefig(filename, dpi=150, bbox_inches='tight')
+                    fig.savefig(filename, dpi=150, bbox_inches="tight")
             else:
                 # Parse test path: "tests/holography/test_algorithms.py::TestHologram::test_gs_converges (call)"
-                test_path = test_name.split(' ')[0]  # Remove "(call)" part
+                test_path = test_name.split(" ")[0]  # Remove "(call)" part
 
                 # Extract components
                 parts = []
-                if '::' in test_path:
-                    file_and_rest = test_path.split('::')
+                if "::" in test_path:
+                    file_and_rest = test_path.split("::")
                     # Get module name from file path
-                    module = file_and_rest[0].split('/')[-1].replace('.py', '')
+                    module = file_and_rest[0].split("/")[-1].replace(".py", "")
                     parts.append(module)
                     # Add class and function if present
                     parts.extend(file_and_rest[1:])
                 else:
-                    parts.append('unknown')
+                    parts.append("unknown")
 
                 # Build base filename
-                base_name = '_'.join(parts)
+                base_name = "_".join(parts)
 
                 # Track figure count for this test
                 if base_name not in test_fig_counts:
@@ -374,20 +372,21 @@ def configure_matplotlib_for_testing(request):
                 for fig in figs:
                     test_fig_counts[base_name] += 1
                     filename = output_dir / f"{base_name}_fig{test_fig_counts[base_name]}.png"
-                    fig.savefig(filename, dpi=150, bbox_inches='tight')
+                    fig.savefig(filename, dpi=150, bbox_inches="tight")
                     # Print relative path
                     rel_path = filename.relative_to(Path("tests/output"))
                     print(f"Saved plot: tests/output/{rel_path}")
 
             # Close figures to free memory
-            plt.close('all')
+            plt.close("all")
 
         # Replace plt.show with our custom version
         plt.show = custom_show
     else:
         # If plots disabled, just close figures silently
         def no_show(*args, **kwargs):
-            plt.close('all')
+            plt.close("all")
+
         plt.show = no_show
 
     yield
@@ -404,12 +403,12 @@ def mpl_test(request):
     Provides automatic figure cleanup and easy access to plt.
     """
     # Clear any existing figures before test
-    plt.close('all')
+    plt.close("all")
 
     yield plt
 
     # Cleanup after test
-    plt.close('all')
+    plt.close("all")
 
 
 def pytest_addoption(parser):
@@ -418,16 +417,18 @@ def pytest_addoption(parser):
         "--save-plots",
         action="store_true",
         default=True,
-        help="Save matplotlib plots to tests/output/{timestamp}/ (default: True)"
+        help="Save matplotlib plots to tests/output/{timestamp}/ (default: True)",
     )
     parser.addoption(
         "--no-save-plots",
         action="store_false",
         dest="save_plots",
-        help="Disable saving matplotlib plots"
+        help="Disable saving matplotlib plots",
     )
 
+
 # Logging and final configuration
+
 
 @pytest.fixture
 def temp_dir():
@@ -450,7 +451,7 @@ def test_logger(request):
     # Build logger name from test node
     parts = []
     if request.module:
-        module_name = request.module.__name__.split('.')[-1]
+        module_name = request.module.__name__.split(".")[-1]
         parts.append(module_name)
     if request.cls:
         parts.append(request.cls.__name__)
@@ -469,7 +470,7 @@ def test_logger(request):
     yield logger
 
     # Log test result
-    if hasattr(request.node, 'rep_call'):
+    if hasattr(request.node, "rep_call"):
         outcome = request.node.rep_call.outcome
         logger.info(f"=== {outcome.upper()} ===")
 
@@ -529,11 +530,11 @@ def pytest_configure(config):
     logging.getLogger().setLevel(logging.WARNING)
 
     # Explicitly set common external packages to WARNING
-    for package in ['matplotlib', 'PIL', 'numpy', 'cupy', 'h5py']:
+    for package in ["matplotlib", "PIL", "numpy", "cupy", "h5py"]:
         logging.getLogger(package).setLevel(logging.WARNING)
 
     # Enable INFO for slmsuite package only
-    logging.getLogger('slmsuite').setLevel(logging.INFO)
+    logging.getLogger("slmsuite").setLevel(logging.INFO)
 
     print(f"\nTest output directory: {output_dir}")
 

@@ -1,16 +1,11 @@
 from slmsuite.holography.algorithms._header import *
 
-class _HologramStats(object):
 
+class _HologramStats:
     # Statistics handling.
     @staticmethod
     def _calculate_stats(
-        feedback_amp,
-        target_amp,
-        xp=cp,
-        efficiency_compensation=True,
-        total=None,
-        raw=False
+        feedback_amp, target_amp, xp=cp, efficiency_compensation=True, total=None, raw=False
     ):
         """
         Helper function to analyze how close the feedback is to the target.
@@ -48,8 +43,8 @@ class _HologramStats(object):
             if total is not None:
                 total = float(total)
 
-        feedback_amp = xp.array(feedback_amp, copy=(False if np.__version__[0] == '1' else None))
-        target_amp = xp.array(target_amp, copy=(False if np.__version__[0] == '1' else None))
+        feedback_amp = xp.array(feedback_amp, copy=(False if np.__version__[0] == "1" else None))
+        target_amp = xp.array(target_amp, copy=(False if np.__version__[0] == "1" else None))
 
         feedback_pwr = xp.square(feedback_amp)
         target_pwr = xp.square(target_amp)
@@ -70,9 +65,7 @@ class _HologramStats(object):
 
         if total is None:
             # Efficiency overlap integral.
-            efficiency_intermediate = xp.nansum(
-                xp.multiply(target_amp, feedback_amp)
-            )
+            efficiency_intermediate = xp.nansum(xp.multiply(target_amp, feedback_amp))
             efficiency = xp.square(float(efficiency_intermediate))
             if efficiency_compensation:
                 feedback_pwr *= 1 / efficiency
@@ -115,10 +108,12 @@ class _HologramStats(object):
 
         return final_stats
 
-    def _calculate_stats_computational(self, stats, stat_groups=[]):
+    def _calculate_stats_computational(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`Hologram._update_stats()`.
         """
+        if stat_groups is None:
+            stat_groups = []
         if "computational" in stat_groups:
             stats["computational"] = self._calculate_stats(
                 self.amp_ff,
@@ -148,7 +143,7 @@ class _HologramStats(object):
         flaglist = set(self.flags.keys()).union(set(self.stats["flags"].keys()))
         for flag in flaglist:
             # Extend flag
-            if not flag in self.stats["flags"]:
+            if flag not in self.stats["flags"]:
                 self.stats["flags"][flag] = [np.nan for _ in range(M)]
             else:
                 diff = self.iter + 1 - len(self.stats["flags"][flag])
@@ -162,7 +157,7 @@ class _HologramStats(object):
         # Update stats
         grouplist = set(stats.keys()).union(set(self.stats["stats"].keys()))
         if len(grouplist) > 0:
-            statlists = [set(stats[group].keys()) for group in stats.keys()]
+            statlists = [set(stats[group].keys()) for group in stats]
             if len(self.stats["stats"].keys()) > 0:
                 key = next(iter(self.stats["stats"]))
                 statlists.append(set(self.stats["stats"][key].keys()))
@@ -170,13 +165,13 @@ class _HologramStats(object):
 
             for group in grouplist:
                 # Check this group
-                if not group in self.stats["stats"]:
+                if group not in self.stats["stats"]:
                     self.stats["stats"][group] = {}
 
                 if len(statlist) > 0:
                     for stat in statlist:
                         # Extend stat
-                        if not stat in self.stats["stats"][group]:
+                        if stat not in self.stats["stats"][group]:
                             self.stats["stats"][group][stat] = [np.nan for _ in range(M)]
                         else:
                             diff = self.iter + 1 - len(self.stats["stats"][group][stat])
@@ -186,19 +181,17 @@ class _HologramStats(object):
                                 )
 
                         # Update stat
-                        if group in stats.keys() and stat in stats[group].keys():
+                        if group in stats and stat in stats[group]:
                             self.stats["stats"][group][stat][self.iter] = stats[group][stat]
 
         # Rawest stats
-        if "raw_stats" in self.flags and self.flags["raw_stats"]:
-            if not "raw_farfield" in self.stats:
+        if self.flags.get("raw_stats"):
+            if "raw_farfield" not in self.stats:
                 self.stats["raw_farfield"] = []
 
             diff = self.iter + 1 - len(self.stats["raw_farfield"])
             if diff > 0:
-                self.stats["raw_farfield"].extend(
-                    [np.nan for _ in range(diff)]
-                )
+                self.stats["raw_farfield"].extend([np.nan for _ in range(diff)])
 
             if hasattr(self.farfield, "get"):
                 farfield = self.farfield.get()
@@ -207,7 +200,7 @@ class _HologramStats(object):
 
             self.stats["raw_farfield"][self.iter] = farfield
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         """
         Calculate statistics corresponding to the desired ``stat_groups``.
 
@@ -216,6 +209,8 @@ class _HologramStats(object):
         stat_groups : list of str
             Which groups or types of statistics to analyze.
         """
+        if stat_groups is None:
+            stat_groups = []
         stats = {}
 
         self._calculate_stats_computational(stats, stat_groups)
@@ -293,15 +288,22 @@ class _HologramStats(object):
         if include_state:
             if len(from_save.keys()) <= 1:
                 raise ValueError(
-                    "State was not stored in file '{}'"
-                    "and cannot be imported".format(file_path)
+                    f"State was not stored in file '{file_path}'and cannot be imported"
                 )
 
             is_cupy = ["phase", "amp", "target", "weights", "phase_ff"]
-            for key in from_save.keys():
+            for key in from_save:
                 if key != "stats":
                     if key in is_cupy:
-                        setattr(self, key, cp.array(from_save[key], dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None)))
+                        setattr(
+                            self,
+                            key,
+                            cp.array(
+                                from_save[key],
+                                dtype=self.dtype,
+                                copy=(False if np.__version__[0] == "1" else None),
+                            ),
+                        )
                     else:
                         setattr(self, key, from_save[key])
 
@@ -337,14 +339,7 @@ class _HologramStats(object):
 
         return limits
 
-    def plot_nearfield(
-            self,
-            source=None,
-            title="",
-            padded=False,
-            figsize=(8,4),
-            cbar=False
-        ):
+    def plot_nearfield(self, source=None, title="", padded=False, figsize=(8, 4), cbar=False):
         """
         Plots the amplitude (left) and phase (right) of the nearfield (plane of the SLM).
         The amplitude is assumed (whether uniform, assumed, or measured) while the
@@ -372,7 +367,7 @@ class _HologramStats(object):
             try:
                 amp = cp.abs(source).get()
                 phase = cp.angle(source).get()
-            except:
+            except Exception:
                 amp = np.abs(source)
                 phase = np.angle(source)
 
@@ -422,16 +417,16 @@ class _HologramStats(object):
         plt.show()
 
     def plot_farfield(
-            self,
-            source=None,
-            title="",
-            limits=None,
-            units="knm",
-            limit_padding=0.1,
-            figsize=(8,4),
-            cbar=False,
-            axs=None
-        ):
+        self,
+        source=None,
+        title="",
+        limits=None,
+        units="knm",
+        limit_padding=0.1,
+        figsize=(8, 4),
+        cbar=False,
+        axs=None,
+    ):
         """
         Plots an overview (left) and zoom (right) view of ``source``.
 
@@ -480,12 +475,11 @@ class _HologramStats(object):
             if source is None or len(source.shape) == 1:
                 source = self.get_farfield(get=False)
 
-            if limits is None:
-                if len(self.target.shape) == 2:
-                    if np == cp:
-                        limits = self._compute_limits(self.target, limit_padding=limit_padding)
-                    else:
-                        limits = self._compute_limits(self.target.get(), limit_padding=limit_padding)
+            if limits is None and len(self.target.shape) == 2:
+                if np == cp:
+                    limits = self._compute_limits(self.target, limit_padding=limit_padding)
+                else:
+                    limits = self._compute_limits(self.target.get(), limit_padding=limit_padding)
 
             if len(title) == 0:
                 title = "Farfield Amplitude"
@@ -495,18 +489,18 @@ class _HologramStats(object):
         if isphase:
             try:
                 npsource = source.get()
-            except:
+            except Exception:
                 npsource = source
 
             npsource = np.mod(npsource, 2 * np.pi)
         else:
             try:
                 npsource = cp.abs(source).get()
-            except:
+            except Exception:
                 npsource = np.abs(source)
 
         # Check units
-        if not units in toolbox.BLAZE_UNITS:
+        if units not in toolbox.BLAZE_UNITS:
             raise ValueError(f"'{units}' is not recognized as a valid blaze unit.")
         if units in toolbox.CAMERA_UNITS:
             raise ValueError(
@@ -519,7 +513,7 @@ class _HologramStats(object):
             limits = self._compute_limits(npsource, limit_padding=limit_padding)
         # Check the limits in case the user provided them.
         for a in [0, 1]:
-            limits[a] = np.clip(np.array(limits[a], dtype=int), 0, npsource.shape[1-a]-1)
+            limits[a] = np.clip(np.array(limits[a], dtype=int), 0, npsource.shape[1 - a] - 1)
             if np.diff(limits[a])[0] == 0:
                 raise ValueError("Clipped limit has zero length.")
 
@@ -533,12 +527,13 @@ class _HologramStats(object):
         # Plot the full target, blurred so single pixels are visible in low res
         b = 2 * int(np.amax(self.shape) / 400) + 1  # FUTURE: fix arbitrary
         npsource_blur = cv2.GaussianBlur(npsource, (b, b), 0)
-        
+
         full = axs[0].imshow(
             npsource_blur,
-            vmin=0, vmax=np.nanmax(npsource),
+            vmin=0,
+            vmax=np.nanmax(npsource),
             cmap=("twilight" if isphase else None),
-            interpolation=("none" if isphase else "gaussian")
+            interpolation=("none" if isphase else "gaussian"),
         )
         if len(title) > 0:
             title += ": "
@@ -551,11 +546,11 @@ class _HologramStats(object):
         ]
         zoom = axs[1].imshow(
             zoom_data,
-            vmin=0, vmax=np.nanmax(zoom_data),
-            extent=[limits[0][0], limits[0][1],
-                    limits[1][1],limits[1][0]],
+            vmin=0,
+            vmax=np.nanmax(zoom_data),
+            extent=[limits[0][0], limits[0][1], limits[1][1], limits[1][0]],
             interpolation="none" if b < 2 or isphase else "gaussian",
-            cmap=("twilight" if isphase else None)
+            cmap=("twilight" if isphase else None),
         )
         axs[1].set_title(title + "Zoom", color="r")
         # Red border (to match red zoom box applied below in "full" img)
@@ -566,7 +561,7 @@ class _HologramStats(object):
         # Helper function: calculate extent for the given units
         try:
             slm = self.cameraslm
-        except:
+        except Exception:
             slm = None
             units = "knm"
 
@@ -603,7 +598,7 @@ class _HologramStats(object):
                 ax.set_ylabel(toolbox.BLAZE_LABELS[units][1])
 
         # Scale aspect; knm might be displaying a non-square array.
-        if units == "knm":  
+        if units == "knm":
             aspect = float(npsource.shape[1]) / float(npsource.shape[0])
         else:
             aspect = 1
@@ -655,7 +650,7 @@ class _HologramStats(object):
                     from_units="knm",
                     to_units=units,
                     hardware=slm,
-                    shape=npsource.shape
+                    shape=npsource.shape,
                 )
 
             # Plot the labeled yellow rectangle representing the camera.
@@ -726,7 +721,7 @@ class _HologramStats(object):
 
         return limits
 
-    def plot_stats(self, stats_dict=None, stat_groups=[], ylim=None, show=False):
+    def plot_stats(self, stats_dict=None, stat_groups=None, ylim=None, show=False):
         """
         Plots the statistics contained in the given dictionary.
 
@@ -743,6 +738,8 @@ class _HologramStats(object):
         show : bool
             Whether or not to immediately show the plot. Defaults to false.
         """
+        if stat_groups is None:
+            stat_groups = []
         if stats_dict is None:
             stats_dict = self.stats
 
@@ -769,7 +766,7 @@ class _HologramStats(object):
                 if i < 2:
                     y = 1 - np.array(y)
 
-                color = "C%d" % ls_num
+                color = f"C{ls_num}"
                 line = ax.scatter(
                     niter, y, marker=markers[i], ec=color, fc="None" if i >= 1 else color
                 )
@@ -781,11 +778,10 @@ class _HologramStats(object):
 
         # Make the linestyle legend.
         # Inspired from https://stackoverflow.com/a/46214879
-        dummylines_keys = []
-        for i in range(len(stats)):
-            dummylines_keys.append(
-                ax.scatter([], [], marker=markers[i], ec="k", fc="None" if i >= 1 else "k")
-            )
+        dummylines_keys = [
+            ax.scatter([], [], marker=markers[i], ec="k", fc="None" if i >= 1 else "k")
+            for i in range(len(stats))
+        ]
 
         ax.set_xlabel("Iteration")
         ax.set_ylabel("Relative Metrics")
@@ -794,7 +790,7 @@ class _HologramStats(object):
         plt.grid()
         try:  # This fails under all nan or other conditions. Fail elegantly.
             plt.tight_layout()
-        except:
+        except Exception:
             pass
         if ylim is not None:
             ax.set_ylim(ylim)
@@ -820,7 +816,7 @@ class _HologramStats(object):
         # Make the color/linestyle legend.
         plt.legend(dummylines_modes + dummylines_keys, stat_keys + legendstats, loc="lower left")
 
-        plt.plot([-.75, len(stats_dict["method"]) - .25], [1,1], alpha=0)
+        plt.plot([-0.75, len(stats_dict["method"]) - 0.25], [1, 1], alpha=0)
 
         ax.set_xlim([-0.75, len(stats_dict["method"]) - 0.25])
 

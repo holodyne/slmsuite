@@ -6,11 +6,13 @@ on a dedicated background thread. This thread continuously dispatches OS events
 to prevent window freezing, while rendering commands are submitted from the main
 thread via a thread-safe queue.
 """
+
 import warnings
+
 import numpy as np
 
-from slmsuite.hardware.slms.slm import SLM
 from slmsuite.hardware._pyglet import _Window, _WindowManager, _WindowThread, get_pyglet_display
+from slmsuite.hardware.slms.slm import SLM
 
 try:
     import pyglet
@@ -22,6 +24,7 @@ try:
     import cupy as cp
 except ImportError:
     cp = None
+
 
 class ScreenMirrored(SLM):
     """
@@ -123,15 +126,15 @@ class ScreenMirrored(SLM):
     """
 
     def __init__(
-            self,
-            display_number,
-            bitdepth=8,
-            wav_um=1,
-            pitch_um=(8,8),
-            verbose=True,
-            slm_shape=None,
-            **kwargs
-        ):
+        self,
+        display_number,
+        bitdepth=8,
+        wav_um=1,
+        pitch_um=(8, 8),
+        verbose=True,
+        slm_shape=None,
+        **kwargs,
+    ):
         """
         Initializes a :mod:`pyglet` window for displaying data to an SLM.
 
@@ -173,7 +176,7 @@ class ScreenMirrored(SLM):
             SLM resolution as ``(width, height)``, for when the SLM's
             active area differs from the display resolution (e.g. PLM).
             Defaults to ``None``, which uses the display's native resolution.
-            
+
             Caution
             ~~~~~~~
             This should normally be left as ``None`` unless the SLM has a
@@ -194,19 +197,19 @@ class ScreenMirrored(SLM):
         screens = display.get_screens()
         if verbose:
             print("success")
-            print("Searching for window with display_number={}... "
-                    .format(display_number), end="")
+            print(f"Searching for window with display_number={display_number}... ", end="")
 
         if len(screens) <= display_number:
-            raise ValueError("Could not find display_number={}; only {} displays"
-                .format(display_number, len(screens)))
+            raise ValueError(
+                f"Could not find display_number={display_number}; only {len(screens)} displays"
+            )
 
         screen_info = ScreenMirrored.info(verbose=False)
 
         if screen_info[display_number][3]:
             raise ValueError(
-                "ScreenMirrored window already created on display_number={}"
-                .format(display_number))
+                f"ScreenMirrored window already created on display_number={display_number}"
+            )
 
         if verbose and screen_info[display_number][2]:
             print("warning: this is the main display... ", end="")
@@ -224,13 +227,7 @@ class ScreenMirrored(SLM):
         if slm_shape is None:
             slm_shape = self.display_resolution
 
-        super().__init__(
-            slm_shape,
-            bitdepth=bitdepth,
-            wav_um=wav_um,
-            pitch_um=pitch_um,
-            **kwargs
-        )
+        super().__init__(slm_shape, bitdepth=bitdepth, wav_um=wav_um, pitch_um=pitch_um, **kwargs)
 
         # Create the window on a dedicated background thread.
         # The _WindowThread handles window creation, OpenGL context setup,
@@ -239,7 +236,7 @@ class ScreenMirrored(SLM):
             wm = _WindowManager.get_instance()
             self._window_thread = wm.create_window(None, screen, self.name)
             self.window = self._window_thread.window
-        except Exception as e:
+        except Exception:
             if verbose:
                 print("Window creation failed")
             raise
@@ -250,8 +247,8 @@ class ScreenMirrored(SLM):
         # Warn the user if wav_um > wav_design_um
         if self.phase_scaling > 1:
             print(
-                "Warning: Wavelength {} μm is inaccessible to this SLM with "
-                "design wavelength {} μm".format(self.wav_um, self.wav_design_um)
+                f"Warning: Wavelength {self.wav_um} μm is inaccessible to this SLM with "
+                f"design wavelength {self.wav_design_um} μm"
             )
 
     def _set_phase_hw(self, display, execute=True, block=True):
@@ -279,8 +276,7 @@ class ScreenMirrored(SLM):
 
         # Submit render to the window's dedicated thread.
         if execute:
-            future = self._window_thread.submit(self._render, self.window,
-                                                display)
+            future = self._window_thread.submit(self._render, self.window, display)
             if block:
                 _WindowThread.wait(future)
 
@@ -290,9 +286,9 @@ class ScreenMirrored(SLM):
         window.switch_to()
         # 3x writes faster than single broadcast
         # (buffer[:,:,:3] = display[:,:,np.newaxis])
-        window.buffer[:,:,0] = display # R
-        window.buffer[:,:,1] = display # G
-        window.buffer[:,:,2] = display # B
+        window.buffer[:, :, 0] = display  # R
+        window.buffer[:, :, 1] = display  # G
+        window.buffer[:, :, 2] = display  # B
         window.render()
 
     def close(self):

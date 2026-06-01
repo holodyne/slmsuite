@@ -17,11 +17,13 @@ Note
 Santec provides base wavefront correction accounting for the curvature of the SLM surface.
 Consider loading these files via :meth:`.SLM.load_vendor_phase_correction()`
 """
-import os
+
 import ctypes
-import numpy as np
-import cv2
+import os
 import warnings
+
+import cv2
+import numpy as np
 
 from .slm import SLM
 
@@ -34,7 +36,7 @@ except BaseException as e:  # Provide an informative error should something go w
         "must be present in the runtime directory:\n"
         "  - SLMFunc.dll\n  - FTD3XX.dll\n"
         "  Check that these files are present and are error-free.\n"
-        "Original error: {}".format(e)
+        f"Original error: {e}"
     )
     slm_funcs = None
 
@@ -58,15 +60,15 @@ class Santec(SLM):
     """
 
     def __init__(
-            self,
-            slm_number=1,
-            display_number=2,
-            bitdepth=10,
-            wav_um=1,
-            pitch_um=(8,8),
-            verbose=True,
-            **kwargs
-        ):
+        self,
+        slm_number=1,
+        display_number=2,
+        bitdepth=10,
+        wav_um=1,
+        pitch_um=(8, 8),
+        verbose=True,
+        **kwargs,
+    ):
         r"""
         Initializes an instance of a Santec SLM.
 
@@ -128,7 +130,7 @@ class Santec(SLM):
             wav_design_um = wav_um
 
         if verbose:
-            print("Santec slm_number={} initializing... ".format(self.slm_number), end="")
+            print(f"Santec slm_number={self.slm_number} initializing... ", end="")
         Santec._parse_status(slm_funcs.SLM_Ctrl_Open(self.slm_number))
 
         try:
@@ -168,17 +170,13 @@ class Santec(SLM):
             while wav_current_nm.value != wav_desired_nm and attempt < 5:
                 if verbose:
                     if attempt > 1:
-                        print("(attempt {})".format(attempt))
+                        print(f"(attempt {attempt})")
                     else:
                         print(
-                            "Current phase table: wav = {0} nm, maxphase = {1:.2f}pi".format(
-                                wav_current_nm.value, phase_current.value / 100.0
-                            )
+                            f"Current phase table: wav = {wav_current_nm.value} nm, maxphase = {phase_current.value / 100.0:.2f}pi"
                         )
                         print(
-                            "Desired phase table: wav = {0} nm, maxphase = {1:.2f}pi".format(
-                                wav_desired_nm, phase_desired / 100.0
-                            )
+                            f"Desired phase table: wav = {wav_desired_nm} nm, maxphase = {phase_desired / 100.0:.2f}pi"
                         )
                     print("     ...Updating phase table (this may take 40 seconds)...")
 
@@ -198,9 +196,7 @@ class Santec(SLM):
                 )
                 if verbose:
                     print(
-                        "Updated phase table: wav = {0} nm, maxphase = {1:.2f}pi".format(
-                            wav_current_nm.value, phase_current.value / 100.0
-                        )
+                        f"Updated phase table: wav = {wav_current_nm.value} nm, maxphase = {phase_current.value / 100.0:.2f}pi"
                     )
 
                 attempt += 1
@@ -213,23 +209,17 @@ class Santec(SLM):
             if verbose and abs(phase_current.value - 200) > 4:
                 wav_design_fixed_um = wav_design_um * (phase_current.value / 200.0)
                 print(
-                    "  Warning: the Santec phase table maximum deviates significantly (>2%) from 2pi ({0:.2f}pi).".format(
-                        phase_current.value / 100.0
-                    )
+                    f"  Warning: the Santec phase table maximum deviates significantly (>2%) from 2pi ({phase_current.value / 100.0:.2f}pi)."
                 )
                 print(
                     "    This is likely due to internal checks avoiding 'abnormal' phase table results."
                 )
                 print(
-                    "    To compensate for this, wav_design_um is noted to equal {} instead of the desired {}.".format(
-                        wav_design_fixed_um, wav_design_um
-                    )
+                    f"    To compensate for this, wav_design_um is noted to equal {wav_design_fixed_um} instead of the desired {wav_design_um}."
                 )
                 if wav_um / wav_design_fixed_um != 1:
                     print(
-                        "    This results in phase_scaling={0:.4f} != 1, which has negative speed implications (see .set_phase()).".format(
-                            wav_um / wav_design_fixed_um
-                        )
+                        f"    This results in phase_scaling={wav_um / wav_design_fixed_um:.4f} != 1, which has negative speed implications (see .set_phase())."
                     )
                 print(
                     "    If this behavior is undesired, play with wav_design_um to find a better regime."
@@ -242,7 +232,7 @@ class Santec(SLM):
             display_name = ctypes.create_string_buffer(128)
 
             if verbose:
-                print("Looking for display_number={}... ".format(self.display_number), end="")
+                print(f"Looking for display_number={self.display_number}... ", end="")
             Santec._parse_status(
                 slm_funcs.SLM_Disp_Info2(self.display_number, width, height, display_name)
             )
@@ -259,8 +249,8 @@ class Santec(SLM):
             if names[0] != "LCOS-SLM":
                 # Don't parse status around this one...
                 raise ValueError(
-                    "SLM not found at display_number={}. "
-                    "Use .info() to find the correct display!".format(self.display_number)
+                    f"SLM not found at display_number={self.display_number}. "
+                    "Use .info() to find the correct display!"
                 )
 
             # Populate some info
@@ -276,7 +266,7 @@ class Santec(SLM):
 
             # Open SLM
             if verbose:
-                print("Opening {}... ".format(name), end="")
+                print(f"Opening {name}... ", end="")
             Santec._parse_status(slm_funcs.SLM_Disp_Open(self.display_number))
             if verbose:
                 print("success")
@@ -284,7 +274,7 @@ class Santec(SLM):
             super().__init__(
                 (int(width.value), int(height.value)),
                 bitdepth=bitdepth,
-                name=kwargs.pop("name", names[-1]), # SerialNumberID
+                name=kwargs.pop("name", names[-1]),  # SerialNumberID
                 wav_um=wav_um,
                 wav_design_um=wav_design_um,
                 pitch_um=pitch_um,
@@ -297,9 +287,7 @@ class Santec(SLM):
                 Santec._parse_status(slm_funcs.SLM_Ctrl_Close(self.slm_number))
             except Exception as close_error:
                 print(
-                    "Could not close attempt to open Santec slm_number={}: {}".format(
-                        slm_number, str(close_error)
-                    )
+                    f"Could not close attempt to open Santec slm_number={slm_number}: {close_error!s}"
                 )
 
             raise init_error
@@ -316,7 +304,7 @@ class Santec(SLM):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of (int, str) tuples
             The number and name of each potential display.
         """
@@ -349,7 +337,7 @@ class Santec(SLM):
             name = display_name.value.decode("mbcs")
             if len(name) > 0:
                 if verbose:
-                    print("{},  {}".format(display_number, name))
+                    print(f"{display_number},  {name}")
 
                 display_list.append((display_number, name))
 
@@ -375,7 +363,7 @@ class Santec(SLM):
         This correction is only fully valid at the wavelength at which it was collected.
 
         Returns
-        ----------
+        -------
         numpy.ndarray
             :attr:`~slmsuite.hardware.slms.slm.SLM.source` ``["phase"]``,
             the Santec-provided phase correction.
@@ -403,7 +391,7 @@ class Santec(SLM):
 
             return phase
         except BaseException as e:
-            warnings.warn("Error while loading phase correction.\n{}".format(e))
+            warnings.warn(f"Error while loading phase correction.\n{e}")
             return self.source["phase"]
 
     def close(self):
@@ -477,15 +465,15 @@ class Santec(SLM):
         )
 
         # Check the resulting bitstrings for errors (0 ==> all good).
-        errors = []
-
-        for drive_error_bit in slm_funcs.SLM_DRIVEBOARD_ERROR.keys():
-            if drive_error.value & drive_error_bit:
-                errors.append(slm_funcs.SLM_DRIVEBOARD_ERROR[drive_error_bit])
-
-        for option_error_bit in slm_funcs.SLM_OPTIONBOARD_ERROR.keys():
-            if option_error.value & option_error_bit:
-                errors.append(slm_funcs.SLM_OPTIONBOARD_ERROR[option_error_bit])
+        errors = [
+            slm_funcs.SLM_DRIVEBOARD_ERROR[drive_error_bit]
+            for drive_error_bit in slm_funcs.SLM_DRIVEBOARD_ERROR
+            if drive_error.value & drive_error_bit
+        ] + [
+            slm_funcs.SLM_OPTIONBOARD_ERROR[option_error_bit]
+            for option_error_bit in slm_funcs.SLM_OPTIONBOARD_ERROR
+            if option_error.value & option_error_bit
+        ]
 
         if raise_error and len(errors) > 0:
             error = "Santec error: " + ", ".join(["'" + err + "'" for err in errors])
@@ -536,13 +524,13 @@ class Santec(SLM):
         # Parse status
         status = int(status)
 
-        if not status in slm_funcs.SLM_STATUS_DICT.keys():
-            raise ValueError("SLM status '{}' not recognized.".format(status))
+        if status not in slm_funcs.SLM_STATUS_DICT:
+            raise ValueError(f"SLM status '{status}' not recognized.")
 
         # Recover the meaning of status
         (name, note) = slm_funcs.SLM_STATUS_DICT[status]
 
-        status_str = "Santec error {}; '{}'".format(name, note)
+        status_str = f"Santec error {name}; '{note}'"
 
         if status != 0:
             if raise_error:

@@ -15,19 +15,22 @@ Color camera functionality is not currently implemented, and will lead to undefi
 """
 
 import time
-import numpy as np
 import warnings
+
+import numpy as np
 
 from slmsuite.hardware.cameras.camera import Camera
 
 try:
     import vmbpy
+
     vimba_system = vmbpy.VmbSystem
     vimba_name = "vmbpy"
 
 except ImportError:
     try:
         import vimba
+
         vimba_system = vimba.Vimba
         vimba_name = "vimba"
 
@@ -92,7 +95,9 @@ class AlliedVision(Camera):
             See :meth:`.Camera.__init__` for permissible options.
         """
         if vimba_system is None:
-            raise ImportError("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
+            raise ImportError(
+                "vimba or vmbpy are not installed. Install to use AlliedVision cameras."
+            )
 
         if AlliedVision.sdk is None:
             if verbose:
@@ -135,20 +140,19 @@ class AlliedVision(Camera):
         try:
             self.cam.BinningHorizontal.set(1)
             self.cam.BinningVertical.set(1)
-        except:
+        except Exception:
             print("Warning: failed to set binning to 1.")
 
         try:
             self.cam.GainAuto.set("Off")
-        except:
+        except Exception:
             print("Warning: failed to turn autogain off.")
 
         try:
             self.cam.ExposureAuto.set("Off")
             self.cam.ExposureMode.set("Timed")
-        except:
+        except Exception:
             print("Warning: failed to set exposure mode to timed.")
-
 
         try:
             self.cam.AcquisitionMode.set("SingleFrame")
@@ -158,7 +162,7 @@ class AlliedVision(Camera):
             self.cam.TriggerMode.set("Off")
             self.cam.TriggerActivation.set("RisingEdge")
             self.cam.TriggerSource.set("Software")
-        except:
+        except Exception:
             print("Warning: failed to set acquisition and trigger configuration.")
 
         # Cache whether the camera has ExposureTimeAbs or ExposureTime, for use
@@ -206,12 +210,14 @@ class AlliedVision(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of AlliedVision serial numbers.
         """
         if vimba_system is None:
-            raise ImportError("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
+            raise ImportError(
+                "vimba or vmbpy are not installed. Install to use AlliedVision cameras."
+            )
 
         if AlliedVision.sdk is None:
             AlliedVision.sdk = vimba_system.get_instance()
@@ -267,17 +273,17 @@ class AlliedVision(Camera):
 
             try:
                 print(prop.get(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_unit(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_description(), end="\n")
-            except:
+            except Exception:
                 print("")
 
     def set_adc_bitdepth(self, bitdepth):
@@ -367,7 +373,6 @@ class AlliedVision(Camera):
             woi = self.woi if self.woi is not None else maxwoi
             self._set_woi(woi)
             raise e
-
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""

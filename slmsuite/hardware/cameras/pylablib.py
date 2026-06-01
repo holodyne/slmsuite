@@ -10,26 +10,32 @@ For example, the following code loads a UC480 camera:
 
     # Load a legacy Thorlabs camera using the UC480 driver.
     import pylablib as pll
+
     pll.par["devices/dlls/uc480"] = "path/to/uc480/dlls"
     from pylablib.devices.uc480 import UC480Camera
+
     pll_cam = UC480Camera()
 
     # Wrap the camera with the slmsuite-compatible class.
     from slmsuite.hardware.cameras.pylablib import PyLabLib
+
     cam = PyLabLib(pll_cam)
 
 Note
 ~~~~
 Color camera functionality is not currently implemented, and will lead to undefined behavior.
 """
+
 import warnings
+
 from slmsuite.hardware.cameras.camera import Camera
 
 try:
     from pylablib.devices.interface.camera import ICamera
-except:
+except Exception:
     ICamera = None
     warnings.warn("pylablib not installed. Install to use PyLabLib cameras.")
+
 
 class PyLabLib(Camera):
     """
@@ -58,12 +64,15 @@ class PyLabLib(Camera):
 
                 # Load a legacy Thorlabs camera using the UC480 driver.
                 import pylablib as pll
+
                 pll.par["devices/dlls/uc480"] = "path/to/uc480/dlls"
                 from pylablib.devices.uc480 import UC480Camera
+
                 pll_cam = UC480Camera()
 
                 # Wrap the camera with the slmsuite-compatible class.
                 from slmsuite.hardware.cameras.pylablib import PyLabLib
+
                 cam = PyLabLib(pll_cam)
 
         pitch_um : (float, float) OR None
@@ -92,7 +101,7 @@ class PyLabLib(Camera):
         di = cam.get_device_info()
         info_counter = 1
         for info in di:
-            if isinstance(info, str):   # This will usually catch the mode name and serial number.
+            if isinstance(info, str):  # This will usually catch the mode name and serial number.
                 name += info + "_"
                 info_counter += 1
 
@@ -103,18 +112,20 @@ class PyLabLib(Camera):
             name = "pylablibcamera"
         name = kwargs.pop("name", name)
 
-        if verbose: print(f"Cam {name} parsing... ", end="")
+        if verbose:
+            print(f"Cam {name} parsing... ", end="")
         height, width = cam.get_data_dimensions()
         self.cam = cam
 
         super().__init__(
             (width, height),
-            bitdepth=8,         # Currently defaults to 8 because pylablib doesn't cache this. Update in the future, maybe.
+            bitdepth=8,  # Currently defaults to 8 because pylablib doesn't cache this. Update in the future, maybe.
             pitch_um=pitch_um,  # Currently unset because pylablib doesn't cache this. Update in the future, maybe.
             name=name,
-            **kwargs
+            **kwargs,
         )
-        if verbose: print("success")
+        if verbose:
+            print("success")
 
     def close(self):
         """
@@ -122,8 +133,8 @@ class PyLabLib(Camera):
         """
         try:
             self.cam.close()
-        except:
-            raise RuntimeError("This instrumental camera does not support .close().")
+        except Exception:
+            raise RuntimeError("This instrumental camera does not support .close().") from None
 
     @staticmethod
     def info(verbose=True):
@@ -160,7 +171,7 @@ class PyLabLib(Camera):
             If ``None``, defaults to largest possible.
 
         Returns
-        ----------
+        -------
         woi : list
             :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
         """

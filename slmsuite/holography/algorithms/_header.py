@@ -1,25 +1,30 @@
+import pprint
+import warnings
+
+import cv2
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-import cv2
-from tqdm.auto import tqdm
-import warnings
-import pprint
 
 # Import numpy and scipy dependencies.
 import numpy as np
 import scipy.fft as spfft
-from scipy.ndimage import gaussian_filter1d as sp_gaussian_filter1d
-from scipy.ndimage import affine_transform as sp_affine_transform
-from scipy.ndimage import gaussian_filter as sp_gaussian_filter
+from scipy.ndimage import (
+    affine_transform as sp_affine_transform,
+    gaussian_filter as sp_gaussian_filter,
+    gaussian_filter1d as sp_gaussian_filter1d,
+)
+from tqdm.auto import tqdm
 
 # Try to import cupy, but revert to base numpy/scipy upon ImportError.
 try:
-    import cupy as cp                                                           # type: ignore
-    import cupyx.scipy.fft as cpfft                                             # type: ignore
-    from cupyx import zeros_pinned as cp_zeros_pinned                           # type: ignore
-    from cupyx.scipy.ndimage import gaussian_filter1d as cp_gaussian_filter1d   # type: ignore
-    from cupyx.scipy.ndimage import gaussian_filter as cp_gaussian_filter       # type: ignore
-    from cupyx.scipy.ndimage import affine_transform as cp_affine_transform     # type: ignore
+    import cupy as cp  # type: ignore
+    from cupyx import zeros_pinned as cp_zeros_pinned  # type: ignore
+    import cupyx.scipy.fft as cpfft  # type: ignore
+    from cupyx.scipy.ndimage import (
+        affine_transform as cp_affine_transform,  # type: ignore
+        gaussian_filter as cp_gaussian_filter,  # type: ignore
+        gaussian_filter1d as cp_gaussian_filter1d,  # type: ignore
+    )
 except ImportError:
     cp = np
     cpfft = spfft
@@ -33,15 +38,20 @@ except ImportError:
 
 try:
     import torch
-except:
+except Exception:
     torch = None
 
 # Import helper functions
 from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.toolbox import phase as tphase
-from slmsuite.holography.toolbox.phase import CUDA_KERNELS, _zernike_populate_basis_map, zernike_sum, _load_cuda
+from slmsuite.holography.toolbox.phase import (
+    CUDA_KERNELS,
+    _load_cuda,
+    _zernike_populate_basis_map,
+    zernike_sum,
+)
+from slmsuite.misc.files import load_h5, save_h5
 from slmsuite.misc.math import REAL_TYPES
-from slmsuite.misc.files import save_h5, load_h5
 
 # List of algorithms and default parameters.
 # See algorithm documentation for parameter definitions.
@@ -60,16 +70,16 @@ ALGORITHM_DEFAULTS = {
         "feedback_exponent": 0.8,
     },
     "WGS-Nogrette": {"feedback": "computational", "feedback_factor": 0.1},
-    "WGS-Wu": {"feedback": "computational", "feedback_exponent": .5},
-    "WGS-tanh": {"feedback": "computational", "feedback_factor": .2, "feedback_exponent": .5},
-    "CG" : {
+    "WGS-Wu": {"feedback": "computational", "feedback_exponent": 0.5},
+    "WGS-tanh": {"feedback": "computational", "feedback_factor": 0.2, "feedback_exponent": 0.5},
+    "CG": {
         "feedback": "computational",
         "optimizer": "Adam",
-        "optimizer_kwargs": {"lr": .1},
-        "loss": None
-    }
+        "optimizer_kwargs": {"lr": 0.1},
+        "loss": None,
+    },
 }
-ALGORITHM_INDEX = {key : i for i, key in enumerate(ALGORITHM_DEFAULTS.keys())}
+ALGORITHM_INDEX = {key: i for i, key in enumerate(ALGORITHM_DEFAULTS.keys())}
 
 # List of feedback options. See the documentation for the feedback keyword in optimize().
 FEEDBACK_OPTIONS = [

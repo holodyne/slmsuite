@@ -1,21 +1,23 @@
 """
 Unit tests for the _Picklable base class, which handles object serialization and saving.
 """
-import pytest
-import tempfile
+
 import os
+import tempfile
+from typing import ClassVar
 
 import h5py
+import pytest
 
-from slmsuite.hardware import _Picklable
 from slmsuite import __version__
+from slmsuite.hardware import _Picklable
 
 
 class _TestPicklableClass(_Picklable):
     """Concrete _Picklable used by most tests."""
 
-    _pickle = ["basic_attr", "name"]
-    _pickle_data = ["heavy_attr"]
+    _pickle: ClassVar[list[str]] = ["basic_attr", "name"]
+    _pickle_data: ClassVar[list[str]] = ["heavy_attr"]
 
     def __init__(self):
         self.basic_attr = 42
@@ -83,16 +85,14 @@ class TestPicklable:
     def test_pickle_edge_cases(self, subtests):
         """Test warnings, nested objects, and empty _pickle lists."""
         with subtests.test("missing attribute warns"):
-            with pytest.warns(
-                UserWarning, match="Expected attribute 'nonexistent' not present"
-            ):
+            with pytest.warns(UserWarning, match="Expected attribute 'nonexistent' not present"):
                 result = self.obj.pickle(attributes=["nonexistent"], metadata=False)
             assert "__class__" in result
 
         with subtests.test("nested Picklable is recursively pickled"):
 
             class _Nested(_Picklable):
-                _pickle = ["nested_value"]
+                _pickle: ClassVar[list[str]] = ["nested_value"]
 
                 def __init__(self):
                     self.nested_value = "nested"
@@ -110,8 +110,8 @@ class TestPicklable:
         with subtests.test("empty _pickle lists yield only __class__"):
 
             class _Empty(_Picklable):
-                _pickle = []
-                _pickle_data = []
+                _pickle: ClassVar[list] = []
+                _pickle_data: ClassVar[list] = []
 
                 def __init__(self):
                     self.some_attr = "value"
@@ -148,7 +148,7 @@ class TestPicklable:
         with subtests.test("no name attribute raises AttributeError"):
 
             class _NoName(_Picklable):
-                _pickle = ["value"]
+                _pickle: ClassVar[list[str]] = ["value"]
 
                 def __init__(self):
                     self.value = 123

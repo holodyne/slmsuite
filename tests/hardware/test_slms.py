@@ -1,13 +1,14 @@
 """
 Unit tests for SLM base class.
 """
+
 import os
 import tempfile
 import warnings
 
-import pytest
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import pytest
 
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 
@@ -62,8 +63,10 @@ class TestSLM:
 
     def test_phase2gray(self, slm, subtests, benchmark):
         """Edge cases for _phase2gray not covered by .test()."""
+        rng = np.random.default_rng(42)
+
         with subtests.test("benchmark"):
-            phase = np.random.uniform(0, 2 * np.pi, slm.shape).astype(np.float32)
+            phase = rng.uniform(0, 2 * np.pi, slm.shape).astype(np.float32)
             benchmark(slm._phase2gray, phase)
 
         with subtests.test("negative phase wraps to valid gray"):
@@ -89,8 +92,10 @@ class TestSLM:
 
     def test_set_phase(self, slm, subtests, benchmark):
         """set_phase edge cases beyond what .test() exercises."""
+        rng = np.random.default_rng(42)
+
         with subtests.test("benchmark"):
-            phase = np.random.uniform(0, 2 * np.pi, slm.shape).astype(np.float32)
+            phase = rng.uniform(0, 2 * np.pi, slm.shape).astype(np.float32)
             benchmark(slm.set_phase, phase, phase_correct=False)
 
         with subtests.test("None zeros phase and display"):
@@ -133,7 +138,7 @@ class TestSLM:
                 slm.set_phase(int_data, phase_correct=False)
 
         with subtests.test("display in valid range after random phase"):
-            phase = np.random.uniform(-4 * np.pi, 4 * np.pi, slm.shape).astype(np.float32)
+            phase = rng.uniform(-4 * np.pi, 4 * np.pi, slm.shape).astype(np.float32)
             slm.set_phase(phase, phase_correct=False)
             assert np.all(slm.display < slm.bitresolution)
 
@@ -143,8 +148,10 @@ class TestSLM:
 
     def test_save_load_phase(self, slm, subtests):
         """Round-trip save/load of phase data."""
+        rng = np.random.default_rng(42)
+
         with subtests.test("save then load restores display"):
-            slm.set_phase(np.random.rand(*slm.shape) * 2 * np.pi, phase_correct=False)
+            slm.set_phase(rng.random(slm.shape) * 2 * np.pi, phase_correct=False)
             saved_display = slm.display.copy()
             with tempfile.TemporaryDirectory() as d:
                 path = slm.save_phase(path=d, name="test")
@@ -209,6 +216,8 @@ class TestSLM:
 
     def test_source_helpers(self, slm, subtests):
         """_get_source_amplitude/phase fallbacks when source is empty."""
+        rng = np.random.default_rng(42)
+
         with subtests.test("no amplitude -> ones"):
             slm.source.pop("amplitude", None)
             assert np.all(slm._get_source_amplitude() == 1)
@@ -218,7 +227,7 @@ class TestSLM:
             assert np.all(slm._get_source_phase() == 0)
 
         with subtests.test("with amplitude -> returns it"):
-            amp = np.random.rand(*slm.shape)
+            amp = rng.random(slm.shape)
             slm.source["amplitude"] = amp
             np.testing.assert_array_equal(slm._get_source_amplitude(), amp)
 
@@ -228,7 +237,6 @@ class TestSLM:
 
     def test_plot(self, slm, subtests):
         """plot() runs without error for common argument combos."""
-        import matplotlib.pyplot as plt
 
         with subtests.test("default"):
             ax = slm.plot()
@@ -253,15 +261,15 @@ class TestSLM:
         slm.set_source_analytic(sim=True)
 
         with subtests.test("measured amplitude & phase"):
-            axs = slm.plot_source(sim=False)
+            slm.plot_source(sim=False)
             plt.show()
 
         with subtests.test("simulated"):
-            axs = slm.plot_source(sim=True)
+            slm.plot_source(sim=True)
             plt.show()
 
         with subtests.test("power mode"):
-            axs = slm.plot_source(power=True)
+            slm.plot_source(power=True)
             plt.show()
 
         with subtests.test("missing sim keys raises"):

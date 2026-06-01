@@ -1,8 +1,5 @@
-from typing import Any
 from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._hologram import Hologram
-from slmsuite.holography.algorithms._spots import SpotHologram, CompressedSpotHologram
-from slmsuite.holography.algorithms._feedback import FeedbackHologram
 
 
 class MultiplaneHologram(Hologram):
@@ -36,6 +33,7 @@ class MultiplaneHologram(Hologram):
         holograms. Keep in mind that each hologram will normalize itself, so differences
         in intensity between target patterns cannot be relied upon.
     """
+
     def __init__(self, holograms, weights=None):
         """
         Initializes a 'meta' hologram consisting of several sub-holograms optimizing at
@@ -55,12 +53,14 @@ class MultiplaneHologram(Hologram):
         for h in self.holograms:
             if "MultiplaneHologram" in str(type(h)):
                 raise ValueError("Multiplane hologram recursion is not supported.")
-            if not "Hologram" in str(type(h)):
-                raise ValueError(f"Multiplane hologram must be provided child holograms, not {type(h)}")
+            if "Hologram" not in str(type(h)):
+                raise ValueError(
+                    f"Multiplane hologram must be provided child holograms, not {type(h)}"
+                )
 
         # Construct the parent hologram with empty goals but complete context.
         super().__init__(
-            target=holograms[0].slm_shape,      # This hologram has a fake target.
+            target=holograms[0].slm_shape,  # This hologram has a fake target.
             amp=holograms[0].amp,
             phase=holograms[0].phase,
             slm_shape=holograms[0].slm_shape,
@@ -77,7 +77,9 @@ class MultiplaneHologram(Hologram):
         if weights is None:
             weights = np.ones(len(self), dtype=self.dtype)
 
-        self.weights = np.array(weights, copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype)
+        self.weights = np.array(
+            weights, copy=(False if np.__version__[0] == "1" else None), dtype=self.dtype
+        )
         self.weights /= Hologram._norm(self.weights, xp=np)
 
     def __len__(self):
@@ -156,7 +158,7 @@ class MultiplaneHologram(Hologram):
         w0_pix = f_eff * w0_kxy
         w0_um = w0_pix * np.mean(cameraslm.cam.pitch_um)
 
-        zr = np.pi * w0_um * w0_um / cameraslm.slm.wav_um     # (what if n != 1?)
+        zr = np.pi * w0_um * w0_um / cameraslm.slm.wav_um  # (what if n != 1?)
 
         for j, z2 in enumerate(return_depths):
             for i, z1 in enumerate(target_depths):
@@ -180,10 +182,12 @@ class MultiplaneHologram(Hologram):
             h.flags.update(self.flags)
 
     def _update_weights(self, *args, **kwargs):
-        for h in self.holograms: h._update_weights(*args, **kwargs)
+        for h in self.holograms:
+            h._update_weights(*args, **kwargs)
 
     def _gs_farfield_routines(self, *args, **kwargs):
-        for h in self.holograms: h._gs_farfield_routines(*args, **kwargs)
+        for h in self.holograms:
+            h._gs_farfield_routines(*args, **kwargs)
 
     def _get_target_moments_knm_norm(self):
         # Get the data from the child holograms.
@@ -207,7 +211,9 @@ class MultiplaneHologram(Hologram):
         r = c + stds * np.sqrt(3)
 
         integral_normalized = (r * r * r - l * l * l) / (2 * stds * np.sqrt(3)) / 3
-        std = np.sqrt(np.nansum(np.square(self.weights).reshape(-1, 1) * integral_normalized, axis=0))
+        std = np.sqrt(
+            np.nansum(np.square(self.weights).reshape(-1, 1) * integral_normalized, axis=0)
+        )
 
         return center, std
 
@@ -217,23 +223,30 @@ class MultiplaneHologram(Hologram):
         super().reset(reset_phase, reset_flags)
 
         # Reset the other child variables.
-        for h in self.holograms: h.reset(reset_phase=False, reset_flags=reset_flags)
+        for h in self.holograms:
+            h.reset(reset_phase=False, reset_flags=reset_flags)
 
     def reset_weights(self):
-        for h in self.holograms: h.reset_weights()
+        for h in self.holograms:
+            h.reset_weights()
 
     def plot_farfield(self, *args, **kwargs):
-        for h in self.holograms: h.plot_farfield(*args, **kwargs)
+        for h in self.holograms:
+            h.plot_farfield(*args, **kwargs)
 
     # def plot_nearfield(self, *args, **kwargs):
     #     for h in self.holograms: h.plot_nearfield(*args, **kwargs)
 
     def plot_stats(self, *args, **kwargs):
-        for h in self.holograms: h.plot_stats(*args, **kwargs)
+        for h in self.holograms:
+            h.plot_stats(*args, **kwargs)
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
+        if stat_groups is None:
+            stat_groups = []
         # FUTURE: make meta stat group.
-        for h in self.holograms: h._update_stats(stat_groups)
+        for h in self.holograms:
+            h._update_stats(stat_groups)
 
     def set_target(self, *args, **kwargs):
         raise RuntimeError(
@@ -263,7 +276,7 @@ class MultiplaneHologram(Hologram):
         self.nearfield.fill(0)
 
         for h, w in zip(self.holograms, self.weights):
-            h._farfield2nearfield(extract=False)    # Avoid individually extracting phase.
+            h._farfield2nearfield(extract=False)  # Avoid individually extracting phase.
 
             (i0, i1, i2, i3) = toolbox.unpad(h.shape, h.slm_shape)
 
@@ -286,4 +299,5 @@ class MultiplaneHologram(Hologram):
             h._gs_farfield_routines(mraf)
 
     def remove_vortices(self):
-        for h in self.holograms: h.remove_vortices()
+        for h in self.holograms:
+            h.remove_vortices()

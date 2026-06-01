@@ -1,37 +1,38 @@
 """
 Unit tests for slmsuite.holography.algorithms module.
 """
-import pytest
-import numpy as np
-import logging
-import copy
 
-from slmsuite.holography.algorithms import *
+import copy
+import logging
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+
 from slmsuite.hardware.slms.simulated import SimulatedSLM
+from slmsuite.holography.algorithms import *
 from slmsuite.holography.toolbox import convert_vector, format_vectors
 from slmsuite.holography.toolbox.phase import blaze
-import matplotlib.pyplot as plt
 
 # Module-level logger for test output
 logger = logging.getLogger(__name__)
+
 
 class TestHologram:
     """Tests for Hologram class."""
 
     def test_hologram_construction(self):
         """Test the primitives for hologram formation."""
+        rng = np.random.default_rng(42)
         slm_shape = (256, 256)
         shape = (512, 512)
 
-        random_phase = np.random.uniform(0, 2 * np.pi, slm_shape).astype(np.float32)
-        random_amplitude = np.random.uniform(0, 1, slm_shape).astype(np.float32) + 1e-2
+        random_phase = rng.uniform(0, 2 * np.pi, slm_shape).astype(np.float32)
+        random_amplitude = rng.uniform(0, 1, slm_shape).astype(np.float32) + 1e-2
 
         target = np.zeros(shape, dtype=np.float32)
         hologram = Hologram(
-            target=target,
-            slm_shape=slm_shape,
-            phase=random_phase,
-            amp=random_amplitude
+            target=target, slm_shape=slm_shape, phase=random_phase, amp=random_amplitude
         )
 
         # Check shape conventions
@@ -56,7 +57,7 @@ class TestHologram:
 
         rng = np.random.default_rng(random_seed)
         test_point = (rng.integers(0, 64), rng.integers(0, 64))
-        logger.info(f'GS Convergence Test Point: {test_point}')
+        logger.info(f"GS Convergence Test Point: {test_point}")
         target[test_point] = 1
         hologram = Hologram(target=target)
 
@@ -64,21 +65,21 @@ class TestHologram:
 
         # Check that output matches the expected grating
         slm = SimulatedSLM(hologram.target.shape)
-        kxy = convert_vector(format_vectors(test_point[::-1]), "knm","norm", hardware=slm)
-        blaze_phase = copy.deepcopy(slm.set_phase(blaze(slm,kxy)))
+        kxy = convert_vector(format_vectors(test_point[::-1]), "knm", "norm", hardware=slm)
+        blaze_phase = copy.deepcopy(slm.set_phase(blaze(slm, kxy)))
         holo_phase = copy.deepcopy(slm.set_phase(hologram.get_phase()))
         phase_err = holo_phase - blaze_phase
-        rel_err = np.amax(np.abs(phase_err - phase_err.flat[0])) / (2*np.pi)
+        rel_err = np.amax(np.abs(phase_err - phase_err.flat[0])) / (2 * np.pi)
 
         # Comparison plot
         fig, axs = plt.subplots(2, 2, constrained_layout=True)
         hologram.plot_farfield(axs=axs[0])
-        axs[0,1].cla()
-        axs[0,1].imshow(phase_err)
-        axs[0,1].set_title('Phase Error')
-        slm.plot(phase=blaze_phase, title='Blaze Phase', ax=axs[1,0], cbar=False)
-        slm.plot(phase=holo_phase, title='Hologram Phase', ax=axs[1,1], cbar=False)
-        fig.suptitle(f'{method} | Relative Error: {rel_err:.2e}', fontsize=12)
+        axs[0, 1].cla()
+        axs[0, 1].imshow(phase_err)
+        axs[0, 1].set_title("Phase Error")
+        slm.plot(phase=blaze_phase, title="Blaze Phase", ax=axs[1, 0], cbar=False)
+        slm.plot(phase=holo_phase, title="Hologram Phase", ax=axs[1, 1], cbar=False)
+        fig.suptitle(f"{method} | Relative Error: {rel_err:.2e}", fontsize=12)
         plt.show()
 
         assert np.allclose(phase_err, phase_err.flat[0], rtol=0.1, atol=0.1)
@@ -90,9 +91,9 @@ class TestHologram:
         target = np.zeros((64, 64))
 
         rng = np.random.default_rng(random_seed)
-        for i in range(20):
+        for _i in range(20):
             test_point = (rng.integers(0, 64), rng.integers(0, 64))
-            logger.info(f'Adding GS test point at: {test_point}')
+            logger.info(f"Adding GS test point at: {test_point}")
             target[test_point] = 1
         hologram = Hologram(target=target)
 
@@ -102,9 +103,9 @@ class TestHologram:
 
         # Comparison plot - show target, result...
         fig, axs = plt.subplots(2, 2, constrained_layout=True)
-        hologram.plot_farfield(source=hologram.target,axs=axs[0])
+        hologram.plot_farfield(source=hologram.target, axs=axs[0])
         hologram.plot_farfield(axs=axs[1])
-        fig.suptitle(f'{method} | Relative Error: {stats["std_err"][-1]:.2e}', fontsize=12)
+        fig.suptitle(f"{method} | Relative Error: {stats['std_err'][-1]:.2e}", fontsize=12)
         plt.show()
 
         # Check that efficiency improves
@@ -115,7 +116,7 @@ class TestHologram:
         assert np.std(recent_efficiencies) < 0.05
 
         # Check that error decreases
-        if method != "GS": # Basic GS may have non-monotonic error
+        if method != "GS":  # Basic GS may have non-monotonic error
             assert stats["std_err"][-1] <= stats["std_err"][1]
 
     @pytest.mark.parametrize("method", ["GS", "WGS-Leonardo", "WGS-Kim", "WGS-Nogrette"])
@@ -124,7 +125,7 @@ class TestHologram:
         target = np.zeros((1024, 1024))
 
         rng = np.random.default_rng(random_seed)
-        for i in range(20):
+        for _i in range(20):
             test_point = (rng.integers(0, 1024), rng.integers(0, 1024))
             target[test_point] = 1
         hologram = Hologram(target=target)
@@ -135,10 +136,11 @@ class TestHologram:
     def test_gs_speed_gpu(self, random_seed, method, benchmark, has_cupy):
         """GPU speed benchmark for GS algorithms (no stats overhead)."""
         import cupy as cp
+
         target = cp.zeros((1024, 1024))
 
         rng = np.random.default_rng(random_seed)
-        for i in range(20):
+        for _i in range(20):
             test_point = (rng.integers(0, 1024), rng.integers(0, 1024))
             target[test_point] = 1
         hologram = Hologram(target=target)

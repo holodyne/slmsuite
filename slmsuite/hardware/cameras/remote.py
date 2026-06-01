@@ -1,16 +1,22 @@
 """
 Connects to a camera on a remote :class:`~slmsuite.hardware.remote.Server`.
 """
-import warnings, time
+
+import time
+from typing import ClassVar
+import warnings
+
 from slmsuite.hardware.cameras.camera import Camera
-from slmsuite.hardware.remote import _Client, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT
+from slmsuite.hardware.remote import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, _Client
+
 
 class RemoteCamera(_Client, Camera):
     """
     Connects to a camera on a remote :class:`~slmsuite.hardware.remote.Server`.
     """
 
-    _pickle = Camera._pickle + [
+    _pickle: ClassVar[list[str]] = [
+        *Camera._pickle,
         "server_attributes",
         "host",
         "port",
@@ -24,7 +30,7 @@ class RemoteCamera(_Client, Camera):
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         timeout: float = DEFAULT_TIMEOUT,
-        **kwargs
+        **kwargs,
     ):
         r"""
         Connects to a camera on a remote :class:`~slmsuite.hardware.remote.Server`.
@@ -61,7 +67,7 @@ class RemoteCamera(_Client, Camera):
             bitdepth=pickled["bitdepth"],
             pitch_um=pickled["pitch_um"],
             name=self.name,
-            **kwargs
+            **kwargs,
         )
 
     def close(self):
@@ -71,10 +77,7 @@ class RemoteCamera(_Client, Camera):
 
     def flush(self, timeout_s=1):
         """See :meth:`.Camera.flush`."""
-        return self._com(
-            command="flush",
-            kwargs=dict(timeout_s=timeout_s)
-        )
+        return self._com(command="flush", kwargs={"timeout_s": timeout_s})
 
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
@@ -84,19 +87,13 @@ class RemoteCamera(_Client, Camera):
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
-        return self._com(
-            command="_set_exposure_hw",
-            kwargs=dict(exposure_s=exposure_s)
-        )
+        return self._com(command="_set_exposure_hw", kwargs={"exposure_s": exposure_s})
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
         t = time.perf_counter()
-        img = self._com(
-            command="_get_image_hw",
-            kwargs=dict(timeout_s=timeout_s)
-        )
-        print(time.perf_counter()-t)
+        img = self._com(command="_get_image_hw", kwargs={"timeout_s": timeout_s})
+        print(time.perf_counter() - t)
         return img
 
     def _get_images_hw(self, image_count, timeout_s, out=None):
@@ -105,6 +102,5 @@ class RemoteCamera(_Client, Camera):
             warnings.warn("Remote camera does not support in-place operations.")
 
         return self._com(
-            command="_get_images_hw",
-            kwargs=dict(image_count=image_count, timeout_s=timeout_s)
+            command="_get_images_hw", kwargs={"image_count": image_count, "timeout_s": timeout_s}
         )

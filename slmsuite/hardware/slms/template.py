@@ -2,7 +2,9 @@
 Template for writing a subclass for SLM hardware control in :mod:`slmsuite`.
 Outlines which SLM superclass functions must be implemented.
 """
+
 from .slm import SLM
+
 
 class Template(SLM):
     """
@@ -11,12 +13,14 @@ class Template(SLM):
     superclass that sets the requirements for :class:`Template`.
     """
 
+    # TODO: Remove the below default arguments if the SLM SDK has some function to read them from the SLM.
+    # Otherwise, the user must supply them as they are critical for transformations and calibrations.
     def __init__(
         self,
-        bitdepth=8,         # TODO: Remove these arguments if the SLM SDK
-        wav_um=1,           #       has some function to read them from the SLM.
-        pitch_um=(8,8),     #       Otherwise, the user must supply them as they
-        **kwargs            #       are critical for transformations and calibrations.
+        bitdepth=8,
+        wav_um=1,
+        pitch_um=(8, 8),
+        **kwargs,
     ):
         r"""
         Initialize SLM and attributes.
@@ -38,7 +42,6 @@ class Template(SLM):
         may be more accurately filled by calling the SLM's SDK functions.
         See the other implemented SLM subclasses for examples.
         """
-
         # TODO: Insert code here to initialize the SLM hardware, load properties, etc.
 
         # Mandatory functions:
@@ -61,7 +64,7 @@ class Template(SLM):
             bitdepth=bitdepth,
             wav_um=wav_um,
             pitch_um=pitch_um,
-            **kwargs
+            **kwargs,
         )
 
         # Zero the display using the superclass `set_phase()` function.
@@ -83,22 +86,22 @@ class Template(SLM):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of serial numbers or identifiers.
         """
         raise NotImplementedError()
-        serial_list = get_serial_list()     # TODO: Fill in proper function.
+        serial_list = get_serial_list()  # TODO: Fill in proper function.
         return serial_list
 
     def _set_phase_hw(
-            self,
-            display,
-            # execute: bool = True,    # TODO: Implement if supported.
-            # block: bool = True,      # TODO: Implement if supported.
-            # Add other keyword arguments if needed;
-            # these are passed directly from set_phase(**kwargs)
-        ):
+        self,
+        display,
+        # execute: bool = True,    # TODO: Implement if supported.
+        # block: bool = True,      # TODO: Implement if supported.
+        # Add other keyword arguments if needed;
+        # these are passed directly from set_phase(**kwargs)
+    ):
         """
         Hardware-specific implementation.
 
