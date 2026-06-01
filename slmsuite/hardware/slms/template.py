@@ -13,12 +13,14 @@ class Template(SLM):
     superclass that sets the requirements for :class:`Template`.
     """
 
+    # TODO: Remove the below default arguments if the SLM SDK has some function to read them from the SLM.
+    # Otherwise, the user must supply them as they are critical for transformations and calibrations.
     def __init__(
         self,
-        bitdepth=8,  # TODO: Remove these arguments if the SLM SDK
-        wav_um=1,  #       has some function to read them from the SLM.
-        pitch_um=(8, 8),  #       Otherwise, the user must supply them as they
-        **kwargs,  #       are critical for transformations and calibrations.
+        bitdepth=8,
+        wav_um=1,
+        pitch_um=(8, 8),
+        **kwargs,
     ):
         r"""
         Initialize SLM and attributes.
