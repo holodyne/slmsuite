@@ -57,13 +57,13 @@ def configure_plotting(mode="show", save_dir=None, prefix="", headless=False):
         Switch to the ``"Agg"`` backend and call ``plt.ioff()``.
     """
     import matplotlib
+    if headless:
+        matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     global _fig_counts, _save_dir, _prefix, _current_handler
 
     if headless:
-        matplotlib.use("Agg")
         plt.ioff()
-
     if mode == "show":
         _current_handler = None
 

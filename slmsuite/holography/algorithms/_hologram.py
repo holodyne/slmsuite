@@ -456,8 +456,8 @@ class Hologram(_HologramStats, _Loggable):
             except:
                 pass
 
-        self.name = ""
-
+        self.name = self.__class__.__name__
+        _Loggable.__init__(self)
     # Initialization helper functions.
     def reset(self, reset_phase=True, reset_flags=False):
         r"""

@@ -222,7 +222,7 @@ class _HologramStats(object):
 
         self._update_stats_dictionary(stats)
 
-    # These functions are somewhat superseded by picke.
+    # These functions are somewhat superseded by pickle.
 
     def save_stats(self, file_path, include_state=True):
         """

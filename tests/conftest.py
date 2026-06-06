@@ -326,7 +326,7 @@ def configure_matplotlib_for_testing(request):
         # Track figure count per test
         test_fig_counts = {}
 
-        def custom_show(name=None):
+        def custom_show(name=None, *args, **kwargs):
             """
             Replacement for plt.show() that saves figures with descriptive names.
 
