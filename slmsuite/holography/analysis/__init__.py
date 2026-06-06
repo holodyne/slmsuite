@@ -232,9 +232,6 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
         vmin = np.nanmin(images)
         vmax = np.nanmax(images)
 
-        # Make the figure and subplots.
-        plt.figure(figsize=(12, 12))
-
         for x in range(img_count):
             ax = plt.subplot(M, M, x + 1)
 
@@ -247,6 +244,8 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
             )
             ax.axes.xaxis.set_visible(False)
             ax.axes.yaxis.set_visible(False)
+
+        plt.show()
     else:
         im = plt.imshow(
             take_tile(images, shape),
@@ -268,6 +267,8 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
 
             # Return the current axes to the original one.
             plt.sca(ax)
+
+        plt.show()
 
 
 def _take_parse_shape(images, shape=None):

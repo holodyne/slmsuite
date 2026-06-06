@@ -1004,12 +1004,14 @@ class Camera(_Common, ABC):
             image = self.last_image
         image = np.array(image, copy=(False if np.__version__[0] == '1' else None))
 
-        if len(plt.get_fignums()) > 0:
-            fig = plt.gcf()
+        should_show = False
+        if ax is None:
+            if len(plt.get_fignums()) > 0:
+                fig = plt.gcf()
+            else:
+                fig = plt.figure(figsize=(20,8))
+                should_show = True
         else:
-            fig = plt.figure(figsize=(20,8))
-
-        if ax is not None:
             plt.sca(ax)
 
         im = plt.imshow(image)
@@ -1044,6 +1046,9 @@ class Camera(_Common, ABC):
 
         plt.sca(ax)
 
+
+        if should_show:
+            plt.show()
         return ax
 
     # Other helper methods.

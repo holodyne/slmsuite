@@ -1169,8 +1169,7 @@ def zernike_pyramid_plot(
     ):
     r"""
     Plots :meth:`.zernike()` on a pyramid of subplots corresponding to the radial and
-    azimuthal order. The user can resize the figure with ``plt.figure()`` beforehand
-    and force ``plt.show()`` afterward.
+    azimuthal order. The user can resize the figure with ``plt.figure()`` beforehand.
 
     Parameters
     ----------
@@ -1274,6 +1273,8 @@ def zernike_pyramid_plot(
         box = box.translated(dx * pitch, 0)
         a.set_position(box)
 
+    plt.show()
+
 
 def _zernike_overlap(
     grid, indices, aperture=None, use_mask=True
@@ -1320,10 +1321,10 @@ def _zernike_overlap(
 
 
 def _zernike_cache_plot():
-    plt.figure(figsize=(10,10))
     plt.imshow(np.log2(_zernike_cache_vectorized))
     plt.ylabel("Zernike Index (ANSI)");
     plt.xlabel("Monomial Index (Cantor)");
+    plt.show()
 
 
 # Old style dictionary.     {(n,m) : {(nx, ny) : w, ... }, ... }

@@ -150,19 +150,27 @@ class CameraSLM(_Picklable):
         if image is None and phase is not None and np.shape(phase) == self.slm.shape:
             self.slm.set_phase(phase, **kwargs)
 
-        if len(plt.get_fignums()) > 0:
-            fig = plt.gcf()
-        else:
-            fig = plt.figure(figsize=(20,8))
 
+        should_show = False
         if axs is None:
+            if len(plt.get_fignums()) > 0:
+                fig = plt.gcf()
+            else:
+                fig = plt.figure(figsize=(20,8))
+                should_show = True
             axs = (fig.add_subplot(1, 2, 1), fig.add_subplot(1, 2, 2))
+        else:
+            if len(axs) != 2:
+                raise ValueError(f"Expected axs to be a tuple of two axes. Found length {len(axs)} tuple.")
 
         self.slm.plot(phase=phase, limits=slm_limits, title="", ax=axs[0], cbar=cbar)
         self.cam.plot(image=image, limits=cam_limits, title="", ax=axs[1], cbar=cbar)
 
         fig.suptitle(title)
         plt.tight_layout()
+
+        if should_show:
+            plt.show()
 
         return axs
 

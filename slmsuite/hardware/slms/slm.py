@@ -338,12 +338,14 @@ class SLM(_Common, _Loggable, ABC):
         phase = np.array(phase, copy=(False if np.__version__[0] == '1' else None))
         phase = np.mod(phase, 2*np.pi) / np.pi
 
-        if len(plt.get_fignums()) > 0:
-            fig = plt.gcf()
+        should_show = False
+        if ax is None:
+            if len(plt.get_fignums()) > 0:
+                fig = plt.gcf()
+            else:
+                fig = plt.figure(figsize=(20,8))
+                should_show = True
         else:
-            fig = plt.figure(figsize=(20,8))
-
-        if ax is not None:
             plt.sca(ax)
 
         im = plt.imshow(phase, clim=[0, 2], cmap="twilight", interpolation="none")
@@ -380,6 +382,9 @@ class SLM(_Common, _Loggable, ABC):
             ax.set_ylabel("SLM $m$ [pix]")
 
         plt.sca(ax)
+
+        if should_show:
+            plt.show()
 
         return ax
 

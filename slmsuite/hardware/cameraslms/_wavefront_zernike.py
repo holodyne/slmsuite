@@ -548,6 +548,7 @@ class _WavefrontCalibrationZernike(object):
         cbar.ax.set_ylabel("Aberration Correction [rad]") #, rotation=270)
         plt.clim(-lim, lim)
         plt.title(f"Zernike $Z_{zernike_indices[index]}$")
+        plt.show()
 
     @staticmethod
     def _wavefront_calibrate_zernike_default_metric(images):
