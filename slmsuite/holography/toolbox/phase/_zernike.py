@@ -1499,21 +1499,18 @@ def _parse_out(x_grid, out, stack=1):
     shape = tuple(np.concatenate(([stack], x_grid.shape)))
 
     if out is None:
-        # Initialize out to zero.
-        if cp == np:
-            out = np.zeros(shape, x_grid.dtype)
-        else:
-            out = cp.get_array_module(x_grid).zeros(shape, x_grid.dtype)
-
-        return out
+        # Initialize out to zero on the grid's own backend (numpy/cupy). ``xp.zeros(shape, dtype)``
+        # is the shared numpy/cupy signature; torch coordinate grids are not supported here.
+        xp = backend.get_module(x_grid)
+        return xp.zeros(shape, x_grid.dtype)
     else:
         # Error check user-provided out.
         if out.size != np.prod(shape):
             raise ValueError("out must have same size as the stacked grid.")
         if out.dtype != x_grid.dtype:
             raise ValueError("out must have same type as grid.")
-        if cp != np and cp.get_array_module(x_grid) != cp.get_array_module(out):
-            raise ValueError("out and grid must both be cupy arrays if one is.")
+        if backend.get_module(x_grid) is not backend.get_module(out):
+            raise ValueError("out and grid must be on the same array backend.")
 
         return out.reshape(shape)
 
@@ -1598,12 +1595,8 @@ def polynomial(grid, weights, terms=None, pathing=None, out=None):
 
     out.fill(0)
     nx0 = ny0 = 0
-    if cp == np:
-        xp = np
-        monomial = np.ones_like(x_grid)
-    else:
-        xp = cp.get_array_module(x_grid)
-        monomial = xp.ones_like(x_grid)
+    xp = backend.get_module(x_grid)
+    monomial = xp.ones_like(x_grid)
 
     # Force datatype for easier multiplication.
     weights = weights.astype(out.dtype)

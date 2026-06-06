@@ -695,6 +695,23 @@ def test_zernike_basis(normalized_grid, subtests):
         assert np.allclose(w_torch.grad.cpu().numpy(), np.asarray(expected), atol=1e-6)
 
 
+def test_zernike_module_dispatch_resolves_torch(normalized_grid, subtests):
+    """The Zernike namespace resolver must recognize torch tensors (not fall back to numpy).
+
+    Regression for the removal of the cupy-only ``_zernike_xp`` helper, which silently treated
+    torch tensors as numpy. ``backend.get_module`` now backs the dispatch. (Full torch *grid*
+    evaluation through ``zernike_sum`` is a separate, larger effort; the supported differentiable
+    entry point is torch *weights* against a numpy/cupy basis -- covered in ``test_zernike_basis``.)
+    """
+    torch = pytest.importorskip("torch")
+    from slmsuite.misc import backend
+
+    Xn, _ = normalized_grid
+    with subtests.test("get_module dispatches torch / numpy correctly"):
+        assert backend.get_module(torch.as_tensor(Xn)) is torch
+        assert backend.get_module(Xn) is np
+
+
 def test_polynomial(simple_grid, subtests):
     """Test polynomial() monomial summation."""
     with subtests.test("constant term (x^0 * y^0)"):

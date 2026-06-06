@@ -187,9 +187,10 @@ class FeedbackHologram(Hologram):
         if "a" in self.cameraslm.calibrations["fourier"]:
             b2 -= np.matmul(M2, self.cameraslm.calibrations["fourier"]["a"])
 
-        # Composite transformation (along with xy -> yx).
-        M = cp.array(np.flip(np.flip(np.matmul(M2, M1), axis=0), axis=1))
-        b = cp.array(np.flip(np.squeeze(np.matmul(M2, b1) + b2)))
+        # Composite transformation (along with xy -> yx). M and b stay host numpy arrays;
+        # backend.affine_transform coerces them to the input image's backend internally.
+        M = np.flip(np.flip(np.matmul(M2, M1), axis=0), axis=1)
+        b = np.flip(np.squeeze(np.matmul(M2, b1) + b2))
 
         # See if the user wants to blur.
         if blur_ij is None:
@@ -202,19 +203,22 @@ class FeedbackHologram(Hologram):
         if blur_ij > 0:
             img = sp_gaussian_filter(img, (blur_ij, blur_ij), output=img, truncate=2)
 
-        cp_img = cp.array(img, dtype=self.dtype)
-        cp.abs(cp_img, out=cp_img)
+        # Source image on the active backend (matches ``out`` when given, else the camera image's
+        # own backend). ``backend.abs`` keeps the torch autograd graph intact.
+        src = img if out is None else backend.to_backend(img, out)
+        src = backend.abs(src)
 
-        # Perform affine.
-        out_target = None if backend.is_torch(out) else out
-        target = cp_affine_transform(
-            input=cp_img,
+        # Perform the affine resample. Backend-agnostic: scipy/cupyx for numpy/cupy and a
+        # differentiable grid_sample for torch, so camera feedback stays on the autograd graph.
+        # ``cval=NaN`` marks pixels outside the camera image; ``_norm`` below uses nansum.
+        out_target = None if backend.is_torch(src) else out
+        target = backend.affine_transform(
+            src,
             matrix=M,
             offset=b,
             output_shape=self.shape,
             order=order,
             output=out_target,
-            mode="constant",
             cval=np.nan,
         )
 
@@ -222,9 +226,8 @@ class FeedbackHologram(Hologram):
         # target = cp_gaussian_filter1d(target, blur, axis=0, output=target, truncate=2)
         # target = cp_gaussian_filter1d(target, blur, axis=1, output=target, truncate=2)
 
-        target = cp.abs(target, out=target)
-        norm = Hologram._norm(target)
-        target *= 1 / norm
+        target = backend.abs(target)
+        norm = backend.norm(target)
 
         if norm == 0:
             raise ValueError(
@@ -232,8 +235,14 @@ class FeedbackHologram(Hologram):
                 "Check transformations."
             )
 
+        target = backend.multiply(target, 1 / norm)
+
+        # Write back into the caller's buffer where possible (numpy/cupy in-place); torch returns
+        # a fresh tensor to keep the autograd graph intact.
         if backend.is_torch(out):
-            out[:] = backend.to_backend(target, out)[:]
+            return backend.to_backend(target, out)
+        if out is not None and target is not out:
+            out[:] = target
             return out
         return target
 
@@ -293,7 +302,7 @@ class FeedbackHologram(Hologram):
 
             if basis == "knm":  # Compute the knm basis image.
                 self.img_knm = self.ijcam_to_knmslm(self.img_ij, out=self.img_knm)
-                cp.sqrt(self.img_knm, out=self.img_knm)
+                self.img_knm = backend.sqrt(self.img_knm, out=self.img_knm)
             else:  # The old image is outdated, erase it. FUTURE: memory concerns?
                 self.img_knm = None
 
@@ -301,7 +310,7 @@ class FeedbackHologram(Hologram):
         elif basis == "knm":
             if self.img_knm is None:
                 self.img_knm = self.ijcam_to_knmslm(np.square(self.img_ij), out=self.img_knm)
-                cp.sqrt(self.img_knm, out=self.img_knm)
+                self.img_knm = backend.sqrt(self.img_knm, out=self.img_knm)
         elif basis == "ij":
             pass
         else:
@@ -331,7 +340,7 @@ class FeedbackHologram(Hologram):
         """
         self.target_ij = new_target_ij.astype(self.dtype)
         # Transformation order of zero to prevent nan-blurring in MRAF cases.
-        self.ijcam_to_knmslm(new_target_ij, out=self.target, order=0)
+        self.target = self.ijcam_to_knmslm(new_target_ij, out=self.target, order=0)
 
         # Set the null region.
         undefined = self._xp.isnan(self.target)

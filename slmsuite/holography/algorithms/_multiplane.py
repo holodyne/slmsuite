@@ -364,6 +364,7 @@ class MultiplaneHologram(Hologram):
         # Reset the other child variables.
         for h in self.holograms:
             h.reset(reset_phase=False, reset_flags=reset_flags)
+            h.phase = self.phase
 
     def reset_weights(self):
         for h in self.holograms:
@@ -448,6 +449,8 @@ class MultiplaneHologram(Hologram):
 
         # Get meta self phase.
         self._nearfield_extract()
+        for h in self.holograms:
+            h.phase = self.phase
 
     def _nearfield2farfield_batched(self):
         """Batched FFT2 across child planes. See `_can_batch` for preconditions."""
@@ -516,6 +519,8 @@ class MultiplaneHologram(Hologram):
 
         # Extract meta self.phase from self.nearfield.
         self._nearfield_extract()
+        for h in self.holograms:
+            h.phase = self.phase
 
     def _mraf_helper_routines(self):
         return [h._mraf_helper_routines() for h in self.holograms]

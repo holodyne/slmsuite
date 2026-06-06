@@ -1414,14 +1414,15 @@ class SpotHologram(_AbstractSpotHologram):
         if null_region_radius_frac is not None:
             # Build up the null region pattern if we have not already done the transform above.
             if self.null_region_knm is None:
-                self.null_region_knm = cp.zeros(self.shape, dtype=bool)
+                self.null_region_knm = backend.zeros(self.shape, self._xp, bool, device=self._device)
 
             # Make a circle, outside of which the null_region is active.
-            xl = cp.linspace(-1, 1, self.null_region_knm.shape[1])
-            yl = cp.linspace(-1, 1, self.null_region_knm.shape[0])
-            (xg, yg) = cp.meshgrid(xl, yl)
-            mask = cp.square(xg) + cp.square(yg) > null_region_radius_frac**2
-            self.null_region_knm[mask] = True
+            like = self.null_region_knm
+            xl = backend.linspace(-1, 1, self.null_region_knm.shape[1], like=like)
+            yl = backend.linspace(-1, 1, self.null_region_knm.shape[0], like=like)
+            (xg, yg) = backend.meshgrid(xl, yl)
+            mask = backend.square(xg) + backend.square(yg) > null_region_radius_frac**2
+            self.null_region_knm = backend.where_replace(self.null_region_knm, mask, True)
 
         # Fill the target with data.
         self.set_target(reset_weights=True)

@@ -395,37 +395,15 @@ class SimulatedCamera(Camera):
             ff = self._hologram.get_farfield(get=False)     # complex far-field U (padded)
 
             if self._interpolate:
-                # Manual bilinear resample of the far-field intensity onto the camera grid.
-                # Equivalent to ``grid_sample(..., mode='bilinear', padding_mode='zeros',
-                # align_corners=True)`` but built from gather + weighted sum, which -- unlike
-                # ``aten::grid_sampler_2d_backward`` -- supports second-order autograd. That
-                # makes the differentiable camera usable for Fisher-information / CRLB work,
-                # where the loss depends on a first derivative of the image.
+                # Bilinear resample of the far-field intensity onto the camera grid via the shared
+                # backend op: differentiable (gather + weighted sum, second-order-autograd safe for
+                # Fisher/CRLB work) and identical in convention to the numpy/cupy map_coordinates
+                # path below. ``knm_cam`` is reshaped to the camera image afterwards.
                 ff_intensity = ff.real ** 2 + ff.imag ** 2          # (H, W)
-                H, W = ff_intensity.shape
                 knm_cam_torch = torch.as_tensor(
                     backend.to_numpy(self.knm_cam), dtype=dtype, device=device
                 )
-                ys = knm_cam_torch[0]                                # sample rows (float)
-                xs = knm_cam_torch[1]                                # sample cols (float)
-                y0 = torch.floor(ys)
-                x0 = torch.floor(xs)
-                wy = ys - y0
-                wx = xs - x0
-
-                def _gather(yy, xx):
-                    # Zero-padding: contributions from out-of-range taps are masked to 0.
-                    valid = (yy >= 0) & (yy <= H - 1) & (xx >= 0) & (xx <= W - 1)
-                    yc = yy.clamp(0, H - 1).long()
-                    xc = xx.clamp(0, W - 1).long()
-                    return ff_intensity[yc, xc] * valid.to(ff_intensity.dtype)
-
-                img = (
-                    _gather(y0, x0) * ((1 - wy) * (1 - wx))
-                    + _gather(y0, x0 + 1) * ((1 - wy) * wx)
-                    + _gather(y0 + 1, x0) * (wy * (1 - wx))
-                    + _gather(y0 + 1, x0 + 1) * (wy * wx)
-                )
+                img = backend.map_coordinates(ff_intensity, knm_cam_torch, order=1, cval=0)
                 img = img * (self.exposure_s * self.gain)
             else:
                 ff = toolbox.unpad(ff, self.shape)              # crop to camera pixels (slicing)

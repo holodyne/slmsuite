@@ -950,29 +950,20 @@ class Hologram(_HologramStats):
             self.phase_ff = backend.arctan2(farfield.imag, farfield.real, out=self.phase_ff)
 
         # Transform as desired. Note that this will likely break normalization.
-        if is_torch(farfield):
-            if affine is not None:
-                raise NotImplementedError(
-                    "Affine farfield transforms are not yet supported on the torch backend."
-                )
-            return backend.to_numpy(farfield) if get else farfield
-        else:
-            # numpy / cupy: dispatch the affine transform on the farfield's actual backend
-            # (not the global ``cp != np``), so an explicitly-numpy hologram on a cupy-enabled
-            # system uses scipy. ``to_numpy`` returns a host array for either backend.
-            if affine is not None:
-                affine_transform = cp_affine_transform if get_module(farfield) is cp else sp_affine_transform
-                affine_transform(
-                    input=farfield,
-                    matrix=affine["M"],
-                    offset=affine["b"],
-                    output_shape=shape,
-                    order=3,
-                    output=farfield,
-                    mode="constant",
-                    cval=0,
-                )
-            return backend.to_numpy(farfield) if get else farfield
+        # ``backend.affine_transform`` dispatches on the farfield's backend: scipy/cupyx for
+        # numpy/cupy (cubic, order=3), and a differentiable grid_sample for torch (bilinear),
+        # so the affine far-field transform is now backend-agnostic and autograd-safe.
+        if affine is not None:
+            farfield = backend.affine_transform(
+                farfield,
+                matrix=affine["M"],
+                offset=affine["b"],
+                output_shape=shape,
+                order=3,
+                output=None if is_torch(farfield) else farfield,
+                cval=0,
+            )
+        return backend.to_numpy(farfield) if get else farfield
 
     # Propagation: nearfield-farfield helper functions.
     def _populate_results(self):
@@ -1551,15 +1542,15 @@ class Hologram(_HologramStats):
                 "zero_region":None,
             }
 
-        noise_region = cp.isnan(self.target)
+        noise_region = backend.isnan(self.target)
 
-        zero_region = cp.abs(self.target) == 0
+        zero_region = backend.abs(self.target) == 0
         if ("zero_factor" in self.flags and self.flags["zero_factor"] != 0):
-            Z = int(cp.sum(zero_region))
+            Z = int(backend.sum(zero_region))
             if Z > 0 and not hasattr(self, "zero_weights"):
-                self.zero_weights = cp.zeros((Z,), dtype=self.dtype_complex)
+                self.zero_weights = backend.zeros((Z,), get_module(self.target), self.dtype_complex)
 
-        signal_region = cp.logical_not(cp.logical_or(noise_region, zero_region))
+        signal_region = backend.logical_not(backend.logical_or(noise_region, zero_region))
         mraf_factor = self.flags.get("mraf_factor", None)
         # if mraf_factor is not None:
         #     if mraf_factor < 0:

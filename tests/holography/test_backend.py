@@ -388,6 +388,23 @@ class TestDifferentiableSimulatedHardware:
         cam.field_far.abs().sum().backward()
         assert phase.grad is not None and torch.isfinite(phase.grad).all()
 
+    def test_interpolated_camera_is_differentiable(self):
+        # With an affine (M, b) the camera takes the interpolated path
+        # (backend.map_coordinates); it must keep the image on torch and differentiable wrt
+        # the SLM phase. A near-identity affine keeps the far-field within camera k-space.
+        N = 16
+        slm = SimulatedSLM((N, N))
+        M = np.eye(2)
+        b = np.zeros(2)
+        cam = SimulatedCamera(slm, resolution=(N, N), M=M, b=b)
+        assert cam._interpolate
+        phase = torch.randn(N, N, dtype=torch.float64, requires_grad=True)
+        slm.set_phase(phase)
+        img = cam.get_image()
+        assert backend.is_torch(img)
+        img.sum().backward()
+        assert phase.grad is not None and torch.isfinite(phase.grad).all()
+
 
 # ---------------------------------------------------------------------------
 # Capability gate: only compute-only SLMs accept a torch phase
@@ -598,6 +615,156 @@ class TestWGSWeightingTorch:
         assert backend.is_torch(updated) and updated.requires_grad
         updated.sum().backward()
         assert feedback.grad is not None and torch.isfinite(feedback.grad).all()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2/3 additions: new elementwise/logical/constructor wrappers
+# ---------------------------------------------------------------------------
+class TestNewWrapperParity:
+    """numpy<->torch parity for the wrappers added during the backend unification."""
+
+    _x = np.array([0.2, -0.7, 1.3, np.nan], dtype=np.float64)
+
+    @pytest.mark.parametrize("name", ["square", "sqrt"])
+    def test_new_unary_parity(self, name):
+        f = getattr(backend, name)
+        vals = np.array([0.2, 0.7, 1.3, 2.1], dtype=np.float64)
+        ref = f(vals)
+        got = backend.to_numpy(f(torch.from_numpy(vals.copy())))
+        np.testing.assert_allclose(got, ref, rtol=1e-12, atol=1e-12)
+
+    def test_isnan_logical_sum_any(self):
+        x = self._x
+        xt = torch.from_numpy(x.copy())
+        np.testing.assert_array_equal(backend.to_numpy(backend.isnan(xt)), np.isnan(x))
+        np.testing.assert_array_equal(
+            backend.to_numpy(backend.logical_not(backend.isnan(xt))), ~np.isnan(x)
+        )
+        a = np.array([True, False, True]); b = np.array([False, False, True])
+        np.testing.assert_array_equal(
+            backend.to_numpy(backend.logical_or(torch.from_numpy(a), torch.from_numpy(b))),
+            np.logical_or(a, b),
+        )
+        ints = np.array([1, 2, 3, 4])
+        assert int(backend.sum(torch.from_numpy(ints))) == int(ints.sum())
+        assert bool(backend.any(torch.from_numpy(np.array([False, True])))) is True
+
+    def test_linspace_meshgrid_constructors(self):
+        # Witness-array form selects backend/device; meshgrid defaults to "xy" like numpy/cupy.
+        ref_x = np.linspace(-1, 1, 7)
+        xt = backend.linspace(-1, 1, 7, like=torch.zeros(1, dtype=torch.float64))
+        assert backend.is_torch(xt)
+        np.testing.assert_allclose(backend.to_numpy(xt), ref_x, atol=1e-12)
+        gx, gy = backend.meshgrid(xt, xt)
+        gxn, gyn = np.meshgrid(ref_x, ref_x)
+        np.testing.assert_allclose(backend.to_numpy(gx), gxn, atol=1e-12)
+        np.testing.assert_allclose(backend.to_numpy(gy), gyn, atol=1e-12)
+
+    def test_linspace_spec_form_and_torch_dtype_bool_int(self):
+        # (module, device) spec form, plus _torch_dtype coverage of bool/int via backend.zeros.
+        xt = backend.linspace(0, 1, 4, like=(backend.torch, torch.device("cpu")), dtype=np.float32)
+        assert backend.is_torch(xt) and xt.dtype == torch.float32
+        zb = backend.zeros((2, 2), backend.torch, bool, device=torch.device("cpu"))
+        assert zb.dtype == torch.bool
+        zi = backend.zeros((3,), backend.torch, np.int64, device=torch.device("cpu"))
+        assert zi.dtype == torch.int64
+
+
+# ---------------------------------------------------------------------------
+# Affine / coordinate-map resampling (shared backend ops)
+# ---------------------------------------------------------------------------
+class TestAffineAndMapCoordinates:
+    """backend.affine_transform / map_coordinates: numpy<->torch parity + autograd."""
+
+    def _img(self):
+        rng = np.random.default_rng(0)
+        return rng.random((16, 20)).astype(np.float64)
+
+    @pytest.mark.parametrize("cval", [0.0, float("nan")])
+    def test_affine_transform_parity(self, cval):
+        img = self._img()
+        M = np.array([[1.1, 0.05], [0.0, 0.9]])
+        b = np.array([1.5, -2.0])
+        ref = backend.affine_transform(img, M, b, (16, 20), order=1, cval=cval)
+        got = backend.to_numpy(
+            backend.affine_transform(torch.from_numpy(img.copy()), M, b, (16, 20), order=1, cval=cval)
+        )
+        np.testing.assert_array_equal(np.isnan(ref), np.isnan(got))
+        fin = ~np.isnan(ref)
+        np.testing.assert_allclose(got[fin], ref[fin], rtol=1e-6, atol=1e-6)
+
+    def test_affine_transform_complex_and_negative_strides(self):
+        rng = np.random.default_rng(1)
+        img = (rng.random((12, 14)) + 1j * rng.random((12, 14)))
+        # np.flip yields negative-strided M/b, mirroring the feedback transform.
+        M = np.flip(np.flip(np.array([[0.8, 0.0], [0.0, 1.2]]), axis=0), axis=1)
+        b = np.flip(np.array([1.0, -1.0]))
+        ref = backend.affine_transform(img, M, b, (12, 14), order=1, cval=0)
+        got = backend.to_numpy(
+            backend.affine_transform(torch.from_numpy(img.copy()), M, b, (12, 14), order=1, cval=0)
+        )
+        np.testing.assert_allclose(got, ref, rtol=1e-6, atol=1e-6)
+
+    def test_affine_transform_gradcheck(self):
+        x0 = torch.rand(10, 12, dtype=torch.float64, requires_grad=True)
+        M = np.array([[1.0, 0.1], [0.0, 1.0]]); b = np.array([0.5, -0.5])
+        assert torch.autograd.gradcheck(
+            lambda z: backend.affine_transform(z, M, b, (10, 12), order=1, cval=0),
+            (x0,), eps=1e-6, atol=1e-5,
+        )
+
+    @pytest.mark.parametrize("order", [0, 1])
+    def test_map_coordinates_parity(self, order):
+        img = self._img()
+        H, W = img.shape
+        rng = np.random.default_rng(2)
+        coords = np.stack([
+            rng.uniform(-2, H + 2, size=(10, 11)),
+            rng.uniform(-2, W + 2, size=(10, 11)),
+        ])
+        ref = backend.map_coordinates(img, coords, order=order, cval=0)
+        got = backend.to_numpy(
+            backend.map_coordinates(torch.from_numpy(img.copy()), torch.from_numpy(coords.copy()),
+                                    order=order, cval=0)
+        )
+        np.testing.assert_allclose(got, ref, rtol=1e-10, atol=1e-10)
+
+    def test_map_coordinates_gradcheck(self):
+        x0 = torch.rand(8, 9, dtype=torch.float64, requires_grad=True)
+        rng = np.random.default_rng(3)
+        coords = torch.from_numpy(np.stack([
+            rng.uniform(0, 7, size=(6, 6)), rng.uniform(0, 8, size=(6, 6))
+        ]))
+        assert torch.autograd.gradcheck(
+            lambda z: backend.map_coordinates(z, coords, order=1, cval=0),
+            (x0,), eps=1e-6, atol=1e-5,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Affine far-field transform on torch (previously NotImplementedError)
+# ---------------------------------------------------------------------------
+class TestAffineFarfieldTorch:
+    def _holo(self, backend_name):
+        target = np.zeros((32, 32)); target[16, 16] = 1.0; target[8, 20] = 1.0
+        kwargs = {"backend": backend_name}
+        if backend_name == "torch":
+            kwargs["device"] = "cpu"
+        return Hologram(target=target, **kwargs)
+
+    def test_affine_farfield_runs_on_torch(self):
+        affine = {"M": np.array([[1.0, 0.0], [0.0, 1.0]]), "b": np.array([2.0, -1.0])}
+        ff = self._holo("torch").get_farfield(affine=affine, get=False)
+        assert backend.is_torch(ff) and torch.is_complex(ff)
+        assert tuple(ff.shape) == (32, 32)
+
+    def test_affine_farfield_differentiable(self):
+        holo = self._holo("torch")
+        holo.phase = holo.phase.clone().requires_grad_(True)
+        affine = {"M": np.array([[1.0, 0.0], [0.0, 1.0]]), "b": np.array([1.0, 0.0])}
+        ff = holo.get_farfield(affine=affine, get=False)
+        (ff.real ** 2 + ff.imag ** 2).sum().backward()
+        assert holo.phase.grad is not None and bool((holo.phase.grad != 0).any())
 
 
 # ---------------------------------------------------------------------------

@@ -352,8 +352,6 @@ def _get_torch_tensor_from_cupy(array):
     if cp is np or not isinstance(array, cp.ndarray):
         return torch.from_numpy(np.asarray(array))
     else:
-        if not torch.cuda.is_available():
-            return torch.from_numpy(array.get())
         if not array.flags.c_contiguous:
             array = cp.ascontiguousarray(array)
         # Use standard modern from_dlpack directly to avoid deprecation warnings

@@ -253,8 +253,8 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
     
-    if isinstance(images, cp.ndarray):
-        images = cp.asnumpy(images)
+    # Move to host for matplotlib regardless of backend (numpy/cupy/torch).
+    images = backend.to_numpy(images)
 
     if separate_axes:
         sx = sx / 2.0 - 0.5
