@@ -55,14 +55,10 @@ class Camera(_Picklable, ABC):
         Default setting for averaging (sums repeated measurements). See :meth:`.get_image()`.
     hdr : (int, int) OR None
         Default setting for multi-exposure High Dynamic Range imaging. See :meth:`.get_image()`.
-    color_handling : None OR int OR list of float
+    color_handling : None OR int
         Determines how to convert color images to grayscale.
         If  ``int``, returns the corresponding color channel.
-        If ``list``, returns the weighted sum of the color channels with the corresponding weights.
-        This list must have the same length as the number of color channels returned by the camera.
-        If ``None``, defaults to unweighted sum.
-        Note that this summation may overflow the datatype. 
-        The same rules as averaging apply for when the return type is promoted to float.
+        If ``None``, defaults to 0.
     capture_attempts : int
         If the camera returns an error or exceeds a timeout,
         try again for a total of `capture_attempts` attempts.
@@ -158,10 +154,6 @@ class Camera(_Picklable, ABC):
             Determines how to convert color images to grayscale.
             If  ``int``, returns the corresponding color channel.
             If ``None``, defaults to 0.
-            If ``list``, returns the weighted sum of the color channels with the corresponding weights (NotImplemented).
-            This list must have the same length as the number of color channels returned by the camera.
-            Note that this summation may overflow the datatype. 
-            The same rules as averaging apply for when the return type is promoted to float.
         capture_attempts : int
             If the camera returns an error or exceeds a timeout,
             try again for a total of `capture_attempts` attempts.
@@ -450,13 +442,13 @@ class Camera(_Picklable, ABC):
         color_handling = self.color_handling
         if color_handling is None:
             color_handling = 0
-    
+
         if isinstance(color_handling, int):
             return img[:, :, color_handling]
         elif isinstance(color_handling, (list, np.ndarray)):
             raise NotImplementedError("Weighted color handling is not implemented yet.")
         else:
-            raise ValueError(f"Expected color_handling to be None, int, or list of floats. Found {self.color_handling}.")
+            raise ValueError(f"Expected color_handling to be None or int. Found {self.color_handling}.")
 
     def _get_image_hw_tolerant(self, *args, **kwargs):
         err = None
@@ -467,7 +459,7 @@ class Camera(_Picklable, ABC):
                 img = np.array(self._get_image_hw(*args, **kwargs))
 
                 if len(img.shape) == 2:     # All good!
-                    pass    
+                    pass
                 elif len(img.shape) == 3:     # Need to convert to grayscale.
                     img = self._parse_color_image(img)
                 else:
