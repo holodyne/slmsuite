@@ -159,13 +159,15 @@ class CameraSLM(_Loggable):
                 should_show = True
             axs = (fig.add_subplot(1, 2, 1), fig.add_subplot(1, 2, 2))
         else:
+            fig = None
             if len(axs) != 2:
                 raise ValueError(f"Expected axs to be a tuple of two axes. Found length {len(axs)} tuple.")
 
         self.slm.plot(phase=phase, limits=slm_limits, title="", ax=axs[0], cbar=cbar)
         self.cam.plot(image=image, limits=cam_limits, title="", ax=axs[1], cbar=cbar)
 
-        fig.suptitle(title)
+        if fig is not None:
+            fig.suptitle(title)
         plt.tight_layout()
 
         if should_show:

@@ -80,7 +80,8 @@ def configure_plotting(mode="show", save_dir=None, prefix="", headless=False):
         _prefix = prefix
 
         def _save(name=None, **kwargs):
-            from slmsuite._logging import logger
+            from slmsuite._logging import make_logger
+            logger = make_logger("plotting")
             ctx = name or _prefix
             figs = [plt.figure(n) for n in plt.get_fignums()]
             for fig in figs:

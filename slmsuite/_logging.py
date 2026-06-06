@@ -110,14 +110,18 @@ def get_log():
 def configure_logging(level=logging.INFO, stream=None):
     """Configure slmsuite console logging.
 
-    Called automatically at import with INFO level. Call again to change
-    the level or output stream. Pass ``level=False`` to suppress display
-    output while keeping capture active via :func:`get_log`.
+    Called automatically at import. Pass ``level=False`` to suppress display
+    while keeping capture active via :func:`get_log`.
 
-    Args:
-        level (int or bool): Logging level for the console handler.
-            ``True`` → INFO, ``False`` → suppress display output entirely.
-        stream: Output stream (default: ``sys.stdout``).
+    Parameters
+    ----------
+    level : int or bool
+        Console handler level,
+        though full logs are still captured and can be returned via :func:`get_log`.
+        ``True`` is evaluated as ``INFO``.
+        ``False`` suppresses console output entirely.
+    stream : stream, optional
+        Output stream. Defaults to ``sys.stdout``.
     """
     if level is True:
         level = logging.INFO
@@ -133,6 +137,24 @@ def configure_logging(level=logging.INFO, stream=None):
     handler.setLevel(level)
     handler.setFormatter(_ColorFormatter())
     _slmsuite_logger.addHandler(handler)
+
+def make_logger(name, color="default"):
+    """Return a colorized :class:`logging.LoggerAdapter` for use outside :class:`_Loggable`.
+
+    Parameters
+    ----------
+    name : str
+        Logger name, prefixed with ``"slmsuite."`` automatically.
+    color : str, optional
+        Key into :data:`_LOGGER_COLORS` or :data:`_SLMSUITE_COLORS`
+        (e.g. ``"bold_cyan"``, ``"hologram"``). Defaults to uncolored.
+    """
+    _logger = logging.getLogger(f"slmsuite.{name}")
+    _logger.setLevel(logging.DEBUG)
+    return logging.LoggerAdapter(
+        _logger,
+        extra={"device_color": _LOGGER_COLORS.get(color, _LOGGER_COLORS["reset"])},
+    )
 
 # Superclass for objects we want to log.
 
@@ -162,15 +184,15 @@ class _Loggable(_Picklable):
     #             setattr(cls, name, _wrap_with_logging(obj))
 
     def __init__(self, logger_attributes=None, logger_color=None):
-        """
+        """Initialize logging for this object.
+
         Parameters
         ----------
         logger_attributes : list of str, optional
             Attributes logged at DEBUG on every ``__setattr__``. Defaults to
-            ``_pickle + _pickle_data``, so any attribute added to the pickle
-            list is automatically logged too. Pass an explicit list to override.
+            ``_pickle + _pickle_data``. Pass an explicit list to override.
         logger_color : str, optional
-            Key into :data:`_LOGGER_COLORS`. Set to defaults based on class when ``None``.
+            Key into :data:`_LOGGER_COLORS`. Inferred from class MRO when ``None``.
         """
         if logger_attributes is None:
             logger_attributes = self._pickle + self._pickle_data
@@ -235,18 +257,36 @@ class _Loggable(_Picklable):
         return log
 
     def set_log_level(self, level):
-        """Set the logging level for this device only."""
+        """Set the logging level for this device.
+
+        Parameters
+        ----------
+        level : int
+            Logging level (e.g. ``logging.DEBUG``, ``logging.INFO``).
+        """
         self.logger.logger.setLevel(level)
 
     def log_state(self, level=logging.DEBUG):
-        """Log current values of all tracked attributes."""
+        """Log current values of all tracked attributes.
+
+        Parameters
+        ----------
+        level : int, optional
+            Logging level. Defaults to ``logging.DEBUG``.
+        """
         for name in self._logger_attributes:
             if hasattr(self, name):
                 self.logger.log(level, f"{name}: {_attr_repr(getattr(self, name))}")
 
     @contextlib.contextmanager
     def log_at(self, level):
-        """Context manager that temporarily changes the log level for this device."""
+        """Temporarily change the log level for this device.
+
+        Parameters
+        ----------
+        level : int
+            Logging level to use inside the ``with`` block.
+        """
         prev = self.logger.logger.level
         self.logger.logger.setLevel(level)
         try:
@@ -256,11 +296,9 @@ class _Loggable(_Picklable):
 
     @contextlib.contextmanager
     def suppress_attr_logging(self):
-        """Context manager that suppresses attribute change logging.
+        """Suppress per-attribute DEBUG logs inside the ``with`` block.
 
-        Useful when wrapping tight loops (e.g. hologram optimization) where
-        tracked arrays are updated every iteration but per-iteration log lines
-        are not desired.
+        Useful in tight loops where tracked arrays change every iteration.
         """
         object.__setattr__(self, "_attr_logging_suppressed", True)
         try:
@@ -269,8 +307,13 @@ class _Loggable(_Picklable):
             object.__setattr__(self, "_attr_logging_suppressed", False)
 
     def vlog(self, verbose, msg, *args, **kwargs):
-        """Log at INFO if verbose is ``True``, DEBUG otherwise.
+        """Log at INFO if ``verbose`` is ``True``, DEBUG otherwise.
 
-        Replaces the old ``if verbose: print(msg)`` pattern.
+        Parameters
+        ----------
+        verbose : bool
+            Controls the log level.
+        msg : str
+            Message forwarded to :meth:`logging.Logger.log`.
         """
         self.logger.log(logging.INFO if verbose else logging.DEBUG, msg, *args, **kwargs)

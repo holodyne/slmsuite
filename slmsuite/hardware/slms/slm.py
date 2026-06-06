@@ -301,7 +301,7 @@ class SLM(_Common, ABC):
         ax : matplotlib.pyplot.axis OR None
             Axis to plot upon.
         cbar : bool
-            Also plot a colorbar.
+            Also plot a colorbar. Does not work if ``ax`` is passed.
 
         Returns
         -------
@@ -321,19 +321,19 @@ class SLM(_Common, ABC):
                 fig = plt.figure(figsize=(20,8))
                 should_show = True
         else:
+            fig = None
             plt.sca(ax)
 
         im = plt.imshow(phase, clim=[0, 2], cmap="twilight", interpolation="none")
         ax = plt.gca()
 
-        if cbar:
+        if cbar and fig is not None:
             cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
             fig.colorbar(im, cax=cax, orientation="vertical")
             ticks = [0,1,2]
             cax.set_yticks([0,1,2])
             cax.set_yticklabels([f"${t}\\pi$" for t in ticks])
 
-        # ax.invert_yaxis()
         ax.set_title(title)
 
         if limits is not None and limits != 1:
@@ -414,7 +414,7 @@ class SLM(_Common, ABC):
     def _gray2display(self, gray):
         """
         Helper function to send integer data to a format understood by the SLM.
-        For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`), 
+        For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`),
         this is a more complicated step to convert from grayscale to an electrode bitmap.
         """
         xp = _xp(gray)
