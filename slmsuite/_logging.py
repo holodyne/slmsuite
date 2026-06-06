@@ -1,5 +1,6 @@
 """Class logging."""
 import contextlib
+import functools
 import logging
 import sys
 
@@ -129,7 +130,30 @@ def configure_logging(level=logging.INFO, stream=None):
 
 # Superclass for objects we want to log.
 
+def _wrap_with_logging(fn):
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception:
+            if hasattr(self, "logger"):
+                self.logger.exception(f"{fn.__qualname__} raised:")
+            raise
+    wrapper._log_wrapped = True
+    return wrapper
+
+
 class _Loggable(_Picklable):
+
+    # TODO: decide whether to enable this error logging.
+    # def __init_subclass__(cls, **kwargs):
+    #     """Adds any errors raise in methods of the subclass to the log."""
+    #     super().__init_subclass__(**kwargs)
+    #     for name, obj in list(cls.__dict__.items()):
+    #         if name.startswith("_") or getattr(obj, "_log_wrapped", False):
+    #             continue
+    #         if callable(obj):
+    #             setattr(cls, name, _wrap_with_logging(obj))
 
     def __init__(self, logger_attributes=None, logger_color=None):
         """
@@ -188,9 +212,21 @@ class _Loggable(_Picklable):
                 and self.logger.isEnabledFor(logging.DEBUG)):
             self.logger.debug(f"Set {name}: {_attr_repr(value)}")
 
-    def get_log(self):
-        """Return accumulated log records as a list of plain-text strings."""
-        return self._log_capture.get_log()
+    def get_log(self, verbose=False):
+        """Return accumulated log records as a list of plain-text strings.
+
+        Parameters
+        ----------
+        verbose : bool, optional
+            If ``True``, also print the log to the console.
+        """
+        log = self._log_capture.get_log()
+
+        if verbose:
+            for record in log:
+                print(record)
+
+        return log
 
     def set_log_level(self, level):
         """Set the logging level for this device only."""
