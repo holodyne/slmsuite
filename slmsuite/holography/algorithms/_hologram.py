@@ -208,6 +208,7 @@ class Hologram(_HologramStats, _Loggable):
         "target",
         "weights",
         "phase_ff",
+        "propagation_kernel",
     ]
 
     def __init__(
@@ -456,32 +457,6 @@ class Hologram(_HologramStats, _Loggable):
                 pass
 
         self.name = ""
-
-        # Initialize logger.
-        _Loggable.__init__(
-            self,
-            logger_color="bold_cyan",
-            logger_attributes=[
-                "phase",
-                "amp",
-                "nearfield",
-                "phase_ff",
-                "amp_ff",
-                "farfield",
-                "target",
-                "weights",
-                "propagation_kernel"
-            ],
-            # logger_methods=[
-            #     "reset",
-            #     "reset_phase",
-            #     "reset_weights",
-            #     "optimize",
-            #     "set_target",
-            #     "set_weights",
-            #     "_update_weights_generic",
-            # ]
-        )
 
     # Initialization helper functions.
     def reset(self, reset_phase=True, reset_flags=False):

@@ -87,25 +87,6 @@ class CameraSLM(_Picklable):
 
         self.calibrations = {}
 
-        # Initialize logger.
-        _Loggable.__init__(
-            self,
-            logger_color="bold_green",
-            logger_attributes=[
-                "mag",
-                "calibrations",
-            ],
-            # logger_methods=[
-            #     "reset",
-            #     "reset_phase",
-            #     "reset_weights",
-            #     "optimize",
-            #     "set_target",
-            #     "set_weights",
-            #     "_update_weights_generic",
-            # ]
-        )
-
     def plot(
         self,
         phase=None,

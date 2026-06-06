@@ -214,31 +214,6 @@ class SLM(_Common, _Loggable, ABC):
         self.phase_correct = True
         self.settle = False
 
-        # Initialize logger.
-        _Loggable.__init__(
-            self,
-            logger_color="bold_blue",
-            logger_attributes=[
-                "grid",
-                "wav_um",
-                "wav_design_um",
-                "pitch_um",
-                "settle_time_s",
-                "phase_correct",
-                "settle",
-                "source",
-            ],
-            # logger_methods=[
-            #     "reset",
-            #     "reset_phase",
-            #     "reset_weights",
-            #     "optimize",
-            #     "set_target",
-            #     "set_weights",
-            #     "_update_weights_generic",
-            # ]
-        )
-
     @abstractmethod
     def close(self):
         """Abstract method to close the SLM and delete related objects."""

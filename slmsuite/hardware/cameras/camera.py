@@ -210,27 +210,6 @@ class Camera(_Common, ABC):
             is_slm=False,
         )
 
-        # Initialize logger.
-        _Loggable.__init__(
-            self,
-            logger_color="bold_yellow",
-            logger_attributes=[
-                "woi",
-                "capture_attempts",
-                "averaging",
-                "hdr",
-            ],
-            # logger_methods=[
-            #     "reset",
-            #     "reset_phase",
-            #     "reset_weights",
-            #     "optimize",
-            #     "set_target",
-            #     "set_weights",
-            #     "_update_weights_generic",
-            # ]
-        )
-
     @property
     def bitresolution(self):
         return (2**self.bitdepth) * (self.averaging if self.averaging is not None else 1)
