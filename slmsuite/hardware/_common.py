@@ -4,7 +4,7 @@ import numpy as np
 from yaml import warnings
 
 from slmsuite.hardware._viewer import _Viewable
-from slmsuite.hardware._pickle import _Picklable
+from slmsuite._pickling import _Picklable
 from slmsuite.holography.toolbox import format_shape
 from slmsuite.misc.math import REAL_TYPES
 

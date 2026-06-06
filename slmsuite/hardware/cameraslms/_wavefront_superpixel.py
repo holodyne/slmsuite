@@ -473,14 +473,14 @@ class _WavefrontCalibrationSuperpixel(object):
             )
 
         def superpixels(
-                schedule=None,
-                reference_phase=None,
-                target_phase=None,
-                reference_blaze=reference_blazes,
-                target_blaze=calibration_blazes,
-                phase_baselines=None,
-                plot=False
-            ):
+            schedule=None,
+            reference_phase=None,
+            target_phase=None,
+            reference_blaze=reference_blazes,
+            target_blaze=calibration_blazes,
+            phase_baselines=None,
+            plot=False
+        ):
             """
             Helper function for making superpixel phase masks.
 

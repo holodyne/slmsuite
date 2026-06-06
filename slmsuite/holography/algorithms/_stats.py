@@ -222,6 +222,8 @@ class _HologramStats(object):
 
         self._update_stats_dictionary(stats)
 
+    # These functions are somewhat superseded by picke.
+
     def save_stats(self, file_path, include_state=True):
         """
         Uses :meth:`save_h5` to export the statistics hierarchy to a given h5 file.

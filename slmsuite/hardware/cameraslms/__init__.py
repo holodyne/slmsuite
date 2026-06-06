@@ -10,7 +10,7 @@ import warnings
 
 from slmsuite import __version__
 from slmsuite._logging import _Loggable
-from slmsuite.hardware._pickle import _Picklable
+from slmsuite._pickling import _Picklable
 from slmsuite.holography.analysis.files import load_h5, save_h5, generate_path, latest_path
 
 from slmsuite.hardware.cameras.simulated import SimulatedCamera

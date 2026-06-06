@@ -194,6 +194,22 @@ class Hologram(_HologramStats, _Loggable):
         See :meth:`._update_stats()` and :meth:`.plot_stats()`.
     """
 
+    _pickle = [
+        "slm_shape",
+        "shape",
+        "iter",
+        "method",
+        "flags",
+        "stats",
+    ]
+    _pickle_data = [
+        "phase",
+        "amp",
+        "target",
+        "weights",
+        "phase_ff",
+    ]
+
     def __init__(
         self,
         target,

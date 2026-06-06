@@ -1,4 +1,6 @@
-"""Interface to experimental devices."""
+"""
+Handles pickling of objects.
+"""
 import warnings
 import datetime
 
@@ -10,7 +12,7 @@ class _Picklable(object):
     Class for hardware objects to handle state saving.
     """
     _pickle = []        # Baseline parameters to pickle.
-    _pickle_data = []   #
+    _pickle_data = []
 
     def pickle(self, attributes=True, metadata=True):
         """
@@ -55,6 +57,8 @@ class _Picklable(object):
         # Return the result.
         if metadata:
             t = datetime.datetime.now()
+            if hasattr(self, "get_log"):
+                pickled["__log__"] = "\n".join(self.get_log())
             return {
                 "__version__" : __version__,
                 "__time__" : str(t),
