@@ -37,6 +37,8 @@ _SLMSUITE_COLORS = {
     "default" : "reset",
 }
 
+_LOGGER_COLORS.update({k: _LOGGER_COLORS[v] for k, v in _SLMSUITE_COLORS.items()})
+
 def _attr_repr(value):
     if hasattr(value, "shape"):
         if len(value.shape) <= 1:
