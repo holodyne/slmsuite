@@ -101,7 +101,7 @@ class Camera(_Common, ABC):
         resolution,
         bitdepth=8,
         pitch_um=None,
-        name="camera",
+        name="",
         exposure_bounds_s=None,
         averaging=None,
         capture_attempts=5,

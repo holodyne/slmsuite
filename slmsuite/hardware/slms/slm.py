@@ -33,7 +33,7 @@ def _xp(array):
     return np
 
 
-class SLM(_Common, _Loggable, ABC):
+class SLM(_Common, ABC):
     r"""
     Abstract class for SLMs.
 
@@ -140,7 +140,7 @@ class SLM(_Common, _Loggable, ABC):
         self,
         resolution,
         bitdepth=8,
-        name="SLM",
+        name="",
         wav_um=1,
         wav_design_um=None,
         pitch_um=(8,8),

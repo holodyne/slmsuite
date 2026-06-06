@@ -36,16 +36,21 @@ _SLMSUITE_COLORS = {
 }
 
 def _attr_repr(value):
-    if hasattr(value, "shape") and hasattr(value, "dtype"):
-        return f"<{type(value).__name__} shape={value.shape} dtype={value.dtype}>"
+    if hasattr(value, "shape"):
+        if len(value.shape) <= 1:
+            return f"{value}"
+        elif hasattr(value, "dtype"):
+            return f"<{type(value).__name__} shape={value.shape} dtype={value.dtype}>"
+        else:
+            return f"<{type(value).__name__} shape={value.shape}>"
     elif isinstance(value, dict):
-        return f"<dict keys={value.keys()}>"
+        return f"<dict keys={tuple(value.keys())}>"
     return repr(value)
 
 class _LogCapture(logging.Handler):
     """Accumulates plain-text log records for saving to .h5 files."""
 
-    _FMT = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
+    _FMT = logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
 
     def __init__(self):
         super().__init__(level=logging.DEBUG)
@@ -78,12 +83,15 @@ class _ColorFormatter(logging.Formatter):
         device_color = getattr(record, "device_color", reset)
         level_color = self._LEVEL_COLORS.get(record.levelno, reset)
         fmt = self._FMT.format(grey=grey, reset=reset, device=device_color, level=level_color)
+        record = logging.makeLogRecord(record.__dict__)
+        record.name = record.name.removeprefix("slmsuite.")
         return logging.Formatter(fmt).format(record)
 
 # Make the exposed methods and loggers.
 
 _slmsuite_logger = logging.getLogger("slmsuite")
 _slmsuite_logger.setLevel(logging.DEBUG)
+_slmsuite_logger.handlers = [h for h in _slmsuite_logger.handlers if not isinstance(h, _LogCapture)]
 _slmsuite_log = _LogCapture()
 _slmsuite_logger.addHandler(_slmsuite_log)
 logger = _slmsuite_logger   # This is exposed.
@@ -137,10 +145,7 @@ class _Loggable(_Picklable):
         if logger_attributes is None:
             logger_attributes = self._pickle + self._pickle_data
 
-        classname = self.__class__.__name__
-        logger_name = f"slmsuite.{classname}"
-        if hasattr(self, "name") and self.name:
-            logger_name += f"->'{self.name}'"
+        logger_name = f"slmsuite.{self.name}"
 
         if logger_color is None:
             mro_names = {c.__name__ for c in type(self).__mro__}
@@ -171,7 +176,7 @@ class _Loggable(_Picklable):
 
         self._logger_attributes = logger_attributes
 
-        self.logger.debug("Initialized.")
+        self.logger.info(f"Initialized {self.__class__.__name__}.")
 
     def __setattr__(self, name, value):
         object.__setattr__(self, name, value)

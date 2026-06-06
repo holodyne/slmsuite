@@ -81,7 +81,7 @@ from typing import Any, List, Tuple, Dict
 import zlib
 import base64
 
-from slmsuite.hardware._pickle import _Picklable
+from slmsuite._pickling import _Picklable
 from slmsuite import __version__
 
 DEFAULT_HOST = 'localhost'

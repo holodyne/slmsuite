@@ -10,7 +10,6 @@ import warnings
 
 from slmsuite import __version__
 from slmsuite._logging import _Loggable
-from slmsuite._pickling import _Picklable
 from slmsuite.holography.analysis.files import load_h5, save_h5, generate_path, latest_path
 
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
@@ -22,7 +21,7 @@ from slmsuite.hardware.cameraslms._pixel import _PixelCalibration
 from slmsuite.hardware.cameraslms._settle import _SettleCalibration
 from slmsuite.hardware.cameraslms._wavefront import _WavefrontCalibration
 
-class CameraSLM(_Picklable):
+class CameraSLM(_Loggable):
     """
     Base class for an SLM with camera feedback.
 
@@ -86,6 +85,10 @@ class CameraSLM(_Picklable):
         self.mag = float(mag)
 
         self.calibrations = {}
+
+        # Initialize logger.
+        _Loggable.__init__(self)
+        self.log_state()
 
     def plot(
         self,

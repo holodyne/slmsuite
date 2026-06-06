@@ -4,11 +4,11 @@ import numpy as np
 from yaml import warnings
 
 from slmsuite.hardware._viewer import _Viewable
-from slmsuite._pickling import _Picklable
+from slmsuite._logging import _Loggable
 from slmsuite.holography.toolbox import format_shape
 from slmsuite.misc.math import REAL_TYPES
 
-class _Common(_Viewable, _Picklable, ABC):
+class _Common(_Viewable, _Loggable, ABC):
     """
     Handles common properties and methods for both cameras and SLMs.
     """
@@ -30,6 +30,8 @@ class _Common(_Viewable, _Picklable, ABC):
 
         # Remember the name.
         self.name = str(name)
+        if len(self.name) == 0:
+            self.name = str(self.__class__.__name__)
 
         # Parse spatial dimensions.
         if pitch_um is None:
@@ -52,6 +54,10 @@ class _Common(_Viewable, _Picklable, ABC):
 
         # Initialize viewer.
         _Viewable.__init__(self)
+
+        # Initialize logger.
+        _Loggable.__init__(self)
+        self.log_state()
 
     @abstractmethod
     def close(self):
