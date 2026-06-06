@@ -308,6 +308,9 @@ def configure_matplotlib_for_testing(request):
     - Use Agg backend (non-interactive) to prevent blocking
     - Replace plt.show() to save figures with descriptive names
     - Save to current test run's timestamped directory
+
+    TODO: determine when plt.show() is called outside of
+    slmsuite's `slmsuite_plt_show()`.
     """
     # Check if we should save plots (default: True)
     save_plots = request.config.getoption("--save-plots", default=True)
@@ -323,11 +326,11 @@ def configure_matplotlib_for_testing(request):
         # Track figure count per test
         test_fig_counts = {}
 
-        def custom_show(*args, **kwargs):
+        def custom_show(name=None):
             """
             Replacement for plt.show() that saves figures with descriptive names.
 
-            Format: {module}_{class}_{function}_fig{N}.png
+            Format: {module}_{class}_{function}[_{name}]_fig{N}.png
             Saved to: tests/output/{timestamp}/
             """
             # Get output directory for this test run
@@ -342,7 +345,8 @@ def configure_matplotlib_for_testing(request):
 
             if not test_name:
                 # Fallback if called outside test context
-                filename = output_dir / f"unknown_fig_{len(test_fig_counts)}.png"
+                key = f"unknown_{name}" if name else "unknown"
+                filename = output_dir / f"{key}_fig{len(test_fig_counts)}.png"
                 figs = [plt.figure(n) for n in plt.get_fignums()]
                 for fig in figs:
                     fig.savefig(filename, dpi=150, bbox_inches='tight')
@@ -362,18 +366,18 @@ def configure_matplotlib_for_testing(request):
                 else:
                     parts.append('unknown')
 
-                # Build base filename
-                base_name = '_'.join(parts)
+                # Append plot-site name from _slmsuite_plt_show if provided
+                if name:
+                    parts.append(name)
 
-                # Track figure count for this test
-                if base_name not in test_fig_counts:
-                    test_fig_counts[base_name] = 0
+                # Build filename key; each unique key has its own counter
+                key = '_'.join(parts)
 
                 # Save all open figures
                 figs = [plt.figure(n) for n in plt.get_fignums()]
                 for fig in figs:
-                    test_fig_counts[base_name] += 1
-                    filename = output_dir / f"{base_name}_fig{test_fig_counts[base_name]}.png"
+                    test_fig_counts[key] = test_fig_counts.get(key, 0) + 1
+                    filename = output_dir / f"{key}_fig{test_fig_counts[key]}.png"
                     fig.savefig(filename, dpi=150, bbox_inches='tight')
                     # Print relative path
                     rel_path = filename.relative_to(Path("tests/output"))
@@ -382,18 +386,23 @@ def configure_matplotlib_for_testing(request):
             # Close figures to free memory
             plt.close('all')
 
-        # Replace plt.show with our custom version
+        # Replace plt.show and configure slmsuite's internal handler
         plt.show = custom_show
+        import slmsuite
+        slmsuite.configure_plotting(custom_show)
     else:
         # If plots disabled, just close figures silently
-        def no_show(*args, **kwargs):
+        def no_show(_name=None, *_args, **_kwargs):
             plt.close('all')
         plt.show = no_show
+        import slmsuite
+        slmsuite.configure_plotting(no_show)
 
     yield
 
-    # Restore original plt.show
+    # Restore original plt.show and slmsuite handler
     plt.show = original_show
+    slmsuite.configure_plotting("show")
 
 
 @pytest.fixture
