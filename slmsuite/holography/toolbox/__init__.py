@@ -584,8 +584,8 @@ def window_extent(window, padding_frac=0, padding_pix=0):
         if len(window) == 4:  # Handle the (x, w, y, h) case
             b = 2*(1-a)
             limit = np.array([window[b], window[b] + window[b + 1]])
-        elif len(window) == 2:  # Handle two list case
-            limit = np.array([np.amin(window[a]), np.amax(window[a]) + 1])
+        elif len(window) == 2:  # Handle two list case: window = (y_ind, x_ind)
+            limit = np.array([np.amin(window[1 - a]), np.amax(window[1 - a]) + 1])
         elif np.ndim(window) == 2:  # Handle the boolean array case
             collapsed = np.where(np.any(window, axis=a))  # Collapse the other axis
             limit = np.array([np.amin(collapsed), np.amax(collapsed) + 1])
@@ -596,8 +596,8 @@ def window_extent(window, padding_frac=0, padding_pix=0):
         padding_ = int((np.floor(np.diff(limit) * padding_frac) + padding_pix).item())
         limit += np.array([-padding_, padding_])
 
-        # Clip the padding to shape.
-        if np.ndim(window) == 2:
+        # Clip the padding to shape (boolean array only — index-list tuples have no .shape).
+        if isinstance(window, np.ndarray) and np.ndim(window) == 2:
             limit = np.clip(limit, 0, window.shape[1 - a])
 
         limits.append(tuple(limit))

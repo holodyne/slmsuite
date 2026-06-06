@@ -404,7 +404,7 @@ class SLM(_Common, ABC):
     def _gray2display(self, gray):
         """
         Helper function to send integer data to a format understood by the SLM.
-        For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`), 
+        For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`),
         this is a more complicated step to convert from grayscale to an electrode bitmap.
         """
         xp = _xp(gray)
@@ -942,17 +942,17 @@ class SLM(_Common, ABC):
         # Now make all the children and return.
         children = []
 
-        for x in range(shape[1]):
-            for y in range(shape[0]):
-                x = x0 + x * w
-                y = y0 + y * h
+        for xi in range(shape[1]):
+            for yi in range(shape[0]):
+                x = x0 + xi * w
+                y = y0 + yi * h
 
-                # The last SLM should handle updates.
+                # The last SLM should handle updates by default.
                 child = SegmentedSLM(
                     parent=self,
                     window=(x, w, y, h),
                     name=f"{self.name}_segment_{x}_{y}",
-                    update=(x == shape[1] - 1 and y == shape[0] - 1)
+                    refresh=(xi == shape[1] - 1 and yi == shape[0] - 1)
                 )
 
                 children.append(child)
