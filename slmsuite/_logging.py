@@ -9,17 +9,16 @@ from slmsuite._pickling import _Picklable
 # Handle default appearance of the logs.
 
 _LOGGER_COLORS = {
-    "grey" :         "\033[38;20m",
+    "grey" :         "\033[90m",
     "red" :          "\033[31m",
-    "orange" :       "\033[38;5;208m",
     "yellow" :       "\033[33m",
     "green" :        "\033[32m",
     "blue" :         "\033[34m",
     "cyan" :         "\033[36m",
     "magenta" :      "\033[35m",
-    "bold_grey" :    "\033[1;38;20m",
+    "bold_grey" :    "\033[1;90m",
     "bold_red" :     "\033[1;31m",
-    "bold_orange" :  "\033[1;38;5;208m",
+    "bold_italic_red" : "\033[1;3;31m",
     "bold_yellow" :  "\033[1;33m",
     "bold_green" :   "\033[1;32m",
     "bold_blue" :    "\033[1;34m",
@@ -73,12 +72,12 @@ class _ColorFormatter(logging.Formatter):
         logging.INFO:     _LOGGER_COLORS["reset"],
         logging.WARNING:  _LOGGER_COLORS["bold_yellow"],
         logging.ERROR:    _LOGGER_COLORS["bold_red"],
-        logging.CRITICAL: _LOGGER_COLORS["bold_red"],
+        logging.CRITICAL: _LOGGER_COLORS["bold_italic_red"],
     }
     _FMT = (
         "{grey}%(asctime)s{reset} "
         "{device}%(name)s{reset} "
-        "{level}%(levelname)s:{reset} %(message)s"
+        "{level}%(message)s{reset}"
     )
 
     def format(self, record):
