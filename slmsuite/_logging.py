@@ -9,22 +9,41 @@ from slmsuite._pickling import _Picklable
 # Handle default appearance of the logs.
 
 _LOGGER_COLORS = {
-    "grey" :         "\033[90m",
-    "red" :          "\033[31m",
-    "yellow" :       "\033[33m",
-    "green" :        "\033[32m",
-    "blue" :         "\033[34m",
-    "cyan" :         "\033[36m",
-    "magenta" :      "\033[35m",
-    "bold_grey" :    "\033[1;90m",
-    "bold_red" :     "\033[1;31m",
-    "bold_italic_red" : "\033[1;3;31m",
-    "bold_yellow" :  "\033[1;33m",
-    "bold_green" :   "\033[1;32m",
-    "bold_blue" :    "\033[1;34m",
-    "bold_cyan" :    "\033[1;36m",
-    "bold_magenta" : "\033[1;35m",
-    "reset" :        "\033[0m",
+    "black" :               "\033[30m",
+    "red" :                 "\033[31m",
+    "green" :               "\033[32m",
+    "yellow" :              "\033[33m",
+    "blue" :                "\033[34m",
+    "magenta" :             "\033[35m",
+    "cyan" :                "\033[36m",
+    "white" :               "\033[37m",
+    "grey" :                "\033[90m",
+    "bright_red" :          "\033[91m",
+    "bright_green" :        "\033[92m",
+    "bright_yellow" :       "\033[93m",
+    "bright_blue" :         "\033[94m",
+    "bright_magenta" :      "\033[95m",
+    "bright_cyan" :         "\033[96m",
+    "bright_white" :        "\033[97m",
+    "bold_black" :          "\033[1;30m",
+    "bold_red" :            "\033[1;31m",
+    "bold_green" :          "\033[1;32m",
+    "bold_yellow" :         "\033[1;33m",
+    "bold_blue" :           "\033[1;34m",
+    "bold_magenta" :        "\033[1;35m",
+    "bold_cyan" :           "\033[1;36m",
+    "bold_white" :          "\033[1;37m",
+    "bold_grey" :           "\033[1;90m",
+    "bold_bright_red" :     "\033[1;91m",
+    "bold_bright_green" :   "\033[1;92m",
+    "bold_bright_yellow" :  "\033[1;93m",
+    "bold_bright_blue" :    "\033[1;94m",
+    "bold_bright_magenta" : "\033[1;95m",
+    "bold_bright_cyan" :    "\033[1;96m",
+    "bold_bright_white" :   "\033[1;97m",
+    "bold_italic_red" :     "\033[1;3;31m",
+    "bold_italic_bright_red" :     "\033[1;3;91m",
+    "reset" :               "\033[0m",
 }
 
 _SLMSUITE_COLORS = {
@@ -37,6 +56,12 @@ _SLMSUITE_COLORS = {
 }
 
 _LOGGER_COLORS.update({k: _LOGGER_COLORS[v] for k, v in _SLMSUITE_COLORS.items()})
+
+def print_colors():
+    """Print all entries in :data:`_LOGGER_COLORS` rendered in their own color."""
+    reset = _LOGGER_COLORS["reset"]
+    for name, code in _LOGGER_COLORS.items():
+        print(f"{code}{name}{reset}")
 
 def _attr_repr(value):
     if hasattr(value, "shape"):
@@ -70,11 +95,17 @@ class _ColorFormatter(logging.Formatter):
     _LEVEL_COLORS = {
         logging.DEBUG:    _LOGGER_COLORS["grey"],
         logging.INFO:     _LOGGER_COLORS["reset"],
-        logging.WARNING:  _LOGGER_COLORS["bold_yellow"],
+        logging.WARNING:  _LOGGER_COLORS["red"],
         logging.ERROR:    _LOGGER_COLORS["bold_red"],
-        logging.CRITICAL: _LOGGER_COLORS["bold_italic_red"],
+        logging.CRITICAL: _LOGGER_COLORS["bold_italic_bright_red"],
     }
     _FMT = (
+        "{grey}%(asctime)s{reset} "
+        "{device}%(name)s{reset} "
+        "{grey}%(levelname)s{reset} "
+        "{level}%(message)s{reset}"
+    )
+    _FMT_INFO = (
         "{grey}%(asctime)s{reset} "
         "{device}%(name)s{reset} "
         "{level}%(message)s{reset}"
@@ -85,7 +116,10 @@ class _ColorFormatter(logging.Formatter):
         reset = _LOGGER_COLORS["reset"]
         device_color = getattr(record, "device_color", reset)
         level_color = self._LEVEL_COLORS.get(record.levelno, reset)
-        fmt = self._FMT.format(grey=grey, reset=reset, device=device_color, level=level_color)
+        if record.levelno == logging.INFO:
+            fmt = self._FMT_INFO.format(grey=grey, reset=reset, device=device_color, level=level_color)
+        else:
+            fmt = self._FMT.format(grey=grey, reset=reset, device=device_color, level=level_color)
         record = logging.makeLogRecord(record.__dict__)
         record.name = record.name.removeprefix("slmsuite.")
         return logging.Formatter(fmt).format(record)
