@@ -33,6 +33,7 @@ _SLMSUITE_COLORS = {
     "cameraslm" : "bold_green",
     "slm" : "bold_blue",
     "hologram" : "bold_cyan",
+    "slmsuite" : "bold_magenta",
     "default" : "reset",
 }
 
@@ -95,7 +96,10 @@ _slmsuite_logger.setLevel(logging.DEBUG)
 _slmsuite_logger.handlers = [h for h in _slmsuite_logger.handlers if not isinstance(h, _LogCapture)]
 _slmsuite_log = _LogCapture()
 _slmsuite_logger.addHandler(_slmsuite_log)
-logger = _slmsuite_logger   # This is exposed.
+logger = logging.LoggerAdapter(
+    _slmsuite_logger,
+    extra={"device_color": _LOGGER_COLORS[_SLMSUITE_COLORS["slmsuite"]]},
+)
 
 def get_log():
     """Return all log records emitted by any slmsuite object this session."""
