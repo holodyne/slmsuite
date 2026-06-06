@@ -411,6 +411,16 @@ class SLM(_Common, ABC):
         """
         return self._phase2gray(phase, out=self.display)
 
+    def _gray2display(self, gray):
+        """
+        Helper function to send integer data to a format understood by the SLM.
+        For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`), 
+        this is a more complicated step to convert from grayscale to an electrode bitmap.
+        """
+        xp = _xp(gray)
+        xp.copyto(self.display, gray)
+        return self.display
+
     def _phase2gray(self, phase, out=None):
         r"""
         Helper function to convert an array of phases (units of :math:`2\pi`) to an array of
@@ -706,39 +716,37 @@ class SLM(_Common, ABC):
 
         if phase is not None and np.issubdtype(phase.dtype, np.integer):
             # Check the type.
-            if phase.dtype != self.display.dtype:
+            if phase.dtype != self.dtype:
                 raise TypeError(
-                    "Unexpected integer type {}. Expected {}.".format(
-                        phase.dtype, self.display.dtype
-                    )
+                    f"Unexpected integer type {phase.dtype}. Expected {self.dtype}."
                 )
 
             # If integer data was passed, check that we are not out of range.
             if xp.any(phase >= self.bitresolution):
                 raise TypeError(
-                    "Integer data must be within the bitdepth ({}-bit) of the SLM.".format(
-                        self.bitdepth
-                    )
+                    f"Integer data must be within the bitdepth ({self.bitdepth}-bit) of the SLM."
                 )
 
-            # Copy the pattern and unpad if necessary.
+            # Unpad if necessary.
             if phase.shape != self.shape:
-                xp.copyto(self.display, toolbox.unpad(phase, self.shape))
-            else:
-                xp.copyto(self.display, phase)
+                phase = toolbox.unpad(phase, self.shape)
+
+            # Send the data to self.display.
+            self.display = self._gray2display(phase)
 
             # Update the phase variable with the integer data that we displayed.
-            self.phase = 2 * np.pi - self.display * (
+            self.phase = 2 * np.pi - phase * (
                 2 * np.pi / self.phase_scaling / self.bitresolution
             )
         else:
             # If float data was passed (or the None case).
-            # Copy the pattern and unpad if necessary.
+            # Unpad if necessary.
             if phase is not None:
                 if phase.shape != self.shape:
-                    xp.copyto(self.phase, toolbox.unpad(phase, self.shape))
-                else:
-                    xp.copyto(self.phase, phase)
+                    phase = toolbox.unpad(phase, self.shape)
+
+                # Copy the data to self.phase.
+                xp.copyto(self.phase, phase)
 
             # Add phase correction if requested.
             if phase_correct is None:
@@ -759,7 +767,12 @@ class SLM(_Common, ABC):
 
             # Maybe some of that time will be spent rendering the data in the viewer...
             if self.viewer is not None:
-                self.viewer.render(self.display)
+                xp = _xp(self.phase)
+                factor = (self.phase_scaling * self.bitresolution / (2 * np.pi))
+                if xp == np:
+                    self.viewer.render((self.phase * factor).astype(self.dtype))
+                else:
+                    self.viewer.render((self.phase.get() * factor).astype(self.dtype))
 
         # Optional delay.
         if settle is None:

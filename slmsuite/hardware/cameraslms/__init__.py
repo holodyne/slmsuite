@@ -46,18 +46,21 @@ class CameraSLM(_Loggable):
     _pickle = ["name", "cam", "slm", "mag"]
     _pickle_data = []
 
-    def __init__(self, cam, slm, mag=1):
+    def __init__(self, cam=None, slm=None, mag=1):
         """
         Initialize an SLM linked to a camera, with given magnification between the
         camera and experiment planes.
 
         Parameters
         ----------
-        cam : ~slmsuite.hardware.cameras.camera.Camera
+        cam : ~slmsuite.hardware.cameras.camera.Camera OR (int, int) OR None
             Instance of :class:`~slmsuite.hardware.cameras.camera.Camera`
             which interfaces with a camera. This camera is
             used to provide closed-loop feedback to an SLM for calibration and holography.
-        slm : ~slmsuite.hardware.slms.slm.SLM
+            If a shape ``(int, int)`` is passed and ``slm=None``,
+            then a simulated system is constructed with the desired resolution.
+            If ``None``, then the shape defaults to ``(512, 512)``.
+        slm : ~slmsuite.hardware.slms.slm.SLM OR None
             Instance of :class:`~slmsuite.hardware.slms.slm.SLM`
             which interfaces with a phase display.
         mag : float
@@ -72,6 +75,19 @@ class CameraSLM(_Loggable):
             This magnification is currently isotropic. In the future, anisotropy between
             the camera and experiment planes could be implemented.
         """
+        # First, handle the case where we want to quickly construct a simulated system.
+        if cam is None:
+            cam = (512, 512)
+
+        if isinstance(cam, (list, tuple)):
+            if slm is not None:
+                raise ValueError("When a shape is passed for cam, slm must be None.")
+            slm = SimulatedSLM(resolution=cam, pitch_um=8)
+            slm.set_source_analytic(sim=True)
+            slm.set_source_analytic(sim=False)
+            cam = SimulatedCamera(slm=slm, pitch_um=8)
+
+        # Now actually parse the cameras.
         if not hasattr(cam, "get_image"):
             raise ValueError(f"Expected Camera to be passed as cam. Found {type(cam)}")
         self.cam = cam
@@ -81,7 +97,6 @@ class CameraSLM(_Loggable):
         self.slm = slm
 
         self.name = self.cam.name + "-" + self.slm.name
-
         self.mag = float(mag)
 
         self.calibrations = {}
@@ -170,9 +185,9 @@ class NearfieldSLM(CameraSLM):
         and the camera sensor plane.
     """
 
-    def __init__(self, cam, slm, mag=None):
+    def __init__(self, *args, **kwargs):
         """See :meth:`CameraSLM.__init__`."""
-        super().__init__(cam, slm)
+        super().__init__(*args, **kwargs)
         self.mag = mag
 
 

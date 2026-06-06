@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from slmsuite._logging import _Loggable
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
-from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape
+from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
@@ -1032,13 +1032,22 @@ class Camera(_Common, ABC):
 
     # Other helper methods.
 
-    def autoexposure(
+    @staticmethod
+    def _autoexpose_metric(img):
+        return np.max(img)
+
+    def autoexposure(self, *args, **kwargs):
+        """Backwards-compatible alias for :meth:`autoexpose()`."""
+        return self.autoexpose(*args, **kwargs)
+
+    def autoexpose(
         self,
         set_fraction=0.5,
         tol=0.05,
         exposure_bounds_s=None,
         window=None,
-        timeout_s=5,
+        metric=None,
+        timeout_s=10,
         verbose=True,
     ):
         """
@@ -1055,9 +1064,13 @@ class Camera(_Common, ABC):
             Shortest and longest allowable integration in seconds. If ``None``, defaults to
             :attr:`exposure_bounds_s`. If this attribute was not set (or not available on
             a particular camera), then ``None`` instead defaults to unbounded.
-        window : array_like or None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
+        window : array_like OR None
+            Passed to :meth:`~slmsuite.holography.toolbox.window_slice()`.
             If ``None``, the full camera frame will be used.
+        metric : lambda OR None
+            Metric to use for exposure within the chosen window.
+            If ``None``, this defaults to ``np.max``, which tries to pin the image
+            maximum to the desired exposure ``set_fraction``.
         timeout_s : float
             Stop attempting adjusting exposure after ``timeout_s`` seconds.
         verbose : bool
@@ -1068,6 +1081,18 @@ class Camera(_Common, ABC):
         float
             Resulting exposure in seconds.
         """
+        # Parse set_fraction
+        if set_fraction is True:
+            set_fraction = 0.5
+        set_fraction = float(set_fraction)
+        if set_fraction <= 0:
+            raise ValueError("set_fraction must be positive.")
+
+        # Parse tol
+        tol = float(tol)
+        if tol <= 0:
+            raise ValueError("tol must be positive.")
+
         # Parse exposure_bounds_s
         if exposure_bounds_s is None:
             if self.exposure_bounds_s is None:
@@ -1076,51 +1101,66 @@ class Camera(_Common, ABC):
                 exposure_bounds_s = self.exposure_bounds_s
 
         # Parse window
-        if window is None:
-            wxi = 0
-            wxf = self.shape[1]
-            wyi = 0
-            wyf = self.shape[0]
-        else:
-            wxi = int(window[0] - window[1] / 2)
-            wxf = int(window[0] + window[1] / 2)
-            wyi = int(window[2] - window[3] / 2)
-            wyf = int(window[2] + window[3] / 2)
+        sliced = window_slice(window)
+
+        # Parse metric
+        if metric is None:
+            metric = Camera._autoexpose_metric
 
         # Initialize loop
         set_val = 0.5 * self.bitresolution
         exp = self.get_exposure()
         self.flush()
-        img = self.get_image()
-        im_max = np.amax(img[wyi:wyf, wxi:wxf])
+        img = self.get_image(hdr=False)
+        is_railed = False
 
         # Calculate the error as a percent of the camera's bitresolution
-        err = np.abs(im_max - set_val) / self.bitresolution
+        status = metric(img[sliced])
+        err = np.abs(status - set_val) / self.bitresolution
         t = time.perf_counter()
 
         # Loop until timeout expires or we meet tolerance
         while err > tol and time.perf_counter() - t < timeout_s:
-            # Clip exposure steps to 0.5x -> 2x
-            exp = exp / np.amax([0.5, np.amin([(im_max / set_val), 2])])
-            exp_desired = exp
-            exp = np.clip(exp, exposure_bounds_s[0], exposure_bounds_s[1])
-            if exp_desired != exp:
-                raise RuntimeError(f"autoexposure has railed (exposure: {exp_desired}, bounds: {exposure_bounds_s}).")
+            exp_prev = exp
+
+            # Clip exposure steps to 0.25x -> 4x, also avoiding division by 0.
+            exp_unclipped = exp * np.clip(set_val / max(status, 1), .25, 4)
+            exp = np.clip(exp_unclipped, exposure_bounds_s[0], exposure_bounds_s[1])
+            if exp_unclipped != exp:
+                # If already railed, handle failure cases (TODO).
+                if is_railed:
+                    if (exp == exposure_bounds_s[0] and set_fraction < 0.5):
+                        break
+                    if (exp == exposure_bounds_s[1] and set_fraction > 0.5):
+                        break
+
+                # Otherwise, prepare to do so next loop.
+                is_railed = True
 
             self.set_exposure(exp)
-            self.flush()
-            img = self.get_image()
+            exp = self.get_exposure()
+            if exp_prev == exp:
+                # If already railed, handle failure cases (TODO).
+                if is_railed:
+                    break
 
-            im_max = np.amax(img[wyi:wyf, wxi:wxf])
-            err = np.abs(im_max - set_val) / self.bitresolution
+                # Otherwise, prepare to do so next loop.
+                is_railed = True
+
+            self.flush()
+            img = self.get_image(hdr=False)
+
+            status = metric(img[sliced])
+            err = np.abs(status - set_val) / self.bitresolution
 
             if verbose:
                 print(
-                    f"Autoexposure: exposure = {exp:<.2e} s, "
-                    f"image_max = {im_max}/{self.bitresolution-(self.averaging if self.averaging is not None else 1)}, ",
+                    f"Autoexpose: exposure = {exp:<.2e} s, "
+                    f"status = {status}/{self.bitresolution-(self.averaging if self.averaging is not None else 1)}, ",
                 )
 
-        # The loop targets 50% of resolution. Now set the final exposure if different.
+        # The loop targets 50% of resolution.
+        # Now set the final exposure if different (TODO, improve).
         if set_fraction != 0.5:
             exp = exp * (2 * set_fraction)
             self.set_exposure(exp)
@@ -1271,8 +1311,7 @@ class Camera(_Common, ABC):
             ]
         )
 
-        # try:
-        if True:
+        try:
             popt, _ = curve_fit(
                 lorentzian,
                 z_list,
@@ -1283,11 +1322,11 @@ class Camera(_Common, ABC):
             )
             z_opt = popt[0]
             c_opt = popt[1] + popt[2]
-        # except BaseException:
-        #     if verbose:
-        #         print("Autofocus fit failed, using maximum fom as optimum...")
-        #     z_opt = z_list[I_max_count]
-        #     c_opt = counts[I_max_count]
+        except BaseException:
+            if verbose:
+                print("Autofocus fit failed, using maximum fom as optimum...")
+            z_opt = z_list[I_max_count]
+            c_opt = counts[I_max_count]
 
         # Goto the optimal position
         if verbose:

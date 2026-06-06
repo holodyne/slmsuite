@@ -462,11 +462,11 @@ def convert_radius(radius, from_units="norm", to_units="norm", hardware=None, sh
 
 def window_slice(window, shape=None, centered=False, circular=False):
     """
-    Parses the slices that describe the window's view into the larger array.
+    Parses the slices that describe the window's view into the larger 2D array.
 
     Parameters
     ----------
-    window : (int, int, int, int) OR (array_like, array_like) OR array_like
+    window : (int, int, int, int) OR (array_like, array_like) OR array_like OR None
         A number of formats are accepted:
 
         - List in ``(x, w, y, h)`` format, where ``w`` and ``h`` are the width and height of
@@ -479,6 +479,7 @@ def window_slice(window, shape=None, centered=False, circular=False):
           ``centered`` and ``circular`` are ignored.
         - Boolean array of same ``shape`` as ``matrix``; the window is defined where ``True`` pixels are.
           ``centered`` and ``circular`` are ignored.
+        - If ``None``, the window is the full slice of the 2D array.
 
     shape : (int, int) OR None
         The (height, width) of the array that the window is a view into.
@@ -496,8 +497,11 @@ def window_slice(window, shape=None, centered=False, circular=False):
     if shape is not None:
         shape = format_shape(shape)
 
+    # Case 0: No window, so return the full slice.
+    if window is None:
+        slice_ = (slice(None), slice(None))
     # Case 1: (x, w, y, h) format
-    if len(window) == 4:
+    elif len(window) == 4:
         # Prepare helper vars
         xi = int(window[0] - ((window[1] - 1) / 2 if centered else 0))
         xf = xi + int(window[1])
@@ -738,7 +742,7 @@ def imprint(
     **kwargs,
 ):
     r"""
-    Imprints a region (defined by ``window``) of a ``matrix`` with a ``function``.
+    Imprints a region (defined by ``window``) of a ``matrix`` with a ``function`` in-place.
     This ``function`` must be in the style of :mod:`~slmsuite.holography.toolbox.phase`
     phase helper functions, which expect a ``grid`` parameter to define the coordinate basis
     (see :meth:`~slmsuite.holography.toolbox.phase.blaze()` or
@@ -760,6 +764,7 @@ def imprint(
     ----------
     matrix : numpy.ndarray
         The data to imprint a ``function`` onto.
+        This operation occurs in-place (original array is modified).
     window
         Passed to :meth:`~slmsuite.holography.toolbox.window_slice()`.
         See :meth:`~slmsuite.holography.toolbox.window_slice()` for various options.

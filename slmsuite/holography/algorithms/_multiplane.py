@@ -83,6 +83,9 @@ class MultiplaneHologram(Hologram):
     def __len__(self):
         return len(self.holograms)
 
+    def __getitem__(self, index):
+        return self.holograms[index]
+
     @staticmethod
     def get_multiplane_defocus_blur(
         cameraslm,
@@ -285,5 +288,5 @@ class MultiplaneHologram(Hologram):
         for h, mraf in zip(self.holograms, mraf_variables):
             h._gs_farfield_routines(mraf)
 
-    def remove_vortices(self):
-        for h in self.holograms: h.remove_vortices()
+    def _remove_vortices(self):
+        for h in self.holograms: h._remove_vortices()

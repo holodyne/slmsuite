@@ -996,15 +996,18 @@ class Hologram(_HologramStats, _Loggable):
             Enable debug plots.
         """
         if self.phase_ff is not None:
-            limits = self.plot_farfield(self.target)
 
             if plot:
+                limits = self.plot_farfield(self.target)
                 self.plot_farfield(self.phase_ff, title="phase original", limits=limits)
                 self.plot_farfield(analysis.image_vortices(self.phase_ff), title="vortices coords", limits=limits)
                 self.plot_farfield((self.target > 0).astype(float), title="target_mask", limits=limits)
                 self.plot_farfield((self.target > 0).astype(float) + analysis.image_vortices(self.phase_ff), title="vortices coords + target_mask", limits=limits)
                 self.plot_farfield(analysis.image_remove_vortices(self.phase_ff, self.target > 0, True), title="phase vortices", limits=limits)
-                analysis.image_remove_vortices(self.phase_ff, self.target > 0)
+
+            analysis.image_remove_vortices(self.phase_ff, self.target > 0)
+
+            if plot:
                 self.plot_farfield(self.phase_ff, title="phase removal after", limits=limits)
 
     def _build_nearfield(self, phase_torch=None):

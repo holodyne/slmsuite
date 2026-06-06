@@ -106,10 +106,7 @@ class _ViewerObject(object):
             cmap=True,
             scale=1,
             border=None,
-            cmap_options=[
-                "default", "gray", "Blues", "turbo",
-                'viridis', 'plasma', 'inferno', 'magma', 'cividis'
-            ],
+            cmap_options=None,
             crosshair=False,
             centroid=False,
         ):
@@ -124,11 +121,21 @@ class _ViewerObject(object):
         range = [min, max]
         range = [np.min(range), np.max(range)]
 
-        if cmap is True: cmap = "default"
-        if cmap is False: cmap = "grayscale"
-
         # Parse scale
         scale = 2 ** np.round(np.log2(scale))
+
+        # Parse colormap options.
+        if cmap_options is None:
+            if self.parent.is_slm:
+                cmap_options = ["twilight", "twilight_shifted", "gray", "hsv"]
+            else:
+                cmap_options = [
+                    "default", "gray", "Blues", "turbo",
+                    'viridis', 'plasma', 'inferno', 'magma', 'cividis'
+                ]
+
+        if cmap is True: cmap = cmap_options[0]
+        if cmap is False: cmap = "gray"
 
         self.state = {
             "backend" : backend,
@@ -149,6 +156,8 @@ class _ViewerObject(object):
         self.init_image()
 
     def parse(self, img=None):
+        is_cam = not self.parent.is_slm
+
         if img is not None:
             self.prev_img = img
         if self.prev_img is None:
@@ -164,7 +173,7 @@ class _ViewerObject(object):
         else:
             img = np.copy(self.prev_img)
 
-        if self.state["centroid_crosshair"]:
+        if is_cam and self.state["centroid_crosshair"]:
             img_median_subtract = image_remove_field([img], deviations=None)
             cx, cy = np.rint(
                 (
@@ -178,7 +187,7 @@ class _ViewerObject(object):
         img -= r[0]
         d = r[1] - r[0]
 
-        if self.state["log"]:
+        if is_cam and self.state["log"]:
             # clip to avoid log(0)
             img = (np.log10(np.clip(img, 1, np.inf)) / np.log10(d+1))
 
@@ -196,12 +205,12 @@ class _ViewerObject(object):
             rgb = zoom(rgb, (1, self.state["scale"], self.state["scale"], 1), order=0)
 
         # Add crosshair at the median-subtracted centroid (center of mass) position.
-        if self.state["centroid_crosshair"]:
+        if is_cam and self.state["centroid_crosshair"]:
             rgb[:, :, cx, :3] = 255 - rgb[:, :, cx, :3]
             rgb[:, cy, :, :3] = 255 - rgb[:, cy, :, :3]
 
         # Finally, add crosshair in the center.
-        if self.state["center_crosshair"]:
+        if is_cam and self.state["center_crosshair"]:
             rgb[:, :, int(rgb.shape[2]/2), :3] = 127 - rgb[:, :, int(rgb.shape[2]/2), :3]
             rgb[:, int(rgb.shape[1]/2), :, :3] = 127 - rgb[:, int(rgb.shape[1]/2), :, :3]
 
@@ -221,7 +230,7 @@ class _ViewerObject(object):
     def update(self, event):
         with self.widgets["output"]:
             self.widgets["output"].clear_output(wait=True)
-        for key in ["range", "log", "cmap", "scale", "live", "center_crosshair", "centroid_crosshair"]:
+        for key in self.state_keys:
             self.state[key] = self.widgets[key].value
 
         self.render()
@@ -267,8 +276,10 @@ class _ViewerObject(object):
         from ipywidgets import Image
         from IPython.display import display
 
+        self.prev_img = np.zeros(self.parent.shape, dtype=self.parent.dtype)
+
         self.image = Image(
-            value=np.zeros(self.parent.shape, dtype=self.parent.dtype),
+            value=self.prev_img,
             format="png"
         )
         self.image.on_click = self.on_click
@@ -302,11 +313,13 @@ class _ViewerObject(object):
                 step=1,
                 description="Scale",
                 tooltip="Scale the image by powers of two.",
-                layout=item_layout,
+                layout=(Layout(width="30%") if self.parent.is_slm else item_layout),
                 continuous_update=False,
             ),
             "output": Output()
         }
+
+        self.state_keys = ["cmap", "scale"]
 
         # Extra widgets for cameras, not relevant for SLMs.
         if not self.parent.is_slm:
@@ -352,6 +365,7 @@ class _ViewerObject(object):
                     layout=item_layout,
                 ),
             })
+            self.state_keys += ["live", "range", "log", "center_crosshair", "centroid_crosshair"]
 
         for k, w in self.widgets.items():
             if k == "autorange":

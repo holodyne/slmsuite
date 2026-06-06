@@ -610,8 +610,9 @@ def test_take(subtests, benchmark):
     with subtests.test("integration sums region"):
         image = np.ones((100, 100))
         result = analysis.take(image, vectors=[50, 50], size=10, centered=True, integrate=True)
-        assert result.shape == ()
-        assert float(result) == pytest.approx(100)
+        # 2D image + single vector: shape is (vector_count,) per docstring
+        assert result.shape == (1,)
+        assert result[0] == pytest.approx(100)
 
     with subtests.test("take_tile with explicit shape"):
         test_images = np.random.rand(3, 10, 10)
@@ -683,12 +684,17 @@ def test_take(subtests, benchmark):
         canvas = analysis.take(image, vectors=[40, 40], size=10, centered=True, return_mask=2)
         assert canvas.shape == (80, 80)
         nan_count = np.sum(np.isnan(canvas))
-        assert nan_count > 0
+        # 80*80 pixels total, 10*10=100 filled from image; rest are NaN
+        assert nan_count == 80 * 80 - 100
+        # Non-NaN pixels must equal the source image values
+        assert np.allclose(canvas[~np.isnan(canvas)], image[~np.isnan(canvas)])
 
     with subtests.test("3D image stack with integrate"):
-        images = np.random.rand(3, 100, 100)
+        images = np.ones((3, 100, 100))
         result = analysis.take(images, vectors=[50, 50], size=10, centered=True, integrate=True)
-        assert result.shape == (3,)
+        # 3D stack + single vector: shape is (image_count, vector_count) per docstring
+        assert result.shape == (3, 1)
+        assert np.allclose(result[:, 0], 100.0)
 
     with subtests.test("clip=True fully in-bounds sets clip=False"):
         image = np.random.rand(100, 100)
@@ -735,6 +741,57 @@ def test_take(subtests, benchmark):
             plt.close("all")
 
         assert result.shape == (1, 10, 10)
+
+    with subtests.test("centered=False uses upper-left anchor"):
+        image = np.zeros((100, 100))
+        image[10:20, 20:30] = 5.0  # rows [10,19], cols [20,29]
+        result = analysis.take(image, vectors=[20, 10], size=10, centered=False)
+        assert result.shape == (1, 10, 10)
+        assert np.all(result == 5.0)
+
+    with subtests.test("extracted values match source image"):
+        image = np.zeros((100, 100))
+        image[45:55, 45:55] = 7.0
+        result = analysis.take(image, vectors=[50, 50], size=10, centered=True)
+        assert result.shape == (1, 10, 10)
+        assert np.all(result == 7.0)
+
+    with subtests.test("float vectors get floored"):
+        image = np.zeros((100, 100))
+        image[45:55, 45:55] = 3.0
+        result_int = analysis.take(image, vectors=[50, 50], size=10, centered=True)
+        result_float = analysis.take(image, vectors=[50.7, 50.3], size=10, centered=True)
+        assert np.allclose(result_int, result_float)
+
+    with subtests.test("images as shape tuple returns boolean mask"):
+        mask = analysis.take((80, 60), vectors=[30, 20], size=10, centered=True)
+        assert mask.shape == (80, 60)
+        assert mask.dtype == bool
+        assert np.sum(mask) == 100
+
+    with subtests.test("multiple vectors integrate shape for 2D image"):
+        image = np.ones((100, 100))
+        vectors = np.array([[25, 50, 75], [50, 50, 50]])
+        result = analysis.take(image, vectors=vectors, size=10, centered=True, integrate=True)
+        # 2D image + 3 vectors: shape is (vector_count,) per docstring
+        assert result.shape == (3,)
+        assert np.allclose(result, 100.0)
+
+    with subtests.test("3D stack without integrate gives (image_count, vector_count, h, w)"):
+        images = np.random.rand(4, 100, 100)
+        vectors = np.array([[25, 75], [25, 75]])
+        result = analysis.take(images, vectors=vectors, size=10, centered=True)
+        assert result.shape == (4, 2, 10, 10)
+
+    with subtests.test("out-of-range index without clip raises IndexError"):
+        image = np.random.rand(50, 50)
+        with pytest.raises(IndexError):
+            analysis.take(image, vectors=[100, 100], size=10, centered=True, clip=False)
+
+    with subtests.test("4D images raises RuntimeError"):
+        image = np.random.rand(2, 3, 50, 50)
+        with pytest.raises(RuntimeError):
+            analysis.take(image, vectors=[25, 25], size=10)
 
 
 def test_image_positions(subtests):

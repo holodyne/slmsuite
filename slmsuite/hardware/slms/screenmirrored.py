@@ -6,6 +6,7 @@ on a dedicated background thread. This thread continuously dispatches OS events
 to prevent window freezing, while rendering commands are submitted from the main
 thread via a thread-safe queue.
 """
+import time
 import warnings
 import numpy as np
 
@@ -118,20 +119,20 @@ class ScreenMirrored(SLM):
     ----------
     window : _Window
         Fullscreen window used to send information to the SLM.
-    display_resolution : (int, int)
-        Resolution of the mirrored display in pixels, as (width, height).
+    display_shape : (int, int)
+        Shape of the mirrored display in pixels, as (height, width).
     """
 
     def __init__(
-            self,
-            display_number,
-            bitdepth=8,
-            wav_um=1,
-            pitch_um=(8,8),
-            verbose=True,
-            slm_shape=None,
-            **kwargs
-        ):
+        self,
+        display_number,
+        bitdepth=8,
+        wav_um=1,
+        pitch_um=(8,8),
+        verbose=True,
+        slm_shape=None,
+        **kwargs
+    ):
         """
         Initializes a :mod:`pyglet` window for displaying data to an SLM.
 
@@ -216,13 +217,13 @@ class ScreenMirrored(SLM):
             print("Creating window... ", end="")
 
         screen = screens[display_number]
-        # Store as (width, height) to match SLM.__init__ convention.
-        self.display_resolution = (screen.width, screen.height)
+        # Store as (height, width) for consistency with shape convention.
+        self.display_shape = (screen.height, screen.width)
 
         # Use custom slm_shape if provided, else use display resolution.
         # slm_shape is (width, height) per SLM.__init__ convention.
         if slm_shape is None:
-            slm_shape = self.display_resolution
+            slm_shape = self.display_shape
 
         super().__init__(
             slm_shape,
@@ -236,6 +237,7 @@ class ScreenMirrored(SLM):
         # The _WindowThread handles window creation, OpenGL context setup,
         # and continuous event dispatch on the same thread.
         try:
+            time.sleep(0.2) # Short delay
             wm = _WindowManager.get_instance()
             self._window_thread = wm.create_window(None, screen, self.name)
             self.window = self._window_thread.window
@@ -253,6 +255,9 @@ class ScreenMirrored(SLM):
                 "Warning: Wavelength {} μm is inaccessible to this SLM with "
                 "design wavelength {} μm".format(self.wav_um, self.wav_design_um)
             )
+
+        # Variable to keep track of the last thread future.
+        self._window_thread_future = None
 
     def _set_phase_hw(self, display, execute=True, block=True):
         """
@@ -279,10 +284,13 @@ class ScreenMirrored(SLM):
 
         # Submit render to the window's dedicated thread.
         if execute:
-            future = self._window_thread.submit(self._render, self.window,
-                                                display)
-            if block:
-                _WindowThread.wait(future)
+            self._window_thread_future = self._window_thread.submit(
+                self._render, 
+                self.window,
+                display
+            )
+        if block and self._window_thread_future is not None:
+            _WindowThread.wait(self._window_thread_future)
 
     @staticmethod
     def _render(window, display):

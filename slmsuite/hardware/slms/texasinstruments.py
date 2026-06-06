@@ -190,7 +190,7 @@ class PLM(ScreenMirrored):
             print(f"PLM using {backend} backend")
 
         # Extract model parameters
-        self.model_shape = tuple(self.model_config["shape"])  # (rows, cols) - input phase shape
+        model_shape = tuple(self.model_config["shape"])  # (rows, cols) - input phase shape
         pitch_um = tuple(np.array(self.model_config["pitch"]) * 1e6)  # Convert m to µm
 
         # Store electrode layout for later use
@@ -211,7 +211,7 @@ class PLM(ScreenMirrored):
         super().__init__(
             display_number,
             verbose=verbose,
-            slm_shape=self.model_shape[::-1],  # ScreenMirrored expects (width, height)
+            slm_shape=model_shape[::-1],  # ScreenMirrored expects (width, height)
             bitdepth=bitdepth,
             pitch_um=pitch_um,
             name=kwargs.pop("name", model_name),
@@ -220,7 +220,7 @@ class PLM(ScreenMirrored):
 
         # Calculate display shape after electrode mapping
         elec_shape = self._electrode_layout_raw.shape
-        self.display_shape = (self.model_shape[0] * elec_shape[0], self.model_shape[1] * elec_shape[1])
+        self.display_shape = (model_shape[0] * elec_shape[0], model_shape[1] * elec_shape[1])
 
         # Update window shape and recreate buffers for electrode-mapped output.
         # Must run on the window thread to satisfy OpenGL context thread affinity.
@@ -398,7 +398,7 @@ class PLM(ScreenMirrored):
             self.dlpc900 = None
         super().close()
 
-    def _init_quantize_lut(self):
+    def _init_quantize_lut(self, displacement_ratios=None):
         """
         Pre-compute a quantization lookup table (LUT) that maps discretized
         phase values directly to phase state indices.
@@ -407,8 +407,14 @@ class PLM(ScreenMirrored):
         with a single array index at runtime. The LUT has 2^16 entries (64 KB),
         built once from the model's non-uniform displacement ratios.
         """
-
-        displacement_ratios = np.array(self.model_config["displacement_ratios"])
+        if displacement_ratios is None:
+            displacement_ratios = np.array(self.model_config["displacement_ratios"])
+        else:
+            if len(displacement_ratios) != self.bitresolution:
+                raise ValueError(
+                    f"Expected {self.bitresolution} displacement ratios, "
+                    f"got {len(displacement_ratios)}."
+                )
 
         # Scale displacement ratios to (bitresolution - 1) / bitresolution
         ratio_scale = (self.bitresolution - 1) / self.bitresolution
@@ -531,7 +537,7 @@ class PLM(ScreenMirrored):
 
         # Shape validation
         if enforce_shape:
-            expected_shape = self.model_shape
+            expected_shape = self.shape
             if len(phase.shape) < 2 or phase.shape[-2:] != expected_shape:
                 raise ValueError(
                     f"Phase map shape {phase.shape} does not match "
@@ -548,8 +554,12 @@ class PLM(ScreenMirrored):
         # Quantize phase to discrete states (handles [0, 2π) wrapping internally)
         phase_state_idx = self._quantize(phase)
 
+        return self._gray2display(phase_state_idx)
+
+    def _gray2display(self, gray, replicate_bits=True):
+        xp = self.xp
         # Map to electrode pattern
-        result = self._electrode_map(phase_state_idx)
+        result = self._electrode_map(gray)
 
         # Write into self.display in-place to avoid per-frame allocations
         # (mirrors how _phase2gray writes to self.display in slm.py).

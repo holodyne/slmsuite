@@ -341,13 +341,13 @@ class _HologramStats(object):
         return limits
 
     def plot_nearfield(
-            self,
-            source=None,
-            title="",
-            padded=False,
-            figsize=(8,4),
-            cbar=False
-        ):
+        self,
+        source=None,
+        title="",
+        padded=False,
+        figsize=(8,4),
+        cbar=False
+    ):
         """
         Plots the amplitude (left) and phase (right) of the nearfield (plane of the SLM).
         The amplitude is assumed (whether uniform, assumed, or measured) while the
@@ -427,16 +427,16 @@ class _HologramStats(object):
         plt.show()
 
     def plot_farfield(
-            self,
-            source=None,
-            title="",
-            limits=None,
-            units="knm",
-            limit_padding=0.1,
-            figsize=(8,4),
-            cbar=False,
-            axs=None
-        ):
+        self,
+        source=None,
+        title="",
+        limits=None,
+        units="knm",
+        limit_padding=0.1,
+        figsize=(8,4),
+        cbar=False,
+        axs=None
+    ):
         """
         Plots an overview (left) and zoom (right) view of ``source``.
 
@@ -478,22 +478,36 @@ class _HologramStats(object):
             Used ``limits``, which may be autocomputed. Autocomputed limits are returned
             as integers.
         """
-        # Parse source.
         if source is None:
-            source = self.amp_ff
+            source = "amp_ff"
 
-            if source is None or len(source.shape) == 1:
-                source = self.get_farfield(get=False)
+        if isinstance(source, str):
+            titles = {
+                "amp_ff" : "Farfield Amplitude",
+                "phase_ff" : "Farfield Amplitude",
+                "target" : "Target Amplitude",
+            }
+            if source in titles.keys():
+                source_str = source
+                source = getattr(self, source)
 
-            if limits is None:
-                if len(self.target.shape) == 2:
-                    if np == cp:
-                        limits = self._compute_limits(self.target, limit_padding=limit_padding)
+                if source is None or len(source.shape) == 1:
+                    if source_str == "amp_ff":
+                        source = self.get_farfield(get=False)
                     else:
-                        limits = self._compute_limits(self.target.get(), limit_padding=limit_padding)
+                        raise ValueError(f"Could not retrieve source={source_str}")
 
-            if len(title) == 0:
-                title = "Farfield Amplitude"
+                if len(title) == 0:
+                    title = titles[source_str]
+
+                if limits is None:
+                    if len(self.target.shape) == 2:
+                        if np == cp:
+                            limits = self._compute_limits(self.target, limit_padding=limit_padding)
+                        else:
+                            limits = self._compute_limits(self.target.get(), limit_padding=limit_padding)
+            else:
+                raise ValueError(f"Did not recognize source {source}. Must be one of {list(titles.keys())}")
 
         # Interpret source and convert to numpy for plotting.
         isphase = "phase" in title.lower()

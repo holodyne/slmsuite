@@ -1,11 +1,12 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import warnings
+import cv2
 
 from slmsuite.holography import analysis
 from slmsuite.holography import toolbox
 from slmsuite.holography.algorithms import SpotHologram
-from slmsuite.holography.toolbox import format_2vectors, format_vectors
+from slmsuite.holography.toolbox import format_2vectors, format_vectors, format_shape
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
 
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
@@ -575,3 +576,98 @@ class _FourierCalibration(object):
             raise ValueError(f"Unit '{units}' not recognized as a length.")
 
         return f_eff
+
+    def get_farfield_extent(self, return_corners=True):
+        """
+        Find the extent of the SLM's farfield in the plane of the camera.
+
+        Parameters
+        ----------
+        return_corners : bool
+            If ``True``, returns the coordinates of the corners of the farfield.
+            If ``False``, return a boolean image with the SLM's farfield.
+
+        Returns
+        -------
+        """
+        cam_shape = self.cam.shape
+
+        ll = [0, 0]
+        lr = [1, 0]
+        ur = [1, 1]
+        ul = [0, 1]
+
+        corners_knm = toolbox.format_2vectors(
+            np.vstack((ll, lr, ur, ul, ll)).T
+        )
+        corners_ij = toolbox.convert_vector(
+            corners_knm,
+            from_units="knm",
+            to_units="ij",
+            hardware=self.cameraslm.slm,
+            shape=(1,1),
+        )
+
+        if return_corners:
+            return corners_ij
+        else:
+            # Fill the shadow of the camera on the canvas.
+            canvas = np.zeros(self.cam.shape, dtype=np.uint8)
+            pts = np.rint(corners_ij).astype(np.int32)
+            cv2.fillConvexPoly(canvas, pts, 255, cv2.LINE_4)
+
+            return canvas > 128
+
+    def get_camera_extent(self, units="kxy", return_corners=True):
+        """
+        Find the extent of the camera in the basis of various farfield units.
+
+        Parameters
+        ----------
+        units : str OR (int, int) OR Hologram
+
+        return_corners : bool
+            If ``True``, returns the coordinates of the corners of the camera.
+            If ``False``, and a shape was passed to units, returns
+
+        Returns
+        -------
+        """
+        cam_shape = self.cam.shape
+
+        ll = [0, 0]
+        lr = [cam_shape[1] - 1, 0]
+        ur = [cam_shape[1] - 1, cam_shape[0] - 1]
+        ul = [0, cam_shape[0] - 1]
+
+        corners_ij = toolbox.format_2vectors(
+            np.vstack((ll, lr, ur, ul, ll)).T
+        )
+
+        if isinstance(units, str):
+            return toolbox.convert_vector(
+                corners_ij,
+                from_units="ij",
+                to_units=basis,
+                hardware=self.cameraslm.slm,
+            )
+        else:
+            units = format_shape(units)
+
+            corners_knm = toolbox.convert_vector(
+                corners_ij,
+                from_units="ij",
+                to_units="knm",
+                hardware=self.cameraslm.slm,
+                shape=units,
+            )
+
+            if return_corners:
+                return corners_knm
+            else:
+                # Fill the shadow of the camera on the canvas.
+                canvas = np.zeros(units, dtype=np.uint8)
+                pts = np.rint(corners_knm).astype(np.int32)
+                cv2.fillConvexPoly(canvas, pts, 255, cv2.LINE_4)
+
+                return canvas > 128

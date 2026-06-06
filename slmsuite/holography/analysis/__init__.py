@@ -58,16 +58,16 @@ def _generate_grid(w_x, w_y, centered=False, integer=False):
 
 
 def take(
-        images,
-        vectors,
-        size,
-        centered=True,
-        integrate=False,
-        clip=False,
-        return_mask=False,
-        plot=False,
-        xp=None
-    ):
+    images,
+    vectors,
+    size,
+    centered=True,
+    integrate=False,
+    clip=False,
+    return_mask=False,
+    plot=False,
+    xp=None
+):
     """
     Crop integration regions around an array of ``vectors``, yielding an array of images.
 
@@ -77,15 +77,16 @@ def take(
 
     Parameters
     ----------
-    images : array_like
-        2D image or array of 2D images.
+    images : array_like OR (int, int)
+        2D image of shape ``(h, w)`` or stack of 2D images of shape ``(image_count, h, w)``.
+        If a shape ``(int, int)`` is given, then ``return_mask`` is forced to ``True``.
     vectors : array_like of floats
-        2-vector (or 2-vector array). Location(s) of integration region anchor(s) in pixels,
-        see ``centered``.
+        2-vector (or 2-vector array).
+        Location(s) of integration region anchor(s) in pixels, see ``centered``.
         See :meth:`~slmsuite.holography.toolbox.format_2vectors`.
     size : int or (int, int)
-        Size of the rectangular integration region in ``(w, h)`` format in pixels.
-        If a scalar is given, assume square ``(w, w)``.
+        Size of the rectangular integration region in ``(iw, ih)`` format in pixels.
+        If a scalar is given, assume square ``(iw, iw)``.
     centered : bool
         Whether to center the integration region on the ``vectors``.
         If ``False``, ``vectors`` indicates the upper-left corner of the integration region.
@@ -116,10 +117,12 @@ def take(
     -------
     numpy.ndarray OR cupy.ndarray
         If ``integrate`` is ``False``, returns an array containing the images cropped
-        from the regions of size ``(image_count, h, w)``.
-        If ``integrate`` is ``True``, instead returns an array of floats of size ``(image_count,)``
+        from the regions of size ``(vector_count, h, w)``.
+        If ``integrate`` is ``True``, instead returns an array of floats of size ``(vector_count,)``
         where each float corresponds to the :meth:`numpy.sum` of a cropped image.
         If ``xp`` is :mod:`cupy`, then a ``cupy.ndarray`` is returned.
+        If a stack of ``image_count`` images is given, the output is of shape
+        ``(image_count, vector_count, h, w)`` or ``(image_count, vector_count)`` depending on ``integrate``.
     """
     # Clean variables.
     if np.isscalar(size):
@@ -144,8 +147,12 @@ def take(
     integration_x = np.add(region_x.ravel()[:, np.newaxis].T, vectors[:][0][:, np.newaxis])
     integration_y = np.add(region_y.ravel()[:, np.newaxis].T, vectors[:][1][:, np.newaxis])
 
-    images = xp.array(images, copy=(False if np.__version__[0] == '1' else None))
+    # Parse images and shape.
     shape = xp.shape(images)
+
+    if shape == (2,):
+        shape = (int(images[0]), int(images[1]))
+        return_mask = True
 
     if clip:  # Prevent out-of-range errors by clipping.
         mask = (
@@ -165,10 +172,10 @@ def take(
 
     if return_mask:
         if return_mask == 2:
-            canvas = np.full(images.shape, np.nan, dtype=float)
+            canvas = np.full(shape[-2:], np.nan, dtype=float)
             canvas[integration_y, integration_x] = images[integration_y, integration_x]
         else:
-            canvas = np.zeros(shape[:2], dtype=bool)
+            canvas = np.zeros(shape[-2:], dtype=bool)
             canvas[integration_y, integration_x] = True
 
         if plot:
@@ -177,6 +184,8 @@ def take(
 
         return canvas
     else:
+        images = xp.array(images, copy=(False if np.__version__[0] == '1' else None))
+
         # Take the data, depending on the shape of the images.
         if len(shape) == 2:
             result = images[np.newaxis, integration_y, integration_x]
@@ -190,17 +199,28 @@ def take(
                 result[:, mask] = np.nan
             except:
                 result[:, mask] = 0
+
+        if integrate:
+            if len(shape) == 2:
+                final_shape = (vectors.shape[1],)
+            elif len(shape) == 3:
+                final_shape = (shape[0], vectors.shape[1],)
         else:
-            pass
+            if len(shape) == 2:
+                final_shape = (vectors.shape[1], size[1], size[0])
+            elif len(shape) == 3:
+                final_shape = (shape[0], vectors.shape[1], size[1], size[0])
 
-        # Plot if desired
         if plot:
-            take_plot(xp.reshape(result, (vectors.shape[1], size[1], size[0])), separate_axes=False)
+            if len(shape) == 2:
+                take_plot(xp.reshape(result, final_shape), separate_axes=False)
+            elif len(shape) == 3:
+                take_plot(xp.reshape(result, final_shape)[0], separate_axes=False)
 
-        if integrate:  # Sum over the integration axis.
-            return xp.squeeze(xp.sum(result.astype(float), axis=-1))
-        else:  # Reshape the integration axis.
-            return xp.reshape(result, (vectors.shape[1], size[1], size[0]))
+        if integrate:   # Sum over the integration axis.
+            return xp.sum(result.astype(float), axis=-1).reshape(final_shape)
+        else:           # Reshape the integration axis.
+            return xp.reshape(result, final_shape)
 
 
 def take_plot(images, shape=None, separate_axes=False, cbar=True):
@@ -223,6 +243,9 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
     # Gather helper variables and set the min and max of all the subplots.
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
+    
+    if isinstance(images, cp.ndarray):
+        images = cp.asnumpy(images)
 
     if separate_axes:
         sx = sx / 2.0 - 0.5
@@ -1107,8 +1130,9 @@ def image_zernike_fit(
     grid : (array_like, array_like) OR None
         Components of the meshgrid describing coordinates over the phase_images.
         If ``None``, makes a grid with unit pitch centered on the phase_images.
-    order : int
+    order : int OR list of int
         Maximal radial Zernike order for the fitting basis.
+        If a list of int is provided, these are the ANSI indices of the Zernike polynomials to fit.
     iterations : int
         Number of times to iterate the subtractive approach.
     leastsquares : bool
@@ -1134,8 +1158,11 @@ def image_zernike_fit(
         phase_images = [unwrap_phase(im) for im in phase_images]
 
     # Generate Zernike terms and norms.
-    order = int(order + 1)
-    indices_ansi = np.arange((order * (order + 1)) // 2)
+    if np.isscalar(order):
+        order = int(order + 1)
+        indices_ansi = np.arange((order * (order + 1)) // 2)[1:]    # Omit the piston term
+    else:
+        indices_ansi = np.array(order, dtype=int)
     D = len(indices_ansi)
     phases = zernike_sum(
         grid,
@@ -1191,7 +1218,7 @@ def image_zernike_fit(
                 pass
 
     # Return the fit with the piston term omitted.
-    return vectors_zernike[1:, :]
+    return vectors_zernike
 
 
 def _get_module(matrix):
