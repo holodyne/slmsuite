@@ -482,7 +482,7 @@ class TestCamera:
         # → w_bin=20, h_bin=30
         # The push-orientation matrix maps unt=(0,0) to t (the translation vector).
         # Each row below: (label, cam-kwargs, expected-ijcam-of-WOI-origin)
-        binx, biny = BINNING[1], BINNING[0]
+        binx, biny = BINNING[0], BINNING[1]
         w_bin = WOI[1] // binx   # 20
         h_bin = WOI[3] // biny   # 30
 
@@ -525,7 +525,7 @@ class TestCamera:
 
             # --- A step of one binned pixel in x maps to a shift of 1 in the
             #     appropriate output axis ---
-            binx, biny = BINNING[1], BINNING[0]
+            binx, biny = BINNING[0], BINNING[1]
             pt_x = np.array([[float(WOI[0] + binx)], [float(WOI[2])]])  # x+1binned-step
             pt_y = np.array([[float(WOI[0])], [float(WOI[2] + biny)]])  # y+1binned-step
 

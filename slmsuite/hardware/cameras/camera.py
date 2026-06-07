@@ -422,7 +422,13 @@ class Camera(_Common, ABC):
                 woi_hw[3] * biny,
             )
 
-        return self.woi
+        # Return the WOI in transformed, but unbinned coordinates.
+        return self.transform.transform_woi(
+            self._woi,
+            shape=self._shape,
+            binning_in=1,
+            binning_out=1,
+        )
 
     def _get_ijraw_to_ijcam(self):
         """
@@ -519,9 +525,7 @@ class Camera(_Common, ABC):
         self._set_exposure_hw(exposure_s)
 
         self._exposure_s = self.get_exposure()
-        # Make sure we update the property.
-        self.exposure_s = self._exposure_s
-        return self.exposure_s
+        return self._exposure_s
 
     @abstractmethod
     def _get_exposure_hw(self):
