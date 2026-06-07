@@ -2412,7 +2412,9 @@ class Affine(object):
                 f"'Affine' and '{type(x).__name__}'"
             )
 
+    @property
     def inv(self):
+        """The inverse affine transformation."""
         M_inv = np.linalg.inv(self.M)
         b_inv = -np.matmul(M_inv, self.b)
         return Affine(M_inv, b_inv)
@@ -2550,7 +2552,15 @@ class OrientationTransform:
 
     @property
     def orientation_matrix(self):
-        """numpy.ndarray : 2x2 matrix."""
+        """
+        numpy.ndarray : 2x2 **pull** (inverse) matrix for this orientation transform.
+
+        This is the linear component of the *inverse* pixel mapping — suitable for
+        composing with calibration matrices (e.g. ``kxy``→``ij``) where the
+        translation is already embedded in the calibration's ``b`` vector.
+        For the *forward* pixel-space mapping (with shape-dependent translation) use
+        :meth:`push_affine`.
+        """
         c = self.code
         C = self.Code
         if c == C.IDENTITY:
@@ -2569,6 +2579,61 @@ class OrientationTransform:
             return np.array([[1, 0], [0, -1]])
         else:   # FLIP_ROT270
             return np.array([[0, 1], [1, 0]])
+
+    @property
+    def push_matrix(self):
+        """
+        numpy.ndarray : 2x2 **push** (forward) matrix for pixel-space ``(x=col, y=row)`` mapping.
+
+        Unlike :attr:`orientation_matrix` (the pull/inverse matrix used for calibration
+        composition), this is the forward pixel mapping — i.e. where each input pixel
+        *goes* in the output image.  The translation component depends on the image
+        shape; use :meth:`push_affine` to get the complete :class:`Affine`.
+        """
+        c = self.code
+        C = self.Code
+        if c == C.IDENTITY:
+            return np.array([[ 1.,  0.], [ 0.,  1.]])
+        elif c == C.ROT90:
+            return np.array([[ 0.,  1.], [-1.,  0.]])
+        elif c == C.ROT180:
+            return np.array([[-1.,  0.], [ 0., -1.]])
+        elif c == C.ROT270:
+            return np.array([[ 0., -1.], [ 1.,  0.]])
+        elif c == C.FLIP:
+            return np.array([[-1.,  0.], [ 0.,  1.]])
+        elif c == C.FLIP_ROT90:
+            return np.array([[ 0.,  1.], [ 1.,  0.]])
+        elif c == C.FLIP_ROT180:
+            return np.array([[ 1.,  0.], [ 0., -1.]])
+        else:   # FLIP_ROT270
+            return np.array([[ 0., -1.], [-1.,  0.]])
+
+    def push_affine(self, shape):
+        """
+        Return an :class:`Affine` for the forward pixel-space transform of a ``(H, W)`` image.
+
+        Maps ``(x=col, y=row)`` in the input image to ``(x', y')`` in the transformed
+        image.  The translation is computed analytically: for each output axis ``i``,
+        ``t[i] = max(0, -M[i,0])*(W-1) + max(0, -M[i,1])*(H-1)``, which compensates
+        for any negated input axis.
+
+        Parameters
+        ----------
+        shape : (int, int)
+            Image shape ``(H, W)`` in the original (untransformed) space.
+
+        Returns
+        -------
+        Affine
+        """
+        H, W = shape
+        M = self.push_matrix
+        t = np.array([
+            max(0., -M[0, 0]) * (W - 1) + max(0., -M[0, 1]) * (H - 1),
+            max(0., -M[1, 0]) * (W - 1) + max(0., -M[1, 1]) * (H - 1),
+        ])
+        return Affine(M, t)
 
     # Actual transform
 

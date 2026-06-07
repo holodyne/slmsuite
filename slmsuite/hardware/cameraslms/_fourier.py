@@ -468,7 +468,6 @@ class _FourierCalibration(object):
         except:
             pass
 
-    @property
     def _get_kxyslm_to_ijraw(self):
         """
         Gets the raw affine transformation from the Fourier calibration.

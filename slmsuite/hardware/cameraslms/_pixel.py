@@ -367,7 +367,7 @@ class _PixelCalibration(object):
                             self.cam.plot(
                                 title=(
                                     f"Pixel Calibrate index {index} "
-                                    f"at direction {["x", "y"][i]}, period {periods[j]}, "
+                                    f"at direction {('x', 'y')[i]}, period {periods[j]}, "
                                     f"levels {levels[k]}, {levels[l]}"
                                 )
                             )

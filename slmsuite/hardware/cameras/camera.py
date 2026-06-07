@@ -87,7 +87,7 @@ class Camera(_Common, ABC):
         "averaging",
         "hdr",
         "woi",
-        "_shape_untransformed",
+        "_shape",
     ]
     _pickle_data = [
         "last_image",
@@ -157,10 +157,15 @@ class Camera(_Common, ABC):
         """
         width, height = format_shape(resolution)
 
-        # Set woi, binning, and shape variables (raw camera coordinates).
+        # Set woi, binning, and shape variables
+        # These are stored in **untransformed** raw camera coordinates.
         self._binning = (1, 1)
-        self._woi_untransformed = (0, width, 0, height)
-        self._shape_untransformed = (height, width)
+        self._woi = (0, width, 0, height)
+        self._shape = (height, width)
+
+        # Detect hardware WOI / binning support.
+        self._software_woi = type(self)._set_woi_hw is Camera._set_woi_hw
+        self._software_binning = type(self)._set_binning_hw is Camera._set_binning_hw
 
         # Create image transformation. Now shape properties can be used.
         self.transform = analysis.get_orientation_transformation(rot, fliplr, flipud)
@@ -205,10 +210,10 @@ class Camera(_Common, ABC):
     # Binning methods.
 
     @property
-    def pitch_um(self) -> tuple[float, float] | None:
+    def pitch_um(self) -> np.ndarray | None:
         """Returns the pixel pitch in micrometers (potentially after binning)."""
         if self._pitch_um is not None:
-            return (self._pitch_um[0] * self.binning[0], self._pitch_um[1] * self.binning[1])
+            return np.array([self._pitch_um[0] * self.binning[0], self._pitch_um[1] * self.binning[1]])
         else:
             return None
 
@@ -227,9 +232,12 @@ class Camera(_Common, ABC):
         if self._binning != value:
             self.set_binning(value)
 
-    def set_binning(self, binning: int | tuple[int, int] = 1, fix_woi=True):
+    def set_binning(self, binning: int | tuple[int, int] = 1, update_woi=True):
         """
-        Binning in the transformed orientation. See :attr:`transform`.
+        Set pixel binning in the transformed orientation. See :attr:`transform`.
+
+        The WOI is tracked in full-resolution (unbinned) sensor coordinates, so
+        :attr:`shape` and :attr:`woi` update automatically to reflect the new binning.
         """
         # Parse binning.
         if isinstance(binning, INTEGER_TYPES):
@@ -237,14 +245,20 @@ class Camera(_Common, ABC):
 
         binning = self.transform.transform_shape(binning)
 
-        # Send it off to the hardware.
-        self._set_binning_hw(binning)
+        if not self._software_binning:
+            # Send it off to the hardware.
+            self._set_binning_hw(binning)
+            # Never trust that it succeeded.
+            self._binning = self._get_binning_hw()
+        else:
+            self._binning = binning
 
-        # Never trust that it suceeded.
-        self._binning = self._get_binning_hw()
-
-        # Now fix the WOI to match the new binning.
-        # self.set_woi(self.woi)
+        # Fix the WOI to account for the new binning.
+        if update_woi:
+            try:
+                self.set_woi(self.woi)
+            except:
+                pass
 
     def _set_binning_hw(self, binning: tuple[int, int]):
         raise NotImplementedError(f"Camera {self.name} has not implemented binning")
@@ -256,13 +270,24 @@ class Camera(_Common, ABC):
 
     @property
     def shape(self):
-        _woi_hw = self._woi_hw
-        return (_woi_hw[3], _woi_hw[1])
+        """
+        Returns ``(height, width)`` of images returned by :meth:`.get_image()`.
+
+        Accounts for the current WOI, binning, and orientation transform so that
+        ``get_image().shape == camera.shape`` always holds.
+        """
+        h_bin = self._woi[3] // self._binning[0]
+        w_bin = self._woi[1] // self._binning[1]
+        return self.transform.transform_shape((h_bin, w_bin))
+
+    @shape.setter
+    def shape(self, _):
+        pass  # derived from _woi and _binning; _Common.__init__ sets this
 
     @property
     def origin(self):
-        _woi_hw = self._woi_hw
-        return (_woi_hw[0], _woi_hw[2])
+        woi = self.woi
+        return (woi[0], woi[2])
 
     @property
     def _woi_untransformed_binned(self):
@@ -272,21 +297,20 @@ class Camera(_Common, ABC):
         This is probably what the hardware interface will accept.
         """
         return (
-            self._woi_untransformed[0] // self.binning[1],    # x
-            self._woi_untransformed[1] // self.binning[1],    # w
-            self._woi_untransformed[2] // self.binning[0],    # y
-            self._woi_untransformed[3] // self.binning[0],    # h
+            self._woi[0] // self._binning[1],    # x / binx
+            self._woi[1] // self._binning[1],    # w / binx
+            self._woi[2] // self._binning[0],    # y / biny
+            self._woi[3] // self._binning[0],    # h / biny
         )
-
-    def _woi_untransformed(self, woi):
-        self._woi_untransformed = 0
 
     @property
     def woi(self):
         """Returns the WOI ``(x, w, y, h)`` in the coordinates of the returned image."""
         return self.transform.transform_woi(
-            self._woi_hw,
-            shape=self._shape_untransformed,
+            self._woi,
+            shape=self._shape,
+            binning_in=1,
+            binning_out=self._binning,
         )
 
     def _set_woi_hw(self, woi):
@@ -297,35 +321,88 @@ class Camera(_Common, ABC):
 
     def set_woi(self, woi=None):
         """
-        Method to narrow the imaging region to a 'window of interest'
-        for faster framerates.
+        Set the window of interest (WOI) for the camera.
 
-        Important
-        ~~~~~~~~~
-        ``slmsuite`` keeps track of TODO
+        Cameras without hardware WOI support use a software crop after each capture.
+        Cameras with hardware WOI support (``_set_woi_hw`` overridden) call that instead.
 
         Parameters
         ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-            If ``None``, defaults to largest possible.
+        woi : (int, int, int, int) or None
+            ``(x0, w, y0, h)`` in **transformed, unbinned** pixel coordinates
+            (i.e. the camera's image orientation at full sensor resolution).
+            If ``None``, resets to the full sensor.
 
         Returns
         -------
-        woi : list
-            :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
+        (int, int, int, int)
+            :attr:`~slmsuite.hardware.cameras.camera.Camera.woi` after the update.
         """
-        raise NotImplementedError()
+        binx, biny = self._binning[1], self._binning[0]
+
+        if woi is None:
+            # Full sensor in untransformed, unbinned coordinates.
+            woi_unt = (0, self._shape[1], 0, self._shape[0])
+        else:
+            # Get the WOI in raw camera coordinates.
+            transformed_shape = self.transform.transform_shape(self._shape)
+            woi_unt = self.transform.inverse_woi(woi, transformed_shape)
+
+            # Clip to sensor bounds. Warn the user about this?
+            x0 = max(0, int(woi_unt[0]))
+            y0 = max(0, int(woi_unt[2]))
+            x1 = min(self._shape[1], x0 + int(woi_unt[1]))
+            y1 = min(self._shape[0], y0 + int(woi_unt[3]))
+            woi_unt = (x0, x1 - x0, y0, y1 - y0)
+
+        # Store untransformed, unbinned WOI.
+        self._woi = woi_unt
+
+        if not self._software_woi:
+            # Pass untransformed, binned coordinates to the subclass.
+            # The subclass might muliply by binning again depending on the camera.
+            self._set_woi_hw(self._woi_untransformed_binned)
+            # Read back (hardware may snap to allowed boundaries)
+            woi_hw = self._get_woi_hw()
+            self._woi = (
+                woi_hw[0] * binx,
+                woi_hw[1] * binx,
+                woi_hw[2] * biny,
+                woi_hw[3] * biny,
+            )
+        # else: handled by _crop_to_woi()
+
+        return self.woi
 
     def _get_ijraw_to_ijcam(self):
-        # _binning and _woi_untransformed are in the untransformed corrdinates
-        ijraw_to_untransformed = analysis.Affine(
-            M=np.diag(self._binning),
-            b=np.array([self._woi_untransformed[0], self._woi_untransformed[2]]),
-            a=np.array([0, 0]),
+        """
+        Returns an :class:`~slmsuite.holography.analysis.Affine` mapping raw sensor
+        pixel coordinates ``(x=col, y=row)`` to camera-image pixel coordinates,
+        accounting for WOI offset, binning, and orientation.
+
+        Stored calibrations use ``ijraw``; this converts them for user-facing ``ijcam``.
+        """
+        binx = self._binning[1]   # column binning
+        biny = self._binning[0]   # row binning
+        woi_x = self._woi[0]
+        woi_y = self._woi[2]
+        w_bin = self._woi[1] // binx
+        h_bin = self._woi[3] // biny
+
+        # Step 1: subtract WOI origin, then divide by binning.
+        # Result is (x, y) in WOI-relative, binned, untransformed coordinates.
+        woi_bin = analysis.Affine(
+            np.diag([1.0 / binx, 1.0 / biny]),
+            np.array([0.0, 0.0]),
+            np.array([float(woi_x), float(woi_y)]),
         )
-        untransformed_to_ijcam = self.transform.affine()
-        return untransformed_to_ijcam @ ijraw_to_untransformed
+
+        # Step 2: push-orientation transform with shape-dependent translation.
+        return self.transform.push_affine((h_bin, w_bin)) @ woi_bin
+
+    def _get_ijcam_to_ijraw(self):
+        """Inverse of :meth:`_get_ijraw_to_ijcam`."""
+        return self._get_ijraw_to_ijcam().inv
 
     # Info method to discover cameras.
 
@@ -441,39 +518,66 @@ class Camera(_Common, ABC):
 
         return averaging
 
-    def _get_averaging_dtype(self, averaging=None):
-        """Returns the appropriate image datatype for ``averaging`` levels of averaging."""
-        if averaging is None:
-            if self.averaging is None:
-                raise ValueError("Averaging is not enabled for this camera. Set the .averaging attribute.")
-            else:
-                averaging = self.averaging
+    def get_dtype(self, averaging=None, hdr=None, binning=None):
+        """
+        Return the dtype that :meth:`.get_image()` will produce for the given settings.
+
+        Useful for pre-allocating output buffers with the correct type before capture.
+
+        Parameters
+        ----------
+        averaging : int or None or False
+            Number of frames to sum. ``None`` uses :attr:`averaging` (or 1 if unset).
+            ``False`` is equivalent to 1.
+        hdr : int or (int, int) or None or False
+            HDR exposure settings. ``None`` uses :attr:`hdr`.
+            Any active HDR (exposures > 1) forces ``float`` regardless of other settings.
+        binning : (int, int) or int or None
+            Software binning factor ``(biny, binx)`` to include in the overflow budget.
+            ``None`` auto-detects: uses :attr:`_binning` when ``_software_binning`` is
+            ``True``, otherwise ``(1, 1)`` (hardware binning does not widen the dtype).
+            Pass an explicit value to query a hypothetical configuration.
+
+        Returns
+        -------
+        dtype
+            The numpy dtype of the image returned by :meth:`.get_image()`.
+        """
+        # HDR always returns float.
+        (exposures, _) = self._parse_hdr(hdr)
+        if exposures > 1:
+            return float
+
+        # Parse averaging (default to self.averaging, fall back to 1 if unset).
+        if averaging is False:
+            averaging = 1
+        elif averaging is None:
+            averaging = self.averaging if self.averaging is not None else 1
         averaging = int(averaging)
-
         if averaging <= 0:
-            raise ValueError("Cannot have negative averaging.")
+            raise ValueError("averaging must be positive.")
 
-        # Get dtype instance from type if needed
+        # Parse software binning factor.
+        if binning is None:
+            eff_binning = self._binning if self._software_binning else (1, 1)
+        elif np.isscalar(binning):
+            eff_binning = (int(binning), int(binning))
+        else:
+            eff_binning = tuple(int(b) for b in binning)
+        bin_factor = eff_binning[0] * eff_binning[1]
+
+        # Integer promotion: check whether averaging * binning fits in the native dtype.
         dtype = np.dtype(self.dtype) if not hasattr(self.dtype, 'kind') else self.dtype
-
-        # Switch based on image type
-        if dtype.kind == "i" or dtype.kind == "u":
-            dtype_bitdepth = 8*dtype.type(0).nbytes
-
-            # Remove depth for signed integer.
+        if dtype.kind in ("i", "u"):
+            dtype_bitdepth = 8 * dtype.type(0).nbytes
             if dtype.kind == "i":
-                dtype_bitdepth -= 1
-
-            extra_bits = int(np.rint(np.log2(averaging)))
-
+                dtype_bitdepth -= 1   # signed integers lose one bit
+            extra_bits = int(np.rint(np.log2(max(1, averaging * bin_factor))))
             if self.bitdepth + extra_bits <= dtype_bitdepth:
-                # If we can sustain the averaging with the current type, continue.
                 return self.dtype
             else:
-                # Otherwise, force floating point.
                 return float
         elif dtype.kind == "f":
-            # Return floating point.
             return self.dtype
         else:
             raise ValueError(f"Datatype {self.dtype} does not make sense as a camera return.")
@@ -501,9 +605,34 @@ class Camera(_Common, ABC):
         # Force int so we have a chance of exposure aligning with camera clock.
         return (int(exposures), int(exposure_power))
 
+    @property
+    def _hw_image_shape(self):
+        """
+        Shape that :meth:`._get_image_hw` returns before software WOI/binning is applied.
+
+        - Software WOI (``_software_woi=True``): hardware delivers the full sensor,
+          so the shape is ``_shape``.
+        - Hardware WOI + software binning: hardware crops to the WOI but does not bin,
+          so the shape is the unbinned WOI size.
+        - Hardware WOI + hardware binning: hardware both crops and bins,
+          so the shape is the binned WOI size in the untransformed frame.
+        """
+        if self._software_woi:
+            # Full sensor: crop happens later in _crop_to_woi().
+            return self._shape
+        # Hardware WOI: image is already cropped to the WOI region.
+        h_woi = self._woi[3]
+        w_woi = self._woi[1]
+        if self._software_binning:
+            # Binning happens later in _crop_to_woi(): return unbinned WOI size.
+            return (h_woi, w_woi)
+        # Hardware binning: return the WOI size after binning.
+        return (h_woi // self._binning[0], w_woi // self._binning[1])
+
     def _get_out(self, image_count, out=None):
         # Preallocate memory if necessary
-        out_shape = (int(image_count), self._shape_untransformed[0], self._shape_untransformed[1])
+        hw_shape = self._hw_image_shape
+        out_shape = (int(image_count), hw_shape[0], hw_shape[1])
         if out is None:
             out = np.empty(out_shape, dtype=self.dtype)
         else:
@@ -514,6 +643,29 @@ class Camera(_Common, ABC):
             out = np.array(out, copy=False, dtype=self.dtype)
 
         return out
+
+    def _crop_to_woi(self, img):
+        """
+        Software-apply WOI crop and/or binning to ``(H, W)`` image or ``(N, H, W)`` stack.
+        """
+        # Step 1: Software WOI crop.
+        if self._software_woi:
+            x0, w, y0, h = self._woi
+            if x0 != 0 or y0 != 0 or w != self._shape[1] or h != self._shape[0]:
+                img = img[..., y0:y0+h, x0:x0+w]
+
+        # Step 2: Software binning (block-sum of adjacent pixels).
+        if self._software_binning:
+            biny, binx = self._binning
+            if biny != 1 or binx != 1:
+                if img.ndim == 2:
+                    H, W = img.shape
+                    img = img.reshape(H//biny, biny, W//binx, binx).sum(axis=(1, 3))
+                else:   # (N, H, W) stack
+                    N, H, W = img.shape
+                    img = img.reshape(N, H//biny, biny, W//binx, binx).sum(axis=(2, 4))
+
+        return img
 
     # Core capture methods to be implemented by subclass.
 
@@ -687,7 +839,7 @@ class Camera(_Common, ABC):
                 averaging=averaging,
             )
         elif averaging > 1:     # Average many images.
-            averaging_dtype = self._get_averaging_dtype(averaging)
+            averaging_dtype = self.get_dtype(averaging=averaging)
 
             try:
                 # Using the camera-specific batch method if available
@@ -699,7 +851,7 @@ class Camera(_Common, ABC):
                 img = np.sum(imgs, axis=0)
             except NotImplementedError:
                 # Brute-force collection as a backup
-                img = np.zeros(self._shape_untransformed, dtype=averaging_dtype)
+                img = np.zeros(self._hw_image_shape, dtype=averaging_dtype)
 
                 for _ in range(averaging):
                     img += self._get_image_hw_tolerant(
@@ -709,6 +861,11 @@ class Camera(_Common, ABC):
             img = self._get_image_hw_tolerant(
                 timeout_s=timeout_s+self.exposure_s
             )
+            # Promote dtype so the binning does not overflow.
+            img = img.astype(self.get_dtype(averaging=1))
+
+        # Software WOI crop and/or binning (no-op when handled by hardware).
+        img = self._crop_to_woi(img)
 
         # self.transform implements the flipping and rotating keywords passed to the
         # superclass constructor.
@@ -769,16 +926,12 @@ class Camera(_Common, ABC):
             out=out
         )
 
+        # Software WOI crop and/or binning (unused when handled by hardware).
+        imgs = self._crop_to_woi(imgs)
+
         # Transform if desired. Future: make more efficient.
         if transform:
-            imgs_ = np.empty(
-                (int(image_count), self.shape[0], self.shape[1]),
-                dtype=self.dtype
-            )
-            for i in range(image_count):
-                imgs_[i, :, :] = self.transform(imgs[i])
-
-            imgs = imgs_
+            imgs = self.transform(imgs)
 
         # Store the result locally.
         self.last_image = imgs[-1]
@@ -815,7 +968,7 @@ class Camera(_Common, ABC):
         camera. One way to recover High Dynamic Range (HDR) imaging is to use
         `multiple exposures <https://en.wikipedia.org/wiki/Multi-exposure_HDR_capture>`_
         each with increasing exposure time. Then, these images can be stitched together
-        as floating-point data, omitting data which is under- or over- exposed.
+        as **floating-point** data, omitting data which is under- or over- exposed.
 
         Tip
         ~~~
@@ -863,11 +1016,13 @@ class Camera(_Common, ABC):
 
         # Make empty data and grab the original exposure time.
         original_exposure = self.get_exposure()
-        imgs = np.zeros((exposures, self.shape[0], self.shape[1]), self.dtype)
+        # Store frames as float: the analysis immediately casts to float anyway,
+        # and this sidesteps any integer overflow from software binning or wide averaging.
+        imgs = np.zeros((exposures, self.shape[0], self.shape[1]), float)
         exposure_times = np.zeros((exposures,), dtype=float)
 
         for i in range(exposures):
-            # FUTURE: record the set exposures and use these to do better analysis.
+            # FUTURE: record the get_exposures and use these to do better analysis.
             exposure_times[i] = self.set_exposure(int(exposure_power ** i) * original_exposure)
             self.flush()    # Sometimes, cameras return bad frames after exposure change.
             imgs[i, :, :] = self.get_image(hdr=False, **kwargs)

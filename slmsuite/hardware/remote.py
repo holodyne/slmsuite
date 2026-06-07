@@ -232,6 +232,10 @@ class Server(object):
             "_get_exposure_hw",
             "_get_image_hw",
             "_get_images_hw",
+            "_set_woi_hw",
+            "_get_woi_hw",
+            "_set_binning_hw",
+            "_get_binning_hw",
         ]
 
     @staticmethod
