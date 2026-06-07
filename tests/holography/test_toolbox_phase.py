@@ -4,7 +4,7 @@ Unit tests for slmsuite.holography.toolbox.phase module.
 import pytest
 import numpy as np
 
-from slmsuite.holography.toolbox import phase
+from slmsuite.holography.toolbox import phase, Aperture
 from slmsuite.holography.toolbox.phase import (
     _parse_focal_length,
     _zernike_indices_parse,
@@ -320,10 +320,13 @@ def test_phase_functions_general(simple_grid, subtests):
             assert result.shape == expected_shape, f"{func.__name__} changed shape"
 
 
-def test_zernike_aperture(normalized_grid, subtests):
-    """Test zernike_aperture() scaling helper."""
+def test_aperture(normalized_grid, subtests):
+    """Test the Aperture class (scaling, resolve, mask)."""
+    from slmsuite.holography.toolbox import Aperture
+    from slmsuite.holography.toolbox.phase import zernike_sum
+
     with subtests.test("circular aperture is isotropic"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture="circular")
+        x_scale, y_scale = Aperture("circular").scaling(normalized_grid)
         assert x_scale == pytest.approx(y_scale)
         # Scale times max coordinate should give 1
         assert x_scale * np.nanmax(normalized_grid[0]) == pytest.approx(1, rel=1e-6)
@@ -331,15 +334,14 @@ def test_zernike_aperture(normalized_grid, subtests):
     with subtests.test("elliptical aperture may be anisotropic"):
         x = np.linspace(-200, 200, 128)
         y = np.linspace(-500, 500, 128)
-        X, Y = np.meshgrid(x, y)
-        rect_grid = (X, Y)
-        x_scale, y_scale = phase.zernike_aperture(rect_grid, aperture="elliptical")
+        rect_grid = np.meshgrid(x, y)
+        x_scale, y_scale = Aperture("elliptical").scaling(rect_grid)
         # Each axis maps independently
         assert x_scale == pytest.approx(1 / 200, rel=1e-6)
         assert y_scale == pytest.approx(1 / 500, rel=1e-6)
 
     with subtests.test("cropped aperture circumscribes rectangle"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture="cropped")
+        x_scale, y_scale = Aperture("cropped").scaling(normalized_grid)
         assert x_scale == pytest.approx(y_scale)
         # For a square grid the corner distance is sqrt(2)*max
         max_coord = np.nanmax(normalized_grid[0])
@@ -347,56 +349,61 @@ def test_zernike_aperture(normalized_grid, subtests):
         assert x_scale == pytest.approx(expected, rel=1e-6)
 
     with subtests.test("scalar aperture"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture=0.005)
+        x_scale, y_scale = Aperture(0.005).scaling(normalized_grid)
         assert x_scale == pytest.approx(0.005)
         assert y_scale == pytest.approx(0.005)
 
     with subtests.test("tuple aperture"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture=(0.01, 0.02))
+        x_scale, y_scale = Aperture((0.01, 0.02)).scaling(normalized_grid)
         assert x_scale == pytest.approx(0.01)
         assert y_scale == pytest.approx(0.02)
 
     with subtests.test("invalid string raises ValueError"):
         with pytest.raises(ValueError):
-            phase.zernike_aperture(normalized_grid, aperture="invalid")
+            Aperture("invalid").scaling(normalized_grid)
 
-    with subtests.test("None aperture defaults to cropped for grids"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture=None)
-        x_s2, y_s2 = phase.zernike_aperture(normalized_grid, aperture="cropped")
-        assert x_scale == pytest.approx(x_s2)
-        assert y_scale == pytest.approx(y_s2)
+    with subtests.test("None resolves to cropped for raw grids"):
+        resolved = Aperture.resolve(normalized_grid, None).scaling(normalized_grid)
+        cropped = Aperture("cropped").scaling(normalized_grid)
+        assert resolved == pytest.approx(cropped)
 
-    with subtests.test("SLM-like object with get_source_zernike_scaling"):
+    with subtests.test("resolve returns a passed Aperture unchanged"):
+        ap = Aperture("circular")
+        assert Aperture.resolve(normalized_grid, ap) is ap
+
+    with subtests.test("SLM-like object's aperture is the source of truth"):
         class FakeSLM:
             def __init__(self, grid):
                 self.x_grid, self.y_grid = grid
-            def get_source_zernike_scaling(self):
-                return (0.01, 0.02)
+                self.aperture = Aperture((0.01, 0.02))
         fake = FakeSLM(normalized_grid)
-        fake.x_grid = normalized_grid[0]
-        fake.y_grid = normalized_grid[1]
-        x_scale, y_scale = phase.zernike_aperture(fake, aperture=None)
+        x_scale, y_scale = Aperture.resolve(fake, None).scaling(fake)
         assert x_scale == 0.01
         assert y_scale == 0.02
 
-    with subtests.test("CameraSLM-like object delegates to slm"):
+    with subtests.test("CameraSLM-like object delegates to slm.aperture"):
         class FakeCameraSLM:
             def __init__(self, grid):
                 self.x_grid, self.y_grid = grid
                 self.slm = type('FakeSLM', (), {
-                    'get_source_zernike_scaling': lambda self_: (0.03, 0.04),
+                    'aperture': Aperture((0.03, 0.04)),
                     'x_grid': grid[0],
                     'y_grid': grid[1],
                 })()
                 self.cam = True
         fake = FakeCameraSLM(normalized_grid)
-        x_scale, y_scale = phase.zernike_aperture(fake, aperture=None)
+        x_scale, y_scale = Aperture.resolve(fake, None).scaling(fake)
         assert x_scale == 0.03
         assert y_scale == 0.04
 
-    with subtests.test("unrecognized type raises ValueError"):
+    with subtests.test("unrecognized spec raises ValueError"):
         with pytest.raises(ValueError, match="not recognized"):
-            phase.zernike_aperture(normalized_grid, aperture=object())
+            Aperture(object()).scaling(normalized_grid)
+
+    with subtests.test("mask matches resolved mask"):
+        m = Aperture("circular").mask(normalized_grid)
+        m2 = Aperture.resolve(normalized_grid, "circular").mask(normalized_grid)
+        assert np.array_equal(m, m2)
 
 
 def test_zernike_get_string(subtests):
@@ -529,21 +536,11 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
         coeffs = rng.normal(0, 0.1, 10)
         benchmark(phase.zernike_sum, normalized_grid, indices=list(range(len(coeffs))), weights=coeffs)
 
-    with subtests.test("use_mask='return' gives boolean mask"):
-        mask = phase.zernike_sum(
-            normalized_grid, indices=[0], weights=[1], use_mask="return"
-        )
-        assert mask.dtype == bool
-        assert mask.shape == normalized_grid[0].shape
-
     with subtests.test("use_mask=True zeros outside aperture"):
         result = phase.zernike_sum(
             normalized_grid, indices=[4], weights=[1], use_mask=True, aperture="circular"
         )
-        mask = phase.zernike_sum(
-            normalized_grid, indices=[0], weights=[1],
-            use_mask="return", aperture="circular"
-        )
+        mask = Aperture.resolve(normalized_grid, "circular").mask(normalized_grid)
         # Outside the mask should be zero
         assert np.allclose(result[~mask], 0)
 
@@ -1294,12 +1291,11 @@ def test_determine_source_radius(simple_grid, subtests):
         assert w == pytest.approx(np.min([np.amax(simple_grid[0]),
                                            np.amax(simple_grid[1])]) / 4)
 
-    with subtests.test("SLM-like with get_source_radius"):
+    with subtests.test("SLM-like with source_radius"):
         class FakeSLM:
             x_grid = simple_grid[0]
             y_grid = simple_grid[1]
-            def get_source_radius(self):
-                return 42.0
+            source_radius = 42.0
         assert _determine_source_radius(FakeSLM(), w=None) == 42.0
 
     with subtests.test("CameraSLM-like delegates to slm"):
@@ -1307,7 +1303,7 @@ def test_determine_source_radius(simple_grid, subtests):
             x_grid = simple_grid[0]
             y_grid = simple_grid[1]
             slm = type('FakeSLM', (), {
-                'get_source_radius': lambda self: 99.0,
+                'source_radius': 99.0,
                 'x_grid': simple_grid[0],
                 'y_grid': simple_grid[1],
             })()

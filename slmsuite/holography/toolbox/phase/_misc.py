@@ -22,8 +22,8 @@ def _determine_source_radius(grid, w=None):
         To produce perfect structured beams, this radius is equal to the radius of
         the Gaussian profile of the source (ideally not clipped by the SLM).
         If an SLM was passed as grid, retrieves the data from
-        :attr:`slmsuite.hardware.slms.slm.SLM.source` and
-        :meth:`slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`.
+        :attr:`slmsuite.hardware.slms.slm.SLM.source_radius` (see also
+        :meth:`slmsuite.hardware.slms.slm.SLM.fit_aperture()`).
         If ``w`` is left as ``None``, ``w`` is set to a quarter of the smallest normalized screen dimension.
 
     Returns
@@ -36,8 +36,8 @@ def _determine_source_radius(grid, w=None):
 
     if hasattr(grid, "slm") and hasattr(grid, "cam"):
         grid = grid.slm
-    if hasattr(grid, "get_source_radius"):
-        return grid.get_source_radius()
+    if hasattr(grid, "source_radius"):
+        return grid.source_radius
 
     (x_grid, y_grid) = _process_grid(grid)
     return np.min([np.amax(x_grid), np.amax(y_grid)]) / 4

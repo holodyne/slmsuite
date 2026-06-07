@@ -16,7 +16,7 @@ from typing import Tuple, Union, Callable
 
 
 from slmsuite.misc.math import REAL_TYPES
-from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
+from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors, Aperture
 
 # Load CUDA code. This is used for cupy.RawKernels in this file and elsewhere.
 
@@ -212,106 +212,6 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
         result = (n * (n + 2) + l) // 2
 
     return result
-
-
-def zernike_aperture(grid, aperture=None):
-    """
-    Helper function to find the appropriate scaling for between the normalized units in
-    the grid and the Zernike aperture (the unit disk).
-
-    Tip
-    ~~~
-    Passing an :class:`~slmsuite.hardware.slms.slm.SLM` for ``grid`` makes this easy.
-    The function :meth:`~slmsuite.hardware.slms.slm.SLM.get_source_zernike_scaling()`
-    determines the optimal scaling of the aperture.
-
-    Important
-    ~~~~~~~~~
-    Zernike polynomials are canonically defined on a circular aperture. However, we may
-    want to use these polynomials on other apertures (e.g. a rectangular SLM).
-    Cropping this aperture breaks the orthogonality and normalization of the set, but
-    this is fine for many applications. While it is possible to orthonormalize the
-    cropped set, we do not do so in :mod:`slmsuite`, as this is not critical for target
-    applications such as aberration correction.
-
-    Caution
-    ~~~~~~~
-    Anisotropic Zernike scaling can lead to unexpected behavior.
-    For instance, the :math:`Z_4 = Z_2^0 = 1 - 2x^2 - 2y^2` Zernike term is commonly
-    used for focusing, but with anisotropic scaling, this becomes an elliptical lens
-    on the SLM which may not behave as expected.
-
-    Parameters
-    ----------
-    aperture : {"circular", "elliptical", "cropped"} OR (float, float) OR float OR None
-        How to scale the polynomials relative to the grid shape. This is relative
-        to the :math:`r = 1` edge of a standard Zernike pupil.
-
-        - ``None``
-          If a :class:`~slmsuite.hardware.slms.slm.SLM` is passed for ``grid``, then
-          uses :meth:`~slmsuite.hardware.slms.slm.SLM.get_source_zernike_scaling()` to
-          determine the scaling most appropriate for the SLM.
-          Otherwise, defaults to ``"cropped"``.
-          See also :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`
-          and especially the `extent_threshold` keyword which determines the scaling used by
-          :meth:`~slmsuite.hardware.slms.slm.SLM.get_source_zernike_scaling()`
-
-        - ``"circular"``
-          The circle is scaled isotropically until the pupil edge touches one set
-          of opposite grid edges. This is the default aperture.
-
-        - ``"elliptical"``
-          The circle is scaled anisotropically until each pupil edge touches a grid
-          edge. Generally produces an ellipse.
-
-        - ``"cropped"``
-          The circle is scaled isotropically until the rectangle of the grid is
-          circumscribed by the circle.
-
-        - ``float OR (float, float)``
-          Custom scaling. These values are multiplied to the ``x_grid`` and ``y_grid``
-          directly, respectively. The edge of the Zernike pupil corresponds to where
-          ``(s_x * x_grid)**2 + (s_y * y_grid)**2 = 1``. If a scalar is given, assumes
-          isotropic scaling.
-
-    Returns
-    -------
-    (float, float)
-    """
-    # Parse grid.
-    (x_grid, y_grid) = _process_grid(grid)
-
-    # Parse aperture.
-    if aperture is None:
-        # Check if cameraslm.
-        if hasattr(grid, "slm") and hasattr(grid, "cam"):
-            grid = grid.slm
-
-        # Check if slm.
-        if hasattr(grid, "get_source_zernike_scaling"):
-            aperture = grid.get_source_zernike_scaling()
-        else:
-            aperture = "cropped"
-
-    if isinstance(aperture, str):
-        if aperture == "elliptical":
-            x_scale = 1 / np.nanmax(x_grid)
-            y_scale = 1 / np.nanmax(y_grid)
-        elif aperture == "circular":
-            x_scale = y_scale = 1 / np.amin([np.nanmax(x_grid), np.nanmax(y_grid)])
-        elif aperture == "cropped":
-            x_scale = y_scale = 1 / np.sqrt(np.nanmax(np.square(x_grid) + np.square(y_grid)))
-        else:
-            raise ValueError(f"Aperture '{aperture}' is not implemented.")
-    elif np.isscalar(aperture):
-        x_scale = y_scale = aperture
-    elif isinstance(aperture, (list, tuple, np.ndarray)) and len(aperture) == 2:
-        x_scale = aperture[0]
-        y_scale = aperture[1]
-    else:
-        raise ValueError("Aperture type {} not recognized.".format(type(aperture)))
-
-    return (x_scale, y_scale)
 
 
 def zernike(grid, index, weight=1, **kwargs):
@@ -527,8 +427,9 @@ class ZernikeBasis:
     indices : array_like of int OR None
         ANSI indices of the Zernike polynomials in the basis, of shape ``(D,)``.
         Parsed with :meth:`_zernike_indices_parse`.
-    aperture : see :meth:`zernike_aperture`
-        Lateral scaling of the Zernike polynomials.
+    aperture : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
+        The aperture defining the lateral scaling of the Zernike polynomials. Resolved
+        with :meth:`~slmsuite.holography.toolbox.Aperture.resolve`.
     use_mask : bool
         Whether to zero the region outside the standard Zernike pupil. Defaults
         to ``True`` so that overlap integrals reduce to plain matrix products.
@@ -555,6 +456,9 @@ class ZernikeBasis:
         xp = _zernike_xp(x_grid)
         D = len(indices)
 
+        # Resolve the aperture object
+        aperture = Aperture.resolve(grid, aperture)
+
         # One single-mode Zernike image per basis index, stacked as (D, h, w).
         basis = zernike_sum(
             grid,
@@ -563,7 +467,8 @@ class ZernikeBasis:
             aperture=aperture,
             use_mask=bool(use_mask),
         )
-        mask = zernike_sum(grid, 0, 0, aperture=aperture, use_mask="return")
+        # The mask is the aperture's own pupil; no redundant zernike_sum round-trip.
+        mask = aperture.mask(grid)
 
         self.indices = indices
         self.aperture = aperture
@@ -835,22 +740,27 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     weights : array_like of float
         The weight for each given index. Of shape ``(D,)``.
         If a stack of Zernike sums is desired, then use shape ``(D, N)``.
-    aperture : {"circular", "elliptical", "cropped"} OR (float, float) OR float OR None
-        Determines how the Zernike polynomials are laterally scaled.
-        Parsed with :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture()`.
+    aperture : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
+        The aperture defining how the Zernike polynomials are laterally scaled and
+        cropped. Pass a first-class :class:`~slmsuite.holography.toolbox.Aperture`
+        (e.g. ``Aperture("circular")``), or a legacy shorthand spec
+        (``"circular"`` / ``"elliptical"`` / ``"cropped"`` / ``float`` /
+        ``(float, float)``) which is wrapped by
+        :meth:`~slmsuite.holography.toolbox.Aperture.resolve`. If ``None`` and ``grid``
+        is an :class:`~slmsuite.hardware.slms.slm.SLM`, the SLM's
+        :attr:`~slmsuite.hardware.slms.slm.SLM.aperture` is used.
 
         Important
         ~~~~~~~~~
         Read the documentation and tips in
-        :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture()`
+        :class:`~slmsuite.holography.toolbox.Aperture`
         to avoid subtle issues with lateral scaling.
 
-    use_mask : bool OR "return" OR np.nan
+    use_mask : bool OR np.nan
         If ``True``, sets the area where standard Zernike polynomials are undefined to zero.
         If ``False``, the polynomial is not cropped. This should be used carefully, as
         polynomials outside the unit circle quickly explode with
         :math:`r^O` for terms of order :math:`O`.
-        If ``"return"``, returns the 2D mask ``x_grid**2 + y_grid**2 <= 1``.
         If ``np.nan``, the clipped area is set to ``np.nan`` instead of zero;
         this is used for plotting transparency in this undefined region.
     derivative : (int, int)
@@ -864,7 +774,7 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     Returns
     -------
     numpy.ndarray
-        The phase for this function. Optionally returns the 2D Zernike mask.
+        The phase for this function.
     """
     if len(derivative) != 2:
         raise ValueError("Expected derivative to be a (int, int)")
@@ -882,7 +792,8 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
 
     # Parse passed simple values.
     (x_grid, y_grid) = _process_grid(grid)
-    (x_scale, y_scale) = zernike_aperture(grid, aperture)
+    aperture = Aperture.resolve(grid, aperture)
+    (x_scale, y_scale) = aperture.scaling(grid)
     xp = _zernike_xp(x_grid)
 
     # Parse weights.
@@ -922,9 +833,7 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     if use_mask is False:
         mask = None
     else:
-        mask = xp.square(x_grid * x_scale) + xp.square(y_grid * y_scale) <= 1
-        if use_mask == "return":
-            return mask
+        mask = aperture.mask(grid)
         mask_value = 0
         if np.isnan(use_mask):
             use_mask = True
@@ -1309,10 +1218,7 @@ def _zernike_test(grid, indices):
 
     # Parse grid.
     (x_grid, y_grid) = _process_grid(grid)
-    scale = 1
-    if hasattr(grid, "get_source_zernike_scaling"):
-        scale = grid.get_source_zernike_scaling()
-        print(scale)
+    (scale, _) = Aperture.resolve(grid).scaling(grid)
     x_grid = cp.array(x_grid, copy=True, dtype=np.float32)
     y_grid = cp.array(y_grid, copy=True, dtype=np.float32)
 

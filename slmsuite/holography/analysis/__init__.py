@@ -1172,9 +1172,10 @@ def image_zernike_fit(
         :math:`\langle\phi, Z_i\rangle / \langle Z_i, Z_i\rangle`, which ignores
         cross-terms between modes and is exact only when the basis is orthonormal
         over the sampled aperture.
-    aperture : see :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture`
-        Lateral scaling of the Zernike polynomials. Ignored if ``grid`` is a
-        :class:`ZernikeBasis`.
+    aperture : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
+        The aperture defining the lateral scaling of the Zernike polynomials. Resolved
+        with :meth:`~slmsuite.holography.toolbox.Aperture.resolve`. Ignored if ``grid``
+        is a :class:`ZernikeBasis`.
     use_mask : bool
         Whether to mask the region outside the Zernike pupil. Ignored if ``grid``
         is a :class:`ZernikeBasis`.
