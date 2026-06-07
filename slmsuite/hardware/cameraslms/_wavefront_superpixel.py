@@ -638,7 +638,7 @@ class _WavefrontCalibrationSuperpixel(object):
             xyr = [l.ravel() for l in xy]
 
             # Process dsuperpixel by rotating it according to the Fourier calibration.
-            M = self.calibrations["fourier"]["M"]
+            M = self.fourier_affine.M
             M_norm = M / np.sqrt(np.abs(np.linalg.det(M)))
             dsuperpixel = np.squeeze(np.matmul(M_norm, format_2vectors(dsuperpixel)))
 

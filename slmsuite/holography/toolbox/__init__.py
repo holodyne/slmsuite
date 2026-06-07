@@ -141,12 +141,14 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     -  ``"ij"``
         Camera pixel units, relative to the origin of the camera.
+        When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``.
         See :meth:`~slmsuite.hardware.cameraslms.FourierSLM.kxyslm_to_ijcam`
         and :meth:`~slmsuite.hardware.cameraslms.FourierSLM.ijcam_to_kxyslm`.
 
     -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
         Camera position in metric length units, relative to the origin of the camera.
+        When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
         along with knowledge of the camera pixel size ``pitch_um``.
 

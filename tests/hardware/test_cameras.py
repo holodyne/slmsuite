@@ -292,14 +292,14 @@ class TestCamera:
         """Autoexposure converges to same result from different starting points."""
         with subtests.test("convergence"):
             camera.set_exposure(0.01)
-            result1 = camera.autoexposure(verbose=False)
+            result1 = camera.autoexpose(verbose=False)
             camera.set_exposure(1)
-            result2 = camera.autoexposure(verbose=False)
+            result2 = camera.autoexpose(verbose=False)
             assert pytest.approx(result1, rel=0.15) == result2
 
         with subtests.test("custom set_fraction"):
             camera.set_exposure(0.01)
-            result3 = camera.autoexposure(set_fraction=0.3, verbose=False)
+            result3 = camera.autoexpose(set_fraction=0.3, verbose=False)
             assert result3 > 0
 
     def test_autofocus(self, camera, slm, subtests):

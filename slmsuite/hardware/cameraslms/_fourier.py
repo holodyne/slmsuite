@@ -7,9 +7,12 @@ from slmsuite.holography import analysis
 from slmsuite.holography import toolbox
 from slmsuite.holography.algorithms import SpotHologram
 from slmsuite.holography.toolbox import format_2vectors, format_vectors, format_shape
+from slmsuite.holography.analysis import Affine
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
 
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
+
+
 
 class _FourierCalibration(object):
     """
@@ -26,7 +29,7 @@ class _FourierCalibration(object):
         array_center=None,
         plot=False,
         autofocus=False,
-        autoexposure=False,
+        autoexpose=False,
         **kwargs,
     ):
         """
@@ -69,11 +72,11 @@ class _FourierCalibration(object):
             If a dictionary is passed, autofocus is performed,
             and the dictionary is passed to
             :meth:`~slmsuite.hardware.cameras.camera.Camera.autofocus()`.
-        autoexposure : bool OR dict
+        autoexpose : bool OR dict
             Whether or not to automatically set the camera exposure.
-            If a dictionary is passed, autoexposure is performed,
+            If a dictionary is passed, autoexpose is performed,
             and the dictionary is passed to
-            :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexposure()`.
+            :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexpose()`.
         **kwargs : dict
             Passed to :meth:`.fourier_grid_project()`, which passes them to
             :meth:`~slmsuite.holography.algorithms.SpotHologram.optimize()`.
@@ -119,11 +122,11 @@ class _FourierCalibration(object):
         # Optional step -- autofocus and autoexpose the spots
         if autofocus or isinstance(autofocus, dict):
             # Pre-expose
-            if autoexposure or isinstance(autoexposure, dict):
-                if isinstance(autoexposure, dict):
-                    self.cam.autoexposure(**autoexposure)
+            if autoexpose or isinstance(autoexpose, dict):
+                if isinstance(autoexpose, dict):
+                    self.cam.autoexpose(**autoexpose)
                 else:
-                    self.cam.autoexposure()
+                    self.cam.autoexpose()
 
             # Focus
             if isinstance(autofocus, dict):
@@ -132,11 +135,11 @@ class _FourierCalibration(object):
                 self.cam.autofocus(plot=plot)
 
         # Post-expose
-        if autoexposure or isinstance(autoexposure, dict):
-            if isinstance(autoexposure, dict):
-                self.cam.autoexposure(**autoexposure)
+        if autoexpose or isinstance(autoexpose, dict):
+            if isinstance(autoexpose, dict):
+                self.cam.autoexpose(**autoexpose)
             else:
-                self.cam.autoexposure()
+                self.cam.autoexpose()
 
         img = self.cam.get_image()
 
@@ -165,11 +168,9 @@ class _FourierCalibration(object):
             [M[1, 0] * scaling[0], M[1, 1] * scaling[1]],
         ])
 
-        self.calibrations["fourier"] = {
-            "M": M,
-            "b": b,
-            "a": a
-        }
+        kxyslm_to_ijcam = Affine(M, b, a)
+        kxyslm_to_ijraw = self.cam._get_ijcam_to_ijraw() @ kxyslm_to_ijcam
+        self.calibrations["fourier"] = kxyslm_to_ijraw.to_dict()
         self.calibrations["fourier"].update(self._get_calibration_metadata())
 
         return self.calibrations["fourier"]
@@ -350,6 +351,14 @@ class _FourierCalibration(object):
         This information is encoded in the Fourier calibration, and revealed by
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.get_effective_focal_length()`.
 
+        Important
+        ~~~~~~~~~
+        When a WOI or binning is applied to a camera, this conversion helper function uses the
+        WOI/binned coordinate system, i.e. the coordinate system of the returned image.
+        After all, the user is working with the returned image.
+        Internally, the stored calibration is kept in terms of the **full**,
+        **untransformed** camera coordinates.
+
         Parameters
         ----------
         kxy : array_like
@@ -366,18 +375,10 @@ class _FourierCalibration(object):
         RuntimeError
             If the fourier plane calibration does not exist.
         """
-        if not "fourier" in self.calibrations:
-            raise RuntimeError("Fourier calibration must exist to be used.")
-
         self._check_fourier_calibration_stale()
 
         kxy = format_vectors(kxy, handle_dimension="pass")
-
-        # Apply the xy transformation.
-        ij = np.matmul(
-            self.calibrations["fourier"]["M"],
-            kxy[:2, :] - self.calibrations["fourier"]["a"]
-        ) + self.calibrations["fourier"]["b"]
+        ij = self.fourier_affine * kxy[:2, :]
 
         # Handle z if needed.
         if kxy.shape[0] == 3:
@@ -430,18 +431,10 @@ class _FourierCalibration(object):
         RuntimeError
             If the fourier plane calibration does not exist.
         """
-        if not "fourier" in self.calibrations:
-            raise RuntimeError("Fourier calibration must exist to be used.")
-
         self._check_fourier_calibration_stale()
 
         ij = format_vectors(ij, handle_dimension="pass")
-
-        # Apply the xy transformation.
-        kxy = np.matmul(
-            np.linalg.inv(self.calibrations["fourier"]["M"]),
-            ij[:2, :] - self.calibrations["fourier"]["b"]
-        ) + self.calibrations["fourier"]["a"]
+        kxy = self.fourier_affine.inv * ij[:2, :]
 
         # Handle z if needed.
         if ij.shape[0] == 3:
@@ -456,6 +449,9 @@ class _FourierCalibration(object):
         Warns if this is true. Does nothing if either calibration is not present or
         if another error occurs.
         """
+        if not "fourier" in self.calibrations:
+            raise RuntimeError("Fourier calibration must exist to be used.")
+
         try:
             if "wavefront_superpixel" in self.calibrations and "fourier" in self.calibrations:
                 if (
@@ -471,6 +467,38 @@ class _FourierCalibration(object):
                     )
         except:
             pass
+
+    @property
+    def _get_kxyslm_to_ijraw(self):
+        """
+        Gets the raw affine transformation from the Fourier calibration.
+
+        Returns
+        -------
+        affine : Affine
+        """
+        return Affine(
+            self.calibrations["fourier"]["M"],
+            self.calibrations["fourier"]["b"],
+            self.calibrations["fourier"]["a"],
+        )
+
+    @property
+    def fourier_affine(self):
+        """
+        Returns the affine transformation between the SLM Fourier space and
+        camera pixel space (with binning and WOI applied).
+
+        Returns
+        -------
+        affine : Affine
+            Affine transformation from SLM Fourier space to camera pixel space, with binning and WOI applied.
+        """
+        self._check_fourier_calibration_stale()
+
+        return self.cam._get_ijraw_to_ijcam() @ self._get_kxyslm_to_ijraw()
+
+    # Conversion functions to extract useful information from the Fourier calibration.
 
     def get_farfield_spot_size(self, slm_size=None, basis="kxy"):
         """
@@ -557,8 +585,8 @@ class _FourierCalibration(object):
         if not "fourier" in self.calibrations:
             raise RuntimeError("Fourier calibration must exist to be used.")
 
-        # Gather f_eff in pix/rad.
-        f_eff = np.sqrt(np.abs(np.linalg.det(self.calibrations["fourier"]["M"])))
+        # Gather f_eff in pix/rad. TODO: fix due to WOI/binned coordinates.
+        f_eff = np.sqrt(np.abs(self.fourier_affine.det()))
 
         # Gather other conversions.
         if units != "ij" and self.cam.pitch_um is None:
@@ -576,6 +604,8 @@ class _FourierCalibration(object):
             raise ValueError(f"Unit '{units}' not recognized as a length.")
 
         return f_eff
+
+    # Helper functions to plot the rectangles of the camera and SLM farfield onto each other.
 
     def get_farfield_extent(self, return_corners=True):
         """
@@ -648,7 +678,7 @@ class _FourierCalibration(object):
             return toolbox.convert_vector(
                 corners_ij,
                 from_units="ij",
-                to_units=basis,
+                to_units=units,
                 hardware=self.cameraslm.slm,
             )
         else:
