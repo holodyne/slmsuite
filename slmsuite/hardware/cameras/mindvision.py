@@ -209,9 +209,58 @@ class MindVision(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         _mvsdk.CameraSetExposureTime(self.handle, exposure_s * 1e6)
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        return
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # MindVision iHOffsetFOV/iVOffsetFOV/iWidthFOV/iHeightFOV are physical (unbinned) sensor pixels.
+        # iWidth/iHeight are the output (binned) dimensions.
+        biny, binx = self._binning
+        x, w, y, h = [int(v) for v in woi]
+        resolution = _mvsdk.CameraGetImageResolution(self.handle)
+        resolution.iIndex = 0xFF
+        resolution.iHOffsetFOV = x * binx
+        resolution.iWidthFOV = w * binx
+        resolution.iVOffsetFOV = y * biny
+        resolution.iHeightFOV = h * biny
+        resolution.iWidth = w
+        resolution.iHeight = h
+        _mvsdk.CameraSetImageResolution(self.handle, resolution)
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        # Physical FOV coordinates; divide by binning to get binned coords.
+        biny, binx = self._binning
+        resolution = _mvsdk.CameraGetImageResolution(self.handle)
+        return (
+            int(resolution.iHOffsetFOV) // binx,
+            int(resolution.iWidthFOV) // binx,
+            int(resolution.iVOffsetFOV) // biny,
+            int(resolution.iHeightFOV) // biny,
+        )
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        # MindVision binning via uBinSumMode: bit 0 = 2x2, bit 1 = 3x3, bit 2 = 4x4.
+        biny, binx = int(binning[0]), int(binning[1])
+        if biny != binx:
+            raise ValueError(f"MindVision requires symmetric binning. Received (biny={biny}, binx={binx}).")
+        resolution = _mvsdk.CameraGetImageResolution(self.handle)
+        resolution.iIndex = 0xFF
+        if biny <= 1:
+            resolution.uBinSumMode = 0
+            resolution.uBinAverageMode = 0
+        else:
+            resolution.uBinSumMode = 1 << (biny - 2)
+            resolution.uBinAverageMode = 0
+        resolution.iWidth = resolution.iWidthFOV // binx
+        resolution.iHeight = resolution.iHeightFOV // biny
+        _mvsdk.CameraSetImageResolution(self.handle, resolution)
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        resolution = _mvsdk.CameraGetImageResolution(self.handle)
+        mode = int(resolution.uBinSumMode) or int(resolution.uBinAverageMode)
+        b = mode.bit_length() + 1 if mode else 1
+        return (b, b)
 
     def _get_image_hw(self, timeout_s):
         # TODO: are the following two commands necessary for every call?

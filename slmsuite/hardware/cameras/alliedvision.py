@@ -329,45 +329,38 @@ class AlliedVision(Camera):
         else:
             raise RuntimeError("Camera does not have ExposureTime or ExposureTimeAbs property.")
 
-    def _set_woi(self, woi):
-        """
-        Sets the window of interest (WOI).
-
-        Parameters
-        ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-        """
-        # Set the width and height to very small values
-        # such that setting the offsets will not error.
-        self.cam.Height.set(8)
-        self.cam.Width.set(8)
-
-        # Now set the WOI.
-        x, w, y, h = woi
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # AlliedVision (GenICam): OffsetX/OffsetY/Width/Height are in
+        # binned output pixels when binning is active (same convention as Basler).
+        x, w, y, h = [int(v) for v in woi]
+        self.cam.OffsetX.set(0)
+        self.cam.OffsetY.set(0)
+        self.cam.Width.set(w)
+        self.cam.Height.set(h)
         self.cam.OffsetX.set(x)
         self.cam.OffsetY.set(y)
-        self.cam.Height.set(h)
-        self.cam.Width.set(w)
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        maxwoi = (0, self.cam.WidthMax.get(), 0, self.cam.HeightMax.get())
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        return (
+            int(self.cam.OffsetX.get()),
+            int(self.cam.Width.get()),
+            int(self.cam.OffsetY.get()),
+            int(self.cam.Height.get()),
+        )
 
-        # Default WOI to max.
-        if woi is None:
-            woi = maxwoi
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        self.cam.BinningVertical.set(int(binning[0]))
+        self.cam.BinningHorizontal.set(int(binning[1]))
 
-        try:
-            # Try to set the WOI.
-            self._set_woi(woi)
-            self.woi = woi
-        except Exception as e:
-            # Reset to previous WOI (max if undefined) upon failure.
-            woi = self.woi if self.woi is not None else maxwoi
-            self._set_woi(woi)
-            raise e
-
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        return (
+            int(self.cam.BinningVertical.get()),
+            int(self.cam.BinningHorizontal.get()),
+        )
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""

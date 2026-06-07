@@ -514,21 +514,12 @@ class FLIR(Camera):
 
         self.cam.ExposureTime.SetValue(exposure_us)
 
-    def set_woi(self, woi=None):
-        """
-        See :meth:`.Camera.set_woi`.
-
-        Note: WOI changes require stopping and restarting acquisition.
-        """
-        w_max = int(self.cam.WidthMax.GetValue())
-        h_max = int(self.cam.HeightMax.GetValue())
-
-        if woi is None:
-            woi = (0, w_max, 0, h_max)
-
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # FLIR ROI coordinates (OffsetX/Width/Height) are in binned pixels when binning is active.
+        # https://softwareservices.flir.com/BFS-U3-89S6/latest/Model/public/ImageFormatControl.html
         x, w, y, h = [int(v) for v in woi]
 
-        # Snap values to camera increment requirements
         def _snap(node, value):
             try:
                 inc = node.GetInc()
@@ -541,15 +532,6 @@ class FLIR(Camera):
         w = _snap(self.cam.Width, w)
         h = _snap(self.cam.Height, h)
 
-        # Clamp to valid range: dimensions must be at least GetMin() and must
-        # not overflow the sensor boundary.
-        try:
-            w = max(int(self.cam.Width.GetMin()), min(w, w_max - x))
-            h = max(int(self.cam.Height.GetMin()), min(h, h_max - y))
-        except PySpin.SpinnakerException:
-            pass
-
-        # WOI changes require stopping acquisition
         acquisition_active = False
         try:
             if self.cam.IsStreaming():
@@ -559,45 +541,73 @@ class FLIR(Camera):
             pass
 
         try:
-            # Shrink dimensions first to avoid offset constraint violations
-            if self.cam.Height.GetAccessMode() == PySpin.RW:
-                self.cam.Height.SetValue(self.cam.Height.GetMin())
-            if self.cam.Width.GetAccessMode() == PySpin.RW:
-                self.cam.Width.SetValue(self.cam.Width.GetMin())
-
-            # Set offsets
             if self.cam.OffsetX.GetAccessMode() == PySpin.RW:
-                self.cam.OffsetX.SetValue(x)
+                self.cam.OffsetX.SetValue(0)
             if self.cam.OffsetY.GetAccessMode() == PySpin.RW:
-                self.cam.OffsetY.SetValue(y)
-
-            # Set desired dimensions
+                self.cam.OffsetY.SetValue(0)
             if self.cam.Width.GetAccessMode() == PySpin.RW:
                 self.cam.Width.SetValue(w)
             if self.cam.Height.GetAccessMode() == PySpin.RW:
                 self.cam.Height.SetValue(h)
-
-            self.woi = (x, w, y, h)
-
-            # Update shape to match new WOI, preserving the row/col convention
-            # established in Camera.__init__ (swapped for 90/270 rotations).
-            if self.default_shape[0] == h_max:  # normal orientation: rows=height
-                self.shape = (h, w)
-            else:                                # 90/270 rotation: rows=width
-                self.shape = (w, h)
-
-            # Reconfigure frame rate since max depends on resolution
+            if self.cam.OffsetX.GetAccessMode() == PySpin.RW:
+                self.cam.OffsetX.SetValue(x)
+            if self.cam.OffsetY.GetAccessMode() == PySpin.RW:
+                self.cam.OffsetY.SetValue(y)
             self._configure_frame_rate(verbose=False)
-
         except PySpin.SpinnakerException as ex:
             raise RuntimeError(f"Failed to set WOI: {ex}")
-
         finally:
             if acquisition_active:
                 try:
                     self.cam.BeginAcquisition()
                 except PySpin.SpinnakerException as ex:
                     raise RuntimeError(f"Failed to restart acquisition after WOI change: {ex}")
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        return (
+            int(self.cam.OffsetX.GetValue()),
+            int(self.cam.Width.GetValue()),
+            int(self.cam.OffsetY.GetValue()),
+            int(self.cam.Height.GetValue()),
+        )
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        biny, binx = int(binning[0]), int(binning[1])
+        acquisition_active = False
+        try:
+            if self.cam.IsStreaming():
+                self.cam.EndAcquisition()
+                acquisition_active = True
+        except PySpin.SpinnakerException:
+            pass
+        try:
+            nodemap = self.cam.GetNodeMap()
+            bh = PySpin.CIntegerPtr(nodemap.GetNode("BinningHorizontal"))
+            bv = PySpin.CIntegerPtr(nodemap.GetNode("BinningVertical"))
+            if not PySpin.IsWritable(bh) or not PySpin.IsWritable(bv):
+                raise NotImplementedError(f"Camera {self.name} does not support binning.")
+            bh.SetValue(binx)
+            bv.SetValue(biny)
+        except PySpin.SpinnakerException as ex:
+            raise NotImplementedError(f"Camera {self.name} does not support binning: {ex}")
+        finally:
+            if acquisition_active:
+                try:
+                    self.cam.BeginAcquisition()
+                except PySpin.SpinnakerException:
+                    pass
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        try:
+            nodemap = self.cam.GetNodeMap()
+            bh = PySpin.CIntegerPtr(nodemap.GetNode("BinningHorizontal"))
+            bv = PySpin.CIntegerPtr(nodemap.GetNode("BinningVertical"))
+            return (int(bv.GetValue()), int(bh.GetValue()))
+        except PySpin.SpinnakerException:
+            return (1, 1)
 
     def _get_image_hw(self, timeout_s = 1.0):
         """

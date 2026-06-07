@@ -267,48 +267,80 @@ class Basler(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self.cam.ExposureTime.SetValue(float(1e6 * exposure_s))   # in seconds
 
-    def _set_woi(self, woi):
-        """
-        Sets the window of interest (WOI).
-
-        Parameters
-        ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-        """
-        # Set the width and height to very small values
-        # such that setting the offsets will not error.
-
-        # Now set the WOI.
-        x, w, y, h = woi
-
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # "ROI settings refer to the binned rows and columns"
+        # https://docs.baslerweb.com/binning
+        x, w, y, h = [int(v) for v in woi]
+        self.cam.OffsetX.SetValue(0)
+        self.cam.OffsetY.SetValue(0)
+        self.cam.Width.SetValue(w)
+        self.cam.Height.SetValue(h)
         self.cam.OffsetX.SetValue(x)
         self.cam.OffsetY.SetValue(y)
-        self.cam.Height.SetValue(h)
-        self.cam.Width.SetValue(w)
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        err = None
-        maxwoi = (0, self.cam.Width.GetMax(), 0, self.cam.Height.GetMax())
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        return (
+            int(self.cam.OffsetX.GetValue()),
+            int(self.cam.Width.GetValue()),
+            int(self.cam.OffsetY.GetValue()),
+            int(self.cam.Height.GetValue()),
+        )
 
-        # Default WOI to max.
-        if woi is None:
-            woi = maxwoi
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        self.cam.BinningVertical.SetValue(int(binning[0]))
+        self.cam.BinningHorizontal.SetValue(int(binning[1]))
 
-        try:
-            # Try to set the WOI.
-            self._set_woi(woi)
-            self.woi = woi
-        except Exception as e:
-            # Reset to previous WOI (max if undefined) upon failure.
-            woi = self.woi if self.woi is not None else maxwoi
-            self._set_woi(woi)
-            err = e
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        return (
+            int(self.cam.BinningVertical.GetValue()),
+            int(self.cam.BinningHorizontal.GetValue()),
+        )
 
-        if err is not None:
-            raise err
+    # def _set_woi(self, woi):
+    #     """
+    #     Sets the window of interest (WOI).
+    #
+    #     Parameters
+    #     ----------
+    #     woi : list, None
+    #         See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
+    #     """
+    #     # Set the width and height to very small values
+    #     # such that setting the offsets will not error.
+    #
+    #     # Now set the WOI.
+    #     x, w, y, h = woi
+    #
+    #     self.cam.OffsetX.SetValue(x)
+    #     self.cam.OffsetY.SetValue(y)
+    #     self.cam.Height.SetValue(h)
+    #     self.cam.Width.SetValue(w)
 
+    # def set_woi(self, woi=None):
+    #     """See :meth:`.Camera.set_woi`."""
+    #     err = None
+    #     maxwoi = (0, self.cam.Width.GetMax(), 0, self.cam.Height.GetMax())
+    #
+    #     # Default WOI to max.
+    #     if woi is None:
+    #         woi = maxwoi
+    #
+    #     try:
+    #         # Try to set the WOI.
+    #         self._set_woi(woi)
+    #         self.woi = woi
+    #     except Exception as e:
+    #         # Reset to previous WOI (max if undefined) upon failure.
+    #         woi = self.woi if self.woi is not None else maxwoi
+    #         self._set_woi(woi)
+    #         err = e
+    #
+    #     if err is not None:
+    #         raise err
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera.get_image`."""

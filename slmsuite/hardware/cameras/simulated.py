@@ -156,8 +156,8 @@ class SimulatedCamera(Camera):
 
         self._interpolate = not (M is None or b is None)
         self.grid = np.meshgrid(
-            np.arange(self.shape[1]),
-            np.arange(self.shape[0]),
+            np.arange(self._shape[1]),
+            np.arange(self._shape[0]),
         )
         self.shape_padded = self._slm.shape
 
@@ -327,6 +327,14 @@ class SimulatedCamera(Camera):
 
         return M, b
 
+    @staticmethod
+    def info(verbose=True):
+        """See :meth:`.Camera.info`. Returns a list with a single simulated camera entry."""
+        info_list = ["SimulatedCamera"]
+        if verbose:
+            print(info_list)
+        return info_list
+
     def flush(self, timeout_s=1):
         """
         See :meth:`.Camera.flush`.
@@ -339,7 +347,26 @@ class SimulatedCamera(Camera):
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
-        self.exposure_s = exposure_s
+        self._exposure_s = exposure_s
+
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # SimulatedCamera: receives binned coords; multiplies by binning to store physical in _woi.
+        biny, binx = self._binning
+        x, w, y, h = [int(v) for v in woi]
+        self._woi = (x * binx, w * binx, y * biny, h * biny)
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        return self._woi_untransformed_binned
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        self._binning = binning
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        return self._binning
 
     def _get_image_hw(self, timeout_s):
         """
@@ -375,7 +402,7 @@ class SimulatedCamera(Camera):
             img = map_coordinates(cp.abs(ff) ** 2, self.knm_cam, order=0)
         else:
             img = cp.abs(ff) ** 2
-            img = toolbox.unpad(img, self.shape)
+            img = toolbox.unpad(img, self._hw_image_shape)
         if cp != np:
             img = img.get()
 

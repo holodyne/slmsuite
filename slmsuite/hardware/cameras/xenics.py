@@ -634,6 +634,50 @@ class Cheetah640(Camera):
                 % (err1, err2, err3)
             )
 
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # Xenics WoiSX/WoiEX/WoiSY/WoiEY are physical (unbinned) sensor pixel coordinates.
+        # Binning is not supported on the Cheetah640; _binning is always (1, 1).
+        x, w, y, h = [int(v) for v in woi]
+
+        if self.is_capturing():
+            self.stop_capture()
+
+        min_w_factor = 16
+        min_h_factor = 4
+        if x % min_w_factor:
+            x = max(x - x % min_w_factor, 0)
+        if w % min_w_factor:
+            w = w + min_w_factor - w % min_w_factor
+        if y % min_h_factor:
+            y = max(y - y % min_h_factor, 0)
+        if h % min_h_factor:
+            h = h + min_h_factor - h % min_h_factor
+
+        woi_props = [b"WoiSX(0)", b"WoiEX(0)", b"WoiSY(0)", b"WoiEY(0)"]
+        woi_vals = [x, x + w - 1, y, y + h - 1]
+        errs = []
+        for prop, val in zip(woi_props, woi_vals):
+            errs.append(self.xeneth.XC_SetPropertyValueL(self.cam, prop, c_long(val), ""))
+
+        self.frame_size = self.xeneth.XC_Getframe_size(self.cam)
+        self.frame_buffer = (c_ushort * int(self.frame_size / 2))(0)
+
+        if any(errs):
+            print("Warning! Error(s) in _set_woi_hw:", errs)
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        # Returns physical (unbinned) sensor pixel coordinates converted from start/end to (x, w, y, h).
+        woi_props = [b"WoiSX(0)", b"WoiEX(0)", b"WoiSY(0)", b"WoiEY(0)"]
+        vals = []
+        for prop in woi_props:
+            v = c_long(0)
+            self.xeneth.XC_GetPropertyValueL(self.cam, prop, byref(v))
+            vals.append(v.value)
+        x, x_end, y, y_end = vals
+        return (x, x_end - x + 1, y, y_end - y + 1)
+
     def set_framerate(self, framerate):
         """
         Set the camera framerate.
@@ -1181,81 +1225,6 @@ class Cheetah640(Camera):
         if any(errs):
             print("Warning! Error(s) encountered: ", errs)
 
-    def set_woi(self, woi=None, verbose=False):
-        """See :meth:`.Camera.set_woi`
-
-        Parameters
-        ----------
-        verbose : bool
-            Enable debug printout.
-        """
-        if woi is None:
-            woi = (0, self.default_shape[1], 0, self.default_shape[0])
-
-        woi = (woi[0], woi[1] - woi[0], woi[2], woi[3] - woi[2])
-
-        # If collecting, stop
-        if self.isCapturing():
-            self.stopCapture()
-
-        # Get current WOI setup
-        report_str = "Original WOI setup: "
-        woi_prop = [b"WoiSX(0)", b"WoiEX(0)", b"WoiSY(0)", b"WoiEY(0)"]
-        prop_val = c_long(0)
-        errs = []
-        for prop in woi_prop:
-            errs.append(
-                self.xeneth.XC_GetPropertyValueL(self.cam, prop, byref(prop_val))
-            )
-            report_str += "%s: %d | " % (prop.decode(), prop_val.value)
-        if verbose:
-            print(report_str)
-
-        # Conservatively round inputs (make wider than requested) based on cam. reqts.
-        min_w_factor = 16
-        min_h_factor = 4
-        if (woi[0]) % min_w_factor:
-            woi[0] = max([woi[0] - woi[0] % min_w_factor, 0])
-        if (woi[1] - woi[0] + 1) % min_w_factor:
-            woi[1] = (
-                woi[1] + min_w_factor - (woi[1] - woi[0]) % min_w_factor
-            )
-        if (woi[2]) % min_h_factor:
-            woi[2] = max([woi[2] - woi[2] % min_h_factor, 0])
-        if (woi[3] - woi[2] + 1) % min_h_factor:
-            woi[3] = (
-                woi[3] + min_h_factor - (woi[3] - woi[2]) % min_h_factor
-            )
-
-        # Set new WOI
-        for i, prop in enumerate(woi_prop):
-            errs.append(
-                self.xeneth.XC_SetPropertyValueL(self.cam, prop, c_long(woi[i]), "")
-            )
-
-        # Report new WOI
-        report_str = "     New WOI setup: "
-        for i, prop in enumerate(woi_prop):
-            errs.append(
-                self.xeneth.XC_GetPropertyValueL(self.cam, prop, byref(prop_val))
-            )
-            report_str += "%s: %d | " % (prop.decode(), prop_val.value)
-            woi[i] = prop_val.value
-        if verbose:
-            print(report_str)
-
-        # Reconfigure buffer based on new WOI
-        self.shape = (woi[3] - woi[2] + 1, woi[1] - woi[0] + 1)
-        self.woi = (woi[0], self.shape[0], woi[2], self.shape[1])
-        self.frame_size = self.xeneth.XC_Getframe_size(self.cam)
-        self.frame_buffer = (c_ushort * int(self.frame_size / 2))(0)
-        self.last_capture = np.empty(self.shape)
-
-        if any(errs):
-            print("Warning! Error(s) encountered: ", errs)
-
-        return self.woi
-
     def set_low_gain(self, enable=True):
         """
         Enables or disables low gain mode.
@@ -1500,7 +1469,7 @@ class Cheetah640(Camera):
             self.xeneth.XC_RemImageFilter(self.cam, self.filters["autogain"])
             self.filters.pop("autogain")
 
-    def autoexpose_xenics(self, enable=True, t_settle=0):
+    def set_autoexposure(self, enable=True, t_settle=0):
         """
         Adds Xenics autogain and offset filters to current filter stack.
 

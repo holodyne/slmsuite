@@ -152,24 +152,6 @@ class Instrumental(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self.cam.exposure = 1000. * float(exposure_s)
 
-    def set_woi(self, woi=None):
-        """
-        Method to narrow the imaging region to a 'window of interest'
-        for faster framerates.
-
-        Parameters
-        ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-            If ``None``, defaults to largest possible.
-
-        Returns
-        -------
-        woi : list
-            :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-        """
-        raise NotImplementedError()
-
     def _get_image_hw(self, timeout_s):
         """
         Method to pull an image from the camera and return.
