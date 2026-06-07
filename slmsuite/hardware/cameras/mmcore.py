@@ -139,7 +139,7 @@ class MMCore(Camera):
     def _set_woi_hw(self, woi):
         """See :meth:`.Camera._set_woi_hw`."""
         # MMCore setROI / getROI coordinates are in binned pixels (camera-driver convention).
-        # Ref: https://micro-manager.org/apidoc/MMCore/latest/class_c_m_m_core.html
+        # https://micro-manager.org/apidoc/MMCore/latest/class_c_m_m_core.html
         x, w, y, h = [int(v) for v in woi]
         self.cam.setROI(x, y, w, h)
 
