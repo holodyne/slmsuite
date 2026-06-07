@@ -574,7 +574,7 @@ class FLIR(Camera):
 
     def _set_binning_hw(self, binning):
         """See :meth:`.Camera._set_binning_hw`."""
-        biny, binx = int(binning[0]), int(binning[1])
+        binx, biny = int(binning[0]), int(binning[1])
         acquisition_active = False
         try:
             if self.cam.IsStreaming():
@@ -605,7 +605,7 @@ class FLIR(Camera):
             nodemap = self.cam.GetNodeMap()
             bh = PySpin.CIntegerPtr(nodemap.GetNode("BinningHorizontal"))
             bv = PySpin.CIntegerPtr(nodemap.GetNode("BinningVertical"))
-            return (int(bv.GetValue()), int(bh.GetValue()))
+            return (int(bh.GetValue()), int(bv.GetValue()))
         except PySpin.SpinnakerException:
             return (1, 1)
 
