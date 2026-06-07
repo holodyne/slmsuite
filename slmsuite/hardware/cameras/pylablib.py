@@ -154,8 +154,7 @@ class PyLabLib(Camera):
         if binning is None:
             binx, biny = self._binning
         else:
-            biny, binx = binning
-
+            binx, biny = binning
         x, w, y, h = [int(v) for v in woi]
         x_p, w_p, y_p, h_p = x * binx, w * binx, y * biny, h * biny
 
@@ -202,7 +201,7 @@ class PyLabLib(Camera):
         # get_roi() includes (hbin, vbin) as elements 4 and 5 when binning is supported.
         roi = self.cam.get_roi()
         if len(roi) >= 6:
-            return (int(roi[5]), int(roi[4]))
+            return (int(roi[4]), int(roi[5]))
         return (1, 1)
 
     def _get_image_hw(self, timeout_s):

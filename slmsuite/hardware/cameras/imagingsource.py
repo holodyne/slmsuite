@@ -245,9 +245,10 @@ class ImagingSource(Camera):
 
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`."""
+        """See :meth:`.Camera._get_woi_hw`."""
         # width/height from IC_GetImageDescription are output (binned) pixels.
         # X/Y offsets from IC_GetPropertyValue are physical pixels; divide by binning.
-        biny, binx = self._binning
+        binx, biny = self._binning
         width = ctypes.c_long()
         height = ctypes.c_long()
         bpp = ctypes.c_int()

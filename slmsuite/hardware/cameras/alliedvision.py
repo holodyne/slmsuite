@@ -350,16 +350,14 @@ class AlliedVision(Camera):
             int(self.cam.Height.get()),
         )
 
-    def _set_binning_hw(self, binning):
-        """See :meth:`.Camera._set_binning_hw`."""
-        self.cam.BinningVertical.set(int(binning[0]))
-        self.cam.BinningHorizontal.set(int(binning[1]))
-
+        binx, biny = int(binning[0]), int(binning[1])
+        self.cam.BinningHorizontal.set(binx)
+        self.cam.BinningVertical.set(biny
     def _get_binning_hw(self):
         """See :meth:`.Camera._get_binning_hw`."""
         return (
-            int(self.cam.BinningVertical.get()),
             int(self.cam.BinningHorizontal.get()),
+            int(self.cam.BinningVertical.get()),
         )
 
     def _get_image_hw(self, timeout_s):
