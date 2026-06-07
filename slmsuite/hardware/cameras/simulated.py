@@ -352,7 +352,7 @@ class SimulatedCamera(Camera):
     def _set_woi_hw(self, woi):
         """See :meth:`.Camera._set_woi_hw`."""
         # SimulatedCamera: receives binned coords; multiplies by binning to store physical in _woi.
-        biny, binx = self._binning
+        binx, biny = self._binning
         x, w, y, h = [int(v) for v in woi]
         self._woi = (x * binx, w * binx, y * biny, h * biny)
 

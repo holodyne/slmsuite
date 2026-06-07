@@ -267,7 +267,7 @@ class ThorCam(Camera):
         # Ref: https://pylablib.readthedocs.io/en/stable/_modules/pylablib/devices/Thorlabs/TLCamera.html
         profile = self.profile
         self.setup(None)
-        biny, binx = self._binning
+        binx, biny = self._binning
         x, w, y, h = [int(v) for v in woi]
         x_p, w_p, y_p, h_p = x * binx, w * binx, y * biny, h * biny
         max_x = self.cam.roi_range.lower_right_x_pixels_max
@@ -283,7 +283,7 @@ class ThorCam(Camera):
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`."""
         # ThorCam ROI is in physical pixels; divide by binning to return binned coords.
-        biny, binx = self._binning
+        binx, biny = self._binning
         roi = self.cam.roi
         max_x = self.cam.roi_range.lower_right_x_pixels_max
         x_p = max_x - roi.lower_right_x_pixels
@@ -296,13 +296,13 @@ class ThorCam(Camera):
         """See :meth:`.Camera._set_binning_hw`."""
         profile = self.profile
         self.setup(None)
-        self.cam.biny = int(binning[0])
-        self.cam.binx = int(binning[1])
+        self.cam.binx = int(binning[0])
+        self.cam.biny = int(binning[1])
         self.setup(profile)
 
     def _get_binning_hw(self):
         """See :meth:`.Camera._get_binning_hw`."""
-        return (int(self.cam.biny), int(self.cam.binx))
+        return (int(self.cam.binx), int(self.cam.biny))
 
     def setup(self, profile):
         """

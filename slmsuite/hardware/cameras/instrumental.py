@@ -166,4 +166,5 @@ class Instrumental(Camera):
         numpy.ndarray
             Array of shape :attr:`~slmsuite.hardware.cameras.camera.Camera.shape`.
         """
+        # TODO: binning and WOI appears to be implemented through grab_image?
         return self.cam.grab_image(timeout=str(timeout_s) + "s", copy=True)

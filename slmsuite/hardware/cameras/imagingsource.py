@@ -232,7 +232,7 @@ class ImagingSource(Camera):
         # ImagingSource: width/height in the video format string are output (binned) pixels.
         # Partial scan X/Y offsets are in physical (unbinned) sensor pixels.
         # Ref: https://www.theimagingsource.com/en-us/documentation/icpython/properties.html
-        biny, binx = self._binning
+        binx, biny = self._binning
         x, w, y, h = [int(v) for v in woi]
         x_phys, y_phys = x * binx, y * biny
         idx = self.vid_format.find("(")

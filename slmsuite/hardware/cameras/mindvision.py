@@ -213,7 +213,7 @@ class MindVision(Camera):
         """See :meth:`.Camera._set_woi_hw`."""
         # MindVision iHOffsetFOV/iVOffsetFOV/iWidthFOV/iHeightFOV are physical (unbinned) sensor pixels.
         # iWidth/iHeight are the output (binned) dimensions.
-        biny, binx = self._binning
+        binx, biny = self._binning
         x, w, y, h = [int(v) for v in woi]
         resolution = _mvsdk.CameraGetImageResolution(self.handle)
         resolution.iIndex = 0xFF
@@ -228,7 +228,7 @@ class MindVision(Camera):
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`."""
         # Physical FOV coordinates; divide by binning to get binned coords.
-        biny, binx = self._binning
+        binx, biny = self._binning
         resolution = _mvsdk.CameraGetImageResolution(self.handle)
         return (
             int(resolution.iHOffsetFOV) // binx,

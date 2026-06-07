@@ -152,7 +152,7 @@ class PyLabLib(Camera):
         if woi is None:
             woi = self._woi
         if binning is None:
-            biny, binx = self._binning
+            binx, biny = self._binning
         else:
             biny, binx = binning
 
@@ -182,7 +182,7 @@ class PyLabLib(Camera):
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`."""
         # pylablib get_roi() returns (hstart, hend, vstart, vend[, hbin, vbin]) in physical pixels.
-        biny, binx = self._binning
+        binx, biny = self._binning
         roi = self.cam.get_roi()
         x_p = int(roi[0])
         w_p = int(roi[1]) - x_p

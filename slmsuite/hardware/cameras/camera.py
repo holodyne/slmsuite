@@ -236,8 +236,13 @@ class Camera(_Common, ABC):
         """
         Set pixel binning in the transformed orientation. See :attr:`transform`.
 
-        The WOI is tracked in full-resolution (unbinned) sensor coordinates, so
-        :attr:`shape` and :attr:`woi` update automatically to reflect the new binning.
+        Parameters
+        ----------
+        binning : int or (int, int)
+            Binning factor as ``(binx, biny)``.
+            If a single integer is provided, uses the same binning for both dimensions.
+        update_woi : bool
+            Whether or not to adjust the WOI according to the new binning.
         """
         # Parse binning.
         if isinstance(binning, INTEGER_TYPES):
@@ -260,6 +265,16 @@ class Camera(_Common, ABC):
             except:
                 pass
 
+    def get_binning(self):
+        """
+        Returns the current binning.
+        """
+        if not self._software_binning:
+            self._binning = self._get_binning_hw()
+
+        return self.transform.transform_shape(self._binning)
+
+
     def _set_binning_hw(self, binning: tuple[int, int]):
         raise NotImplementedError(f"Camera {self.name} has not implemented binning")
 
@@ -276,8 +291,8 @@ class Camera(_Common, ABC):
         Accounts for the current WOI, binning, and orientation transform so that
         ``get_image().shape == camera.shape`` always holds.
         """
-        h_bin = self._woi[3] // self._binning[0]
-        w_bin = self._woi[1] // self._binning[1]
+        h_bin = self._woi[3] // self._binning[1]
+        w_bin = self._woi[1] // self._binning[0]
         return self.transform.transform_shape((h_bin, w_bin))
 
     @shape.setter
@@ -297,10 +312,10 @@ class Camera(_Common, ABC):
         This is probably what the hardware interface will accept.
         """
         return (
-            self._woi[0] // self._binning[1],    # x / binx
-            self._woi[1] // self._binning[1],    # w / binx
-            self._woi[2] // self._binning[0],    # y / biny
-            self._woi[3] // self._binning[0],    # h / biny
+            self._woi[0] // self._binning[0],    # x / binx
+            self._woi[1] // self._binning[0],    # w / binx
+            self._woi[2] // self._binning[1],    # y / biny
+            self._woi[3] // self._binning[1],    # h / biny
         )
 
     @property
@@ -314,9 +329,19 @@ class Camera(_Common, ABC):
         )
 
     def _set_woi_hw(self, woi):
+        """
+        Sets the WOI on hardware in raw camera coordinates (untransformed, binned).
+        If the camera expects unbinned coordinates, the woi should be multiplied by the
+        untransformed binning factor ``_binning``.
+        """
         raise NotImplementedError(f"Camera {self.name} has not implemented WOI")
 
     def _get_woi_hw(self):
+        """
+        Gets the WOI from hardware in raw camera coordinates (untransformed, binned).
+        If the camera returns unbinned coordinates, the woi should be multiplied by the
+        untransformed binning factor ``_binning``.
+        """
         raise NotImplementedError(f"Camera {self.name} has not implemented WOI")
 
     def set_woi(self, woi=None):
@@ -338,7 +363,7 @@ class Camera(_Common, ABC):
         (int, int, int, int)
             :attr:`~slmsuite.hardware.cameras.camera.Camera.woi` after the update.
         """
-        binx, biny = self._binning[1], self._binning[0]
+        binx, biny = self._binning[0], self._binning[1]
 
         if woi is None:
             # Full sensor in untransformed, unbinned coordinates.
@@ -374,6 +399,31 @@ class Camera(_Common, ABC):
 
         return self.woi
 
+    def get_woi(self):
+        """
+        Get the current WOI.
+
+        For cameras without hardware WOI support, this is just :attr:`woi`.
+        For cameras with hardware WOI support, this queries the hardware for the current WOI
+        and updates the internal state accordingly before returning :attr:`woi`.
+
+        Returns
+        -------
+        (int, int, int, int)
+            ``(x0, w, y0, h)`` in the coordinates of the returned image.
+        """
+        if not self._software_woi:
+            woi_hw = self._get_woi_hw()
+            binx, biny = self._binning[0], self._binning[1]
+            self._woi = (
+                woi_hw[0] * binx,
+                woi_hw[1] * binx,
+                woi_hw[2] * biny,
+                woi_hw[3] * biny,
+            )
+
+        return self.woi
+
     def _get_ijraw_to_ijcam(self):
         """
         Returns an :class:`~slmsuite.holography.analysis.Affine` mapping raw sensor
@@ -382,8 +432,7 @@ class Camera(_Common, ABC):
 
         Stored calibrations use ``ijraw``; this converts them for user-facing ``ijcam``.
         """
-        binx = self._binning[1]   # column binning
-        biny = self._binning[0]   # row binning
+        binx, biny = self._binning[0], self._binning[1]
         woi_x = self._woi[0]
         woi_y = self._woi[2]
         w_bin = self._woi[1] // binx
@@ -627,7 +676,7 @@ class Camera(_Common, ABC):
             # Binning happens later in _crop_to_woi(): return unbinned WOI size.
             return (h_woi, w_woi)
         # Hardware binning: return the WOI size after binning.
-        return (h_woi // self._binning[0], w_woi // self._binning[1])
+        return (h_woi // self._binning[1], w_woi // self._binning[0])
 
     def _get_out(self, image_count, out=None):
         # Preallocate memory if necessary
@@ -656,7 +705,7 @@ class Camera(_Common, ABC):
 
         # Step 2: Software binning (block-sum of adjacent pixels).
         if self._software_binning:
-            biny, binx = self._binning
+            binx, biny = self._binning
             if biny != 1 or binx != 1:
                 if img.ndim == 2:
                     H, W = img.shape
