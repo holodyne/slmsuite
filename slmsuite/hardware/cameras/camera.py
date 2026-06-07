@@ -489,9 +489,8 @@ class Camera(_Common, ABC):
         float
             Integration time in seconds.
         """
-        # Go through the setter
-        self.exposure_s = self._get_exposure_hw()
-        return self.exposure_s
+        self._exposure_s = float(self._get_exposure_hw())
+        return self._exposure_s
 
     def set_exposure(self, exposure_s):
         """
@@ -709,10 +708,12 @@ class Camera(_Common, ABC):
             if biny != 1 or binx != 1:
                 if img.ndim == 2:
                     H, W = img.shape
-                    img = img.reshape(H//biny, biny, W//binx, binx).sum(axis=(1, 3))
+                    Ht, Wt = (H // biny) * biny, (W // binx) * binx
+                    img = img[:Ht, :Wt].reshape(Ht // biny, biny, Wt // binx, binx).sum(axis=(1, 3))
                 else:   # (N, H, W) stack
                     N, H, W = img.shape
-                    img = img.reshape(N, H//biny, biny, W//binx, binx).sum(axis=(2, 4))
+                    Ht, Wt = (H // biny) * biny, (W // binx) * binx
+                    img = img[:, :Ht, :Wt].reshape(N, Ht // biny, biny, Wt // binx, binx).sum(axis=(2, 4))
 
         return img
 

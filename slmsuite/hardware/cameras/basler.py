@@ -288,16 +288,14 @@ class Basler(Camera):
             int(self.cam.Height.GetValue()),
         )
 
-    def _set_binning_hw(self, binning):
-        """See :meth:`.Camera._set_binning_hw`."""
-        self.cam.BinningVertical.SetValue(int(binning[0]))
-        self.cam.BinningHorizontal.SetValue(int(binning[1]))
-
+        binx, biny = int(binning[0]), int(binning[1])
+        self.cam.BinningHorizontal.SetValue(binx)
+        self.cam.BinningVertical.SetValue(biny
     def _get_binning_hw(self):
         """See :meth:`.Camera._get_binning_hw`."""
         return (
-            int(self.cam.BinningVertical.GetValue()),
             int(self.cam.BinningHorizontal.GetValue()),
+            int(self.cam.BinningVertical.GetValue()),
         )
 
     # def _set_woi(self, woi):
