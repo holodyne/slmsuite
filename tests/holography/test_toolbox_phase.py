@@ -323,10 +323,9 @@ def test_phase_functions_general(simple_grid, subtests):
 def test_aperture(normalized_grid, subtests):
     """Test the Aperture class (scaling, resolve, mask)."""
     from slmsuite.holography.toolbox import Aperture
-    from slmsuite.holography.toolbox.phase import zernike_sum
 
     with subtests.test("circular aperture is isotropic"):
-        x_scale, y_scale = Aperture("circular").scaling(normalized_grid)
+        x_scale, y_scale = Aperture(normalized_grid, "circular").zernike_scaling
         assert x_scale == pytest.approx(y_scale)
         # Scale times max coordinate should give 1
         assert x_scale * np.nanmax(normalized_grid[0]) == pytest.approx(1, rel=1e-6)
@@ -335,13 +334,13 @@ def test_aperture(normalized_grid, subtests):
         x = np.linspace(-200, 200, 128)
         y = np.linspace(-500, 500, 128)
         rect_grid = np.meshgrid(x, y)
-        x_scale, y_scale = Aperture("elliptical").scaling(rect_grid)
+        x_scale, y_scale = Aperture(rect_grid, "elliptical").zernike_scaling
         # Each axis maps independently
         assert x_scale == pytest.approx(1 / 200, rel=1e-6)
         assert y_scale == pytest.approx(1 / 500, rel=1e-6)
 
     with subtests.test("cropped aperture circumscribes rectangle"):
-        x_scale, y_scale = Aperture("cropped").scaling(normalized_grid)
+        x_scale, y_scale = Aperture(normalized_grid, "cropped").zernike_scaling
         assert x_scale == pytest.approx(y_scale)
         # For a square grid the corner distance is sqrt(2)*max
         max_coord = np.nanmax(normalized_grid[0])
@@ -349,35 +348,44 @@ def test_aperture(normalized_grid, subtests):
         assert x_scale == pytest.approx(expected, rel=1e-6)
 
     with subtests.test("scalar aperture"):
-        x_scale, y_scale = Aperture(0.005).scaling(normalized_grid)
+        x_scale, y_scale = Aperture(normalized_grid, 0.005).zernike_scaling
         assert x_scale == pytest.approx(0.005)
         assert y_scale == pytest.approx(0.005)
 
     with subtests.test("tuple aperture"):
-        x_scale, y_scale = Aperture((0.01, 0.02)).scaling(normalized_grid)
+        x_scale, y_scale = Aperture(normalized_grid, (0.01, 0.02)).zernike_scaling
         assert x_scale == pytest.approx(0.01)
         assert y_scale == pytest.approx(0.02)
 
     with subtests.test("invalid string raises ValueError"):
         with pytest.raises(ValueError):
-            Aperture("invalid").scaling(normalized_grid)
+            Aperture(normalized_grid, "invalid").zernike_scaling
 
     with subtests.test("None resolves to cropped for raw grids"):
-        resolved = Aperture.resolve(normalized_grid, None).scaling(normalized_grid)
-        cropped = Aperture("cropped").scaling(normalized_grid)
+        resolved = Aperture.resolve(normalized_grid, None).zernike_scaling
+        cropped = Aperture(normalized_grid, "cropped").zernike_scaling
         assert resolved == pytest.approx(cropped)
 
-    with subtests.test("resolve returns a passed Aperture unchanged"):
-        ap = Aperture("circular")
+    with subtests.test("resolve returns a passed Aperture unchanged if grid matches"):
+        ap = Aperture(normalized_grid, "circular")
         assert Aperture.resolve(normalized_grid, ap) is ap
+
+    with subtests.test("resolve re-binds a passed Aperture if grid does not match"):
+        ap = Aperture(normalized_grid, "circular")
+        other_grid = (normalized_grid[0] * 2, normalized_grid[1] * 2)
+        ap_other = Aperture.resolve(other_grid, ap)
+        assert ap_other is not ap
+        assert ap_other._grid is other_grid
+        assert ap_other.spec == ap.spec
+        assert ap_other.center == ap.center
 
     with subtests.test("SLM-like object's aperture is the source of truth"):
         class FakeSLM:
             def __init__(self, grid):
                 self.x_grid, self.y_grid = grid
-                self.aperture = Aperture((0.01, 0.02))
+                self.aperture = Aperture(grid, (0.01, 0.02))
         fake = FakeSLM(normalized_grid)
-        x_scale, y_scale = Aperture.resolve(fake, None).scaling(fake)
+        x_scale, y_scale = Aperture.resolve(fake, None).zernike_scaling
         assert x_scale == 0.01
         assert y_scale == 0.02
 
@@ -386,24 +394,59 @@ def test_aperture(normalized_grid, subtests):
             def __init__(self, grid):
                 self.x_grid, self.y_grid = grid
                 self.slm = type('FakeSLM', (), {
-                    'aperture': Aperture((0.03, 0.04)),
+                    'aperture': Aperture(grid, (0.03, 0.04)),
                     'x_grid': grid[0],
                     'y_grid': grid[1],
                 })()
                 self.cam = True
         fake = FakeCameraSLM(normalized_grid)
-        x_scale, y_scale = Aperture.resolve(fake, None).scaling(fake)
+        x_scale, y_scale = Aperture.resolve(fake, None).zernike_scaling
         assert x_scale == 0.03
         assert y_scale == 0.04
 
     with subtests.test("unrecognized spec raises ValueError"):
         with pytest.raises(ValueError, match="not recognized"):
-            Aperture(object()).scaling(normalized_grid)
+            Aperture(normalized_grid, object()).zernike_scaling
 
     with subtests.test("mask matches resolved mask"):
-        m = Aperture("circular").mask(normalized_grid)
-        m2 = Aperture.resolve(normalized_grid, "circular").mask(normalized_grid)
+        m = Aperture(normalized_grid, "circular").mask
+        m2 = Aperture.resolve(normalized_grid, "circular").mask
         assert np.array_equal(m, m2)
+
+    with subtests.test("invalid spec raises eagerly at construction"):
+        # The error must fire in __init__, before any .zernike_scaling/.mask access.
+        with pytest.raises(ValueError):
+            Aperture(normalized_grid, "invalid")
+        with pytest.raises(ValueError, match="not recognized"):
+            Aperture(normalized_grid, object())
+
+    with subtests.test("crops flag is False only for the non-cropping default"):
+        assert not Aperture(normalized_grid, "cropped").crops
+        assert Aperture(normalized_grid, "circular").crops
+        assert Aperture(normalized_grid, 0.005).crops
+
+    with subtests.test("is_isotropic / _isotropic_scale honor or reject anisotropy"):
+        circ = Aperture(normalized_grid, "circular")
+        assert circ.is_isotropic
+        assert circ._isotropic_scale() == pytest.approx(circ.zernike_scaling[0])
+        ell = Aperture(normalized_grid, (0.01, 0.02))
+        assert not ell.is_isotropic
+        with pytest.raises(ValueError, match="isotropic"):
+            ell._isotropic_scale()
+
+    with subtests.test("mask applies center (Aperture bound to unshifted grid)"):
+        from slmsuite.holography.toolbox import _process_grid
+        (xg, yg) = _process_grid(normalized_grid)
+        # A clearly nonzero, interior center offset.
+        c = (0.25 * np.nanmax(xg), -0.25 * np.nanmax(yg))
+        ap = Aperture(normalized_grid, "circular", center=c)
+        (sx, sy) = ap.zernike_scaling
+        expected = ((xg - c[0]) * sx) ** 2 + ((yg - c[1]) * sy) ** 2 <= 1
+        assert np.array_equal(np.asarray(ap.mask), expected)
+        # The centered mask differs from the uncentered one (guards against a
+        # regression that silently drops the center subtraction).
+        ap0 = Aperture(normalized_grid, "circular")
+        assert not np.array_equal(np.asarray(ap.mask), np.asarray(ap0.mask))
 
 
 def test_zernike_get_string(subtests):
@@ -540,7 +583,7 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
         result = phase.zernike_sum(
             normalized_grid, indices=[4], weights=[1], use_mask=True, aperture="circular"
         )
-        mask = Aperture.resolve(normalized_grid, "circular").mask(normalized_grid)
+        mask = Aperture.resolve(normalized_grid, "circular").mask
         # Outside the mask should be zero
         assert np.allclose(result[~mask], 0)
 

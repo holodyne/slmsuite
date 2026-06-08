@@ -228,7 +228,7 @@ class TestSLM:
         with subtests.test("unification: aperture_mask == Aperture.mask"):
             from slmsuite.holography.toolbox import Aperture
             assert np.array_equal(
-                slm.aperture_mask, Aperture.resolve(slm).mask(slm)
+                slm.aperture_mask, Aperture.resolve(slm).mask
             )
 
         with subtests.test("aperture masks the source amplitude"):
@@ -238,6 +238,15 @@ class TestSLM:
         with subtests.test("spec and radius mutually exclusive"):
             with pytest.raises(ValueError):
                 slm.set_aperture("circular", radius=0.3)
+
+        with subtests.test("source_radius rejects an anisotropic aperture"):
+            # A single radius cannot describe an elliptical aperture; fail loudly
+            # rather than silently averaging the two axis scales.
+            slm.set_aperture((0.01, 0.02))
+            with pytest.raises(ValueError, match="isotropic"):
+                _ = slm.source_radius
+            slm.set_aperture(radius=0.3, units="frac")
+            assert slm.source_radius > 0
 
     def test_source_helpers(self, slm, subtests):
         """_get_source_amplitude/phase fallbacks when source is empty."""
@@ -253,6 +262,23 @@ class TestSLM:
             amp = np.random.rand(*slm.shape)
             slm.source["amplitude"] = amp
             np.testing.assert_array_equal(slm._get_source_amplitude(), amp)
+
+        with subtests.test("non-cropping aperture skips the mask multiply but stays safe"):
+            # The default "cropped" aperture masks nothing, so the source is returned
+            # unchanged -- but as an independent array, so a caller mutating the result
+            # (e.g. Hologram's in-place amplitude normalization) cannot corrupt source.
+            slm.set_aperture("cropped")
+            amp = np.random.rand(*slm.shape)
+            slm.source["amplitude"] = amp.copy()
+            got = slm._get_source_amplitude()
+            assert np.array_equal(got, amp)
+            assert got is not slm.source["amplitude"]
+            got *= 2.0
+            assert np.array_equal(slm.source["amplitude"], amp)   # source untouched
+            # A real aperture still masks.
+            slm.set_aperture(radius=0.3, units="frac")
+            masked = slm._get_source_amplitude()
+            assert np.array_equal(masked > 0, slm.aperture_mask)
 
     def test_info(self, slm):
         """info() for SimulatedSLM returns empty list."""

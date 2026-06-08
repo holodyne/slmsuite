@@ -2,6 +2,7 @@
 Unified description of the SLM's aperture, used to crop, scale, and shift
 the SLM's source and applied functions (e.g., lenses, Zernike polynomials).
 """
+from functools import cached_property
 import numpy as np
 
 
@@ -64,18 +65,20 @@ class Aperture:
     center : numpy.ndarray OR None
         The ``(x, y)`` coordinate of the aperture center **in the grid's normalized
         units** (the same units as :attr:`~slmsuite.hardware.slms.slm.SLM.grid`).
-        ``None`` corresponds to the grid origin. Note that on an SLM the working
-        :attr:`~slmsuite.hardware.slms.slm.SLM.grid` is already shifted onto this center,
-        so :meth:`scaling` and :meth:`mask` (which evaluate at the grid origin) land on
-        the aperture without a double-shift; use :meth:`transform` to apply the center to
-        a raw, unshifted grid.
+        ``None`` corresponds to the grid origin. Both :meth:`mask` and :meth:`transform`
+        subtract this center from the bound grid before scaling, so an :class:`Aperture`
+        must be bound to the **raw, unshifted** grid (an SLM does this by binding to its
+        immutable geometric grid; its working
+        :attr:`~slmsuite.hardware.slms.slm.SLM.grid` is the *derived* center-shifted frame
+        used to evaluate phase functions). Binding to an already-centered grid would
+        double-subtract the center.
     """
 
-    def __init__(self, spec="cropped", center=None):
+    def __init__(self, grid, spec="cropped", center=None):
+        self._validate_spec(spec)
+        self._grid = grid
         self._spec = spec
         self._center = None if center is None else np.array(center, dtype=float).ravel()
-        self._mask_cache = None
-        self._mask_cache_key = None
 
     @property
     def spec(self):
@@ -85,15 +88,65 @@ class Aperture:
     def center(self):
         return self._center
 
-    def scaling(self, grid):
+    @staticmethod
+    def _validate_spec(spec):
+        """
+        Validate an aperture ``spec``, raising a clear error for unsupported values.
+        Called eagerly from :meth:`__init__` so a bad spec fails at the construction (or
+        :meth:`~slmsuite.hardware.slms.slm.SLM.set_aperture`) call site rather than lazily
+        on first :attr:`zernike_scaling` access.
+        """
+        if isinstance(spec, str):
+            if spec not in ("circular", "elliptical", "cropped"):
+                raise ValueError(f"Aperture spec '{spec}' is not implemented.")
+        elif np.isscalar(spec):
+            pass
+        elif isinstance(spec, (list, tuple, np.ndarray)) and len(spec) == 2:
+            pass
+        else:
+            raise ValueError("Aperture spec type {} not recognized.".format(type(spec)))
+
+    @property
+    def is_isotropic(self):
+        """
+        Whether the aperture scaling is isotropic (circular), i.e.
+        ``x_scale == y_scale``.
+        """
+        (x_scale, y_scale) = self.zernike_scaling
+        return bool(np.isclose(x_scale, y_scale))
+
+    def _isotropic_scale(self):
+        """
+        The single lateral scale of an isotropic aperture. Raises :class:`ValueError` for
+        a genuinely anisotropic (elliptical) aperture, which a lone scalar cannot
+        represent; use :attr:`zernike_scaling` for the full ``(x_scale, y_scale)`` ellipse
+        instead.
+        """
+        (x_scale, y_scale) = self.zernike_scaling
+        if not np.isclose(x_scale, y_scale):
+            raise ValueError(
+                "This operation requires an isotropic (circular) aperture, but the "
+                "scaling is anisotropic: (x_scale, y_scale) = "
+                f"({x_scale}, {y_scale}). Use Aperture.zernike_scaling for the full "
+                "ellipse."
+            )
+        return float(x_scale)
+
+    @property
+    def crops(self):
+        """
+        Whether the aperture actually crops the grid (masks any pixels off). ``False``
+        for the default ``"cropped"`` spec, which circumscribes the whole grid and so
+        masks nothing; ``True`` otherwise. Lets callers skip masking work in the common
+        no-aperture case without materializing :attr:`mask`.
+        """
+        return self._spec != "cropped"
+
+    @cached_property
+    def zernike_scaling(self):
         """
         Compute the lateral scaling ``(x_scale, y_scale)`` mapping the grid onto the
-        canonical unit disk.
-
-        Parameters
-        ----------
-        grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
-            Meshgrids of normalized coordinates, or an object exposing them.
+        canonical Zernike unit disk.
 
         Returns
         -------
@@ -101,7 +154,7 @@ class Aperture:
         """
         from slmsuite.holography.toolbox import _process_grid
 
-        (x_grid, y_grid) = _process_grid(grid)
+        (x_grid, y_grid) = _process_grid(self._grid)
         spec = self._spec
 
         if isinstance(spec, str):
@@ -125,21 +178,18 @@ class Aperture:
         else:
             raise ValueError("Aperture spec type {} not recognized.".format(type(spec)))
 
-        return (x_scale, y_scale)
+        return (float(x_scale), float(y_scale))
 
-    def mask(self, grid):
+    @cached_property
+    def mask(self):
         r"""
-        The boolean mask of pixels inside the aperture, evaluated **at the grid origin**
-        (i.e. :attr:`center` is *not* applied; the grid is assumed already centered on
-        the aperture, as :attr:`~slmsuite.hardware.slms.slm.SLM.grid` is). For a raw,
-        uncentered grid use :meth:`transform` instead.
+        The boolean mask of pixels inside the aperture, evaluated on the aperture's bound
+        grid with :attr:`center` **applied** (subtracted before scaling, identically to
+        :meth:`transform`). The bound grid must therefore be the raw, unshifted grid; see
+        the :attr:`center` note on the class docstring.
 
         Returns the array ``(x s_x)**2 + (y s_y)**2 <= 1``; this is identical to the mask
         built inside :meth:`~slmsuite.holography.toolbox.phase.zernike_sum`.
-
-        Parameters
-        ----------
-        grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
 
         Returns
         -------
@@ -148,31 +198,26 @@ class Aperture:
         """
         from slmsuite.holography.toolbox import _process_grid
 
-        (x_grid, y_grid) = _process_grid(grid)
+        (x_grid, y_grid) = _process_grid(self._grid)
+        if self._center is not None:
+            x_grid = x_grid - self._center[0]
+            y_grid = y_grid - self._center[1]
 
-        # Cache keyed on the identity/shape of the grid; SLM rebuilds its grid array
-        # (new id) whenever the aperture center changes, so this invalidates correctly.
-        key = (id(x_grid), x_grid.shape)
-        if self._mask_cache is not None and self._mask_cache_key == key:
-            return self._mask_cache
-
-        (x_scale, y_scale) = self.scaling(grid)
+        (x_scale, y_scale) = self.zernike_scaling
         mask = (x_grid * x_scale) ** 2 + (y_grid * y_scale) ** 2 <= 1
-
-        self._mask_cache = mask
-        self._mask_cache_key = key
         return mask
 
-    def transform(self, grid):
+    def transform(self, grid=None):
         r"""
         Map a raw (uncentered) grid onto the unit disk, applying :attr:`center` then
-        :meth:`scaling`. This lets an :class:`Aperture` place a unit-disk function (e.g.
+        :meth:`zernike_scaling`. This lets an :class:`Aperture` place a unit-disk function (e.g.
         a lens or Zernike polynomial) or mask on an arbitrary grid on its own, without
         relying on the grid already being centered.
 
         Parameters
         ----------
-        grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM` OR None
+            If None, defaults to the bound grid.
 
         Returns
         -------
@@ -180,10 +225,12 @@ class Aperture:
             The unit-disk coordinates ``(u, v)``; the aperture is the region
             ``u**2 + v**2 <= 1``.
         """
+        if grid is None:
+            grid = self._grid
         from slmsuite.holography.toolbox import _process_grid
 
         (x_grid, y_grid) = _process_grid(grid)
-        (x_scale, y_scale) = self.scaling(grid)
+        (x_scale, y_scale) = self.zernike_scaling
 
         if self._center is not None:
             x_grid = x_grid - self._center[0]
@@ -196,10 +243,10 @@ class Aperture:
         """
         Resolve an ``aperture`` argument into an :class:`Aperture` instance.
 
-        -   If ``aperture`` is already an :class:`Aperture`, it is returned unchanged.
+        -   If ``aperture`` is already an :class:`Aperture`, it is returned (re-bound to
+            ``grid`` if bound to a different grid).
         -   If ``aperture`` is ``None`` and ``grid`` resolves to an SLM (or cameraSLM)
-            carrying an :class:`Aperture`, that aperture is returned (the source of
-            truth).
+            carrying an :class:`Aperture`, that aperture is returned (re-bound if needed).
         -   Otherwise an :class:`Aperture` is constructed from the legacy ``aperture``
             spec (defaulting to ``"cropped"``).
 
@@ -213,16 +260,20 @@ class Aperture:
         Aperture
         """
         if isinstance(aperture, cls):
-            return aperture
+            if aperture._grid is grid:
+                return aperture
+            return cls(grid, aperture.spec, center=aperture.center)
 
         if aperture is None:
             slm = getattr(grid, "slm", grid)
             existing = getattr(slm, "aperture", None)
             if isinstance(existing, cls):
-                return existing
-            return cls("cropped")
+                if existing._grid is grid:
+                    return existing
+                return cls(grid, existing.spec, center=existing.center)
+            return cls(grid, "cropped")
 
-        return cls(aperture)
+        return cls(grid, aperture)
 
     def pickle(self, attributes=True, metadata=False):
         """

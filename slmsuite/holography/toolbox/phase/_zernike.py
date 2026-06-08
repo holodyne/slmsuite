@@ -471,7 +471,7 @@ class ZernikeBasis:
             (0, 0),
             None,
         )
-        self._set_core(indices, aperture, tuple(x_grid.shape), basis, aperture.mask(grid))
+        self._set_core(indices, aperture, tuple(x_grid.shape), basis, aperture.mask)
 
     def _set_core(self, indices, aperture, grid_shape, basis, mask):
         """Assign the core (eagerly-held) attributes; lazy quantities recompute on access."""
@@ -616,7 +616,8 @@ def _zernike_sum_from_basis(basis, weights, out=None):
 # expensive part of zernike_sum / image_zernike_fit; we memoize the basis so that
 # repeated calls with the same grid + indices + aperture reuse it (each subsequent
 # synthesis/fit is then a single matrix product). This mirrors the module-level
-# _zernike_cache of polynomial coefficients and Aperture.mask's id-keyed cache.
+# _zernike_cache of polynomial coefficients (Aperture.mask is itself a plain
+# cached_property on the immutable Aperture, rebuilt whenever the Aperture is replaced).
 _ZERNIKE_BASIS_CACHE = OrderedDict()     # key -> ZernikeBasis
 _ZERNIKE_BASIS_CACHE_MAX = 32            # soft LRU cap; backstop to weakref eviction
 
@@ -728,7 +729,7 @@ def _zernike_sum_direct(grid, indices, weights, aperture, use_mask, derivative, 
     """
     (x_grid, y_grid) = _process_grid(grid)
     aperture = Aperture.resolve(grid, aperture)
-    (x_scale, y_scale) = aperture.scaling(grid)
+    (x_scale, y_scale) = aperture.zernike_scaling
     xp = _zernike_xp(x_grid)
 
     indices, weights, _, N = _zernike_parse_weights_indices(indices, weights)
@@ -741,7 +742,7 @@ def _zernike_sum_direct(grid, indices, weights, aperture, use_mask, derivative, 
     if use_mask is False:
         mask = None
     else:
-        mask = aperture.mask(grid)
+        mask = aperture.mask
         mask_value = 0
         if np.isnan(use_mask):
             use_mask = True
@@ -1278,7 +1279,7 @@ def _zernike_test(grid, indices):
 
     # Parse grid.
     (x_grid, y_grid) = _process_grid(grid)
-    (scale, _) = Aperture.resolve(grid).scaling(grid)
+    scale = Aperture.resolve(grid)._isotropic_scale()
     x_grid = cp.array(x_grid, copy=True, dtype=np.float32)
     y_grid = cp.array(y_grid, copy=True, dtype=np.float32)
 

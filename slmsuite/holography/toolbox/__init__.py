@@ -313,7 +313,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         if slm is None:
             zernike_scale = np.nan
         else:
-            zernike_scale = 2 * np.pi * np.reciprocal(np.mean(slm.zernike_scaling))
+            zernike_scale = 2 * np.pi * np.reciprocal(slm.aperture._isotropic_scale())
 
     # XY
 

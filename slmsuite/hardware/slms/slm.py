@@ -207,7 +207,7 @@ class SLM(_Common, ABC):
 
         # Aperture defaults to "cropped" (circumscribes the whole grid, so it
         # masks nothing until the user sets a real aperture). See set_aperture().
-        self.aperture = toolbox.Aperture("cropped")
+        self.aperture = toolbox.Aperture(self._grid_base, "cropped")
 
         # Multiplier for when the target wavelengths differ from the design wavelength.
         self.phase_scaling = self.wav_um / self.wav_design_um
@@ -256,7 +256,7 @@ class SLM(_Common, ABC):
         """
         Boolean mask (of :attr:`shape`) of the pixels inside :attr:`aperture`.
         """
-        return self.aperture.mask(self.grid)
+        return self.aperture.mask
 
     @property
     def zernike_scaling(self):
@@ -265,18 +265,18 @@ class SLM(_Common, ABC):
         unit disk, from :attr:`aperture`. Used by
         :meth:`~slmsuite.holography.toolbox.phase.zernike_sum`.
         """
-        return self.aperture.scaling(self.grid)
+        return self.aperture.zernike_scaling
 
     @property
     def source_radius(self):
         r"""
         The source radius in normalized units, for structured beams such as
         :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian`. Derived from the
-        :attr:`aperture` scaling as :math:`1 / (2\,\bar{s})`, where :math:`\bar{s}` is
-        the mean of the ``(x_scale, y_scale)`` lateral scaling.
+        :attr:`aperture` scaling as :math:`1 / (2\,s)`, where :math:`s` is the (isotropic)
+        lateral scale. Raises :class:`ValueError` for an anisotropic (elliptical) aperture,
+        which a single radius cannot describe.
         """
-        (x_scale, y_scale) = self.zernike_scaling
-        return float(np.reciprocal(2 * np.mean([x_scale, y_scale])))
+        return float(1.0 / (2.0 * self.aperture._isotropic_scale()))
 
     @abstractmethod
     def close(self):
@@ -356,6 +356,8 @@ class SLM(_Common, ABC):
         Drawn only if the aperture actually crops the SLM (the default ``"cropped"``
         aperture, whose mask is all-True, draws nothing).
         """
+        if not self.aperture.crops:
+            return
         mask = np.asarray(self.aperture_mask)
         if not np.all(mask):
             ax.contour(
@@ -1194,7 +1196,7 @@ class SLM(_Common, ABC):
 
         center_norm = None if center is None else self._center_pix_to_norm(center)
 
-        self.aperture = toolbox.Aperture(spec, center=center_norm)
+        self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
         self._grid = None
         return self.aperture
 
@@ -1231,7 +1233,7 @@ class SLM(_Common, ABC):
             ))
             spec = 1.0 / (2.0 * radius_norm)
             center_norm = self.aperture.center if not recenter else None
-            self.aperture = toolbox.Aperture(spec, center=center_norm)
+            self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
             self._grid = None
             return self.aperture
 
@@ -1259,7 +1261,7 @@ class SLM(_Common, ABC):
         if recenter:
             center_norm = self._center_pix_to_norm(center_pix)
 
-        self.aperture = toolbox.Aperture(spec, center=center_norm)
+        self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
         self._grid = None
         return self.aperture
 
@@ -1270,8 +1272,14 @@ class SLM(_Common, ABC):
         """
         if "amplitude" in self.source:
             amp = self.source["amplitude"]
+            if not self.aperture.crops:
+                # No cropping: skip the all-True mask multiply. Copy so callers may
+                # mutate the result without corrupting self.source["amplitude"].
+                return amp.copy()
         else:
             amp = np.ones(self.shape)
+            if not self.aperture.crops:
+                return amp          # Already a fresh, independent array.
         return amp * _xp(amp).asarray(self.aperture_mask)
 
     def _get_source_phase(self):
@@ -1281,8 +1289,14 @@ class SLM(_Common, ABC):
         """
         if "phase" in self.source:
             phase = self.source["phase"]
+            if not self.aperture.crops:
+                # No cropping: skip the all-True mask multiply. Copy so callers may
+                # mutate the result without corrupting self.source["phase"].
+                return phase.copy()
         else:
             phase = np.zeros(self.shape)
+            if not self.aperture.crops:
+                return phase        # Already a fresh, independent array.
         return phase * _xp(phase).asarray(self.aperture_mask)
 
     def plot_source(self, source=None, sim=False, power=False, aperture=True):
