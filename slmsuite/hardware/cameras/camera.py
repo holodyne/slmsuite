@@ -1268,15 +1268,24 @@ class Camera(_Common, ABC):
         except Exception as e:
             print(f"      HDR testing skipped: {e}")
 
-        # Test 3: Set WOI (if implemented)
-        print("  Testing set_woi...")
-        try:
-            orig_woi = getattr(self, 'woi', None)
-            self.set_woi()
-            if orig_woi is not None:
-                self.set_woi(orig_woi)
-        except NotImplementedError:
-            print("    set_woi not implemented - skipping")
+        # Test 3: WOI and binning (hardware only)
+        if not self._software_woi:
+            print("  Testing get_woi / set_woi...")
+            orig_woi = self.get_woi()
+            self.set_woi()                          # reset to full sensor
+            half_woi = (0, self.shape[1] // 2, 0, self.shape[0] // 2)
+            self.set_woi(half_woi)
+            assert self.get_image().shape == self.shape, "shape mismatch after set_woi"
+            self.set_woi(orig_woi)
+            assert self.get_woi() == orig_woi, "get_woi did not round-trip"
+
+        if not self._software_binning:
+            print("  Testing get_binning / set_binning...")
+            orig_binning = self.get_binning()
+            self.set_binning(1)
+            assert self.get_binning() == (1, 1), "get_binning mismatch after set_binning(1)"
+            assert self.get_image().shape == self.shape, "shape mismatch after set_binning"
+            self.set_binning(orig_binning)
 
         # Test 4: Info method
         print("  Testing info...")
