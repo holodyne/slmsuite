@@ -677,6 +677,65 @@ def test_zernike_basis(normalized_grid, subtests):
             phase.zernike_sum(basis, None, weights, derivative=(1, 0))
 
 
+def test_zernike_basis_transparent_cache(normalized_grid, subtests):
+    """The ZernikeBasis cache that backs zernike_sum / image_zernike_fit transparently."""
+    from slmsuite.holography.toolbox.phase import clear_zernike_basis_cache
+    from slmsuite.holography.toolbox.phase import _zernike as Z
+    from slmsuite.holography.analysis import image_zernike_fit
+
+    indices = [2, 1, 4, 3, 5, 6]
+    rng = np.random.default_rng(1)
+    weights = rng.normal(0, 0.3, len(indices))
+
+    with subtests.test("repeated zernike_sum builds the basis once and reuses it"):
+        clear_zernike_basis_cache()
+        first = phase.zernike_sum(normalized_grid, indices, weights)
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 1
+        cached = next(iter(Z._ZERNIKE_BASIS_CACHE.values()))
+        second = phase.zernike_sum(normalized_grid, indices, weights)
+        # Same cached object, identical result.
+        assert next(iter(Z._ZERNIKE_BASIS_CACHE.values())) is cached
+        assert np.allclose(first, second, atol=1e-12)
+
+    with subtests.test("transparent path matches the direct (uncached) computation"):
+        clear_zernike_basis_cache()
+        auto = phase.zernike_sum(normalized_grid, indices, weights)
+        direct = Z._zernike_sum_direct(
+            normalized_grid, indices, weights, None, True, (0, 0), None
+        )
+        assert np.allclose(auto, direct, atol=1e-9)
+
+    with subtests.test("image_zernike_fit on a raw grid recovers synthesized weights"):
+        clear_zernike_basis_cache()
+        synth = phase.zernike_sum(normalized_grid, indices, weights)
+        coeffs = image_zernike_fit(synth, normalized_grid, order=indices, leastsquares=True)
+        assert np.allclose(coeffs[:, 0], weights, atol=1e-6)
+
+    with subtests.test("gradient fit works on a raw grid (no explicit basis)"):
+        clear_zernike_basis_cache()
+        synth = phase.zernike_sum(normalized_grid, indices, weights)
+        wrapped = np.angle(np.exp(1j * synth))
+        grad = image_zernike_fit(wrapped, normalized_grid, order=indices, gradient=True)
+        assert np.allclose(grad[:, 0], weights, atol=1e-3)
+
+    with subtests.test("distinct grids and apertures key to distinct entries"):
+        clear_zernike_basis_cache()
+        grid_b = (normalized_grid[0].copy(), normalized_grid[1].copy())
+        phase.zernike_sum(normalized_grid, indices, weights)
+        phase.zernike_sum(grid_b, indices, weights)              # different grid id
+        phase.zernike_sum(normalized_grid, indices, weights, aperture="circular")
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 3
+
+    with subtests.test("derivative and clear bypass / empty the cache"):
+        clear_zernike_basis_cache()
+        phase.zernike_sum(normalized_grid, indices, weights, derivative=(1, 0))
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 0     # derivative keeps the direct path
+        phase.zernike_sum(normalized_grid, indices, weights)
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 1
+        clear_zernike_basis_cache()
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 0
+
+
 def test_polynomial(simple_grid, subtests):
     """Test polynomial() monomial summation."""
     with subtests.test("constant term (x^0 * y^0)"):

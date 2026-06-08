@@ -14,6 +14,7 @@ from slmsuite.holography.toolbox.phase._structured import _ince_polynomial
 from slmsuite.holography.toolbox.phase._zernike import (
     CUDA_KERNELS,
     _load_cuda,
+    _zernike_get_basis,
     _zernike_indices_parse,
     _zernike_build_order,
     _zernike_build_indices,

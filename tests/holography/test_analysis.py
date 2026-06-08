@@ -613,13 +613,17 @@ def test_image_zernike_fit(subtests):
         assert grad_err < 1e-2
         assert plain_err > 10 * grad_err
 
-    with subtests.test("gradient mode requires a ZernikeBasis"):
-        import pytest
-
-        with pytest.raises(ValueError):
-            analysis.image_zernike_fit(
-                0.5 * X_small + 0.3 * Y_small, grid_small, order=3, gradient=True
-            )
+    with subtests.test("gradient mode works on a raw grid (basis built transparently)"):
+        indices = [2, 1, 4, 3, 5]
+        weights = np.array([1.5, -1.0, 3.0, 0.4, -0.6])
+        # No explicit ZernikeBasis: the grid + order drive a transparently-cached basis.
+        phase_image = analysis.zernike_sum(grid_small, indices, weights)
+        wrapped = np.angle(np.exp(1j * phase_image))
+        grad_coeffs = analysis.image_zernike_fit(
+            wrapped, grid_small, order=indices, gradient=True
+        )
+        assert grad_coeffs.shape == (len(indices), 1)
+        assert np.allclose(grad_coeffs[:, 0], weights, atol=1e-2)
 
 
 def test_take(subtests, benchmark):

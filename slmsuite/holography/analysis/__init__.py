@@ -18,7 +18,9 @@ except ImportError:
     cp = np
 
 from slmsuite.holography.toolbox import format_2vectors, _process_grid
-from slmsuite.holography.toolbox.phase import zernike_sum, laguerre_gaussian, ZernikeBasis
+from slmsuite.holography.toolbox.phase import (
+    zernike_sum, laguerre_gaussian, ZernikeBasis, _zernike_get_basis,
+)
 from slmsuite.misc.math import REAL_TYPES
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
 
@@ -1142,8 +1144,7 @@ def image_zernike_fit(
     discrete central-difference gradient of the Zernike basis -- the same
     stencil applied to the data -- so the fit stays an exact linear
     least-squares problem. Piston is unrecoverable (its gradient is zero) but is
-    omitted from the return anyway, so the contract is unchanged. Requires
-    ``grid`` to be a precomputed :class:`ZernikeBasis`.
+    omitted from the return anyway, so the contract is unchanged.
 
     Note
     ~~~~
@@ -1158,10 +1159,11 @@ def image_zernike_fit(
         Components of the meshgrid describing coordinates over the phase_images.
         If ``None``, makes a grid with unit pitch centered on the phase_images.
 
-        A precomputed :class:`~slmsuite.holography.toolbox.phase.ZernikeBasis` may
-        also be passed, in which case ``order``, ``aperture``, and ``use_mask`` are
-        ignored (they are fixed when the basis is built). Reusing a basis avoids
-        rebuilding it when fitting many images against the same grid.
+        Repeated calls against the same grid transparently reuse a cached
+        :class:`~slmsuite.holography.toolbox.phase.ZernikeBasis`, so the basis is
+        built only once. An explicit basis may also be passed, in which case
+        ``order``, ``aperture``, and ``use_mask`` are ignored (they are fixed when
+        the basis is built).
     order : int OR list of int
         Maximal radial Zernike order for the fitting basis. If a list of int is
         provided, these are the ANSI indices of the Zernike polynomials to fit.
@@ -1183,8 +1185,7 @@ def image_zernike_fit(
         If ``True``, fit the wrap-aware phase gradient against the gradient
         Zernike basis instead of fitting the phase directly. This recovers
         accurate coefficients from a phase-wrapped ``phase_images`` without
-        unwrapping. Requires ``grid`` to be a :class:`ZernikeBasis`. See the
-        *Gradient mode* note above.
+        unwrapping. See the *Gradient mode* note above.
 
     Returns
     -------
@@ -1196,7 +1197,8 @@ def image_zernike_fit(
         phase_images = phase_images.reshape((1, *phase_images.shape))
     image_count = phase_images.shape[0]
 
-    # Build (or reuse) the Zernike basis.
+    # Build (or transparently reuse) the Zernike basis. Passing an explicit
+    # ZernikeBasis still works; otherwise the cache builds/returns one for this grid.
     if isinstance(grid, ZernikeBasis):
         basis = grid
     else:
@@ -1205,18 +1207,16 @@ def image_zernike_fit(
             indices_ansi = np.arange((order * (order + 1)) // 2)[1:]    # Omit piston.
         else:
             indices_ansi = np.array(order, dtype=int)
-        basis = ZernikeBasis(grid, indices_ansi, aperture=aperture, use_mask=use_mask)
+        basis = _zernike_get_basis(grid, indices_ansi, aperture=aperture, use_mask=use_mask)
 
     # Work on the basis's array module (GPU when the basis is GPU-resident).
     xp = _get_module(basis.basis_flat)
     phase_images = xp.asarray(phase_images)
 
     if gradient:
-        if not isinstance(grid, ZernikeBasis):
-            raise ValueError(
-                "image_zernike_fit(gradient=True) requires grid to be a "
-                "precomputed ZernikeBasis so the gradient basis can be cached."
-            )
+        # The gradient basis (and its Gram inverse / index maps) is cached on the
+        # ZernikeBasis, which is now obtained transparently above whether or not the
+        # caller passed an explicit basis.
         # Wrap-aware phase gradient: equals the true unwrapped gradient
         # everywhere except at vortices, so no phase unwrapping is needed.
         dx, dy = _wrapped_gradient(phase_images, xp)
