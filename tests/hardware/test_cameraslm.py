@@ -11,6 +11,7 @@ from slmsuite.hardware.cameraslms import FourierSLM
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography.toolbox.phase import blaze, zernike_sum
+from slmsuite.holography.algorithms import SpotHologram
 
 
 class TestFourierSLM:
@@ -241,6 +242,68 @@ class TestFourierSLM:
             )
             with pytest.raises(RuntimeError):
                 fs_bare.get_effective_focal_length()
+
+    def test_get_farfield_extent(self, fourierslm_calibrated, subtests):
+        """Test FourierSLM.get_farfield_extent."""
+
+        with subtests.test("returns corners array shape"):
+            corners = fourierslm_calibrated.get_farfield_extent(return_corners=True)
+            # 5 points (closed polygon: ll, lr, ur, ul, ll) in (2, N) format
+            assert corners.shape[0] == 2
+            assert corners.shape[1] == 5
+
+        with subtests.test("returns boolean mask when return_corners=False"):
+            mask = fourierslm_calibrated.get_farfield_extent(return_corners=False)
+            assert mask.dtype == bool
+            assert mask.shape == fourierslm_calibrated.cam.shape
+            # The SLM farfield should occupy some portion of the camera
+            assert mask.any()
+
+    def test_get_camera_extent(self, fourierslm_calibrated, subtests):
+        """Test FourierSLM.get_camera_extent."""
+
+        with subtests.test("kxy units returns 5 corner points"):
+            corners = fourierslm_calibrated.get_camera_extent(units="kxy", return_corners=True)
+            assert corners.shape[0] == 2
+            assert corners.shape[1] == 5
+
+        with subtests.test("knm canvas return_corners=False"):
+            shape = SpotHologram.get_padded_shape(fourierslm_calibrated, padding_order=1, square_padding=True)
+            mask = fourierslm_calibrated.get_camera_extent(units=shape, return_corners=False)
+            assert mask.dtype == bool
+            assert mask.shape == shape
+            # Camera covers some portion of the SLM farfield
+            assert mask.any()
+
+        with subtests.test("corner roundtrip ij->kxy->ij"):
+            # Corners in kxy space then mapped back to ij should enclose the camera
+            corners_kxy = fourierslm_calibrated.get_camera_extent(units="kxy", return_corners=True)
+            # Each corner maps back to a camera boundary pixel
+            corners_ij = fourierslm_calibrated.kxyslm_to_ijcam(corners_kxy)
+            cam_shape = fourierslm_calibrated.cam.shape
+            # All points should be within a few pixels of the camera boundary
+            assert np.all(corners_ij[0] >= -1) and np.all(corners_ij[0] <= cam_shape[1])
+            assert np.all(corners_ij[1] >= -1) and np.all(corners_ij[1] <= cam_shape[0])
+
+    def test_fourier_affine_property(self, fourierslm_calibrated, subtests):
+        """Test that fourier_affine returns an Affine equal to kxyslm->ijcam conversion."""
+        from slmsuite.holography.analysis import Affine
+
+        with subtests.test("fourier_affine is an Affine instance"):
+            aff = fourierslm_calibrated.fourier_affine
+            assert isinstance(aff, Affine)
+
+        with subtests.test("fourier_affine matches kxyslm_to_ijcam"):
+            kxy = np.array([[10.0], [20.0]])
+            via_affine = fourierslm_calibrated.fourier_affine @ kxy
+            via_method = fourierslm_calibrated.kxyslm_to_ijcam(kxy)
+            assert np.allclose(via_affine, via_method, atol=1e-10)
+
+        with subtests.test("fourier_affine inverse matches ijcam_to_kxyslm"):
+            ij = np.array([[150.0], [200.0]])
+            via_inv = fourierslm_calibrated.fourier_affine.inv @ ij
+            via_method = fourierslm_calibrated.ijcam_to_kxyslm(ij)
+            assert np.allclose(via_inv, via_method, atol=1e-10)
 
     def test_simulate(self, fourierslm_calibrated, subtests):
         """Test FourierSLM.simulate."""

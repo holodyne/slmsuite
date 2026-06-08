@@ -244,7 +244,7 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
 
-    if isinstance(images, cp.ndarray):
+    if cp is not np and isinstance(images, cp.ndarray):
         images = cp.asnumpy(images)
 
     if separate_axes:
@@ -2403,7 +2403,7 @@ class Affine(object):
         elif isinstance(x, np.ndarray):
             return np.matmul(self.M, x) + self.b
         elif isinstance(x, OrientationTransform):
-            M_new = np.matmul(self.M, x.orientation_matrix)
+            M_new = np.matmul(self.M, x.matrix)
             b_new = self.b
             return Affine(M_new, b_new)
         else:
@@ -2493,7 +2493,7 @@ class OrientationTransform:
 
     @classmethod
     def from_code(cls, code):
-        """Construct directly from a :class:`Code` value or integer (0–7)."""
+        """Construct directly from a :class:`Code` value or integer (0-7)."""
         obj = cls.__new__(cls)
         obj.code = cls.Code(int(code))
         return obj
@@ -2511,9 +2511,6 @@ class OrientationTransform:
         new_code = self._COMPOSITION_TABLE[self.code.value][other.code.value]
         return OrientationTransform.from_code(new_code)
 
-    def affine(self):
-        """Affine :class:`Affine` object representing this orientation transform."""
-        return Affine(self.orientation_matrix, [0, 0])
 
     # Properties
 
@@ -2551,44 +2548,13 @@ class OrientationTransform:
         return self.from_code(self._INVERSE_CODE[self.code.value])
 
     @property
-    def orientation_matrix(self):
-        """
-        numpy.ndarray : 2x2 **pull** (inverse) matrix for this orientation transform.
-
-        This is the linear component of the *inverse* pixel mapping — suitable for
-        composing with calibration matrices (e.g. ``kxy``→``ij``) where the
-        translation is already embedded in the calibration's ``b`` vector.
-        For the *forward* pixel-space mapping (with shape-dependent translation) use
-        :meth:`push_affine`.
-        """
-        c = self.code
-        C = self.Code
-        if c == C.IDENTITY:
-            return np.array([[1, 0], [0, 1]])
-        elif c == C.ROT90:
-            return np.array([[0, -1], [1, 0]])
-        elif c == C.ROT180:
-            return np.array([[-1, 0], [0, -1]])
-        elif c == C.ROT270:
-            return np.array([[0, 1], [-1, 0]])
-        elif c == C.FLIP:
-            return np.array([[-1, 0], [0, 1]])
-        elif c == C.FLIP_ROT90:
-            return np.array([[0, -1], [-1, 0]])
-        elif c == C.FLIP_ROT180:
-            return np.array([[1, 0], [0, -1]])
-        else:   # FLIP_ROT270
-            return np.array([[0, 1], [1, 0]])
-
-    @property
-    def push_matrix(self):
+    def matrix(self):
         """
         numpy.ndarray : 2x2 **push** (forward) matrix for pixel-space ``(x=col, y=row)`` mapping.
 
-        Unlike :attr:`orientation_matrix` (the pull/inverse matrix used for calibration
-        composition), this is the forward pixel mapping — i.e. where each input pixel
+        This is the forward pixel mapping — i.e. where each input pixel
         *goes* in the output image.  The translation component depends on the image
-        shape; use :meth:`push_affine` to get the complete :class:`Affine`.
+        shape; use :meth:`affine` to get the complete :class:`Affine`.
         """
         c = self.code
         C = self.Code
@@ -2609,7 +2575,7 @@ class OrientationTransform:
         else:   # FLIP_ROT270
             return np.array([[ 0., -1.], [-1.,  0.]])
 
-    def push_affine(self, shape):
+    def affine(self, shape):
         """
         Return an :class:`Affine` for the forward pixel-space transform of a ``(H, W)`` image.
 
@@ -2628,7 +2594,7 @@ class OrientationTransform:
         Affine
         """
         H, W = shape
-        M = self.push_matrix
+        M = self.matrix
         t = np.array([
             max(0., -M[0, 0]) * (W - 1) + max(0., -M[0, 1]) * (H - 1),
             max(0., -M[1, 0]) * (W - 1) + max(0., -M[1, 1]) * (H - 1),

@@ -250,6 +250,9 @@ class Camera(_Common, ABC):
 
         binning = self.transform.transform_shape(binning)
 
+        old_woi = self.woi
+        old_shape = self.shape
+
         if not self._software_binning:
             # Send it off to the hardware.
             self._set_binning_hw(binning)
@@ -258,12 +261,16 @@ class Camera(_Common, ABC):
         else:
             self._binning = binning
 
-        # Fix the WOI to account for the new binning.
+        # Try and retain the same WOI in unbinned camera coordinates.
         if update_woi:
             try:
-                self.set_woi(self.woi)
+                self.set_woi(old_woi)
             except:
                 pass
+
+        # Erase last_image if the shape or WOI changed, since the old image would no longer be valid.
+        if self._shape != old_shape or self.woi != old_woi:
+            self.last_image = None
 
     def get_binning(self):
         """
@@ -273,7 +280,6 @@ class Camera(_Common, ABC):
             self._binning = self._get_binning_hw()
 
         return self.transform.transform_shape(self._binning)
-
 
     def _set_binning_hw(self, binning: tuple[int, int]):
         raise NotImplementedError(f"Camera {self.name} has not implemented binning")
@@ -363,6 +369,9 @@ class Camera(_Common, ABC):
         (int, int, int, int)
             :attr:`~slmsuite.hardware.cameras.camera.Camera.woi` after the update.
         """
+        old_woi = self.woi
+        old_shape = self.shape
+
         binx, biny = self._binning[0], self._binning[1]
 
         if woi is None:
@@ -397,20 +406,26 @@ class Camera(_Common, ABC):
             )
         # else: handled by _crop_to_woi()
 
+        # Erase last_image if the shape or WOI changed, since the old image would no longer be valid.
+        if self._shape != old_shape or self.woi != old_woi:
+            self.last_image = None
+
         return self.woi
 
     def get_woi(self):
         """
-        Get the current WOI.
+        Get the current WOI in transformed, unbinned pixel coordinates.
 
-        For cameras without hardware WOI support, this is just :attr:`woi`.
-        For cameras with hardware WOI support, this queries the hardware for the current WOI
-        and updates the internal state accordingly before returning :attr:`woi`.
+        For cameras without hardware WOI support, returns the cached WOI directly.
+        For cameras with hardware WOI support, queries the hardware first.
+        The returned coordinates match what :meth:`set_woi` accepts, so
+        ``set_woi(get_woi())`` is always a valid no-op round-trip.
 
         Returns
         -------
         (int, int, int, int)
-            ``(x0, w, y0, h)`` in the coordinates of the returned image.
+            ``(x0, w, y0, h)`` in transformed, unbinned pixel coordinates —
+            the same coordinate system accepted by :meth:`set_woi`.
         """
         if not self._software_woi:
             woi_hw = self._get_woi_hw()
@@ -422,7 +437,6 @@ class Camera(_Common, ABC):
                 woi_hw[3] * biny,
             )
 
-        # Return the WOI in transformed, but unbinned coordinates.
         return self.transform.transform_woi(
             self._woi,
             shape=self._shape,
@@ -453,7 +467,7 @@ class Camera(_Common, ABC):
         )
 
         # Step 2: push-orientation transform with shape-dependent translation.
-        return self.transform.push_affine((h_bin, w_bin)) @ woi_bin
+        return self.transform.affine((h_bin, w_bin)) @ woi_bin
 
     def _get_ijcam_to_ijraw(self):
         """Inverse of :meth:`_get_ijraw_to_ijcam`."""

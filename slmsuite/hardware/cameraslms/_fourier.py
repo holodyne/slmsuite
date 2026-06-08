@@ -5,7 +5,7 @@ import cv2
 
 from slmsuite.holography import analysis
 from slmsuite.holography import toolbox
-from slmsuite.holography.algorithms import SpotHologram
+from slmsuite.holography.algorithms import SpotHologram, Hologram
 from slmsuite.holography.toolbox import format_2vectors, format_vectors, format_shape
 from slmsuite.holography.analysis import Affine
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
@@ -248,22 +248,27 @@ class _FourierCalibration(object):
 
     def fourier_calibrate_analytic(self, M, b):
         """
-        Sets the Fourier calibration to a user-selected affine transformation.
+        Sets the Fourier calibration to a user-supplied affine transformation.
 
-        See :meth:`fourier_calibration_build()` to generate this transformation from a
-        known or measured focal length.
+        ``M`` and ``b`` define the mapping :math:`\vec{y} = M\vec{x} + \vec{b}`
+        from SLM Fourier space (``"kxy"``) to raw camera sensor coordinates
+        (before WOI offset, binning, or orientation transform).
+        When none of those transforms are active, raw coordinates equal image coordinates.
+
+        See :meth:`fourier_calibration_build` to construct ``M`` and ``b`` analytically
+        from a known focal length.
 
         Parameters
         ----------
-        M : numpy.ndarray
-            Affine matrix :math:`M`. Shape ``(2, 2)``.
-        b : numpy.ndarray
-            Affine vector :math:`b`. Shape ``(2, 1)``.
+        M : array_like
+            2×2 affine matrix mapping kxy → raw camera pixels.
+        b : array_like
+            Length-2 translation vector (raw camera pixel coordinates).
 
         Returns
         -------
         dict
-            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["fourier"]`
+            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations` ``["fourier"]``
         """
         # Parse arguments.
         M = np.squeeze(M)
@@ -294,8 +299,28 @@ class _FourierCalibration(object):
             offset=None,
         ):
         """
-        META: This docstring will be overwritten by ``SimulatedCamera.build_affine``'s
-        after this class.
+        Builds analytic ``M`` and ``b`` from a known focal length, suitable for passing to
+        :meth:`fourier_calibrate_analytic`.
+        Delegates to :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera._build_affine`,
+        defaulting ``offset`` to the camera center.
+
+        Parameters
+        ----------
+        f_eff : float
+            Effective focal length in ``units``.
+        units : str
+            Length units for ``f_eff``.
+        theta : float
+            Rotation angle in radians.
+        shear_angle : float
+            Shear angle in radians.
+        offset : array_like or None
+            Camera-space offset of the optical axis. Defaults to the camera center.
+
+        Returns
+        -------
+        (M, b) : tuple of numpy.ndarray
+            Affine parameters suitable for :meth:`fourier_calibrate_analytic`.
         """
         if offset is None:
             offset = np.flip(self.cam.shape) / 2
@@ -332,12 +357,15 @@ class _FourierCalibration(object):
     def kxyslm_to_ijcam(self, kxy):
         r"""
         Converts SLM Fourier space (``"kxy"``) to camera pixel space (``"ij"``).
-        For blaze vectors :math:`\vec{x}` and camera pixel indices :math:`\vec{y}`, computes:
+        For blaze vectors :math:`\vec{x}` and camera pixel indices :math:`\vec{y}`
+        (with binning and WOI applied), computes:
 
-        .. math:: \vec{y} = M \cdot (\vec{x} - \vec{a}) + \vec{b}
+        .. math:: \vec{y} = M \cdot \vec{x} + \vec{b}
 
-        where :math:`M`, :math:`\vec{b}`, and :math:`\vec{a}` are stored in
-        :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations` ``["fourier"]``.
+        where :math:`M` and :math:`\vec{b}` are computed from stored calibrations.
+
+        Important
+        ~~~~~~~~~
 
         If the vectors are three-dimensional, the third depth dimension is treated according to:
 
@@ -362,18 +390,18 @@ class _FourierCalibration(object):
         Parameters
         ----------
         kxy : array_like
-            Vector or array of vectors to convert. Can be 2D or 3D.
+            2D or 3D vector(s) in SLM Fourier space.
             Cleaned with :meth:`~slmsuite.holography.toolbox.format_vectors()`.
 
         Returns
         -------
         ij : numpy.ndarray
-            Vector or array of vectors in camera spatial coordinates. Can be 2D or 3D.
+            2D or 3D vector(s) in camera pixel coordinates.
 
         Raises
         ------
         RuntimeError
-            If the fourier plane calibration does not exist.
+            If the Fourier calibration does not exist.
         """
         self._check_fourier_calibration_stale()
 
@@ -389,12 +417,12 @@ class _FourierCalibration(object):
     def ijcam_to_kxyslm(self, ij):
         r"""
         Converts camera pixel space (``"ij"``) to SLM Fourier space (``"kxy"``).
-        For camera pixel indices :math:`\vec{y}` and blaze vectors :math:`\vec{x}`, computes:
+        For camera pixel indices :math:`\vec{y}` (with binning and WOI applied)
+        and blaze vectors :math:`\vec{x}`, computes:
 
         .. math:: \vec{x} = M^{-1} \cdot (\vec{y} - \vec{b}) + \vec{a}
 
-        where :math:`M`, :math:`\vec{b}`, and :math:`\vec{a}` are stored in
-        :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["fourier"]`.
+        where :math:`M` and :math:`\vec{b}` are computed from stored calibrations.
 
         Important
         ~~~~~~~~~
@@ -415,21 +443,29 @@ class _FourierCalibration(object):
         This information is encoded in the Fourier calibration, and revealed by
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.get_effective_focal_length()`.
 
+        Important
+        ~~~~~~~~~
+        When a WOI or binning is applied to a camera, this conversion helper function uses the
+        WOI/binned coordinate system, i.e. the coordinate system of the returned image.
+        After all, the user is working with the returned image.
+        Internally, the stored calibration is kept in terms of the **full**,
+        **untransformed** camera coordinates.
+
         Parameters
         ----------
         ij : array_like
-            Vector or array of vectors to convert. Can be 2D or 3D.
-            Cleaned with :meth:`~slmsuite.holography.toolbox.format_2vectors()`.
+            2D or 3D vector(s) in camera pixel coordinates (WOI/binning/orientation applied).
+            Cleaned with :meth:`~slmsuite.holography.toolbox.format_vectors()`.
 
         Returns
         -------
         kxy : numpy.ndarray
-            Vector or array of vectors in slm angular coordinates. Can be 2D or 3D.
+            2D or 3D vector(s) in SLM Fourier space.
 
         Raises
         ------
         RuntimeError
-            If the fourier plane calibration does not exist.
+            If the Fourier calibration does not exist.
         """
         self._check_fourier_calibration_stale()
 
@@ -444,10 +480,8 @@ class _FourierCalibration(object):
 
     def _check_fourier_calibration_stale(self):
         """
-        Checks if the wavefront calibration is newer than the Fourier calibration.
-
-        Warns if this is true. Does nothing if either calibration is not present or
-        if another error occurs.
+        Raises :exc:`RuntimeError` if no Fourier calibration exists.
+        Warns if the wavefront calibration is newer than the Fourier calibration.
         """
         if not "fourier" in self.calibrations:
             raise RuntimeError("Fourier calibration must exist to be used.")
@@ -485,13 +519,17 @@ class _FourierCalibration(object):
     @property
     def fourier_affine(self):
         """
-        Returns the affine transformation between the SLM Fourier space and
-        camera pixel space (with binning and WOI applied).
+        Affine transformation from SLM Fourier space (``"kxy"``) to camera pixel space (``"ij"``),
+        accounting for the camera's current WOI, binning, and orientation.
 
         Returns
         -------
-        affine : Affine
-            Affine transformation from SLM Fourier space to camera pixel space, with binning and WOI applied.
+        affine : :class:`~slmsuite.holography.analysis.Affine`
+
+        Raises
+        ------
+        RuntimeError
+            If the Fourier calibration does not exist.
         """
         self._check_fourier_calibration_stale()
 
@@ -613,11 +651,14 @@ class _FourierCalibration(object):
         Parameters
         ----------
         return_corners : bool
-            If ``True``, returns the coordinates of the corners of the farfield.
-            If ``False``, return a boolean image with the SLM's farfield.
+            If ``True``, returns a ``(2, 5)`` array of the farfield corner coordinates
+            in camera pixel space (closed polygon with camera origin repeated).
+            If ``False``, returns a boolean mask of shape ``cam.shape`` that is ``True``
+            where the SLM farfield falls on the camera.
 
         Returns
         -------
+        numpy.ndarray
         """
         cam_shape = self.cam.shape
 
@@ -633,7 +674,7 @@ class _FourierCalibration(object):
             corners_knm,
             from_units="knm",
             to_units="ij",
-            hardware=self.cameraslm.slm,
+            hardware=self,
             shape=(1,1),
         )
 
@@ -642,25 +683,30 @@ class _FourierCalibration(object):
         else:
             # Fill the shadow of the camera on the canvas.
             canvas = np.zeros(self.cam.shape, dtype=np.uint8)
-            pts = np.rint(corners_ij).astype(np.int32)
+            pts = np.rint(corners_ij.T).astype(np.int32)  # (N, 2) required by cv2
             cv2.fillConvexPoly(canvas, pts, 255, cv2.LINE_4)
 
             return canvas > 128
 
     def get_camera_extent(self, units="kxy", return_corners=True):
         """
-        Find the extent of the camera in the basis of various farfield units.
+        Find the extent of the camera in various farfield coordinate systems.
 
         Parameters
         ----------
         units : str OR (int, int) OR Hologram
-
+            Target coordinate system.  A string (e.g. ``"kxy"``, ``"knm"``) returns corners
+            in that basis.  A shape tuple or :class:`~slmsuite.holography.algorithms.Hologram`
+            returns corners in ``"knm"`` space for that grid (and supports mask output).
         return_corners : bool
-            If ``True``, returns the coordinates of the corners of the camera.
-            If ``False``, and a shape was passed to units, returns
+            If ``True``, returns a ``(2, 5)`` array of camera corner coordinates in ``units``
+            (closed polygon with camera origin repeated).
+            If ``False``, requires ``units`` to be a shape; returns a boolean mask of that
+            shape that is ``True`` where the camera falls on the farfield.
 
         Returns
         -------
+        numpy.ndarray
         """
         cam_shape = self.cam.shape
 
@@ -674,20 +720,25 @@ class _FourierCalibration(object):
         )
 
         if isinstance(units, str):
+            if not return_corners:
+                raise ValueError("return_corners must be True if units is a string.")
             return toolbox.convert_vector(
                 corners_ij,
                 from_units="ij",
                 to_units=units,
-                hardware=self.cameraslm.slm,
+                hardware=self,
             )
         else:
+            if isinstance(units, Hologram):
+                units = units.shape
+
             units = format_shape(units)
 
             corners_knm = toolbox.convert_vector(
                 corners_ij,
                 from_units="ij",
                 to_units="knm",
-                hardware=self.cameraslm.slm,
+                hardware=self,
                 shape=units,
             )
 
@@ -696,7 +747,7 @@ class _FourierCalibration(object):
             else:
                 # Fill the shadow of the camera on the canvas.
                 canvas = np.zeros(units, dtype=np.uint8)
-                pts = np.rint(corners_knm).astype(np.int32)
+                pts = np.rint(corners_knm.T).astype(np.int32)  # (N, 2) required by cv2
                 cv2.fillConvexPoly(canvas, pts, 255, cv2.LINE_4)
 
                 return canvas > 128

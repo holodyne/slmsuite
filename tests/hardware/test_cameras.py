@@ -805,3 +805,78 @@ class TestCamera:
                 binned_img, expected,
                 err_msg="Binned pixel values do not equal the raw block sum"
             )
+
+    def test_get_binning(self, slm, subtests):
+        """get_binning() returns current binning in transformed coordinates."""
+        cam = SimulatedCamera(slm, resolution=(200, 100))
+        cam.close()
+
+        with subtests.test("default is (1, 1)"):
+            assert cam.get_binning() == (1, 1)
+
+        with subtests.test("matches binning property at default"):
+            assert cam.get_binning() == cam.binning
+
+        with subtests.test("matches binning property after set_binning(2)"):
+            cam.set_binning(2)
+            assert cam.get_binning() == (2, 2)
+            assert cam.get_binning() == cam.binning
+            cam.set_binning(1)
+
+        with subtests.test("asymmetric _binning=(2, 4) with software binning"):
+            cam._software_binning = True
+            cam._binning = (2, 4)
+            assert cam.get_binning() == (2, 4)
+            assert cam.get_binning() == cam.binning
+            cam._binning = (1, 1)
+
+        with subtests.test("90-degree rotation swaps binning axes"):
+            cam_rot = SimulatedCamera(slm, resolution=(200, 100), rot="90")
+            cam_rot.close()
+            cam_rot._software_binning = True
+            cam_rot._binning = (2, 4)   # untransformed (bx=2, by=4)
+            # ROT90 swaps x↔y, so get_binning() returns (by, bx) = (4, 2)
+            assert cam_rot.get_binning() == (4, 2)
+            assert cam_rot.get_binning() == cam_rot.binning
+
+    def test_get_woi(self, slm, subtests):
+        """get_woi() returns the current WOI in the same coordinates as the woi property."""
+        cam = SimulatedCamera(slm, resolution=(200, 100))
+        cam.close()
+
+        with subtests.test("full sensor at default"):
+            assert cam.get_woi() == (0, 200, 0, 100)
+
+        with subtests.test("matches woi property when binning=1"):
+            # binning=1 → binned == unbinned, so get_woi() and woi agree
+            assert cam.get_woi() == cam.woi
+
+        with subtests.test("set_woi then get_woi round-trips"):
+            cam.set_woi((20, 80, 10, 60))
+            assert cam.get_woi() == (20, 80, 10, 60)
+            cam.set_woi(None)
+
+        with subtests.test("get_woi returns unbinned coords even when binning != 1"):
+            cam._software_binning = True
+            cam._binning = (2, 2)
+            # get_woi returns unbinned (full-sensor: 200×100), not binned (100×50)
+            assert cam.get_woi() == (0, 200, 0, 100)
+            # woi property returns binned
+            assert cam.woi == (0, 100, 0, 50)
+            cam._binning = (1, 1)
+
+        with subtests.test("set_woi(get_woi()) is a valid round-trip"):
+            cam.set_woi((10, 40, 20, 30))
+            cam.set_woi(cam.get_woi())
+            assert cam.get_woi() == (10, 40, 20, 30)
+            cam.set_woi(None)
+
+        with subtests.test("90-degree rotation: get_woi in transformed frame"):
+            cam_rot = SimulatedCamera(slm, resolution=(200, 100), rot="90")
+            cam_rot.close()
+            # Untransformed sensor: W=200, H=100.  After ROT90: W_t=100, H_t=200.
+            # Full-sensor woi in transformed frame: (x=0, w=100, y=0, h=200)
+            assert cam_rot.get_woi() == (0, 100, 0, 200)
+
+        with subtests.test("get_woi equals woi property when binning=1"):
+            assert cam.get_woi() == cam.woi

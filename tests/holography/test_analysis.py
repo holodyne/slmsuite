@@ -1233,6 +1233,28 @@ def test_affine_apply(subtests):
         np.testing.assert_allclose(aff_a @ x, expected)
 
 
+def test_affine_to_dict(subtests):
+    """Affine.to_dict serializes and can be reconstructed to an equivalent Affine."""
+    M = np.array([[2., 1.], [0., 3.]])
+    b = np.array([5., -3.])
+    a = np.array([1., 2.])
+    aff = analysis.Affine(M, b, a)
+
+    with subtests.test("to_dict keys"):
+        d = aff.to_dict()
+        assert set(d.keys()) >= {"M", "b", "a"}
+
+    with subtests.test("reconstructed Affine matches original"):
+        d = aff.to_dict()
+        aff2 = analysis.Affine(d["M"], d["b"])
+        x = np.array([[4.], [6.]])
+        np.testing.assert_allclose(aff @ x, aff2 @ x, atol=1e-12)
+
+    with subtests.test("a stored as zeros after centering is baked in"):
+        d = aff.to_dict()
+        np.testing.assert_allclose(d["a"], np.zeros((2, 1)), atol=1e-12)
+
+
 def test_affine_compose(subtests):
     """A @ B composes correctly: (A @ B) @ x == A @ (B @ x)."""
     A = analysis.Affine(np.array([[2., 1.], [0., 3.]]), np.array([1., -1.]))
@@ -1286,20 +1308,15 @@ def _all_transforms():
     ]
 
 
-def test_orientation_push_matrix_properties(subtests):
+def test_orientation_matrix_properties(subtests):
     """
-    push_matrix is an orthogonal matrix (isometry):
+    matrix is an orthogonal matrix (isometry):
       - det = ±1
-      - push^T @ push == I
+      - M^T @ M == I
     These hold for all 8 D4 transforms.
-
-    Note: push_matrix and orientation_matrix (pull) are NOT simply inverses of
-    each other — they serve different mathematical roles and are only equal in
-    the cases where the transform is its own inverse (IDENTITY, ROT180, FLIP,
-    FLIP_ROT180).
     """
     for label, t in _all_transforms():
-        M = t.push_matrix
+        M = t.matrix
 
         with subtests.test(f"{label} : det = ±1"):
             d = np.linalg.det(M)
@@ -1308,13 +1325,13 @@ def test_orientation_push_matrix_properties(subtests):
         with subtests.test(f"{label} : orthogonal (M^T @ M == I)"):
             np.testing.assert_allclose(
                 M.T @ M, np.eye(2), atol=1e-10,
-                err_msg=f"{label}: push^T @ push != I"
+                err_msg=f"{label}: M^T @ M != I"
             )
 
 
-def test_orientation_push_affine_matches_image_transform(subtests):
+def test_orientation_affine_matches_image_transform(subtests):
     """
-    push_affine(shape) maps pixel (x, y) to exactly the position where
+    affine(shape) maps pixel (x, y) to exactly the position where
     OrientationTransform.__call__ moves that pixel in the transformed image.
     """
     H, W = 4, 6   # non-square to expose axis-swap bugs
@@ -1325,9 +1342,9 @@ def test_orientation_push_affine_matches_image_transform(subtests):
     for label, t in _all_transforms():
         transformed = t(img)          # apply the image transform
 
-        # For each pixel (x=col, y=row) in the original, push_affine tells us
+        # For each pixel (x=col, y=row) in the original, affine tells us
         # where it ends up.  Verify that the value at that destination matches.
-        aff = t.push_affine((H, W))
+        aff = t.affine((H, W))
 
         errors = []
         for y in range(H):
@@ -1344,15 +1361,15 @@ def test_orientation_push_affine_matches_image_transform(subtests):
             assert not errors, "\n".join([f"{label} pixel mapping errors:"] + errors)
 
 
-def test_orientation_push_affine_translation_formula(subtests):
+def test_orientation_affine_translation_formula(subtests):
     """
-    The translation vector t of push_affine satisfies
+    The translation vector t of affine satisfies
     t[i] = max(0,-M[i,0])*(W-1) + max(0,-M[i,1])*(H-1),
     which means the origin (0,0) always maps to a non-negative corner.
     """
     H, W = 5, 9
     for label, t in _all_transforms():
-        aff = t.push_affine((H, W))
+        aff = t.affine((H, W))
         origin_out = aff @ np.zeros((2, 1))
         with subtests.test(f"{label} : origin maps to non-negative corner"):
             assert origin_out[0, 0] >= 0 and origin_out[1, 0] >= 0, (
