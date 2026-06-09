@@ -56,9 +56,7 @@ _PACKET_HEADER_FMT = ">4sHxBIxxxx"
 _HEADER_SIZE = 16
 _CONTROL_PAYLOAD_SIZE = 1024  # control command payloads are padded to this size
 _IMAGE_ROW_PAYLOAD_SIZE = 4096  # image row payloads are padded to this size
-_STATUS_READ_SIZE = (
-    _HEADER_SIZE + _CONTROL_PAYLOAD_SIZE
-)  # 1040 bytes per status response
+_STATUS_READ_SIZE = _HEADER_SIZE + _CONTROL_PAYLOAD_SIZE  # 1040 bytes per status response
 
 # command type tuples: (cmd_id, magic_length)
 _CMD_CONTROL = (1, 0xFF)  # ASCII control commands (VI, WL, DS, ...)
@@ -132,10 +130,7 @@ class SantecFTDI:
             If ``PyD3XX`` is not installed.
         """
         if _PyD3XX is None:
-            raise RuntimeError(
-                "PyD3XX not available; cannot use SantecFTDI.\n"
-                "Install it with:  pip install PyD3XX"
-            )
+            raise RuntimeError("PyD3XX not available; cannot use SantecFTDI.\n" "Install it with:  pip install PyD3XX")
         self.serial_number = serial_number
         self.channel = channel
         # FIFO index (int) for FT_ReadPipeEx / FT_WritePipeEx on Linux/macOS
@@ -198,11 +193,7 @@ class SantecFTDI:
                     device_index = i
                     device = info  # reuse FT_Device from FT_GetDeviceInfoDetail (required by FT_Create)
         if device_index is None:
-            raise RuntimeError(
-                "Device '{}' not found. Available: {}.".format(
-                    self.serial_number, serials
-                )
-            )
+            raise RuntimeError("Device '{}' not found. Available: {}.".format(self.serial_number, serials))
         # pass the same FT_Device object returned by FT_GetDeviceInfoDetail, not a fresh one
         status = _PyD3XX.FT_Create(device_index, _PyD3XX.FT_OPEN_BY_INDEX, device)
         if status != _PyD3XX.FT_OK:
@@ -223,12 +214,8 @@ class SantecFTDI:
             self._pipe_in = _PyD3XX.FT_Pipe()
             self._pipe_in._PipeID = _ctypes.c_char(bytes([0x82 + 2 * self.channel]))
         else:
-            _, self._pipe_out = _PyD3XX.FT_GetPipeInformation(
-                device, 0, 2 * self.channel + 1
-            )
-            _, self._pipe_in = _PyD3XX.FT_GetPipeInformation(
-                device, 0, 2 * self.channel
-            )
+            _, self._pipe_out = _PyD3XX.FT_GetPipeInformation(device, 0, 2 * self.channel + 1)
+            _, self._pipe_in = _PyD3XX.FT_GetPipeInformation(device, 0, 2 * self.channel)
         # Windows uses FT_SetPipeTimeout for blocking sync reads; Linux uses per-call timeout
         if _PyD3XX.Platform == "windows":
             _PyD3XX.FT_SetPipeTimeout(device, self._pipe_in, _PIPE_TIMEOUT_MS)
@@ -242,13 +229,9 @@ class SantecFTDI:
             # use a short timeout so this returns quickly when the pipe is clean
             for _ in range(32):
                 if _PyD3XX.Platform == "windows":
-                    _, ft_buf, n = _PyD3XX.FT_ReadPipeEx(
-                        device, self._pipe_in, _STATUS_READ_SIZE, _PyD3XX.NULL
-                    )
+                    _, ft_buf, n = _PyD3XX.FT_ReadPipeEx(device, self._pipe_in, _STATUS_READ_SIZE, _PyD3XX.NULL)
                 else:
-                    _, ft_buf, n = _PyD3XX.FT_ReadPipeEx(
-                        device, self._fifo_in, _STATUS_READ_SIZE, 50
-                    )
+                    _, ft_buf, n = _PyD3XX.FT_ReadPipeEx(device, self._fifo_in, _STATUS_READ_SIZE, 50)
                 if n == 0:
                     break
             last_error: str | Exception = "no attempts made"
@@ -354,11 +337,7 @@ class SantecFTDI:
         if status != _PyD3XX.FT_OK:
             raise RuntimeError("USB write failed (status {}).".format(status))
         if bytes_written != len(buffer):
-            raise RuntimeError(
-                "USB write incomplete: {} of {} bytes written.".format(
-                    bytes_written, len(buffer)
-                )
-            )
+            raise RuntimeError("USB write incomplete: {} of {} bytes written.".format(bytes_written, len(buffer)))
 
     def _read(self, length: int) -> bytes:
         if self._device is None:
@@ -378,13 +357,9 @@ class SantecFTDI:
                     if bytes_read > 0:
                         break
                     if status != _FT_IO_PENDING:
-                        raise RuntimeError(
-                            "USB read failed (status {}).".format(status)
-                        )
+                        raise RuntimeError("USB read failed (status {}).".format(status))
                     if time.monotonic() >= deadline:
-                        raise RuntimeError(
-                            "USB read timed out after {}ms.".format(_PIPE_TIMEOUT_MS)
-                        )
+                        raise RuntimeError("USB read timed out after {}ms.".format(_PIPE_TIMEOUT_MS))
                     time.sleep(0.010)
             else:
                 # Linux/macOS: FIFO index (int) + timeout in ms; 0 is non-blocking
@@ -415,9 +390,7 @@ class SantecFTDI:
         """
         response = "NO RESPONSE"
         for _ in range(trials):
-            self._write(
-                self._assemble_packet(_CMD_STATUSREQUEST[0], _CMD_STATUSREQUEST[1], b"")
-            )
+            self._write(self._assemble_packet(_CMD_STATUSREQUEST[0], _CMD_STATUSREQUEST[1], b""))
             buf = self._read(_STATUS_READ_SIZE)
             pkt = self._disassemble_packet(buf)
             response = pkt["payload"].decode("utf-8").split("\x00")[0].strip()
@@ -551,9 +524,7 @@ class SantecFTDI:
         str
             FPGA response string.
         """
-        return self._control_command(
-            b"WL", [wavelength_nm, max_phase_pi], longrunning=True
-        )
+        return self._control_command(b"WL", [wavelength_nm, max_phase_pi], longrunning=True)
 
     def get_wavelength(self, longrunning: bool = False) -> tuple[int, float]:
         """
@@ -576,16 +547,12 @@ class SantecFTDI:
         """
         resp = self._control_command(b"WL", longrunning=longrunning)
         if resp in ("NO RESPONSE", "NG", "BS"):
-            raise RuntimeError(
-                "WL read returned {!r}; FPGA may still be busy.".format(resp)
-            )
+            raise RuntimeError("WL read returned {!r}; FPGA may still be busy.".format(resp))
         parts = resp.split()
         if len(parts) < 2:
             raise RuntimeError(
                 "WL read returned unexpected response {!r}; expected 'NM PHASE' (e.g. '532 2.09'). "
-                "Possible stale response in pipe -- try re-opening the device.".format(
-                    resp
-                )
+                "Possible stale response in pipe -- try re-opening the device.".format(resp)
             )
         return (int(parts[0]), float(parts[1]))
 
@@ -641,9 +608,7 @@ class SantecFTDI:
         """
         resp = self._control_command(b"GS")
         if resp == "NG":
-            raise RuntimeError(
-                "GS read returned NG; firmware may not support reading grayscale."
-            )
+            raise RuntimeError("GS read returned NG; firmware may not support reading grayscale.")
         return int(resp)
 
     # -------------------------------------------------------------------------
@@ -682,11 +647,7 @@ class SantecFTDI:
             If ``slot`` is out of range.
         """
         if not (self.MIN_SLOT <= slot <= self.MAX_SLOT):
-            raise ValueError(
-                "Slot {} out of valid range ({}-{}).".format(
-                    slot, self.MIN_SLOT, self.MAX_SLOT
-                )
-            )
+            raise ValueError("Slot {} out of valid range ({}-{}).".format(slot, self.MIN_SLOT, self.MAX_SLOT))
         self._control_command(b"MI", [slot])
         image = image.astype(np.uint16)
         buffer = bytearray()
@@ -694,9 +655,7 @@ class SantecFTDI:
             linedata = bytearray(_IMAGE_ROW_PAYLOAD_SIZE)
             row_bytes = row.tobytes()
             linedata[: len(row_bytes)] = row_bytes
-            buffer += self._assemble_packet(
-                _CMD_IMAGEDATA[0], _CMD_IMAGEDATA[1], bytes(linedata), seq_id=i
-            )
+            buffer += self._assemble_packet(_CMD_IMAGEDATA[0], _CMD_IMAGEDATA[1], bytes(linedata), seq_id=i)
         # overwrite last 4 bytes with uint32 checksum; intentional integer overflow
         buffer[-4:] = struct.pack("I", int(image.sum()) % 2**32)
         self._write(bytes(buffer))
@@ -722,11 +681,7 @@ class SantecFTDI:
             If ``slot`` is out of range.
         """
         if not (self.MIN_SLOT <= slot <= self.MAX_SLOT):
-            raise ValueError(
-                "Slot {} out of valid range ({}-{}).".format(
-                    slot, self.MIN_SLOT, self.MAX_SLOT
-                )
-            )
+            raise ValueError("Slot {} out of valid range ({}-{}).".format(slot, self.MIN_SLOT, self.MAX_SLOT))
         return self._control_command(b"DS", [slot])
 
     def get_displayed_slot(self) -> int:
@@ -750,9 +705,7 @@ class SantecFTDI:
         """
         resp = self._control_command(b"DS")
         if resp == "NG":
-            raise RuntimeError(
-                "DS read returned NG; firmware may not support reading displayed slot."
-            )
+            raise RuntimeError("DS read returned NG; firmware may not support reading displayed slot.")
         return int(resp)
 
     def erase_slot(self, slot: int) -> str:
@@ -775,11 +728,7 @@ class SantecFTDI:
             If ``slot`` is out of range.
         """
         if not (self.MIN_SLOT <= slot <= self.MAX_SLOT):
-            raise ValueError(
-                "Slot {} out of valid range ({}-{}).".format(
-                    slot, self.MIN_SLOT, self.MAX_SLOT
-                )
-            )
+            raise ValueError("Slot {} out of valid range ({}-{}).".format(slot, self.MIN_SLOT, self.MAX_SLOT))
         return self._control_command(b"ME", [slot])
 
     # -------------------------------------------------------------------------

@@ -163,16 +163,8 @@ class SantecUSB(SLM):
             while current_nm != wav_desired_nm and attempt <= 5:
                 if verbose:
                     if attempt == 1:
-                        print(
-                            "Current phase table: wav={} nm, maxphase={:.2f}pi".format(
-                                current_nm, current_phase_pi
-                            )
-                        )
-                        print(
-                            "Desired phase table: wav={} nm, maxphase=2.00pi".format(
-                                wav_desired_nm
-                            )
-                        )
+                        print("Current phase table: wav={} nm, maxphase={:.2f}pi".format(current_nm, current_phase_pi))
+                        print("Desired phase table: wav={} nm, maxphase=2.00pi".format(wav_desired_nm))
                     else:
                         print("(attempt {})".format(attempt))
                     print("     ...Updating phase table (this may take 40 seconds)...")
@@ -203,11 +195,7 @@ class SantecUSB(SLM):
                     )
 
                 if verbose and _wl_read_ok:
-                    print(
-                        "Updated phase table: wav={} nm, maxphase={:.2f}pi".format(
-                            current_nm, current_phase_pi
-                        )
-                    )
+                    print("Updated phase table: wav={} nm, maxphase={:.2f}pi".format(current_nm, current_phase_pi))
 
                 # stop retrying if the wavelength did not change after the first attempt;
                 # the firmware cannot recalibrate to this wavelength (hardware limitation)
@@ -227,11 +215,7 @@ class SantecUSB(SLM):
 
             if verbose and abs(current_phase_pi - 2.0) > 0.04:
                 wav_design_fixed_um = wav_design_um * (current_phase_pi / 2.0)
-                print(
-                    "  Warning: phase table maximum deviates >2% from 2pi ({:.2f}pi).".format(
-                        current_phase_pi
-                    )
-                )
+                print("  Warning: phase table maximum deviates >2% from 2pi ({:.2f}pi).".format(current_phase_pi))
                 print(
                     "    wav_design_um adjusted to {:.4f} um (was {:.4f} um).".format(
                         wav_design_fixed_um, wav_design_um
@@ -265,11 +249,7 @@ class SantecUSB(SLM):
             try:
                 ftdi.close()
             except Exception as close_error:
-                print(
-                    "Could not close SantecUSB serial={} after init failure: {}".format(
-                        serial_number, close_error
-                    )
-                )
+                print("Could not close SantecUSB serial={} after init failure: {}".format(serial_number, close_error))
             raise init_error
 
     # -------------------------------------------------------------------------
@@ -453,16 +433,13 @@ class SantecUSB(SLM):
         """
         try:
             # skip first row (header) and first column (Y coordinates)
-            phase_map = np.loadtxt(file_path, skiprows=1, dtype=int, delimiter=",")[
-                :, 1:
-            ]
+            phase_map = np.loadtxt(file_path, skiprows=1, dtype=int, delimiter=",")[:, 1:]
             phase = (-2 * np.pi / self.bitresolution) * phase_map.astype(float)
 
             if smooth:
                 if cv2 is None:
                     warnings.warn(
-                        "cv2 not installed; skipping smoothing. "
-                        "Install opencv-python to enable smooth=True."
+                        "cv2 not installed; skipping smoothing. " "Install opencv-python to enable smooth=True."
                     )
                 else:
                     size_blur = 15
