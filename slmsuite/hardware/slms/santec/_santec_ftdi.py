@@ -30,6 +30,7 @@ See ``context/santec_dll_api.md``, ``context/herosdevices_api.md``, and
 the DLL API, the reverse-engineered protocol, and their mapping.
 """
 
+import ctypes as _ctypes
 import struct
 import time
 import warnings
@@ -68,6 +69,10 @@ _CMD_IMAGEDATA = (4, 0x03BF)  # binary image row data
 # pipe timeouts
 _PIPE_TIMEOUT_MS = 1000  # default read pipe timeout
 _WRITE_TIMEOUT_MS = 5000  # longer timeout for large image uploads (~4.7 MB per frame)
+
+# D3XX WinUSB status: async op started but data not yet available; some driver
+# versions return this from null-overlapped reads instead of blocking
+_FT_IO_PENDING = 32
 
 # firmware version strings validated during open(); known versions for SLM-200.
 # SLM-210 and SLM-300 may return different strings -- add them when known.
@@ -206,14 +211,24 @@ class SantecFTDI:
                     self.serial_number, device_index, status
                 )
             )
-        # FT_GetPipeInformation needed on all platforms:
-        #   - FT_Pipe objects required by FT_AbortPipe / FT_SetPipeTimeout
-        #   - Windows FT_WritePipeEx/FT_ReadPipeEx also use FT_Pipe instead of FIFO index
-        # pipe indices within interface 0: even = out, odd = in, per FIFO channel
-        _, self._pipe_out = _PyD3XX.FT_GetPipeInformation(device, 0, 2 * self.channel)
-        _, self._pipe_in = _PyD3XX.FT_GetPipeInformation(
-            device, 0, 2 * self.channel + 1
-        )
+        # FT_GetPipeInformation pipe indices vary by OS and D3XX driver version.
+        # On Linux: interface 0, idx 0=OUT(0x02), idx 1=IN(0x82) per FIFO channel.
+        # On Windows: interface 0 exposes 4 pipes (0x01 vendor-OUT, 0x81 interrupt-IN,
+        #   0x02 data-OUT, 0x82 data-IN); the formula 2*channel gives the vendor pipe,
+        #   not the data pipe. Bypass FT_GetPipeInformation on Windows entirely and
+        #   construct FT_Pipe objects with the fixed FT601 data endpoint addresses.
+        if _PyD3XX.Platform == "windows":
+            self._pipe_out = _PyD3XX.FT_Pipe()
+            self._pipe_out._PipeID = _ctypes.c_char(bytes([0x02 + 2 * self.channel]))
+            self._pipe_in = _PyD3XX.FT_Pipe()
+            self._pipe_in._PipeID = _ctypes.c_char(bytes([0x82 + 2 * self.channel]))
+        else:
+            _, self._pipe_out = _PyD3XX.FT_GetPipeInformation(
+                device, 0, 2 * self.channel + 1
+            )
+            _, self._pipe_in = _PyD3XX.FT_GetPipeInformation(
+                device, 0, 2 * self.channel
+            )
         # Windows uses FT_SetPipeTimeout for blocking sync reads; Linux uses per-call timeout
         if _PyD3XX.Platform == "windows":
             _PyD3XX.FT_SetPipeTimeout(device, self._pipe_in, _PIPE_TIMEOUT_MS)
@@ -352,17 +367,32 @@ class SantecFTDI:
         while len(received) < length:
             remaining = length - len(received)
             if _PyD3XX.Platform == "windows":
-                # Windows: FT_Pipe object + NULL overlapped (blocking sync)
-                status, ft_buf, bytes_read = _PyD3XX.FT_ReadPipeEx(
-                    self._device, self._pipe_in, remaining, _PyD3XX.NULL
-                )
+                # some D3XX WinUSB driver versions return FT_IO_PENDING immediately
+                # instead of blocking when null-overlapped reads find an empty pipe;
+                # poll at 10 ms intervals for up to _PIPE_TIMEOUT_MS
+                deadline = time.monotonic() + _PIPE_TIMEOUT_MS / 1000.0
+                while True:
+                    status, ft_buf, bytes_read = _PyD3XX.FT_ReadPipeEx(
+                        self._device, self._pipe_in, remaining, _PyD3XX.NULL
+                    )
+                    if bytes_read > 0:
+                        break
+                    if status != _FT_IO_PENDING:
+                        raise RuntimeError(
+                            "USB read failed (status {}).".format(status)
+                        )
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(
+                            "USB read timed out after {}ms.".format(_PIPE_TIMEOUT_MS)
+                        )
+                    time.sleep(0.010)
             else:
                 # Linux/macOS: FIFO index (int) + timeout in ms; 0 is non-blocking
                 status, ft_buf, bytes_read = _PyD3XX.FT_ReadPipeEx(
                     self._device, self._fifo_in, remaining, _PIPE_TIMEOUT_MS
                 )
-            if bytes_read == 0:
-                raise RuntimeError("USB read failed (status {}).".format(status))
+                if bytes_read == 0:
+                    raise RuntimeError("USB read failed (status {}).".format(status))
             received += bytes(ft_buf.Value()[:bytes_read])
         return received
 
