@@ -218,6 +218,9 @@ class SantecFTDI:
         if _PyD3XX.Platform == "windows":
             _PyD3XX.FT_SetPipeTimeout(device, self._pipe_in, _PIPE_TIMEOUT_MS)
         _PyD3XX.FT_AbortPipe(device, self._pipe_in)
+        # D3XX on Windows needs a brief settle after FT_AbortPipe before reads are reliable
+        if _PyD3XX.Platform == "windows":
+            time.sleep(0.2)
         self._device = device
         try:
             # drain any stale data left in the pipe from a previous crashed session;
@@ -233,16 +236,23 @@ class SantecFTDI:
                     )
                 if n == 0:
                     break
+            last_error: str | Exception = "no attempts made"
             for _ in range(10):
                 try:
                     firmware = self.get_firmware_serial()
-                    if firmware in KNOWN_FIRMWARE_VERSIONS:
-                        return
-                except Exception:
-                    pass
+                    if firmware not in KNOWN_FIRMWARE_VERSIONS:
+                        warnings.warn(
+                            "Unrecognized firmware version '{}' for device '{}'. "
+                            "Proceeding; add to KNOWN_FIRMWARE_VERSIONS if the device "
+                            "works correctly.".format(firmware, self.serial_number)
+                        )
+                    return
+                except Exception as e:
+                    last_error = e
             raise RuntimeError(
-                "Could not verify firmware for device '{}'. Known versions: {}.".format(
-                    self.serial_number, sorted(KNOWN_FIRMWARE_VERSIONS)
+                "Could not verify firmware for device '{}'. "
+                "Last error: {}. Known versions: {}.".format(
+                    self.serial_number, last_error, sorted(KNOWN_FIRMWARE_VERSIONS)
                 )
             )
         except Exception:
@@ -351,7 +361,7 @@ class SantecFTDI:
                 status, ft_buf, bytes_read = _PyD3XX.FT_ReadPipeEx(
                     self._device, self._fifo_in, remaining, _PIPE_TIMEOUT_MS
                 )
-            if status != _PyD3XX.FT_OK and bytes_read == 0:
+            if bytes_read == 0:
                 raise RuntimeError("USB read failed (status {}).".format(status))
             received += bytes(ft_buf.Value()[:bytes_read])
         return received
@@ -536,12 +546,16 @@ class SantecFTDI:
         """
         resp = self._control_command(b"WL", longrunning=longrunning)
         if resp in ("NO RESPONSE", "NG", "BS"):
-            raise RuntimeError("WL read returned {!r}; FPGA may still be busy.".format(resp))
+            raise RuntimeError(
+                "WL read returned {!r}; FPGA may still be busy.".format(resp)
+            )
         parts = resp.split()
         if len(parts) < 2:
             raise RuntimeError(
                 "WL read returned unexpected response {!r}; expected 'NM PHASE' (e.g. '532 2.09'). "
-                "Possible stale response in pipe -- try re-opening the device.".format(resp)
+                "Possible stale response in pipe -- try re-opening the device.".format(
+                    resp
+                )
             )
         return (int(parts[0]), float(parts[1]))
 
