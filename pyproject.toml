@@ -49,6 +49,7 @@ slms = [
     "pyglet",
     "hidapi",
     "pyyaml",
+    "PyD3XX",
 ]
 cameras = [
     "pylablib",
