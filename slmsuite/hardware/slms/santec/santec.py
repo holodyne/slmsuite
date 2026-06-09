@@ -23,7 +23,7 @@ import numpy as np
 import cv2
 import warnings
 
-from .slm import SLM
+from ..slm import SLM
 
 try:  # Load Santec's header file.
     from . import _slm_win as slm_funcs
