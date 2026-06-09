@@ -49,6 +49,7 @@ torch = ["torch"]
 slms = [
     "pyglet",
     "hidapi",
+    "PyD3XX"
 ]
 cameras = [
     "pylablib",
