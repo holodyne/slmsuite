@@ -2402,10 +2402,6 @@ class Affine(object):
             return Affine(M_new, b_new)
         elif isinstance(x, np.ndarray):
             return np.matmul(self.M, x) + self.b
-        elif isinstance(x, OrientationTransform):
-            M_new = np.matmul(self.M, x.matrix)
-            b_new = self.b
-            return Affine(M_new, b_new)
         else:
             raise TypeError(
                 "Unsupported operand type(s) for @: "
@@ -2429,8 +2425,6 @@ class OrientationTransform:
     """
     Camera-specific orientation transform.
 
-    One of the 8 orientation transforms (dihedral group D4) applicable to 2D images.
-
     The group elements are combinations of 90 deg rotations and flips.
     All image transforms are zero-copy numpy view operations.
 
@@ -2447,7 +2441,7 @@ class OrientationTransform:
     """
 
     class Code(enum.IntEnum):
-        """Canonical 8-element enum for the D4 dihedral group of image orientations."""
+        """Enums for image orientations."""
         IDENTITY    = 0  # no transform
         ROT90       = 1  # 90° CCW
         ROT180      = 2  # 180°
@@ -2457,10 +2451,16 @@ class OrientationTransform:
         FLIP_ROT180 = 6  # left-right flip then 180°     (= up-down flip)
         FLIP_ROT270 = 7  # left-right flip then 270° CCW (= anti-transpose)
 
-    # Inverse element for each Code (indexed by Code value)
+    # Inverse elements
     _INVERSE_CODE = [0, 3, 2, 1, 4, 5, 6, 7]
 
-    _COMPOSITION_TABLE = [  # TODO check this
+    # 2x2 matrix
+    _MATRICES = (
+        ((1, 0), (0, 1)),  ((0, 1), (-1, 0)), ((-1, 0), (0, -1)), ((0, -1), (1, 0)),
+        ((-1, 0), (0, 1)), ((0, 1), (1, 0)),  ((1, 0), (0, -1)),  ((0, -1), (-1, 0)),
+    )
+
+    _COMPOSITION_TABLE = [
         [0, 1, 2, 3, 4, 5, 6, 7],   # IDENTITY
         [1, 2, 3, 0, 5, 6, 7, 4],   # ROT90
         [2, 3, 0, 1, 6, 7, 4, 5],   # ROT180
@@ -2511,13 +2511,7 @@ class OrientationTransform:
         new_code = self._COMPOSITION_TABLE[self.code.value][other.code.value]
         return OrientationTransform.from_code(new_code)
 
-
     # Properties
-
-    @property
-    def contains_flip(self):
-        """bool : True if the transform has an odd number of reflections (det = -1)."""
-        return self.code >= 4
 
     @property
     def swaps_xy(self):
@@ -2526,21 +2520,6 @@ class OrientationTransform:
             self.Code.ROT90, self.Code.ROT270,
             self.Code.FLIP_ROT90, self.Code.FLIP_ROT270,
         )
-
-    @property
-    def rot_steps(self):
-        """int : CCW rotation component of the canonical form, in units of 90° (0–3)."""
-        return self.code.value % 4
-
-    @property
-    def rot_degrees(self):
-        """int : CCW rotation component in degrees (0, 90, 180, or 270)."""
-        return self.rot_steps * 90
-
-    @property
-    def is_identity(self):
-        """bool : True when no transformation is applied."""
-        return self.code == self.Code.IDENTITY
 
     @property
     def inverse(self):
@@ -2556,33 +2535,11 @@ class OrientationTransform:
         *goes* in the output image.  The translation component depends on the image
         shape; use :meth:`affine` to get the complete :class:`Affine`.
         """
-        c = self.code
-        C = self.Code
-        if c == C.IDENTITY:
-            return np.array([[ 1.,  0.], [ 0.,  1.]])
-        elif c == C.ROT90:
-            return np.array([[ 0.,  1.], [-1.,  0.]])
-        elif c == C.ROT180:
-            return np.array([[-1.,  0.], [ 0., -1.]])
-        elif c == C.ROT270:
-            return np.array([[ 0., -1.], [ 1.,  0.]])
-        elif c == C.FLIP:
-            return np.array([[-1.,  0.], [ 0.,  1.]])
-        elif c == C.FLIP_ROT90:
-            return np.array([[ 0.,  1.], [ 1.,  0.]])
-        elif c == C.FLIP_ROT180:
-            return np.array([[ 1.,  0.], [ 0., -1.]])
-        else:   # FLIP_ROT270
-            return np.array([[ 0., -1.], [-1.,  0.]])
+        return np.array(self._MATRICES[self.code.value], dtype=float)
 
     def affine(self, shape):
         """
-        Return an :class:`Affine` for the forward pixel-space transform of a ``(H, W)`` image.
-
-        Maps ``(x=col, y=row)`` in the input image to ``(x', y')`` in the transformed
-        image.  The translation is computed analytically: for each output axis ``i``,
-        ``t[i] = max(0, -M[i,0])*(W-1) + max(0, -M[i,1])*(H-1)``, which compensates
-        for any negated input axis.
+        Return an :class:`Affine` for the pixel-space transform of a ``(H, W)`` image.
 
         Parameters
         ----------
@@ -2607,10 +2564,6 @@ class OrientationTransform:
         """
         Apply the orientation transform to an image or stack of images.
 
-        The transform acts on the last two axes ``(..., H, W)`` so that leading
-        batch dimensions ``(N,)``, ``(N, M)``, etc. are carried through unchanged.
-        All 8 variants are zero-copy numpy stride operations (views).
-
         Parameters
         ----------
         img : array_like
@@ -2626,42 +2579,23 @@ class OrientationTransform:
         img = np.asarray(img)
         c = self.code
         C = self.Code
-        if img.ndim == 2:
-            # 2D.
-            if   c == C.IDENTITY:
-                return img
-            elif c == C.ROT90:
-                return np.rot90(img, 1)
-            elif c == C.ROT180:
-                return img[::-1, ::-1]
-            elif c == C.ROT270:
-                return np.rot90(img, 3)
-            elif c == C.FLIP:
-                return img[:, ::-1]
-            elif c == C.FLIP_ROT90:
-                return img.T
-            elif c == C.FLIP_ROT180:
-                return img[::-1, :]
-            else:
-                return img[::-1, ::-1].T        # FLIP_ROT270
+        # Operates on the last two axes, so 2D and ND (batched) inputs share one path.
+        if   c == C.IDENTITY:
+            return img
+        elif c == C.ROT90:
+            return np.rot90(img, 1, axes=(-2, -1))
+        elif c == C.ROT180:
+            return img[..., ::-1, ::-1]
+        elif c == C.ROT270:
+            return np.rot90(img, 3, axes=(-2, -1))
+        elif c == C.FLIP:
+            return img[..., ::-1]
+        elif c == C.FLIP_ROT90:
+            return img.swapaxes(-2, -1)
+        elif c == C.FLIP_ROT180:
+            return img[..., ::-1, :]
         else:
-            # ND, operates on last two axes.
-            if   c == C.IDENTITY:
-                return img
-            elif c == C.ROT90:
-                return np.rot90(img, 1, axes=(-2, -1))
-            elif c == C.ROT180:
-                return img[..., ::-1, ::-1]
-            elif c == C.ROT270:
-                return np.rot90(img, 3, axes=(-2, -1))
-            elif c == C.FLIP:
-                return img[..., ::-1]
-            elif c == C.FLIP_ROT90:
-                return img.swapaxes(-2, -1)
-            elif c == C.FLIP_ROT180:
-                return img[..., ::-1, :]
-            else:
-                return img[..., ::-1, ::-1].swapaxes(-2, -1)  # FLIP_ROT270
+            return img[..., ::-1, ::-1].swapaxes(-2, -1)  # FLIP_ROT270
 
     def transform_shape(self, shape):
         """
@@ -2686,9 +2620,6 @@ class OrientationTransform:
         """
         Transform a window of interest (WOI) from the original image space into the
         transformed image space.
-
-        Optionally accounts for different pixel binning in the two spaces, converting
-        through native (un-binned) pixel coordinates internally.
 
         Parameters
         ----------
@@ -2724,40 +2655,13 @@ class OrientationTransform:
         Wn, Hn = W * bxi, H * byi
 
         # Apply orientation transform in native coords.
-        # Pixel (x, y) maps to (x', y') as follows for each Code:
-        #   IDENTITY    (x, y)         → (x, y)
-        #   ROT90       (x, y)         → (y,       W-1-x)   shape (W, H)
-        #   ROT180      (x, y)         → (W-1-x,   H-1-y)
-        #   ROT270      (x, y)         → (H-1-y,   x)       shape (W, H)
-        #   FLIP        (x, y)         → (W-1-x,   y)
-        #   FLIP_ROT90  (x, y)         → (y,       x)       shape (W, H)  [transpose]
-        #   FLIP_ROT180 (x, y)         → (x,       H-1-y)                 [flipud]
-        #   FLIP_ROT270 (x, y)         → (H-1-y,   W-1-x)  shape (W, H)  [anti-transpose]
-        c = self.code
-        C = self.Code
-        if c == C.IDENTITY:
-            x0t, wt, y0t, ht = x0n, wn, y0n, hn
-        elif c == C.ROT90:
-            x0t, wt = y0n, hn
-            y0t, ht = Wn - wn - x0n, wn
-        elif c == C.ROT180:
-            x0t, wt = Wn - wn - x0n, wn
-            y0t, ht = Hn - hn - y0n, hn
-        elif c == C.ROT270:
-            x0t, wt = Hn - hn - y0n, hn
-            y0t, ht = x0n, wn
-        elif c == C.FLIP:
-            x0t, wt = Wn - wn - x0n, wn
-            y0t, ht = y0n, hn
-        elif c == C.FLIP_ROT90:
-            x0t, wt = y0n, hn
-            y0t, ht = x0n, wn
-        elif c == C.FLIP_ROT180:
-            x0t, wt = x0n, wn
-            y0t, ht = Hn - hn - y0n, hn
-        else:  # FLIP_ROT270
-            x0t, wt = Hn - hn - y0n, hn
-            y0t, ht = Wn - wn - x0n, wn
+        (a, b), (c_, d) = self._MATRICES[self.code.value]
+        ox = max(0, -a) * Wn + max(0, -b) * Hn
+        oy = max(0, -c_) * Wn + max(0, -d) * Hn
+        xs = (a * x0n + b * y0n + ox, a * (x0n + wn) + b * (y0n + hn) + ox)
+        ys = (c_ * x0n + d * y0n + oy, c_ * (x0n + wn) + d * (y0n + hn) + oy)
+        x0t, wt = min(xs), abs(a) * wn + abs(b) * hn
+        y0t, ht = min(ys), abs(c_) * wn + abs(d) * hn
 
         if isfloat:
             return (x0t / bxo, wt / bxo, y0t / byo, ht / byo)
@@ -2768,22 +2672,6 @@ class OrientationTransform:
         """
         Inverse of :meth:`transform_woi`: map a WOI from the transformed space back to
         the original image space.
-
-        Parameters
-        ----------
-        woi : (int, int, int, int)
-            WOI ``(x0', w', y0', h')`` in the transformed space at ``binning_in`` scale.
-        transformed_shape : (int, int)
-            Full image shape ``(H', W')`` in the transformed space at ``binning_in`` scale.
-        binning_in : int or (int, int)
-            Pixel binning of the transformed (input) space.
-        binning_out : int or (int, int)
-            Pixel binning of the original (output) space.
-
-        Returns
-        -------
-        (int, int, int, int)
-            WOI ``(x0, w, y0, h)`` in the original space at ``binning_out`` scale.
         """
         return self.inverse.transform_woi(
             woi, transformed_shape, binning_in=binning_out, binning_out=binning_in
@@ -2809,7 +2697,7 @@ def get_orientation_transformation(rot="0", fliplr=False, flipud=False):
     ----------
     rot : str or int
         Rotation in degrees: ``"0"``, ``"90"``, ``"180"``, ``"270"`` or
-        :func:`numpy.rot90` step counts ``0``–``3``.
+        :func:`numpy.rot90` step counts ``0``-``3``.
     fliplr : bool
         Flip left-right before rotation.
     flipud : bool

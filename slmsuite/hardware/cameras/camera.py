@@ -228,9 +228,8 @@ class Camera(_Common, ABC):
 
     @binning.setter
     def binning(self, value):
-        value = self.transform.transform_shape(value)
-        if self._binning != value:
-            self.set_binning(value)
+        # set_binning() handles parsing, the transform, and the no-op short circuit.
+        self.set_binning(value)
 
     def set_binning(self, binning: int | tuple[int, int] = 1, update_woi=True):
         """
@@ -250,6 +249,11 @@ class Camera(_Common, ABC):
 
         binning = self.transform.transform_shape(binning)
 
+        # Break if no change.
+        if self._binning == binning:
+            return
+
+        # Save original WOI.
         old_woi = self.woi
         old_shape = self.shape
 
@@ -269,7 +273,7 @@ class Camera(_Common, ABC):
                 pass
 
         # Erase last_image if the shape or WOI changed, since the old image would no longer be valid.
-        if self._shape != old_shape or self.woi != old_woi:
+        if self.shape != old_shape or self.woi != old_woi:
             self.last_image = None
 
     def get_binning(self):
@@ -326,12 +330,17 @@ class Camera(_Common, ABC):
 
     @property
     def woi(self):
-        """Returns the WOI ``(x, w, y, h)`` in the coordinates of the returned image."""
+        """
+        Returns the WOI ``(x, w, y, h)`` in transformed, unbinned pixel coordinates.
+
+        This is the same coordinate convention accepted by :meth:`set_woi` and returned
+        by :meth:`get_woi`, so it is invariant under changes to :attr:`binning`.
+        """
         return self.transform.transform_woi(
             self._woi,
             shape=self._shape,
             binning_in=1,
-            binning_out=self._binning,
+            binning_out=1,
         )
 
     def _set_woi_hw(self, woi):
@@ -407,7 +416,7 @@ class Camera(_Common, ABC):
         # else: handled by _crop_to_woi()
 
         # Erase last_image if the shape or WOI changed, since the old image would no longer be valid.
-        if self._shape != old_shape or self.woi != old_woi:
+        if self.shape != old_shape or self.woi != old_woi:
             self.last_image = None
 
         return self.woi
@@ -458,15 +467,14 @@ class Camera(_Common, ABC):
         w_bin = self._woi[1] // binx
         h_bin = self._woi[3] // biny
 
-        # Step 1: subtract WOI origin, then divide by binning.
-        # Result is (x, y) in WOI-relative, binned, untransformed coordinates.
+        # subtract WOI origin, then divide by binning.
         woi_bin = analysis.Affine(
             np.diag([1.0 / binx, 1.0 / biny]),
             np.array([0.0, 0.0]),
             np.array([float(woi_x), float(woi_y)]),
         )
 
-        # Step 2: push-orientation transform with shape-dependent translation.
+        # orientation transform with shape-dependent translation.
         return self.transform.affine((h_bin, w_bin)) @ woi_bin
 
     def _get_ijcam_to_ijraw(self):
@@ -638,7 +646,7 @@ class Camera(_Common, ABC):
             dtype_bitdepth = 8 * dtype.type(0).nbytes
             if dtype.kind == "i":
                 dtype_bitdepth -= 1   # signed integers lose one bit
-            extra_bits = int(np.rint(np.log2(max(1, averaging * bin_factor))))
+            extra_bits = int(np.ceil(np.log2(max(1, averaging * bin_factor))))
             if self.bitdepth + extra_bits <= dtype_bitdepth:
                 return self.dtype
             else:
@@ -669,6 +677,11 @@ class Camera(_Common, ABC):
             (exposures, exposure_power) = exposures
 
         # Force int so we have a chance of exposure aligning with camera clock.
+        if not float(exposure_power).is_integer():
+            warnings.warn(
+                f"HDR exposure base {exposure_power} is not an integer; "
+                f"truncating to {int(exposure_power)}."
+            )
         return (int(exposures), int(exposure_power))
 
     @property
@@ -810,7 +823,7 @@ class Camera(_Common, ABC):
         raise err
 
     def _get_images_hw_tolerant(self, *args, **kwargs):
-        e = None
+        err = None
         failures = 0
 
         for _ in range(self.capture_attempts):
@@ -910,9 +923,10 @@ class Camera(_Common, ABC):
             averaging_dtype = self.get_dtype(averaging=averaging)
 
             try:
-                # Using the camera-specific batch method if available
+                # Using the camera-specific batch method if available.
+                # _get_images_hw adds the exposure time to the timeout internally.
                 imgs = self._get_images_hw(
-                    averaging, timeout_s=timeout_s+self.exposure_s
+                    averaging, timeout_s=timeout_s
                 ).astype(averaging_dtype)
 
                 # Cast as the proper type so we can sum.
@@ -987,10 +1001,11 @@ class Camera(_Common, ABC):
         if flush:
             self.flush()
 
-        # Grab images (no transformation)
+        # Grab images (no transformation).
+        # _get_images_hw adds the exposure time to the timeout internally.
         imgs = self._get_images_hw(
             image_count,
-            timeout_s=timeout_s+self.exposure_s,
+            timeout_s=timeout_s,
             out=out
         )
 
@@ -1601,12 +1616,13 @@ class Camera(_Common, ABC):
         if callable(get_z):
             z_base = get_z()
 
-        # Parse range_z
-        z_list = range_z
+        # Parse range_z. Build a fresh float array so we never mutate a caller's input
+        # and so counts can hold NaN sentinels (an integer z_list would not).
         if np.isscalar(range_z):
             z_list = np.linspace(-range_z, range_z, 11, endpoint=True)
-        z_list += z_base
-        z_list = sorted(z_list)
+        else:
+            z_list = np.asarray(range_z, dtype=float)
+        z_list = np.sort(z_list + z_base)
 
         # Parse metric
         if metric is None:
@@ -1614,7 +1630,7 @@ class Camera(_Common, ABC):
 
         # Setup for the sweep
         imlist = []
-        counts = np.full_like(z_list, np.nan)
+        counts = np.full(z_list.shape, np.nan)
 
         for i, z in enumerate(z_list):
             try:

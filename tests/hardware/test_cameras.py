@@ -333,6 +333,20 @@ class TestCamera:
             with pytest.raises(ValueError, match="set_z must be"):
                 camera.autofocus(set_z="not_callable")
 
+        with subtests.test("range_z as list does not raise and is not mutated"):
+            # Regression: a Python list previously raised TypeError on `z_list += z_base`.
+            range_z = [-1.0, -0.5, 0.0, 0.5, 1.0]
+            range_z_copy = list(range_z)
+            camera.autofocus(set_z=slm, get_z=0.5, range_z=range_z, verbose=False)
+            assert range_z == range_z_copy, "caller's range_z list was mutated"
+
+        with subtests.test("range_z as integer numpy array is not mutated"):
+            # Regression: an int array was mutated in place and could not hold NaN counts.
+            range_z = np.array([-1, 0, 1])
+            range_z_copy = range_z.copy()
+            camera.autofocus(set_z=slm, get_z=0, range_z=range_z, verbose=False)
+            assert np.array_equal(range_z, range_z_copy), "caller's range_z array was mutated"
+
     def test_woi(self, camera, subtests):
         """
         WOI (window of interest) test: various sizes and offsets.
@@ -639,10 +653,13 @@ class TestCamera:
             cam.set_binning(2)
             assert cam.shape == (50, 100), f"shape={cam.shape}"   # (H//2, W//2)
 
-        with subtests.test("binning affects woi property"):
+        with subtests.test("woi property is binning-invariant (unbinned coords)"):
+            # The woi property reports transformed, *unbinned* coordinates so that it
+            # agrees with get_woi()/set_woi() and survives binning changes. The binned
+            # dimensions are available via cam.shape instead.
             x, w, y, h = cam.woi
-            # Full sensor with 2x2 binning: binned width=100, height=50
-            assert (x, w, y, h) == (0, 100, 0, 50), f"woi={cam.woi}"
+            assert (x, w, y, h) == (0, 200, 0, 100), f"woi={cam.woi}"
+            assert cam.woi == cam.get_woi(), "woi property must match get_woi()"
 
         with subtests.test("shape reset after binning=1"):
             cam.set_binning(1)
@@ -662,9 +679,12 @@ class TestCamera:
         with subtests.test("shape with WOI + binning"):
             assert cam.shape == (40, 60), f"shape={cam.shape}"   # 80//2, 120//2
 
-        with subtests.test("woi in binned coords"):
+        with subtests.test("woi reports unbinned coords (binning-invariant)"):
+            # woi is unbinned: the 120×80 window is reported verbatim regardless of
+            # binning. The binned shape (40, 60) is asserted separately above.
             x, w, y, h = cam.woi
-            assert (x, w, y, h) == (0, 60, 0, 40), f"woi={cam.woi}"
+            assert (x, w, y, h) == (0, 120, 0, 80), f"woi={cam.woi}"
+            assert cam.woi == cam.get_woi(), "woi property must match get_woi()"
 
         with subtests.test("get_image shape with WOI + binning"):
             img = cam.get_image()
@@ -790,10 +810,12 @@ class TestCamera:
             cam2._binning = (2, 2)
             cam2._software_woi = True
 
-            # Get the unbinned raw image by temporarily disabling software binning.
-            cam2._software_binning = False
+            # Get the unbinned raw image by temporarily disabling binning.
+            # (Flipping _software_binning instead would now invoke SimulatedCamera's
+            # hardware binning emulation and return an already-binned frame.)
+            cam2._binning = (1, 1)
             raw_img = cam2.get_image(averaging=False)
-            cam2._software_binning = True
+            cam2._binning = (2, 2)
 
             # Now get the binned image.
             binned_img = cam2.get_image(averaging=False)
@@ -839,6 +861,14 @@ class TestCamera:
             assert cam_rot.get_binning() == (4, 2)
             assert cam_rot.get_binning() == cam_rot.binning
 
+        with subtests.test("binning setter round-trips under rotation"):
+            # Regression: the setter must not double-apply the orientation transform.
+            cam_rot = SimulatedCamera(slm, resolution=(200, 100), rot="90")
+            cam_rot.close()
+            cam_rot.binning = (2, 4)            # transformed (user-visible) coordinates
+            assert cam_rot.binning == (2, 4), f"binning={cam_rot.binning}"
+            assert cam_rot.get_binning() == (2, 4)
+
     def test_get_woi(self, slm, subtests):
         """get_woi() returns the current WOI in the same coordinates as the woi property."""
         cam = SimulatedCamera(slm, resolution=(200, 100))
@@ -856,13 +886,15 @@ class TestCamera:
             assert cam.get_woi() == (20, 80, 10, 60)
             cam.set_woi(None)
 
-        with subtests.test("get_woi returns unbinned coords even when binning != 1"):
+        with subtests.test("woi and get_woi both return unbinned coords when binning != 1"):
             cam._software_binning = True
             cam._binning = (2, 2)
-            # get_woi returns unbinned (full-sensor: 200×100), not binned (100×50)
+            # Both report unbinned (full-sensor: 200×100), not binned (100×50);
+            # the binned dimensions are exposed via cam.shape instead.
             assert cam.get_woi() == (0, 200, 0, 100)
-            # woi property returns binned
-            assert cam.woi == (0, 100, 0, 50)
+            assert cam.woi == (0, 200, 0, 100)
+            assert cam.woi == cam.get_woi()
+            assert cam.shape == (50, 100)
             cam._binning = (1, 1)
 
         with subtests.test("set_woi(get_woi()) is a valid round-trip"):

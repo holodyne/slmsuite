@@ -349,24 +349,26 @@ class SimulatedCamera(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self._exposure_s = exposure_s
 
-    def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`."""
-        # SimulatedCamera: receives binned coords; multiplies by binning to store physical in _woi.
-        binx, biny = self._binning
-        x, w, y, h = [int(v) for v in woi]
-        self._woi = (x * binx, w * binx, y * biny, h * biny)
+    # Future: use WOI with Zoom FFT?
 
-    def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`."""
-        return self._woi_untransformed_binned
+    # def _set_woi_hw(self, woi):
+    #     """See :meth:`.Camera._set_woi_hw`."""
+    #     # SimulatedCamera: receives binned coords; multiplies by binning to store physical in _woi.
+    #     binx, biny = self._binning
+    #     x, w, y, h = [int(v) for v in woi]
+    #     self._woi = (x * binx, w * binx, y * biny, h * biny)
 
-    def _set_binning_hw(self, binning):
-        """See :meth:`.Camera._set_binning_hw`."""
-        self._binning = binning
+    # def _get_woi_hw(self):
+    #     """See :meth:`.Camera._get_woi_hw`."""
+    #     return self._woi_untransformed_binned
 
-    def _get_binning_hw(self):
-        """See :meth:`.Camera._get_binning_hw`."""
-        return self._binning
+    # def _set_binning_hw(self, binning):
+    #     """See :meth:`.Camera._set_binning_hw`."""
+    #     self._binning = binning
+
+    # def _get_binning_hw(self):
+    #     """See :meth:`.Camera._get_binning_hw`."""
+    #     return self._binning
 
     def _get_image_hw(self, timeout_s):
         """
@@ -402,11 +404,11 @@ class SimulatedCamera(Camera):
             img = map_coordinates(cp.abs(ff) ** 2, self.knm_cam, order=0)
         else:
             img = cp.abs(ff) ** 2
-            img = toolbox.unpad(img, self._hw_image_shape)
+            img = toolbox.unpad(img, self._shape)
         if cp != np:
             img = img.get()
 
-        img *= self.exposure_s * self.gain
+        img = img * (self.exposure_s * self.gain)
 
         # Basic noise sources.
         if self.noise is not None:

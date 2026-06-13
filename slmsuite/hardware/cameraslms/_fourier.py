@@ -291,13 +291,13 @@ class _FourierCalibration(object):
         return self.calibrations["fourier"]
 
     def fourier_calibration_build(
-            self,
-            f_eff,
-            units="norm",
-            theta=0,
-            shear_angle=0,
-            offset=None,
-        ):
+        self,
+        f_eff,
+        units="norm",
+        theta=0,
+        shear_angle=0,
+        offset=None,
+    ):
         """
         Builds analytic ``M`` and ``b`` from a known focal length, suitable for passing to
         :meth:`fourier_calibrate_analytic`.
