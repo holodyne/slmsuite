@@ -17,7 +17,6 @@ import inspect
 from abc import ABC, abstractmethod
 
 from slmsuite import __version__
-from slmsuite._logging import _Loggable
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import toolbox
 from slmsuite.misc import fitfunctions
