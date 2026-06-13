@@ -1,61 +1,51 @@
-"""Class logging."""
-import contextlib
-import functools
+"""
+slmsuite logging.
+
+A single package-level logger owns all handlers (a :class:`_BufferHandler` 
+for :func:`get_log`/h5 capture, and an opt-in console handler via 
+:func:`configure_logging`. Each :class:`_Loggable` instance logs through a
+:class:`logging.LoggerAdapter` tagged with a unique ``log_uid``, so
+:meth:`_Loggable.get_log` returns only that instance's records.
+"""
+import collections
+import itertools
 import logging
+import logging.config
 import sys
 
 from slmsuite._pickling import _Picklable
 
-# Handle default appearance of the logs.
+_DEFAULT_LEVEL = logging.INFO
+_BUFFER_CAPACITY = 10000
 
 _LOGGER_COLORS = {
-    "black" :               "\033[30m",
-    "red" :                 "\033[31m",
-    "green" :               "\033[32m",
-    "yellow" :              "\033[33m",
-    "blue" :                "\033[34m",
-    "magenta" :             "\033[35m",
-    "cyan" :                "\033[36m",
-    "white" :               "\033[37m",
-    "grey" :                "\033[90m",
-    "bright_red" :          "\033[91m",
-    "bright_green" :        "\033[92m",
-    "bright_yellow" :       "\033[93m",
-    "bright_blue" :         "\033[94m",
-    "bright_magenta" :      "\033[95m",
-    "bright_cyan" :         "\033[96m",
-    "bright_white" :        "\033[97m",
-    "bold_black" :          "\033[1;30m",
-    "bold_red" :            "\033[1;31m",
-    "bold_green" :          "\033[1;32m",
-    "bold_yellow" :         "\033[1;33m",
-    "bold_blue" :           "\033[1;34m",
-    "bold_magenta" :        "\033[1;35m",
-    "bold_cyan" :           "\033[1;36m",
-    "bold_white" :          "\033[1;37m",
-    "bold_grey" :           "\033[1;90m",
-    "bold_bright_red" :     "\033[1;91m",
-    "bold_bright_green" :   "\033[1;92m",
-    "bold_bright_yellow" :  "\033[1;93m",
-    "bold_bright_blue" :    "\033[1;94m",
-    "bold_bright_magenta" : "\033[1;95m",
-    "bold_bright_cyan" :    "\033[1;96m",
-    "bold_bright_white" :   "\033[1;97m",
-    "bold_italic_red" :     "\033[1;3;31m",
-    "bold_italic_bright_red" :     "\033[1;3;91m",
-    "reset" :               "\033[0m",
+    "reset":                  "\033[0m",
+    "grey":                   "\033[90m",
+    "red":                    "\033[31m",
+    "green":                  "\033[32m",
+    "yellow":                 "\033[33m",
+    "blue":                   "\033[34m",
+    "magenta":                "\033[35m",
+    "cyan":                   "\033[36m",
+    "bold_red":               "\033[1;31m",
+    "bold_green":             "\033[1;32m",
+    "bold_yellow":            "\033[1;33m",
+    "bold_blue":              "\033[1;34m",
+    "bold_magenta":           "\033[1;35m",
+    "bold_cyan":              "\033[1;36m",
+    "bold_italic_bright_red": "\033[1;3;91m",
 }
 
-_SLMSUITE_COLORS = {
-    "camera" : "bold_yellow",
-    "cameraslm" : "bold_green",
-    "slm" : "bold_blue",
-    "hologram" : "bold_cyan",
-    "slmsuite" : "bold_magenta",
-    "default" : "reset",
+_SLMSUITE_COLORS = {        # keyed by class name (see _infer_color), plus two specials
+    "Camera":    "bold_yellow",
+    "CameraSLM": "bold_green",
+    "SLM":       "bold_blue",
+    "Hologram":  "bold_cyan",
+    "slmsuite":  "bold_magenta",
+    "default":   "reset",
 }
-
 _LOGGER_COLORS.update({k: _LOGGER_COLORS[v] for k, v in _SLMSUITE_COLORS.items()})
+
 
 def print_colors():
     """Print all entries in :data:`_LOGGER_COLORS` rendered in their own color."""
@@ -63,35 +53,72 @@ def print_colors():
     for name, code in _LOGGER_COLORS.items():
         print(f"{code}{name}{reset}")
 
+
 def _attr_repr(value):
-    if hasattr(value, "shape"):
-        if len(value.shape) <= 1:
+    """Log-friendly representation of an attribute value."""
+    shape = getattr(value, "shape", None)
+    if shape is not None and isinstance(shape, tuple):
+        if len(shape) <= 1:
             return f"{value}"
         elif hasattr(value, "dtype"):
-            return f"<{type(value).__name__} shape={value.shape} dtype={value.dtype}>"
+            return f"<{type(value).__name__} shape={shape} dtype={value.dtype}>"
         else:
-            return f"<{type(value).__name__} shape={value.shape}>"
+            return f"<{type(value).__name__} shape={shape}>"
     elif isinstance(value, dict):
         return f"<dict keys={tuple(value.keys())}>"
     return repr(value)
 
-class _LogCapture(logging.Handler):
-    """Accumulates plain-text log records for saving to .h5 files."""
+#  Abbreviations to prepend onto log messages
+_LEVEL_ABBR = {
+    logging.DEBUG:    "DBG",
+    logging.INFO:     "INF",
+    logging.WARNING:  "WRN",
+    logging.ERROR:    "ERR",
+    logging.CRITICAL: "CRT",
+}
+def _level_tag(record):
+    """Fixed-width ``[LVL]`` tag (always 5 chars) so class names stay aligned."""
+    abbr = _LEVEL_ABBR.get(record.levelno, record.levelname[:3].upper())
+    return f"[{abbr:>3.3}]"
 
-    _FMT = logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
+# Registry of display names and associated (unique) log UIDs
+_name_registry = {}
+_uid_counter = itertools.count()
+def _display_name(record):
+    """Display name for a logging record.
+
+    When several instances share a name, the unique ``log_uid`` is appended (e.g.
+    ``SimulatedSLM #3``) to disambiguate them. Falls back to the (trimmed) logger name
+    for records logged outside a :class:`_Loggable`.
+    """
+    name = getattr(record, "log_name", "") or record.name.removeprefix("slmsuite.")
+    uid = getattr(record, "log_uid", None)
+    if uid is not None and len(_name_registry.get(name, ())) > 1:
+        return f"{name} #{uid}"
+    return name
+
+def _infer_color(cls):
+    """Pick a default device color from the first class in the MRO with a known color."""
+    for c in cls.__mro__:
+        if c.__name__ in _SLMSUITE_COLORS:
+            return _SLMSUITE_COLORS[c.__name__]
+    return _SLMSUITE_COLORS["default"]
+
+class _PlainFormatter(logging.Formatter):
+    """Uncolored format used for in-memory capture and h5 export."""
 
     def __init__(self):
-        super().__init__(level=logging.DEBUG)
-        self.records = []
+        super().__init__("%(leveltag)s %(asctime)s %(display)s %(message)s", "%H:%M:%S")
 
-    def emit(self, record):
-        self.records.append(self._FMT.format(record))
+    def format(self, record):
+        record.display = _display_name(record)
+        record.leveltag = _level_tag(record)
+        return super().format(record)
 
-    def get_log(self):
-        """Return accumulated records as a list of strings."""
-        return list(self.records)
 
 class _ColorFormatter(logging.Formatter):
+    """Colorized console format, with one sub-formatter built per level."""
+
     _LEVEL_COLORS = {
         logging.DEBUG:    _LOGGER_COLORS["grey"],
         logging.INFO:     _LOGGER_COLORS["reset"],
@@ -99,77 +126,86 @@ class _ColorFormatter(logging.Formatter):
         logging.ERROR:    _LOGGER_COLORS["bold_red"],
         logging.CRITICAL: _LOGGER_COLORS["bold_italic_bright_red"],
     }
-    _FMT = (
-        "{grey}%(asctime)s{reset} "
-        "{device}%(name)s{reset} "
-        "{grey}%(levelname)s{reset} "
-        "{level}%(message)s{reset}"
-    )
-    _FMT_INFO = (
-        "{grey}%(asctime)s{reset} "
-        "{device}%(name)s{reset} "
-        "{level}%(message)s{reset}"
-    )
 
-    def format(self, record):
+    def __init__(self):
+        super().__init__()
         grey = _LOGGER_COLORS["grey"]
         reset = _LOGGER_COLORS["reset"]
-        device_color = getattr(record, "device_color", reset)
-        level_color = self._LEVEL_COLORS.get(record.levelno, reset)
-        if record.levelno == logging.INFO:
-            fmt = self._FMT_INFO.format(grey=grey, reset=reset, device=device_color, level=level_color)
-        else:
-            fmt = self._FMT.format(grey=grey, reset=reset, device=device_color, level=level_color)
-        record = logging.makeLogRecord(record.__dict__)
-        record.name = record.name.removeprefix("slmsuite.")
-        return logging.Formatter(fmt).format(record)
+        self._formatters = {
+            level: logging.Formatter(
+                f"{color}%(leveltag)s{reset} {grey}%(asctime)s{reset} "
+                f"%(logcolor)s%(display)s{reset} {color}%(message)s{reset}",
+                "%H:%M:%S")
+            for level, color in self._LEVEL_COLORS.items()
+        }
 
-# Make the exposed methods and loggers.
+    def format(self, record):
+        record.display = _display_name(record)
+        record.leveltag = _level_tag(record)
+        record.logcolor = getattr(record, "log_color", _LOGGER_COLORS["reset"])
+        formatter = self._formatters.get(record.levelno, self._formatters[logging.INFO])
+        return formatter.format(record)
 
-_slmsuite_logger = logging.getLogger("slmsuite")
-_slmsuite_logger.setLevel(logging.DEBUG)
-_slmsuite_logger.handlers = [h for h in _slmsuite_logger.handlers if not isinstance(h, _LogCapture)]
-_slmsuite_log = _LogCapture()
-_slmsuite_logger.addHandler(_slmsuite_log)
+class _BufferHandler(logging.Handler):
+    """Stores all plain-text log messages for file output."""
+
+    def __init__(self, capacity=_BUFFER_CAPACITY):
+        super().__init__(level=logging.DEBUG)
+        self.buffer = collections.deque(maxlen=capacity)
+        self.setFormatter(_PlainFormatter())
+
+    # Overwrite emit to store log_uids 
+    def emit(self, record):
+        try:
+            self.buffer.append((getattr(record, "log_uid", None), self.format(record)))
+        except Exception:
+            self.handleError(record)
+
+# slmsuite logger: capture everything; let handlers filter by level
+_package_logger = logging.getLogger("slmsuite")
+_package_logger.setLevel(logging.DEBUG)            
+_package_logger.addHandler(logging.NullHandler()) 
+_BUFFER = _BufferHandler()
+_package_logger.addHandler(_BUFFER)
+
 logger = logging.LoggerAdapter(
-    _slmsuite_logger,
-    extra={"device_color": _LOGGER_COLORS[_SLMSUITE_COLORS["slmsuite"]]},
+    _package_logger,
+    extra={"log_name": "slmsuite", "log_color": _LOGGER_COLORS[_SLMSUITE_COLORS["slmsuite"]]},
 )
 
 def get_log():
-    """Return all log records emitted by any slmsuite object this session."""
-    return _slmsuite_log.get_log()
+    """Return all records emitted by any slmsuite object this session, as plain strings."""
+    return [s for (_uid, s) in _BUFFER.buffer]
 
-def configure_logging(level=logging.INFO, stream=None):
-    """Configure slmsuite console logging.
 
-    Called automatically at import. Pass ``level=False`` to suppress display
-    while keeping capture active via :func:`get_log`.
+def configure_logging(level: "int | str | None" = _DEFAULT_LEVEL, stream=None):
+    """Enable or adjust slmsuite console logging.
+
+    slmsuite is silent by default (records are still captured for :func:`get_log` and
+    pickling). Call this once to turn on colored console output.
 
     Parameters
     ----------
-    level : int or bool
-        Console handler level,
-        though full logs are still captured and can be returned via :func:`get_log`.
-        ``True`` is evaluated as ``INFO``.
-        ``False`` suppresses console output entirely.
+    level : int or str or None
+        Console verbosity. Accepts a :mod:`logging` level (``logging.DEBUG``) or its name
+        (``"DEBUG"``). ``None`` removes the console handler (capture stays active).
     stream : stream, optional
         Output stream. Defaults to ``sys.stdout``.
     """
-    if level is True:
-        level = logging.INFO
-    elif level is False:
-        level = logging.CRITICAL + 1
 
-    # Remove existing display handlers so re-calls don't duplicate output.
-    _slmsuite_logger.handlers = [
-        h for h in _slmsuite_logger.handlers
-        if isinstance(h, (_LogCapture, logging.FileHandler))
-    ]
+    # Remove existing console handlers on re-call
+    for handler in [h for h in _package_logger.handlers if getattr(h, "_slmsuite_console", False)]:
+        _package_logger.removeHandler(handler)
+
+    if level is None:
+        return
+
     handler = logging.StreamHandler(stream or sys.stdout)
-    handler.setLevel(level)
+    handler.setLevel(level.upper() if isinstance(level, str) else level)
     handler.setFormatter(_ColorFormatter())
-    _slmsuite_logger.addHandler(handler)
+    handler._slmsuite_console = True
+    _package_logger.addHandler(handler)
+
 
 def make_logger(name, color="default"):
     """Return a colorized :class:`logging.LoggerAdapter` for use outside :class:`_Loggable`.
@@ -179,42 +215,16 @@ def make_logger(name, color="default"):
     name : str
         Logger name, prefixed with ``"slmsuite."`` automatically.
     color : str, optional
-        Key into :data:`_LOGGER_COLORS` or :data:`_SLMSUITE_COLORS`
-        (e.g. ``"bold_cyan"``, ``"hologram"``). Defaults to uncolored.
+        Key into :data:`_LOGGER_COLORS` (e.g. ``"bold_cyan"``, ``"Hologram"``).
+        Defaults to uncolored.
     """
-    _logger = logging.getLogger(f"slmsuite.{name}")
-    _logger.setLevel(logging.DEBUG)
     return logging.LoggerAdapter(
-        _logger,
-        extra={"device_color": _LOGGER_COLORS.get(color, _LOGGER_COLORS["reset"])},
+        logging.getLogger(f"slmsuite.{name}"),
+        extra={"log_name": name, "log_color": _LOGGER_COLORS.get(color, _LOGGER_COLORS["reset"])},
     )
 
-# Superclass for objects we want to log.
-
-def _wrap_with_logging(fn):
-    @functools.wraps(fn)
-    def wrapper(self, *args, **kwargs):
-        try:
-            return fn(self, *args, **kwargs)
-        except Exception:
-            if hasattr(self, "logger"):
-                self.logger.exception(f"{fn.__qualname__} raised:")
-            raise
-    wrapper._log_wrapped = True
-    return wrapper
-
-
 class _Loggable(_Picklable):
-
-    # TODO: decide whether to enable this error logging.
-    # def __init_subclass__(cls, **kwargs):
-    #     """Adds any errors raise in methods of the subclass to the log."""
-    #     super().__init_subclass__(**kwargs)
-    #     for name, obj in list(cls.__dict__.items()):
-    #         if name.startswith("_") or getattr(obj, "_log_wrapped", False):
-    #             continue
-    #         if callable(obj):
-    #             setattr(cls, name, _wrap_with_logging(obj))
+    """Gives an object a colorized logger and an isolated slice of the shared log buffer."""
 
     def __init__(self, logger_attributes=None, logger_color=None):
         """Initialize logging for this object.
@@ -222,85 +232,49 @@ class _Loggable(_Picklable):
         Parameters
         ----------
         logger_attributes : list of str, optional
-            Attributes logged at DEBUG on every ``__setattr__``. Defaults to
-            ``_pickle + _pickle_data``. Pass an explicit list to override.
+            Attributes reported by :meth:`log_state`. Defaults to ``_pickle + _pickle_data``.
         logger_color : str, optional
-            Key into :data:`_LOGGER_COLORS`. Inferred from class MRO when ``None``.
+            Key into :data:`_LOGGER_COLORS`. Inferred from the class MRO when ``None``.
         """
+        cls = type(self).__name__
+        name = getattr(self, "name", "") or cls
+
         if logger_attributes is None:
             logger_attributes = self._pickle + self._pickle_data
-
-        logger_name = f"slmsuite.{self.name}"
-
-        if logger_color is None:
-            mro_names = {c.__name__ for c in type(self).__mro__}
-            if "CameraSLM" in mro_names:
-                logger_color = _SLMSUITE_COLORS["cameraslm"]
-            elif "Camera" in mro_names:
-                logger_color = _SLMSUITE_COLORS["camera"]
-            elif "SLM" in mro_names:
-                logger_color = _SLMSUITE_COLORS["slm"]
-            elif "Hologram" in mro_names:
-                logger_color = _SLMSUITE_COLORS["hologram"]
-            else:
-                logger_color = _SLMSUITE_COLORS["default"]
-
-        _logger = logging.getLogger(logger_name)
-        # Set to DEBUG so all records reach the capture handler; display handler
-        # applies its own level filter (set by configure_logging).
-        _logger.setLevel(logging.DEBUG)
-        # Replace any existing capture handler (handles re-init of same-named objects).
-        _logger.handlers = [h for h in _logger.handlers if not isinstance(h, _LogCapture)]
-        self._log_capture = _LogCapture()
-        _logger.addHandler(self._log_capture)
-
-        self.logger = logging.LoggerAdapter(
-            _logger,
-            extra={"device_color": _LOGGER_COLORS.get(logger_color, _LOGGER_COLORS["reset"])},
-        )
-
         self._logger_attributes = logger_attributes
 
-        self.logger.info(f"Initialized {self.__class__.__name__}.")
+        if logger_color is None:
+            logger_color = _infer_color(type(self))
 
-    def __setattr__(self, name, value):
-        object.__setattr__(self, name, value)
-        attrs = self.__dict__.get("_logger_attributes")
-        if (attrs is not None
-                and name in attrs
-                and "logger" in self.__dict__
-                and not self.__dict__.get("_attr_logging_suppressed")
-                and self.logger.isEnabledFor(logging.DEBUG)):
-            self.logger.debug(f"Set {name}: {_attr_repr(value)}")
+        self._log_uid = next(_uid_counter)
+        _name_registry.setdefault(name, set()).add(self._log_uid)
+        self.logger = logging.LoggerAdapter(
+            logging.getLogger(f"slmsuite.{cls}"),
+            extra={
+                "log_uid": self._log_uid,
+                "log_name": name,
+                "log_color": _LOGGER_COLORS.get(logger_color, _LOGGER_COLORS["reset"]),
+            },
+        )
+
+        self.logger.info("Initialized %s.", cls)
 
     def get_log(self, verbose=False):
-        """Return accumulated log records as a list of plain-text strings.
+        """Return this object's log records (only), as a list of plain-text strings.
 
         Parameters
         ----------
         verbose : bool, optional
-            If ``True``, also print the log to the console.
+            If ``True``, also print the records to the console.
         """
-        log = self._log_capture.get_log()
-
+        log = [s for (uid, s) in _BUFFER.buffer if uid == self._log_uid]
         if verbose:
             for record in log:
                 print(record)
-
         return log
 
-    def set_log_level(self, level):
-        """Set the logging level for this device.
-
-        Parameters
-        ----------
-        level : int
-            Logging level (e.g. ``logging.DEBUG``, ``logging.INFO``).
-        """
-        self.logger.logger.setLevel(level)
-
     def log_state(self, level=logging.DEBUG):
-        """Log current values of all tracked attributes.
+        """Log the current values of all tracked attributes.
 
         Parameters
         ----------
@@ -309,44 +283,4 @@ class _Loggable(_Picklable):
         """
         for name in self._logger_attributes:
             if hasattr(self, name):
-                self.logger.log(level, f"{name}: {_attr_repr(getattr(self, name))}")
-
-    @contextlib.contextmanager
-    def log_at(self, level):
-        """Temporarily change the log level for this device.
-
-        Parameters
-        ----------
-        level : int
-            Logging level to use inside the ``with`` block.
-        """
-        prev = self.logger.logger.level
-        self.logger.logger.setLevel(level)
-        try:
-            yield
-        finally:
-            self.logger.logger.setLevel(prev)
-
-    @contextlib.contextmanager
-    def suppress_attr_logging(self):
-        """Suppress per-attribute DEBUG logs inside the ``with`` block.
-
-        Useful in tight loops where tracked arrays change every iteration.
-        """
-        object.__setattr__(self, "_attr_logging_suppressed", True)
-        try:
-            yield
-        finally:
-            object.__setattr__(self, "_attr_logging_suppressed", False)
-
-    def vlog(self, verbose, msg, *args, **kwargs):
-        """Log at INFO if ``verbose`` is ``True``, DEBUG otherwise.
-
-        Parameters
-        ----------
-        verbose : bool
-            Controls the log level.
-        msg : str
-            Message forwarded to :meth:`logging.Logger.log`.
-        """
-        self.logger.log(logging.INFO if verbose else logging.DEBUG, msg, *args, **kwargs)
+                self.logger.log(level, "%s: %s", name, _attr_repr(getattr(self, name)))

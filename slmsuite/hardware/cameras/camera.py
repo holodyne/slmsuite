@@ -10,7 +10,6 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.optimize import curve_fit
 from abc import ABC, abstractmethod
 
-from slmsuite._logging import _Loggable
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice

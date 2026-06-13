@@ -17,17 +17,19 @@ Automatic Features:
 - slmsuite package logging: INFO level
 - External packages logging: WARNING level and above only
 """
-import pytest
-import numpy as np
-import tempfile
-import sys, os
-import json
 import importlib
+import json
 import logging
+import os
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
 import matplotlib
 import matplotlib.pyplot as plt
-from pathlib import Path
-from datetime import datetime
+import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -89,8 +91,8 @@ def random_seed():
 # Fixtures for SLM and Camera instances, with dynamic configuration via environment variables.
 
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
-from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.hardware.cameraslms import FourierSLM
+from slmsuite.hardware.slms.simulated import SimulatedSLM
 
 _TEST_SMALL_RESOLUTION = (128, 128)
 
@@ -541,8 +543,8 @@ def pytest_configure(config):
     for package in ['matplotlib', 'PIL', 'numpy', 'cupy', 'h5py']:
         logging.getLogger(package).setLevel(logging.WARNING)
 
-    # Enable INFO for slmsuite package only
-    logging.getLogger('slmsuite').setLevel(logging.INFO)
+    # Capture everything, let handler set level
+    logging.getLogger('slmsuite').setLevel(logging.DEBUG)
 
     print(f"\nTest output directory: {output_dir}")
 

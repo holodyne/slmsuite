@@ -1,15 +1,26 @@
 """
 Unit tests for slmsuite._logging: _Loggable, configure_logging, get_log.
+
+The logging layer uses a single "slmsuite" logger with per-class descendant loggers and one
+shared, bounded capture buffer. Handlers live only on the root; per-instance isolation is by
+a uid tag on each record (filtered out of the shared buffer on read).
 """
 import logging
+
 import pytest
 
 import slmsuite
 from slmsuite._logging import (
-    _LogCapture, _Loggable, _slmsuite_logger, _slmsuite_log,
-    configure_logging, get_log,
+    _BufferHandler,
+    _Loggable,
+    _package_logger,
+    configure_logging,
+    get_log,
 )
-from slmsuite._pickling import _Picklable
+
+
+def _console_handlers():
+    return [h for h in _package_logger.handlers if getattr(h, "_slmsuite_console", False)]
 
 
 class _Device(_Loggable):
@@ -26,31 +37,49 @@ class _Device(_Loggable):
         return self.name
 
 
+class TestTopology:
+
+    def test_silent_by_default_then_opt_in(self):
+        """No console handler should exist until configure_logging() adds one."""
+        configure_logging(level=None)           # ensure none
+        assert _console_handlers() == []
+        configure_logging("INFO")
+        assert len(_console_handlers()) == 1
+        configure_logging(level=None)           # restore silent
+
+    def test_only_root_has_handlers(self):
+        """Descendant (per-class) loggers must carry no handlers of their own."""
+        dev = _Device(name="topology")
+        child = logging.getLogger(f"slmsuite.{type(dev).__name__}")
+        assert child.handlers == []
+        assert child.level == logging.NOTSET    # inherits from root
+
+    def test_buffer_attached_to_root(self):
+        assert any(isinstance(h, _BufferHandler) for h in _package_logger.handlers)
+
+
 class TestConfigureLogging:
 
     def test_idempotent(self):
-        """Calling configure_logging twice must not add duplicate StreamHandlers."""
-        configure_logging()
-        n_before = sum(
-            isinstance(h, logging.StreamHandler) and not isinstance(h, _LogCapture)
-            for h in _slmsuite_logger.handlers
-        )
-        configure_logging()
-        n_after = sum(
-            isinstance(h, logging.StreamHandler) and not isinstance(h, _LogCapture)
-            for h in _slmsuite_logger.handlers
-        )
-        assert n_before == n_after == 1
+        """Calling configure_logging twice must not stack console handlers."""
+        configure_logging("INFO")
+        configure_logging("INFO")
+        assert len(_console_handlers()) == 1
+        configure_logging(level=None)
 
-    def test_level_false_suppresses_display(self):
-        """level=False must set the StreamHandler to above CRITICAL."""
-        configure_logging(level=False)
-        stream_handlers = [
-            h for h in _slmsuite_logger.handlers
-            if isinstance(h, logging.StreamHandler) and not isinstance(h, _LogCapture)
-        ]
-        assert all(h.level > logging.CRITICAL for h in stream_handlers)
-        configure_logging()  # restore
+    def test_level_none_removes_console(self):
+        configure_logging("INFO")
+        configure_logging(level=None)
+        assert _console_handlers() == []
+
+    def test_level_accepts_string_and_int(self, subtests):
+        with subtests.test("string level"):
+            configure_logging("DEBUG")
+            assert _console_handlers()[0].level == logging.DEBUG
+        with subtests.test("int level"):
+            configure_logging(logging.WARNING)
+            assert _console_handlers()[0].level == logging.WARNING
+        configure_logging(level=None)
 
 
 class TestPackageLog:
@@ -60,8 +89,7 @@ class TestPackageLog:
         before = len(get_log())
         dev = _Device(name="pkg_log_test")
         dev.logger.info("hello from device")
-        after = len(get_log())
-        assert after > before
+        assert len(get_log()) > before
         assert any("hello from device" in r for r in get_log())
 
     def test_package_logger_captured(self):
@@ -77,39 +105,58 @@ class TestLoggable:
         self.dev = _Device(name="test_dev")
 
     def test_init_record_in_instance_log(self):
-        """Instance log must contain the 'Initialized.' record."""
-        assert any("Initialized." in r for r in self.dev.get_log())
+        """Instance log must contain the 'Initialized' record."""
+        assert any("Initialized" in r for r in self.dev.get_log())
 
-    def test_attr_change_logged(self):
-        """Setting a tracked attribute must produce a DEBUG log entry."""
+    def test_log_state_reports_tracked_attrs(self):
+        """log_state() must emit the current value of tracked attributes."""
         self.dev.value = 99
+        self.dev.log_state()
         assert any("value" in r and "99" in r for r in self.dev.get_log())
 
-    def test_instance_log_isolated(self, subtests):
-        """Each instance's get_log() must only contain its own records."""
-        other = _Device(name="other_dev")
-        other.logger.info("other message")
+    def test_plain_assignment_has_no_logging_side_effect(self):
+        """Assigning a tracked attribute must NOT log on its own (no __setattr__ magic)."""
+        before = len(self.dev.get_log())
+        self.dev.value = 42
+        assert len(self.dev.get_log()) == before
 
-        with subtests.test("own log does not contain other's message"):
-            assert not any("other message" in r for r in self.dev.get_log())
+    def test_instance_log_isolated(self, subtests):
+        """Each instance's get_log() must only contain its own records, even when two
+        instances share a name (and thus the same per-class logger)."""
+        other = _Device(name="test_dev")        # SAME name -> same class logger
+        self.dev.logger.info("mine")
+        other.logger.info("theirs")
+
+        with subtests.test("own log excludes the other's message"):
+            assert any("mine" in r for r in self.dev.get_log())
+            assert not any("theirs" in r for r in self.dev.get_log())
+
+        with subtests.test("other's log excludes ours"):
+            assert any("theirs" in r for r in other.get_log())
+            assert not any("mine" in r for r in other.get_log())
 
         with subtests.test("package log contains both"):
-            assert any("other message" in r for r in get_log())
+            assert any("mine" in r for r in get_log())
+            assert any("theirs" in r for r in get_log())
 
-    def test_suppress_attr_logging(self):
-        """suppress_attr_logging must prevent attribute change entries."""
-        before = len(self.dev.get_log())
-        with self.dev.suppress_attr_logging():
-            self.dev.value = 42
-        after = len(self.dev.get_log())
-        assert after == before
+    def test_duplicate_names_show_uid(self, subtests):
+        """A lone instance prints just its name; once a name is shared, records append #uid."""
+        solo = _Device(name="solo_dev")
+        solo.logger.info("only one")
+        with subtests.test("single instance: no uid suffix"):
+            assert any("solo_dev" in r and "solo_dev #" not in r for r in solo.get_log())
 
-    def test_vlog_info_vs_debug(self, subtests):
-        """vlog emits INFO when verbose is truthy, DEBUG otherwise."""
-        with subtests.test("verbose=True → INFO"):
-            self.dev.vlog(True, "verbose message")
-            assert any("verbose message" in r for r in self.dev.get_log())
+        a = _Device(name="dup_dev")
+        b = _Device(name="dup_dev")
+        a.logger.info("from a")
+        b.logger.info("from b")
+        with subtests.test("duplicates: each disambiguated by its own uid"):
+            assert any(f"dup_dev #{a._log_uid}" in r for r in a.get_log())
+            assert any(f"dup_dev #{b._log_uid}" in r for r in b.get_log())
+            assert not any(f"dup_dev #{b._log_uid}" in r for r in a.get_log())
 
-        with subtests.test("verbose=False → DEBUG, still captured"):
-            self.dev.vlog(False, "quiet message")
-            assert any("quiet message" in r for r in self.dev.get_log())
+    def test_get_log_verbose_prints(self, capsys):
+        """get_log(verbose=True) echoes records to stdout."""
+        self.dev.logger.info("echo me")
+        self.dev.get_log(verbose=True)
+        assert "echo me" in capsys.readouterr().out
