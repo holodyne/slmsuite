@@ -122,8 +122,10 @@ class PyLabLib(Camera):
         """
         try:
             self.cam.close()
-        except:
-            raise RuntimeError("This instrumental camera does not support .close().")
+        except Exception as e:
+            raise RuntimeError(
+                "This pylablib camera failed to close:\n{}".format(e)
+            ) from e
 
     @staticmethod
     def info(verbose=True):
@@ -222,4 +224,8 @@ class PyLabLib(Camera):
 
     def _get_images_hw(self, image_count, timeout_s, out=None):
         """See :meth:`.Camera._get_images_hw`."""
-        return self.cam.grab(nframes=image_count, frame_timeout=timeout_s)
+        imgs = self.cam.grab(nframes=image_count, frame_timeout=timeout_s)
+        if out is not None:
+            out[...] = imgs
+            return out
+        return imgs

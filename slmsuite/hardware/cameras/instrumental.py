@@ -126,8 +126,10 @@ class Instrumental(Camera):
         """
         try:
             self.cam.close()
-        except:
-            raise RuntimeError("This instrumental camera does not support .close().")
+        except Exception as e:
+            raise RuntimeError(
+                "This instrumental camera failed to close:\n{}".format(e)
+            ) from e
 
     @staticmethod
     def info(verbose=True):

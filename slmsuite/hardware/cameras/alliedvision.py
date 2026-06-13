@@ -296,6 +296,7 @@ class AlliedVision(Camera):
             if str(bitdepth) in value[0]:
                 self.cam.SensorBitDepth.set(value[1])
                 break
+        else:
             raise RuntimeError(f"ADC bitdepth {bitdepth} not found.")
 
     def get_adc_bitdepth(self):
@@ -350,9 +351,12 @@ class AlliedVision(Camera):
             int(self.cam.Height.get()),
         )
 
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
         binx, biny = int(binning[0]), int(binning[1])
         self.cam.BinningHorizontal.set(binx)
-        self.cam.BinningVertical.set(biny
+        self.cam.BinningVertical.set(biny)
+
     def _get_binning_hw(self):
         """See :meth:`.Camera._get_binning_hw`."""
         return (

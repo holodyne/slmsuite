@@ -376,8 +376,7 @@ class Cheetah640(Camera):
                 print("Camera initialized, loading properties ...")
 
             super().__init__(
-                self.xeneth.XC_GetWidth(self.cam),
-                self.xeneth.XC_GetHeight(self.cam),
+                (self.xeneth.XC_GetWidth(self.cam), self.xeneth.XC_GetHeight(self.cam)),
                 bitdepth=12,
                 pitch_um=pitch_um,
                 name=name,
@@ -1340,7 +1339,7 @@ class Cheetah640(Camera):
                     return im
         return -1
 
-    def _get_image_hw(self, timeout_s=None, frame_type=FT_NATIVE, block=True, convert=True):
+    def _get_image_hw(self, timeout_s=None, frame_type=FT_NATIVE, block=True, convert=True, return_img=True):
         """
         Main grabbing function; captures latest image into single frame buffer.
 
@@ -1358,11 +1357,16 @@ class Cheetah640(Camera):
             Blocking read; waits up to ``timeout_s`` for frame.
         convert : bool
             Makes internal 8 bit buffer, set false for max performance.
+        return_img : bool
+            If ``True`` (default), return the converted frame on success. If ``False``,
+            return the raw API error code instead (used by :meth:`flush` to drain frames
+            without processing them).
 
         Returns
         -------
         int, numpy.ndarray
             Error code in the event of an error, otherwise the current frame.
+            If ``return_img`` is ``False``, always returns the error code.
         """
 
         # Update the timeout time (in ms) if different than API default
@@ -1378,6 +1382,8 @@ class Cheetah640(Camera):
         ret = err = self.xeneth.XC_GetFrame(
             self.cam, frame_type, flag, self.frame_buffer, self.frame_size
         )
+        if not return_img:
+            return err
         if err == I_OK:
             t = time.perf_counter()
             self.last_capture = np.frombuffer(self.frame_buffer, c_ushort)
@@ -1390,7 +1396,7 @@ class Cheetah640(Camera):
             )
             # Delete frame tag to avoid issues w/ autfocus/exposure.
             self.last_capture[:2] = 0
-            self.last_capture = self.last_capture.reshape(self.shape)
+            self.last_capture = self.last_capture.reshape(self._hw_image_shape)
             self.last_process_time = time.perf_counter() - t
             ret = self.last_capture
 
@@ -1413,7 +1419,7 @@ class Cheetah640(Camera):
         err = self.xeneth.XC_StartCapture(self.cam)
         if err != I_OK:
             print("Could not start capturing, errorCode: %lu" % (err))
-        while not self.isCapturing():
+        while not self.is_capturing():
             print("Waiting for capture start...")
             time.sleep(0.1)
 

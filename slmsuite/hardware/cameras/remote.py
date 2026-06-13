@@ -64,6 +64,9 @@ class RemoteCamera(_Client, Camera):
             **kwargs
         )
 
+        self._software_woi = pickled.get("_software_woi", self._software_woi)
+        self._software_binning = pickled.get("_software_binning", self._software_binning)
+
     def close(self):
         pass
 
@@ -107,13 +110,10 @@ class RemoteCamera(_Client, Camera):
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
-        t = time.perf_counter()
-        img = self._com(
+        return self._com(
             command="_get_image_hw",
             kwargs=dict(timeout_s=timeout_s)
         )
-        print(time.perf_counter()-t)
-        return img
 
     def _get_images_hw(self, image_count, timeout_s, out=None):
         """See :meth:`.Camera._get_images_hw`."""

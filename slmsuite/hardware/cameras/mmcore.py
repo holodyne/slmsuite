@@ -162,5 +162,5 @@ class MMCore(Camera):
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
-        self.cam.snapImage();
+        self.cam.snapImage()
         return self.cam.getImage()

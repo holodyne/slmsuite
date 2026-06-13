@@ -415,7 +415,7 @@ class SimulatedCamera(Camera):
             for key in self.noise.keys():
                 if key == 'dark':
                     # Background/dark current - exposure dependent
-                    dark = self.noise['dark'](np.ones_like(img) * self.bitresolution) / self.exposure_s
+                    dark = self.noise['dark'](np.ones_like(img) * self.bitresolution) * self.exposure_s
                     img = img + dark
                 elif key == 'read':
                     # Readout noise - exposure independent

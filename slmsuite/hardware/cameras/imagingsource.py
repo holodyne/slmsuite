@@ -286,7 +286,10 @@ class ImagingSource(Camera):
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
-        buffer_size = 3 * self.bitdepth * self.shape[0] * self.shape[1] # times 3 is because even Y800 is RGB
+        # Raw, untransformed frame shape that hardware delivers (WOI/binning applied in hardware).
+        H, W = self._hw_image_shape
+        # 8-bit RGB: 3 bytes per pixel (even Y800 mono is delivered as RGB).
+        buffer_size = 3 * H * W
         # Starts the image acquisition
         ImagingSource.safe_call(ImagingSource.sdk.IC_StartLive, 0, self.cam, 0)
         # Snap image
@@ -299,7 +302,8 @@ class ImagingSource(Camera):
         img_ptr = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_ubyte * buffer_size))
         # Reshape the image according to the width and height.
         # TODO: there are more efficient ways to reshape the array only considering the R component.
-        img = np.ndarray(buffer=img_ptr.contents, dtype=np.uint8, shape=(self.shape[0], self.shape[1], 3)) # 3 for RGB
+        img = np.ndarray(buffer=img_ptr.contents, dtype=np.uint8, shape=(H, W, 3)) # 3 for RGB
         ImagingSource.safe_call(ImagingSource.sdk.IC_StopLive, 0, self.cam)
         # We take only the 1st component, assuming that the image is monochromatic.
-        return self.transform(img[:,:,0])
+        # Return the raw untransformed frame; the base class applies self.transform.
+        return np.copy(img[:, :, 0])

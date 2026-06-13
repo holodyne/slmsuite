@@ -67,10 +67,10 @@ class Basler(Camera):
         if serial is None or serial == "":
             if len(device_list)==0:
                 raise RuntimeError("No cameras found by pylon.")
-            if len(device_list) > 0 and verbose:
+            if verbose:
                 print("No serial given... Choosing first of ", serial_list)
-                serial = serial_list[0]
-                device = Basler.sdk.CreateDevice(device_list[0])
+            serial = serial_list[0]
+            device = Basler.sdk.CreateDevice(device_list[0])
         else:
             if serial in serial_list:
                 device = Basler.sdk.CreateDevice(device_list[serial_list.index(serial)])
@@ -112,7 +112,7 @@ class Basler(Camera):
             )
 
         except Exception as e:
-            warnings.warn("Basler default settings failed to ")
+            warnings.warn("Basler default settings failed to apply:\n{}".format(e))
 
         # Initialize the superclass attributes.
         super().__init__(
@@ -244,6 +244,7 @@ class Basler(Camera):
             if str(bitdepth) in value[0]:
                 self.cam.PixelSize.SetValue(value[1])
                 break
+        else:
             raise RuntimeError("ADC bitdepth {} not found.".format(bitdepth))
 
     def get_adc_bitdepth(self):
@@ -288,14 +289,17 @@ class Basler(Camera):
             int(self.cam.Height.GetValue()),
         )
 
-        binx, biny = int(binning[0]), int(binning[1])
-        self.cam.BinningHorizontal.SetValue(binx)
-        self.cam.BinningVertical.SetValue(biny
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        binx, biny = int(binning[0]), int(binning[1])
+        self.cam.BinningHorizontal.SetValue(binx)
+        self.cam.BinningVertical.SetValue(biny)
+
     def _get_binning_hw(self):
         """See :meth:`.Camera._get_binning_hw`."""
         return (
             int(self.cam.BinningHorizontal.GetValue()),
-            int(self.cam.BinningVertical.GetValue()),
+            int(self.cam.BinningVertical.GetValue()),
         )
 
     # def _set_woi(self, woi):
@@ -347,17 +351,20 @@ class Basler(Camera):
             pylon.GrabLoop_ProvidedByUser
         )
 
-        if self.cam.IsGrabbing():
+        try:
+            if not self.cam.IsGrabbing():
+                raise RuntimeError("Basler camera failed to start grabbing.")
+
             self.cam.ExecuteSoftwareTrigger()
 
             grab = self.cam.RetrieveResult(int(timeout_s*1000), pylon.TimeoutHandling_Return)
 
             # Image grabbed successfully?
             if not grab.GrabSucceeded():
-                self.cam.StopGrabbing()
                 raise RuntimeError(f"Basler error {grab.GetErrorCode()}: {grab.GetErrorDescription()}")
 
             im = grab.GetArray() # This returns an np.array
+        finally:
             self.cam.StopGrabbing()
 
         return im

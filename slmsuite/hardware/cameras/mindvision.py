@@ -282,14 +282,20 @@ class MindVision(Camera):
             _mvsdk.CameraReleaseImageBuffer(self.handle, raw_data)
 
             # Reshape the buffer as a numpy array, and return a copy.
+            # Use the raw, untransformed hardware frame shape; the base class applies
+            # self.transform afterward.
             frame_data = (_mvsdk.c_ubyte * frame_head.uBytes).from_address(self.buffer)
 
             if self.mono:
-                return np.copy(np.frombuffer(frame_data, dtype=np.uint8).reshape(self.shape))
+                return np.copy(np.frombuffer(frame_data, dtype=np.uint8).reshape(self._hw_image_shape))
             else:
-                rgb_shape = (self.shape[0], self.shape[1], 3)
+                rgb_shape = (self._hw_image_shape[0], self._hw_image_shape[1], 3)
                 return np.copy(np.frombuffer(frame_data, dtype=np.uint8).reshape(rgb_shape))
 
         except _mvsdk.CameraException as e:
-            print("CameraGetImageBuffer failed ({}):\n{}".format(e.error_code, e.message))
+            # Re-raise so _get_image_hw_tolerant can retry; a silent None would be
+            # treated as a successful capture by the caller.
+            raise RuntimeError(
+                "CameraGetImageBuffer failed ({}):\n{}".format(e.error_code, e.message)
+            ) from e
 

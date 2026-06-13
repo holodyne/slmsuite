@@ -623,9 +623,10 @@ class FLIR(Camera):
         """
 
         try:
-            # Only fire software trigger if in software trigger mode.
-            # if self.cam.TriggerSource.GetValue() == PySpin.TriggerSource_Software:
-            self.cam.TriggerSoftware.Execute()
+            # Only fire software trigger if in software trigger mode; an externally
+            # triggered camera must not be force-triggered here.
+            if self.cam.TriggerSource.GetValue() == PySpin.TriggerSource_Software:
+                self.cam.TriggerSoftware.Execute()
 
             # Get image (software-triggered or externally triggered).
             frame = self.cam.GetNextImage(int(timeout_s * 1e3))

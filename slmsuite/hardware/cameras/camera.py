@@ -88,6 +88,8 @@ class Camera(_Common, ABC):
         "hdr",
         "woi",
         "_shape",
+        "_software_woi",
+        "_software_binning",
     ]
     _pickle_data = [
         "last_image",
@@ -213,7 +215,11 @@ class Camera(_Common, ABC):
     def pitch_um(self) -> np.ndarray | None:
         """Returns the pixel pitch in micrometers (potentially after binning)."""
         if self._pitch_um is not None:
-            return np.array([self._pitch_um[0] * self.binning[0], self._pitch_um[1] * self.binning[1]])
+            # Report in the transformed frame: transform the raw pitch the same way as
+            # binning, so a 90/270 swap pairs the correct pitch and binning per axis.
+            pitch = self.transform.transform_shape(self._pitch_um)
+            binning = self.binning
+            return np.array([pitch[0] * binning[0], pitch[1] * binning[1]])
         else:
             return None
 
@@ -607,7 +613,7 @@ class Camera(_Common, ABC):
             HDR exposure settings. ``None`` uses :attr:`hdr`.
             Any active HDR (exposures > 1) forces ``float`` regardless of other settings.
         binning : (int, int) or int or None
-            Software binning factor ``(biny, binx)`` to include in the overflow budget.
+            Software binning factor ``(binx, biny)`` to include in the overflow budget.
             ``None`` auto-detects: uses :attr:`_binning` when ``_software_binning`` is
             ``True``, otherwise ``(1, 1)`` (hardware binning does not widen the dtype).
             Pass an explicit value to query a hypothetical configuration.
@@ -1520,6 +1526,7 @@ class Camera(_Common, ABC):
         if set_fraction != 0.5:
             exp = exp * (2 * set_fraction)
             self.set_exposure(exp)
+            exp = self.set_exposure(exp * (2 * set_fraction))
 
         return exp
 
