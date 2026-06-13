@@ -769,7 +769,9 @@ class Camera(_Common, ABC):
         Returns
         -------
         numpy.ndarray
-            Array of shape :attr:`~slmsuite.hardware.cameras.camera.Camera.shape`.
+            The raw, untransformed frame of shape :attr:`_hw_image_shape`.
+            WOI cropping, software binning, and :attr:`transform` are applied later by
+            :meth:`.get_image()`.
         """
         raise NotImplementedError(f"Camera {self.name} has not implemented _get_image_hw")
 
@@ -790,7 +792,9 @@ class Camera(_Common, ABC):
         Returns
         -------
         numpy.ndarray
-            Array of shape ``(image_count, height, width)``.
+            The raw, untransformed stack of shape ``(image_count, *_hw_image_shape)``.
+            WOI cropping, software binning, and :attr:`transform` are applied later by
+            :meth:`.get_images()`.
         """
         # Preallocate memory if necessary
         out = self._get_out(image_count, out)

@@ -106,6 +106,9 @@ class Template(Camera):
 
     ### Required Methods ###
 
+    ## Exposure (used in autoexpose and other functions)
+    # User-facing is in seconds. SDK might require different units (e.g. milliseconds).
+
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
         raise NotImplementedError()
@@ -116,7 +119,7 @@ class Template(Camera):
         raise NotImplementedError()
         self.cam.set_exposure(1e3 * exposure_s)         # TODO: Fill in proper function.
 
-    ### Image Acquisition ###
+    ## Core imaging
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
@@ -130,6 +133,18 @@ class Template(Camera):
 
     ### Optional Methods ###
 
+    ### Secondary imaging (some cameras offer batch image capture)
+
+    # def _get_images_hw(self, image_count, timeout_s, out=None):
+    #     """See :meth:`.Camera._get_images_hw`."""
+    #     # Similar to the core method but for a batch of images.
+    #     # This should be used if the camera has a hardware-specific method of grabbing
+    #     # frame batches. If not defined, the superclass captures and averages sequential
+    #     # _get_image_hw images.
+    #     return self.cam.get_images_function()     # TODO: Fill in proper function.
+
+    ## Setting window of interest (WOI)
+
     # def _set_woi_hw(self, woi):
     #     """See :meth:`.Camera._set_woi_hw`."""
     #     pass # TODO: Fill in proper function. Do not fill in if the camera does not support WOI.
@@ -137,6 +152,8 @@ class Template(Camera):
     # def _get_woi_hw(self):
     #     """See :meth:`.Camera._get_woi_hw`."""
     #     pass # TODO: Fill in proper function. Do not fill in if the camera does not support WOI.
+
+    ## Setting binning
 
     # def _set_binning_hw(self, binning):
     #     """See :meth:`.Camera._set_binning_hw`."""
@@ -146,13 +163,7 @@ class Template(Camera):
     #     """See :meth:`.Camera._get_binning_hw`."""
     #     pass # TODO: Fill in proper function. Do not fill in if the camera does not support binning.
 
-    # def _get_images_hw(self, image_count, timeout_s, out=None):
-    #     """See :meth:`.Camera._get_images_hw`."""
-    #     # Similar to the core method but for a batch of images.
-    #     # This should be used if the camera has a hardware-specific method of grabbing
-    #     # frame batches. If not defined, the superclass captures and averages sequential
-    #     # _get_image_hw images.
-    #     return self.cam.get_images_function()     # TODO: Fill in proper function.
+    ## Clear the image buffer (superclass default method calls get_image successively)
 
     # def flush(self, timeout_s=1):
     #     """See :meth:`.Camera.flush`."""
