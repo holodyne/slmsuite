@@ -139,21 +139,23 @@ class TestLoggable:
             assert any("mine" in r for r in get_log())
             assert any("theirs" in r for r in get_log())
 
-    def test_duplicate_names_show_uid(self, subtests):
-        """A lone instance prints just its name; once a name is shared, records append #uid."""
+    def test_duplicate_names_show_index(self, subtests):
+        """A lone instance prints just its name; once a name is shared, records append a
+        per-name index (#1, #2, ... in creation order), not the global uid."""
         solo = _Device(name="solo_dev")
         solo.logger.info("only one")
-        with subtests.test("single instance: no uid suffix"):
+        with subtests.test("single instance: no index suffix"):
             assert any("solo_dev" in r and "solo_dev #" not in r for r in solo.get_log())
 
         a = _Device(name="dup_dev")
         b = _Device(name="dup_dev")
         a.logger.info("from a")
         b.logger.info("from b")
-        with subtests.test("duplicates: each disambiguated by its own uid"):
-            assert any(f"dup_dev #{a._log_uid}" in r for r in a.get_log())
-            assert any(f"dup_dev #{b._log_uid}" in r for r in b.get_log())
-            assert not any(f"dup_dev #{b._log_uid}" in r for r in a.get_log())
+        with subtests.test("duplicates: 1-based per-name index in creation order"):
+            assert a._log_index == 1 and b._log_index == 2
+            assert any("dup_dev #1" in r for r in a.get_log())
+            assert any("dup_dev #2" in r for r in b.get_log())
+            assert not any("dup_dev #2" in r for r in a.get_log())
 
     def test_get_log_verbose_prints(self, capsys):
         """get_log(verbose=True) echoes records to stdout."""

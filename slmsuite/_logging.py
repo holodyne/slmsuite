@@ -81,20 +81,21 @@ def _level_tag(record):
     abbr = _LEVEL_ABBR.get(record.levelno, record.levelname[:3].upper())
     return f"[{abbr:>3.3}]"
 
-# Registry of display names and associated (unique) log UIDs
-_name_registry = {}
+# Global counters to keep track of _Loggable instances
 _uid_counter = itertools.count()
+_name_counts = {}               
+
 def _display_name(record):
     """Display name for a logging record.
 
-    When several instances share a name, the unique ``log_uid`` is appended (e.g.
-    ``SimulatedSLM #3``) to disambiguate them. Falls back to the (trimmed) logger name
-    for records logged outside a :class:`_Loggable`.
+    When several instances share a name, a per-name index is appended (e.g.
+    ``Hologram #2`` for the second ``Hologram``) to disambiguate them. Falls back to the
+    (trimmed) logger name for records logged outside a :class:`_Loggable`.
     """
     name = getattr(record, "log_name", "") or record.name.removeprefix("slmsuite.")
-    uid = getattr(record, "log_uid", None)
-    if uid is not None and len(_name_registry.get(name, ())) > 1:
-        return f"{name} #{uid}"
+    index = getattr(record, "log_index", None)
+    if index is not None and _name_counts.get(name, 0) > 1:
+        return f"{name} #{index}"
     return name
 
 def _infer_color(cls):
@@ -247,11 +248,13 @@ class _Loggable(_Picklable):
             logger_color = _infer_color(type(self))
 
         self._log_uid = next(_uid_counter)
-        _name_registry.setdefault(name, set()).add(self._log_uid)
+        self._log_index = _name_counts.get(name, 0) + 1
+        _name_counts[name] = self._log_index
         self.logger = logging.LoggerAdapter(
             logging.getLogger(f"slmsuite.{cls}"),
             extra={
                 "log_uid": self._log_uid,
+                "log_index": self._log_index,
                 "log_name": name,
                 "log_color": _LOGGER_COLORS.get(logger_color, _LOGGER_COLORS["reset"]),
             },
