@@ -1,8 +1,8 @@
 """
 slmsuite logging.
 
-A single package-level logger owns all handlers (a :class:`_BufferHandler` 
-for :func:`get_log`/h5 capture, and an opt-in console handler via 
+A single package-level logger owns all handlers (a :class:`_BufferHandler`
+for :func:`get_log`/h5 capture, and an opt-in console handler via
 :func:`configure_logging`. Each :class:`_Loggable` instance logs through a
 :class:`logging.LoggerAdapter` tagged with a unique ``log_uid``, so
 :meth:`_Loggable.get_log` returns only that instance's records.
@@ -83,7 +83,7 @@ def _level_tag(record):
 
 # Global counters to keep track of _Loggable instances
 _uid_counter = itertools.count()
-_name_counts = {}               
+_name_counts = {}
 
 def _display_name(record):
     """Display name for a logging record.
@@ -109,7 +109,7 @@ class _PlainFormatter(logging.Formatter):
     """Uncolored format used for in-memory capture and h5 export."""
 
     def __init__(self):
-        super().__init__("%(leveltag)s %(asctime)s %(display)s %(message)s", "%H:%M:%S")
+        super().__init__("%(leveltag)s %(asctime)s %(display)s %(message)s")
 
     def format(self, record):
         record.display = _display_name(record)
@@ -134,9 +134,10 @@ class _ColorFormatter(logging.Formatter):
         reset = _LOGGER_COLORS["reset"]
         self._formatters = {
             level: logging.Formatter(
-                f"{color}%(leveltag)s{reset} {grey}%(asctime)s{reset} "
+                f"{grey}%(leveltag)s{reset} {grey}%(asctime)s{reset} "
                 f"%(logcolor)s%(display)s{reset} {color}%(message)s{reset}",
-                "%H:%M:%S")
+                "%H:%M:%S"
+            )
             for level, color in self._LEVEL_COLORS.items()
         }
 
@@ -155,7 +156,7 @@ class _BufferHandler(logging.Handler):
         self.buffer = collections.deque(maxlen=capacity)
         self.setFormatter(_PlainFormatter())
 
-    # Overwrite emit to store log_uids 
+    # Overwrite emit to store log_uids
     def emit(self, record):
         try:
             self.buffer.append((getattr(record, "log_uid", None), self.format(record)))
@@ -164,8 +165,8 @@ class _BufferHandler(logging.Handler):
 
 # slmsuite logger: capture everything; let handlers filter by level
 _package_logger = logging.getLogger("slmsuite")
-_package_logger.setLevel(logging.DEBUG)            
-_package_logger.addHandler(logging.NullHandler()) 
+_package_logger.setLevel(logging.DEBUG)
+_package_logger.addHandler(logging.NullHandler())
 _BUFFER = _BufferHandler()
 _package_logger.addHandler(_BUFFER)
 
@@ -260,7 +261,7 @@ class _Loggable(_Picklable):
             },
         )
 
-        self.logger.info("Initialized %s.", cls)
+        self.logger.info(f"Initialized {cls}.")
 
     def get_log(self, verbose=False):
         """Return this object's log records (only), as a list of plain-text strings.
@@ -286,4 +287,4 @@ class _Loggable(_Picklable):
         """
         for name in self._logger_attributes:
             if hasattr(self, name):
-                self.logger.log(level, "%s: %s", name, _attr_repr(getattr(self, name)))
+                self.logger.log(level, "%s = %s", name, _attr_repr(getattr(self, name)))
