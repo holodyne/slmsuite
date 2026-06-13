@@ -372,7 +372,12 @@ class ThorCam(Camera):
             while time.time() - t < timeout_s and frame is None:
                 frame = self.cam.get_pending_frame_or_null()
 
-            ret = np.copy(frame.image_buffer) if frame is not None else None
+            if frame is None:
+                raise RuntimeError(
+                    f"'{self.name}' timed out waiting for a frame after {timeout_s} s."
+                )
+
+            ret = np.copy(frame.image_buffer)
 
         return ret
 

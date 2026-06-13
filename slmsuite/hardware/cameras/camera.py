@@ -765,8 +765,6 @@ class Camera(_Common, ABC):
         ----------
         timeout_s : float
             The time in seconds to wait for the frame to be fetched.
-            The frame exposure time is **NOT added** to this timeout
-            such that there is always enough time to expose.
 
         Returns
         -------
@@ -786,8 +784,6 @@ class Camera(_Common, ABC):
             Number of frames to batch collect.
         timeout_s : float
             The time in seconds to wait for **each** frame to be fetched.
-            The frame exposure time is **added** to this timeout
-            such that there is always enough time to expose.
         out : None OR numpy.ndarray
             Preallocated memory for in-place operations, if applicable.
 
@@ -800,9 +796,7 @@ class Camera(_Common, ABC):
         out = self._get_out(image_count, out)
 
         for i in range(image_count):
-            out[i, :, :] = self._get_image_hw_tolerant(
-                timeout_s=timeout_s+self.exposure_s
-            )
+            out[i, :, :] = self._get_image_hw(timeout_s)
 
         return out
 
@@ -828,13 +822,13 @@ class Camera(_Common, ABC):
 
         raise err
 
-    def _get_images_hw_tolerant(self, *args, **kwargs):
+    def _get_images_hw_tolerant(self, image_count, timeout_s, out=None):
         err = None
         failures = 0
 
         for _ in range(self.capture_attempts):
             try:
-                imgs = self._get_images_hw(*args, **kwargs)
+                imgs = self._get_images_hw(image_count, timeout_s, out=out)
 
                 if failures > 0:
                     warnings.warn(f"'{self.name}' _get_images_hw() failed {failures} times before succeeding.")
@@ -930,9 +924,8 @@ class Camera(_Common, ABC):
 
             try:
                 # Using the camera-specific batch method if available.
-                # _get_images_hw adds the exposure time to the timeout internally.
-                imgs = self._get_images_hw(
-                    averaging, timeout_s=timeout_s
+                imgs = self._get_images_hw_tolerant(
+                    averaging, timeout_s=timeout_s + self.exposure_s
                 ).astype(averaging_dtype)
 
                 # Cast as the proper type so we can sum.
@@ -943,11 +936,11 @@ class Camera(_Common, ABC):
 
                 for _ in range(averaging):
                     img += self._get_image_hw_tolerant(
-                        timeout_s=timeout_s+self.exposure_s
+                        timeout_s=timeout_s + self.exposure_s
                     ).astype(averaging_dtype)
         else:                   # Normal image
             img = self._get_image_hw_tolerant(
-                timeout_s=timeout_s+self.exposure_s
+                timeout_s=timeout_s + self.exposure_s
             )
             # Promote dtype so the binning does not overflow.
             img = img.astype(self.get_dtype(averaging=1))
@@ -1008,10 +1001,9 @@ class Camera(_Common, ABC):
             self.flush()
 
         # Grab images (no transformation).
-        # _get_images_hw adds the exposure time to the timeout internally.
-        imgs = self._get_images_hw(
+        imgs = self._get_images_hw_tolerant(
             image_count,
-            timeout_s=timeout_s,
+            timeout_s=timeout_s + self.exposure_s,
             out=out
         )
 
@@ -1042,12 +1034,12 @@ class Camera(_Common, ABC):
         Parameters
         ----------
         timeout_s : float
-            The time in seconds to wait for each frame.
+            The time in seconds to wait **for each** frame.
             The frame exposure time is **added** to this timeout
             such that there is always enough time to expose.
         """
         for _ in range(self._flush_iterations):
-            self._get_image_hw_tolerant(timeout_s=timeout_s+self.exposure_s)
+            self._get_image_hw_tolerant(timeout_s=timeout_s + self.exposure_s)
 
     # HDR imaging methods.
 

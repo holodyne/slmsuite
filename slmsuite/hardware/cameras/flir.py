@@ -638,7 +638,7 @@ class FLIR(Camera):
                 raise RuntimeError(f"Image incomplete with status {status}")
 
             # Get numpy array from image
-            image_data = frame.GetNDArray()
+            image_data = np.copy(frame.GetNDArray())
 
             # Release frame to free buffer
             frame.Release()

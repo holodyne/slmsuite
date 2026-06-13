@@ -293,8 +293,7 @@ class MindVision(Camera):
                 return np.copy(np.frombuffer(frame_data, dtype=np.uint8).reshape(rgb_shape))
 
         except _mvsdk.CameraException as e:
-            # Re-raise so _get_image_hw_tolerant can retry; a silent None would be
-            # treated as a successful capture by the caller.
+            # Re-raise so _get_image_hw_tolerant can retry.
             raise RuntimeError(
                 "CameraGetImageBuffer failed ({}):\n{}".format(e.error_code, e.message)
             ) from e
