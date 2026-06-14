@@ -828,6 +828,21 @@ class TestCamera:
                 err_msg="Binned pixel values do not equal the raw block sum"
             )
 
+        with subtests.test("get_images stack does not overflow under software binning"):
+            # get_images() routes through _crop_to_woi() too, so the same dtype
+            # promotion must apply to the batched path (regression: it did not).
+            N = 3
+            stack = cam2.get_images(N, transform=False)
+            assert stack.shape == (N, *cam2.shape), (
+                f"stack.shape={stack.shape} expected (N={N}, *{cam2.shape})"
+            )
+            # Each frame must equal its raw 2×2 block sum (no wrap-around).
+            for i in range(N):
+                np.testing.assert_array_equal(
+                    stack[i], expected,
+                    err_msg=f"get_images frame {i} binned values do not equal raw block sum"
+                )
+
     def test_get_binning(self, slm, subtests):
         """get_binning() returns current binning in transformed coordinates."""
         cam = SimulatedCamera(slm, resolution=(200, 100))

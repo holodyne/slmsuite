@@ -302,48 +302,6 @@ class Basler(Camera):
             int(self.cam.BinningVertical.GetValue()),
         )
 
-    # def _set_woi(self, woi):
-    #     """
-    #     Sets the window of interest (WOI).
-    #
-    #     Parameters
-    #     ----------
-    #     woi : list, None
-    #         See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-    #     """
-    #     # Set the width and height to very small values
-    #     # such that setting the offsets will not error.
-    #
-    #     # Now set the WOI.
-    #     x, w, y, h = woi
-    #
-    #     self.cam.OffsetX.SetValue(x)
-    #     self.cam.OffsetY.SetValue(y)
-    #     self.cam.Height.SetValue(h)
-    #     self.cam.Width.SetValue(w)
-
-    # def set_woi(self, woi=None):
-    #     """See :meth:`.Camera.set_woi`."""
-    #     err = None
-    #     maxwoi = (0, self.cam.Width.GetMax(), 0, self.cam.Height.GetMax())
-    #
-    #     # Default WOI to max.
-    #     if woi is None:
-    #         woi = maxwoi
-    #
-    #     try:
-    #         # Try to set the WOI.
-    #         self._set_woi(woi)
-    #         self.woi = woi
-    #     except Exception as e:
-    #         # Reset to previous WOI (max if undefined) upon failure.
-    #         woi = self.woi if self.woi is not None else maxwoi
-    #         self._set_woi(woi)
-    #         err = e
-    #
-    #     if err is not None:
-    #         raise err
-
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera.get_image`."""
         self.cam.StartGrabbing(

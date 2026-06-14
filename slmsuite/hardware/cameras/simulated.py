@@ -351,25 +351,6 @@ class SimulatedCamera(Camera):
 
     # Future: use WOI with Zoom FFT?
 
-    # def _set_woi_hw(self, woi):
-    #     """See :meth:`.Camera._set_woi_hw`."""
-    #     # SimulatedCamera: receives binned coords; multiplies by binning to store physical in _woi.
-    #     binx, biny = self._binning
-    #     x, w, y, h = [int(v) for v in woi]
-    #     self._woi = (x * binx, w * binx, y * biny, h * biny)
-
-    # def _get_woi_hw(self):
-    #     """See :meth:`.Camera._get_woi_hw`."""
-    #     return self._woi_untransformed_binned
-
-    # def _set_binning_hw(self, binning):
-    #     """See :meth:`.Camera._set_binning_hw`."""
-    #     self._binning = binning
-
-    # def _get_binning_hw(self):
-    #     """See :meth:`.Camera._get_binning_hw`."""
-    #     return self._binning
-
     def _get_image_hw(self, timeout_s):
         """
         See :meth:`.Camera._get_image_hw`. Computes and samples the affine-transformed SLM far-field.

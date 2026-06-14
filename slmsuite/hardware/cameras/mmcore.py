@@ -155,6 +155,7 @@ class MMCore(Camera):
         if binx != biny:
             raise ValueError(f"MMCore requires symmetric binning. Received (binx={binx}, biny={biny}).")
         self.cam.setBinning(binx)
+
     def _get_binning_hw(self):
         """See :meth:`.Camera._get_binning_hw`."""
         b = int(self.cam.getBinning())

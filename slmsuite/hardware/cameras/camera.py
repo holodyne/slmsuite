@@ -2,13 +2,13 @@
 Abstract camera functionality.
 """
 import time
-import asyncio
 import warnings
-import numpy as np
+from abc import ABC, abstractmethod
+
 import matplotlib.pyplot as plt
+import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.optimize import curve_fit
-from abc import ABC, abstractmethod
 
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
@@ -67,7 +67,10 @@ class Camera(_Common, ABC):
         This feature is less fleshed out than most. There may be issues
         (e.g. :meth:`.get_image()` with the ``averaging`` or ``hdr`` flags).
     transform : callable
-
+        Orientation transform (:class:`~slmsuite.holography.analysis.OrientationTransform`)
+        of flips and 90 degree rotations, applied to raw camera frames before they are
+        returned to the user. Built from the ``rot``, ``fliplr``, and ``flipud`` arguments
+        to :meth:`__init__`.
     last_image : numpy.ndarray OR None
         Last captured image. Note that this is a pointer to the same data that the user
         receives (to avoid copying overhead). Thus, if the user modifies the returned data,
@@ -499,7 +502,7 @@ class Camera(_Common, ABC):
         verbose : bool
             Whether or not to print display information.
         """
-        raise NotImplementedError(f"Camera class has not implemented info()")
+        raise NotImplementedError("Camera class has not implemented info()")
 
     # Exposure methods.
 
@@ -743,6 +746,10 @@ class Camera(_Common, ABC):
         if self._software_binning:
             binx, biny = self._binning
             if biny != 1 or binx != 1:
+                # Promote so the block-sum cannot overflow the raw dtype. Use
+                # promote_types (never narrows) so an already-wide float input from
+                # get_image's HDR/averaging path is preserved.
+                img = img.astype(np.promote_types(img.dtype, self.get_dtype(averaging=1)))
                 if img.ndim == 2:
                     H, W = img.shape
                     Ht, Wt = (H // biny) * biny, (W // binx) * binx
@@ -946,8 +953,6 @@ class Camera(_Common, ABC):
             img = self._get_image_hw_tolerant(
                 timeout_s=timeout_s + self.exposure_s
             )
-            # Promote dtype so the binning does not overflow.
-            img = img.astype(self.get_dtype(averaging=1))
 
         # Software WOI crop and/or binning (no-op when handled by hardware).
         img = self._crop_to_woi(img)
@@ -1520,8 +1525,6 @@ class Camera(_Common, ABC):
         # The loop targets 50% of resolution.
         # Now set the final exposure if different (TODO, improve).
         if set_fraction != 0.5:
-            exp = exp * (2 * set_fraction)
-            self.set_exposure(exp)
             exp = self.set_exposure(exp * (2 * set_fraction))
 
         return exp
