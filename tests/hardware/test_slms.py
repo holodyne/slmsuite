@@ -248,6 +248,30 @@ class TestSLM:
             slm.set_aperture(radius=0.3, units="frac")
             assert slm.source_radius > 0
 
+        with subtests.test("unification holds for a centered aperture"):
+            # Regression for the resolve double-centering bug: with a non-default
+            # center, slm.grid is already shifted, so a resolved aperture must NOT
+            # re-subtract the center. slm.aperture_mask and Aperture.resolve(slm).mask
+            # must agree (and resolve(slm) returns the SLM's own aperture).
+            from slmsuite.holography.toolbox import Aperture
+            cx, cy = slm.shape[1] / 2 + 120, slm.shape[0] / 2 - 80
+            slm.set_aperture(radius=0.3, units="frac", center=(cx, cy))
+            assert slm.aperture.center is not None
+            assert Aperture.resolve(slm) is slm.aperture
+            assert np.array_equal(
+                np.asarray(slm.aperture_mask),
+                np.asarray(Aperture.resolve(slm).mask),
+            )
+
+        with subtests.test("zernike_sum masks a centered aperture consistently"):
+            # The actual pipeline (not just resolve): with use_mask=np.nan the region
+            # outside the aperture is NaN; it must match the SLM's aperture mask.
+            cx, cy = slm.shape[1] / 2 + 120, slm.shape[0] / 2 - 80
+            slm.set_aperture(radius=0.3, units="frac", center=(cx, cy))
+            result = zernike_sum(slm, [4], [1.0], use_mask=np.nan)
+            outside = np.isnan(np.asarray(result))
+            assert np.array_equal(outside, ~np.asarray(slm.aperture_mask))
+
     def test_source_helpers(self, slm, subtests):
         """_get_source_amplitude/phase fallbacks when source is empty."""
         with subtests.test("no amplitude -> ones"):

@@ -263,9 +263,10 @@ class SLM(_Common, ABC):
         """
         The ``(x_scale, y_scale)`` lateral scaling mapping :attr:`grid` onto the Zernike
         unit disk, from :attr:`aperture`. Used by
-        :meth:`~slmsuite.holography.toolbox.phase.zernike_sum`.
+        :meth:`~slmsuite.holography.toolbox.phase.zernike_sum`. This is the SLM-level name
+        for the general :attr:`~slmsuite.holography.toolbox.Aperture.scale`.
         """
-        return self.aperture.zernike_scaling
+        return self.aperture.scale
 
     @property
     def source_radius(self):

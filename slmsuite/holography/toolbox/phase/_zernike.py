@@ -729,7 +729,7 @@ def _zernike_sum_direct(grid, indices, weights, aperture, use_mask, derivative, 
     """
     (x_grid, y_grid) = _process_grid(grid)
     aperture = Aperture.resolve(grid, aperture)
-    (x_scale, y_scale) = aperture.zernike_scaling
+    (x_scale, y_scale) = aperture.scale
     xp = _zernike_xp(x_grid)
 
     indices, weights, _, N = _zernike_parse_weights_indices(indices, weights)
