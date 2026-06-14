@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from functools import reduce
 from scipy.optimize import curve_fit, minimize
@@ -180,7 +181,7 @@ def take(
 
         if plot:
             plt.imshow(canvas)
-            plt.show()
+            _slmsuite_plt_show(name="take")
 
         return canvas
     else:
@@ -243,7 +244,7 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
     # Gather helper variables and set the min and max of all the subplots.
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
-    
+
     if isinstance(images, cp.ndarray):
         images = cp.asnumpy(images)
 
@@ -268,7 +269,7 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
             ax.axes.xaxis.set_visible(False)
             ax.axes.yaxis.set_visible(False)
 
-        plt.show()
+        _slmsuite_plt_show(name="take_plot")
     else:
         im = plt.imshow(
             take_tile(images, shape),
@@ -291,7 +292,7 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
             # Return the current axes to the original one.
             plt.sca(ax)
 
-        plt.show()
+        _slmsuite_plt_show(name="take_plot")
 
 
 def _take_parse_shape(images, shape=None):
@@ -1086,7 +1087,7 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
             ax2.imshow(result_, vmin=vmin, vmax=vmax)
             ax2.set_title("Result")
 
-            plt.show()
+            _slmsuite_plt_show(name="image_fit")
 
     return result
 
@@ -1399,7 +1400,7 @@ def image_remove_blaze(phase_image, mask=None, plot=False):
         plt.subplot(1, 4, 4)
         plt.imshow(result)
         plt.title('removed')
-        plt.show()
+        _slmsuite_plt_show(name="image_remove_blaze")
 
     return result
 
@@ -1572,7 +1573,7 @@ def fit_affine(x, y, guess_affine=None, plot=False):
         plt.scatter(result[0,:], result[1,:], s=60, fc="none", ec="g")
 
         plt.gca().set_aspect("equal")
-        plt.show()
+        _slmsuite_plt_show(name="fit_affine")
 
     # Return as a dictionary
     return {"M":M, "b":b}
@@ -1840,15 +1841,15 @@ def blob_array_detect(
             if plot:
                 plt.imshow(img)
                 plt.title("Image")
-                plt.show()
+                _slmsuite_plt_show(name="blob_array_detect_img")
 
                 plt.imshow(dft)
                 plt.title("DFT")
-                plt.show()
+                _slmsuite_plt_show(name="blob_array_detect_dft")
 
                 plt.imshow(dft_amp)
                 plt.title("Processed DFT")
-                plt.show()
+                _slmsuite_plt_show(name="blob_array_detect_processed_dft")
 
             raise RuntimeError(
                 "Array fitting looks for prominent periodicity, "
@@ -1992,7 +1993,7 @@ def blob_array_detect(
             ax.set_title('Reciprocal Lattice Vector Fitting')
             ax.legend([kNN_plt, circ, lv_plt], ['Peak Spacing', '$k$ Clusters', 'Lattice Vectors'])
             ax.grid()
-            plt.show()
+            _slmsuite_plt_show(name="blob_array_detect_lattice")
 
         # 3.4) Convert to image space (dx = 1/dk)
         M = fft_size*lv/(np.linalg.norm(lv, axis=0)**2)
@@ -2064,7 +2065,7 @@ def blob_array_detect(
                 ax.set_ylabel("Image Reciprocal $y$ [1/pix]")
             fig.tight_layout(pad=4.0)
 
-            plt.show()
+            _slmsuite_plt_show(name="blob_array_detect_reciprocal_lattice")
 
     # 4) Make the array kernel for convolutional detection of the array center.
     # Make lists that we will use to make the kernel: the array...
@@ -2349,7 +2350,7 @@ def blob_array_detect(
             ax.set_ylabel("Image $y$ [pix]")
         fig.tight_layout(pad=4.0)
 
-        plt.show()
+        _slmsuite_plt_show(name="blob_array_detect")
 
     return orientation
 

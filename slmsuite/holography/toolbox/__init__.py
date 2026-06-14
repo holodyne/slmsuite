@@ -7,6 +7,7 @@ from scipy.spatial import distance
 from scipy.spatial import Voronoi, voronoi_plot_2d
 import cv2
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import warnings
 
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
@@ -696,7 +697,7 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
         plt.ylim(1.05 * sy, -0.05 * sy)
         plt.gca().set_aspect("equal")
         plt.title("Voronoi Cells")
-        plt.show()
+        _slmsuite_plt_show(name="voronoi_windows")
 
     # Gather data from scipy Voronoi and return as a list of boolean windows.
     N = np.shape(vectors)[1]
@@ -1360,7 +1361,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
             plt.ylim(1.05 * sy, -0.05 * sy)
             plt.gca().set_aspect("equal")
             plt.title("Voronoi Cells")
-            plt.show()
+            _slmsuite_plt_show(name="lloyds_algorithm")
 
         for i in range(result.shape[1]):
             # Don't move points that don't make sense.

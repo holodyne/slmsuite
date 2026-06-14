@@ -12,6 +12,7 @@ except ImportError:
 from scipy import special
 from math import factorial
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 from typing import Tuple, Union, Callable
 
 
@@ -815,7 +816,7 @@ def zernike_pyramid_plot(
         box = box.translated(dx * pitch, 0)
         a.set_position(box)
 
-    plt.show()
+    _slmsuite_plt_show(name="zernike_pyramid_plot")
 
 
 def _zernike_overlap(
@@ -866,7 +867,7 @@ def _zernike_cache_plot():
     plt.imshow(np.log2(_zernike_cache_vectorized))
     plt.ylabel("Zernike Index (ANSI)");
     plt.xlabel("Monomial Index (Cantor)");
-    plt.show()
+    _slmsuite_plt_show(name="zernike_cache_plot")
 
 
 # Old style dictionary.     {(n,m) : {(nx, ny) : w, ... }, ... }

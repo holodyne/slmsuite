@@ -6,6 +6,7 @@ import asyncio
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.optimize import curve_fit
 from abc import ABC, abstractmethod
@@ -1026,7 +1027,7 @@ class Camera(_Common, ABC):
 
 
         if should_show:
-            plt.show()
+            _slmsuite_plt_show(name="camera_plot")
         return ax
 
     # Other helper methods.
@@ -1187,7 +1188,7 @@ class Camera(_Common, ABC):
             axs[1].set_xticks([])
             axs[1].set_yticks([])
 
-            plt.show()
+            _slmsuite_plt_show(name="autofocus_metric")
 
         return fom
 
@@ -1348,7 +1349,7 @@ class Camera(_Common, ABC):
             if lfit is not None:
                 plt.plot(z_list, lfit, label="Fit")
             plt.legend()
-            plt.show()
+            _slmsuite_plt_show(name="autofocus")
 
         return z_opt
 

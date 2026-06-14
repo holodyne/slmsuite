@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 import warnings
 
@@ -264,6 +265,6 @@ class _WavefrontCalibration(
 
             plt.xlim([0, self.cam.shape[1]])
             plt.ylim([self.cam.shape[0], 0])
-            plt.show()
+            _slmsuite_plt_show(name="wavefront_calibration_points")
 
         return calibration_points

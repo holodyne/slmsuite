@@ -3,6 +3,7 @@ from slmsuite.holography.toolbox import _process_grid
 from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._hologram import Hologram
 from slmsuite.holography.algorithms._feedback import FeedbackHologram
+from slmsuite._plotting import _slmsuite_plt_show
 
 
 class _AbstractSpotHologram(FeedbackHologram):
@@ -96,7 +97,7 @@ class _AbstractSpotHologram(FeedbackHologram):
                 plt.scatter(sv2[0, :], sv2[1, :], s=300, fc="none", ec="b", label="After affine fit")
                 plt.legend()
             plt.title("Refine Offset")
-            plt.show()
+            _slmsuite_plt_show(name="refine_offset")
 
         # Handle the feedback applied from this refinement.
         if basis is not None:

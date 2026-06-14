@@ -5,6 +5,7 @@ Datastructures, methods, and calibrations for an SLM monitored by a camera.
 import os
 import copy
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 import warnings
 
@@ -171,7 +172,7 @@ class CameraSLM(_Loggable):
         plt.tight_layout()
 
         if should_show:
-            plt.show()
+            _slmsuite_plt_show(name="fourierslm_plot")
 
         return axs
 

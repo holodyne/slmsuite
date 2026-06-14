@@ -1,5 +1,6 @@
 import cv2
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import optimize
 from tqdm.auto import tqdm
@@ -600,7 +601,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 plt.xlabel(r"$\phi$ $[\pi]$")
                 plt.ylabel("Signal")
 
-                plt.show()
+                _slmsuite_plt_show(name="wavefront_calibrate_superpixel_fit_1D")
 
             return best_phase, amp, r2, contrast
 
@@ -740,7 +741,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 for index, title in enumerate(["Image", "Guess", "Fit"]):
                     axs[index].set_title(title)
 
-                plt.show()
+                _slmsuite_plt_show(name="wavefront_calibrate_superpixel_fit_2D")
 
             return final
 
@@ -900,7 +901,8 @@ class _WavefrontCalibrationSuperpixel(object):
 
                     return image_from_plot
                 else:
-                    plt.show()
+                    title_parsed = title.replace(" ", "_").lower()
+                    _slmsuite_plt_show(name=f"wavefront_calibrate_superpixel_{title_parsed}")
 
         def take_interference_regions(img, integrate=True):
             """Helper function for grabbing the data at the calibration points."""
@@ -1736,5 +1738,5 @@ class _WavefrontCalibrationSuperpixel(object):
         plt.xticks([])
         plt.yticks([])
 
-        plt.show()
+        _slmsuite_plt_show(name="wavefront_calibration_superpixel_plot_raw")
 

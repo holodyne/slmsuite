@@ -10,6 +10,7 @@ try:
 except ImportError:
     cp = np
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import warnings
 from PIL import Image
@@ -358,7 +359,7 @@ class SLM(_Common, ABC):
         plt.sca(ax)
 
         if should_show:
-            plt.show()
+            _slmsuite_plt_show(name="slm_plot")
 
         return ax
 
@@ -1401,7 +1402,7 @@ class SLM(_Common, ABC):
 
         # Finalize the plot and return the axes.
         plt.tight_layout()
-        plt.show()
+        _slmsuite_plt_show(name="plot_source")
 
         return axs
 
