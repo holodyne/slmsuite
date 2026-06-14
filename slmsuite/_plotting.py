@@ -1,10 +1,7 @@
 """Matplotlib plot interception for headless and programmatic use."""
-import contextlib
 import pathlib
 
-_fig_counts = {}        # name/prefix → count; tracks per-context numbering in save mode
 _save_dir = None
-_prefix = ""
 _current_handler = None # set by configure_plotting(); None means call real plt.show()
 
 
@@ -27,11 +24,14 @@ def _slmsuite_plt_show(name=None, *args, **kwargs):
         plt.show(*args, **kwargs)
 
 
-def configure_plotting(mode="show", save_dir=None, prefix="", headless=False):
+def configure_plotting(
+    mode="show",
+    save_dir=None,
+    headless=False,
+    extension="png",
+    savefig_kwargs=None
+):
     """Configure how slmsuite plots are displayed or saved.
-
-    Affects :func:`_slmsuite_plt_show` calls only; global ``plt.show`` is
-    never patched.
 
     Parameters
     ----------
@@ -43,24 +43,32 @@ def configure_plotting(mode="show", save_dir=None, prefix="", headless=False):
         ``"suppress"``
             Close all figures silently.
         ``"save"``
-            Save figures to ``save_dir`` as PNGs, then close.
+            Save figures to ``save_dir`` (using ``extension`` and
+            ``savefig_kwargs``), then close.
         callable
             Called in place of ``plt.show()``.
 
     save_dir : str or path-like, optional
-        Output directory for ``"save"`` mode.  Created if absent.
-    prefix : str, optional
-        Fallback filename stem for ``"save"`` mode when no ``name`` is passed
-        to :func:`_slmsuite_plt_show`.  The same prefix shares a counter
-        across calls; a new prefix resets to 1.
+        Output directory for ``"save"`` mode.  Created if absent.  The filename
+        stem comes from the ``name`` passed to :func:`_slmsuite_plt_show`
+        (falling back to ``"fig"``).
     headless : bool, optional
-        Switch to the ``"Agg"`` backend and call ``plt.ioff()``.
+        Switch to the ``"Agg"`` backend and call ``plt.ioff()``.  Selecting any
+        other matplotlib backend is left to the user (e.g. the ``MPLBACKEND``
+        environment variable or a Jupyter ``%matplotlib`` magic).
+    extension : str, optional
+        File extension (and thus output format) for ``"save"`` mode, e.g.
+        ``"png"`` (default), ``"pdf"``, or ``"svg"``.  Ignored for other modes.
+    savefig_kwargs : dict, optional
+        Extra keyword arguments forwarded to ``Figure.savefig`` in ``"save"``
+        mode, merged over the defaults ``{"dpi": 150, "bbox_inches": "tight"}``
+        (user keys take precedence).  Ignored for other modes.
     """
     import matplotlib
     if headless:
         matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    global _fig_counts, _save_dir, _prefix, _current_handler
+    global _save_dir, _current_handler
 
     if headless:
         plt.ioff()
@@ -76,20 +84,18 @@ def configure_plotting(mode="show", save_dir=None, prefix="", headless=False):
         if save_dir is None:
             raise ValueError("save_dir is required for mode='save'")
         _save_dir = pathlib.Path(save_dir)
-        _save_dir.mkdir(parents=True, exist_ok=True)
-        _prefix = prefix
+        merged = {"dpi": 150, "bbox_inches": "tight", **(savefig_kwargs or {})}
 
         def _save(name=None, **kwargs):
             from slmsuite._logging import make_logger
+            from slmsuite.holography.analysis.files import generate_path
             logger = make_logger("plotting")
-            ctx = name or _prefix
+            ctx = name or "fig"
             figs = [plt.figure(n) for n in plt.get_fignums()]
-            for fig in figs:
-                _fig_counts[ctx] = _fig_counts.get(ctx, 0) + 1
-                fname = (f"{ctx}_fig{_fig_counts[ctx]}.png" if ctx
-                         else f"fig{_fig_counts[ctx]}.png")
-                path = _save_dir / fname
-                fig.savefig(path, dpi=150, bbox_inches="tight")
+            for n, fig in enumerate(figs):
+                ctx_ = ctx if len(figs) == 1 else f"{ctx}_{n}"
+                path = generate_path(_save_dir, ctx_, extension=extension)
+                fig.savefig(path, **merged)
                 logger.debug("Saved plot: %s", path)
             plt.close("all")
 
@@ -100,37 +106,3 @@ def configure_plotting(mode="show", save_dir=None, prefix="", headless=False):
 
     else:
         raise ValueError(f"Unknown mode: {mode!r}")
-
-
-@contextlib.contextmanager
-def capture_plots():
-    """Intercept :func:`_slmsuite_plt_show` and collect the resulting figures.
-
-    The previously-active handler is restored on exit.  Captured figures are
-    not closed automatically; call ``plt.close('all')`` when done.
-
-    Yields
-    ------
-    list of matplotlib.figure.Figure
-        Figures that would have been shown, in order of capture.
-
-    Examples
-    --------
-    >>> with slmsuite.capture_plots() as figs:
-    ...     hologram.plot_farfield()
-    >>> plt.close('all')
-    """
-    global _current_handler
-
-    prev_handler = _current_handler
-    captured = []
-
-    def _capture(name=None, **kwargs):
-        import matplotlib.pyplot as plt
-        captured.extend(plt.figure(n) for n in plt.get_fignums())
-
-    _current_handler = _capture
-    try:
-        yield captured
-    finally:
-        _current_handler = prev_handler
