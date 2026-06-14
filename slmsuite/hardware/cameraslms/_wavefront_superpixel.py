@@ -4,7 +4,6 @@ from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import optimize
 from tqdm.auto import tqdm
-import warnings
 
 from slmsuite import __version__
 from slmsuite.holography import analysis
@@ -370,7 +369,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 if test_index is None:
                     raise ValueError(message)
                 else:
-                    warnings.warn(message + " This message will error if running the full calibration.")
+                    self.logger.warning("%s This message will error if running the full calibration.", message)
 
         # Error check interference point proximity to the 0th order.
         dorder = field_point - base_point
@@ -387,7 +386,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 order_distance = order_distance_this
 
         if np.mean(interference_window) > order_distance:
-            warnings.warn(
+            self.logger.warning(
                 "The requested calibration point(s) are close to the expected positions of "
                 "the field diffractive orders. Consider moving calibration regions further away."
             )
@@ -403,7 +402,7 @@ class _WavefrontCalibrationSuperpixel(object):
         )
 
         if np.mean(interference_window)/2 > reflection_distance:
-            warnings.warn(
+            self.logger.warning(
                 "The requested calibration points are close to the expected positions of "
                 "the -1th orders of calibration points. Consider shifting the calibration regions "
                 "relative to the 0th order. Alternatively, use the avoid_mirrors= parameter "
@@ -572,7 +571,7 @@ class _WavefrontCalibrationSuperpixel(object):
             try:
                 popt, _ = optimize.curve_fit(cos, phases, intensities, p0=guess)
             except BaseException:
-                warnings.warn("Curve fitting failed; nulling response from this superpixel.")
+                self.logger.warning("Curve fitting failed; nulling response from this superpixel.")
                 return 0, 0, 0, 0
 
             # Extract phase and amplitude from fit.
@@ -888,7 +887,7 @@ class _WavefrontCalibrationSuperpixel(object):
                                 fig.canvas.get_width_height()[::-1] + (4,)
                             )[:,:,:3]
                     except:
-                        warnings.warn(
+                        self.logger.warning(
                             "Failed to convert figure to image for wavefront_calibrate movie. "
                             "Returning a blank image instead."
                         )
@@ -1412,9 +1411,9 @@ class _WavefrontCalibrationSuperpixel(object):
                 norm_ave = np.nanmean(norm)
                 norm_min = np.nanmin(norm)
                 if (np.median(pwr_below_r2) - pwr_min) / np.nanstd(pwr) < .5 and pwr_min < norm_min:
-                    warnings.warn(
-                        f"remove_background is enabled and a noise floor was detected; "
-                        f"removing this background ({pwr_min/norm_ave}% of the average normalization)."
+                    self.logger.warning(
+                        "remove_background is enabled and a noise floor was detected; "
+                        "removing this background (%s%% of the average normalization).", pwr_min/norm_ave
                     )
                     back[:] = pwr_min
 

@@ -10,6 +10,9 @@ from ctypes import *
 import numpy as np
 
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 CLKFREQ = 80e6
 
@@ -318,7 +321,6 @@ class Cheetah640(Camera):
             virtual=False,
             temperature=None,
             pitch_um=(20,20),
-            verbose=True,
             **kwargs
         ):
         """
@@ -333,8 +335,6 @@ class Cheetah640(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations. Defaults to 20 micron square pixels.
-        verbose : bool
-            Whether or not to print camera initialization information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
 
@@ -356,13 +356,11 @@ class Cheetah640(Camera):
 
         # Open the first avaliable camera
         if virtual:
-            if verbose:
-                print("Opening connection to virtual camera")
+            logger.debug("Opening connection to virtual camera")
             self.cam = self.xeneth.XC_OpenCamera(b"soft://0", 0, 0)
         else:
             if device.name.decode():
-                if verbose:
-                    print("Opening connection to %s" % device.name.decode())
+                logger.debug("Opening connection to %s", device.name.decode())
                 self.cam = self.xeneth.XC_OpenCamera(device.url, 0, 0)
                 name = device.name.decode()
             else:
@@ -372,8 +370,7 @@ class Cheetah640(Camera):
 
         # Check that the camera opened properly
         if self.xeneth.XC_IsInitialised(self.cam):
-            if verbose:
-                print("Camera initialized, loading properties ...")
+            logger.debug("Camera initialized, loading properties...")
 
             super().__init__(
                 self.xeneth.XC_GetWidth(self.cam),
@@ -419,15 +416,15 @@ class Cheetah640(Camera):
                 # Load visible setup by default
                 self.setup("free")
         else:
-            print("Initialization failed")
+            logger.error("Initialization failed.")
 
     def close(self):
         """See :meth:`.Camera.close`."""
         if self.xeneth.XC_IsInitialised(self.cam):
-            print("Closing connection to camera...")
+            self.logger.info("Closing connection to camera...")
             self.xeneth.XC_CloseCamera(self.cam)
         else:
-            print("Camera not open!")
+            self.logger.warning("Camera not open!")
 
     ### Property Configuration ###
 
@@ -600,10 +597,10 @@ class Cheetah640(Camera):
             Path to XCF file containing format information
         """
         if self.xeneth.XC_IsInitialised(self.cam):
-            print("Loading settings from {}.xcf ....".format(format_file))
+            self.logger.info("Loading settings from %s.xcf ...", format_file)
             self.xeneth.XC_LoadSettings(self.cam, format_file)
         else:
-            print("Camera not open!")
+            self.logger.warning("Camera not open!")
 
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
@@ -612,7 +609,7 @@ class Cheetah640(Camera):
             self.cam, b"IntegrationTime", byref(exposure_old)
         )
         if err1:
-            print("\nWarning -- error encountered! Error code: %d" % (err1))
+            self.logger.warning("Error encountered! Error code: %d", err1)
         return exposure_old.value / 1e6
 
     def _set_exposure_hw(self, exposure_s):
@@ -629,9 +626,8 @@ class Cheetah640(Camera):
             self.cam, b"IntegrationTime", byref(exposure)
         )
         if err1 or err2 or err3:
-            print(
-                "\nWarning -- error encountered! Error codes: %d, %d, %d"
-                % (err1, err2, err3)
+            self.logger.warning(
+                "Error encountered! Error codes: %d, %d, %d", err1, err2, err3
             )
 
     def set_framerate(self, framerate):
@@ -644,20 +640,18 @@ class Cheetah640(Camera):
             The framerate in fps.
         """
         rate = c_long(int(framerate))
-        print("Setting frame rate to %d Hz..." % (rate.value))
+        self.logger.info("Setting frame rate to %d Hz...", rate.value)
         rate_old = c_long(0)
         err1 = False
         err1 = self.xeneth.XC_GetPropertyValueL(self.cam, b"FrameRate", byref(rate_old))
         err2 = self.xeneth.XC_SetPropertyValueL(self.cam, b"FrameRate", rate, "")
         err3 = self.xeneth.XC_GetPropertyValueL(self.cam, b"FrameRate", byref(rate))
-        print(
-            "Previous frame rate: %d Hz\nNew frame rate: %d Hz"
-            % (rate_old.value, rate.value)
+        self.logger.info(
+            "Previous frame rate: %d Hz; new frame rate: %d Hz", rate_old.value, rate.value
         )
         if err1 or err2 or err3:
-            print(
-                "Warning -- error encountered! Error codes: %d, %d, %d"
-                % (err1, err2, err3)
+            self.logger.warning(
+                "Error encountered! Error codes: %d, %d, %d", err1, err2, err3
             )
 
     def get_frame_footer_length(self):
@@ -679,23 +673,22 @@ class Cheetah640(Camera):
         frames : int
             Number of buffer frames to allocate.
         """
-        print("Setting API buffer frame count to %d..." % (frames))
+        self.logger.info("Setting API buffer frame count to %d...", frames)
         frame_current = c_ulong(0)
         err1 = self.xeneth.XC_GetPropertyValueL(
             self.cam, b"_API_FPC_BFRNUM", byref(frame_current)
         )
-        print("Previous API buffer size: %d frames" % (frame_current.value))
+        self.logger.info("Previous API buffer size: %d frames", frame_current.value)
         err2 = self.xeneth.XC_SetPropertyValueL(
             self.cam, b"_API_FPC_BFRNUM", c_long(frames), ""
         )
         err3 = self.xeneth.XC_GetPropertyValueL(
             self.cam, b"_API_FPC_BFRNUM", byref(frame_current)
         )
-        print("     New API buffer size: %d frames" % (frame_current.value))
+        self.logger.info("New API buffer size: %d frames", frame_current.value)
         if err1 or err2 or err3:
-            print(
-                "Warning -- error encountered! Error codes: %d, %d, %d"
-                % (err1, err2, err3)
+            self.logger.warning(
+                "Error encountered! Error codes: %d, %d, %d", err1, err2, err3
             )
 
     def set_timeout_api(self, timeout_ms=10000):
@@ -711,23 +704,22 @@ class Cheetah640(Camera):
         timeout_ms : int
             Time in ms to wait for blocking frame capture.
         """
-        print("Setting API timeout to %d ms..." % (timeout_ms))
+        self.logger.info("Setting API timeout to %d ms...", timeout_ms)
         timeout_current = c_ulong(0)
         err1 = self.xeneth.XC_GetPropertyValueL(
             self.cam, b"_API_GETFRAME_TIMEOUT", byref(timeout_current)
         )
-        print("Previous API timeout: %d ms" % (timeout_current.value))
+        self.logger.info("Previous API timeout: %d ms", timeout_current.value)
         err2 = self.xeneth.XC_SetPropertyValueL(
             self.cam, b"_API_GETFRAME_TIMEOUT", c_long(timeout_ms), ""
         )
         err3 = self.xeneth.XC_GetPropertyValueL(
             self.cam, b"_API_GETFRAME_TIMEOUT", byref(timeout_current)
         )
-        print("     New API timeout: %d ms" % (timeout_current.value))
+        self.logger.info("New API timeout: %d ms", timeout_current.value)
         if err1 or err2 or err3:
-            print(
-                "Warning -- error encountered! Error codes: %d, %d, %d"
-                % (err1, err2, err3)
+            self.logger.warning(
+                "Error encountered! Error codes: %d, %d, %d", err1, err2, err3
             )
 
     def set_temperature(self, temp_c):
@@ -739,23 +731,22 @@ class Cheetah640(Camera):
         temp_c : float
             Temperature in degrees Celsius to set on startup.
         """
-        print("Setting settle temperature to %1.2fC..." % (temp_c))
+        self.logger.info("Setting settle temperature to %1.2fC...", temp_c)
         temp_current = c_double(0)
         err1 = self.xeneth.XC_GetPropertyValueF(
             self.cam, b"SettleTemperature", byref(temp_current)
         )
-        print("Previous set temperature: %1.2f degC" % (temp_current.value - 273.15))
+        self.logger.info("Previous set temperature: %1.2f degC", temp_current.value - 273.15)
         err2 = self.xeneth.XC_SetPropertyValueF(
             self.cam, b"SettleTemperature", c_double(temp_c + 273.15), ""
         )
         err3 = self.xeneth.XC_GetPropertyValueF(
             self.cam, b"SettleTemperature", byref(temp_current)
         )
-        print("     New set temperature: %1.2f degC" % (temp_current.value - 273.15))
+        self.logger.info("New set temperature: %1.2f degC", temp_current.value - 273.15)
         if err1 or err2 or err3:
-            print(
-                "Warning -- error encountered! Error codes: %d, %d, %d"
-                % (err1, err2, err3)
+            self.logger.warning(
+                "Error encountered! Error codes: %d, %d, %d", err1, err2, err3
             )
 
     def get_temperature(self):
@@ -775,7 +766,7 @@ class Cheetah640(Camera):
         )
 
         if err:
-            print("Error while reading sensor temperature; code: " + str(err))
+            self.logger.warning("Error while reading sensor temperature; code: %s", err)
         else:
             temp = temp_current.value - 273.15
 
@@ -805,13 +796,13 @@ class Cheetah640(Camera):
         errs.append(
             self.xeneth.XC_GetPropertyValueL(self.cam, b"ReadoutFlipX", byref(flip_x))
         )
-        print(
-            "Readout orientation set to (flip_x,flip_y) = (%s,%s)"
-            % (str(bool(flip_x.value)), str(bool(flip_y.value)))
+        self.logger.info(
+            "Readout orientation set to (flip_x,flip_y) = (%s,%s)",
+            bool(flip_x.value), bool(flip_y.value),
         )
 
         if any(errs):
-            print("Warning! Errors detected in trigger setup. List: ", errs)
+            self.logger.warning("Errors detected in trigger setup: %s", errs)
 
     def enable_frametags(self, enable=False):
         """
@@ -830,9 +821,9 @@ class Cheetah640(Camera):
                 self.cam, b"FrameMarker", b"Disabled"
             )
         if err:
-            print("Error setting frame tags! Code: " + str(err))
+            self.logger.warning("Error setting frame tags! Code: %s", err)
         else:
-            print("Frame tags set...")
+            self.logger.info("Frame tags set...")
 
     def setup_input_trigger(
         self,
@@ -841,7 +832,6 @@ class Cheetah640(Camera):
         source=0,
         skip=0,
         fpt=1,
-        verbose=False,
     ):
         """
         Configure capture control via triggering.
@@ -865,8 +855,6 @@ class Cheetah640(Camera):
             Number of frames to skip after trigger.
         fpt : int
             Frames per trigger.
-        verbose : bool
-            Enable debug printout.
         """
         trigger_modes = {
             0: b"Free running",
@@ -904,18 +892,15 @@ class Cheetah640(Camera):
         errs.append(
             self.xeneth.XC_GetPropertyValueL(self.cam, b"NrOfFrames", byref(fpt_old))
         )
-        if verbose:
-            print(
-                "Original trigger setup: Mode - %s | Delay - %1.2fus "
-                "| Source - %s | NSkip - %d | FPT - %d"
-                % (
-                    mode_old.value.decode(),
-                    delay_old.value,
-                    source_old.value.decode(),
-                    skip_old.value,
-                    fpt_old.value,
-                )
-            )
+        self.logger.debug(
+            "Original trigger setup: Mode - %s | Delay - %1.2fus "
+            "| Source - %s | NSkip - %d | FPT - %d",
+            mode_old.value.decode(),
+            delay_old.value,
+            source_old.value.decode(),
+            skip_old.value,
+            fpt_old.value,
+        )
 
         # Set desired trigger setup
         errs.append(
@@ -962,21 +947,18 @@ class Cheetah640(Camera):
         errs.append(
             self.xeneth.XC_GetPropertyValueL(self.cam, b"NrOfFrames", byref(fpt_old))
         )
-        if verbose:
-            print(
-                "     New trigger setup: Mode - %s | Delay - %1.2fus "
-                "| Source - %s | NSkip - %d | FPT - %d"
-                % (
-                    mode_old.value.decode(),
-                    delay_old.value,
-                    source_old.value.decode(),
-                    skip_old.value,
-                    fpt_old.value,
-                )
-            )
+        self.logger.debug(
+            "New trigger setup: Mode - %s | Delay - %1.2fus "
+            "| Source - %s | NSkip - %d | FPT - %d",
+            mode_old.value.decode(),
+            delay_old.value,
+            source_old.value.decode(),
+            skip_old.value,
+            fpt_old.value,
+        )
 
         if any(errs):
-            print("Warning! Errors detected in trigger setup. List: ", errs)
+            self.logger.warning("Errors detected in trigger setup: %s", errs)
 
     def setup_output_trigger(
         self,
@@ -985,7 +967,6 @@ class Cheetah640(Camera):
         source=2,
         delay=0,
         width=10,
-        verbose=False,
     ):
         """
         Configures output trigger.
@@ -1007,8 +988,6 @@ class Cheetah640(Camera):
             Trigger delay in microseconds.
         width : float
             Number of frames to skip after trigger.
-        verbose : bool
-            Enable debug printout.
         """
 
         trigger_status = {0: b"Off", 1: b"On"}
@@ -1051,18 +1030,15 @@ class Cheetah640(Camera):
                 self.cam, b"TriggerOutWidth", byref(width_old)
             )
         )
-        if verbose:
-            print(
-                "Original trigger setup: Status - %s | Mode - %s | Delay - %1.2fus "
-                "| Source - %s | Width - %d us"
-                % (
-                    status_old.value.decode(),
-                    mode_old.value.decode(),
-                    delay_old.value,
-                    source_old.value.decode(),
-                    width_old.value,
-                )
-            )
+        self.logger.debug(
+            "Original trigger setup: Status - %s | Mode - %s | Delay - %1.2fus "
+            "| Source - %s | Width - %d us",
+            status_old.value.decode(),
+            mode_old.value.decode(),
+            delay_old.value,
+            source_old.value.decode(),
+            width_old.value,
+        )
 
         # Set desired trigger setup
         errs.append(
@@ -1117,21 +1093,18 @@ class Cheetah640(Camera):
                 self.cam, b"TriggerOutWidth", byref(width_old)
             )
         )
-        if verbose:
-            print(
-                "     New trigger setup: Status - %s | Mode - %s | Delay - %1.2fus "
-                "| Source - %s | Width - %d us"
-                % (
-                    status_old.value.decode(),
-                    mode_old.value.decode(),
-                    delay_old.value,
-                    source_old.value.decode(),
-                    width_old.value,
-                )
-            )
+        self.logger.debug(
+            "New trigger setup: Status - %s | Mode - %s | Delay - %1.2fus "
+            "| Source - %s | Width - %d us",
+            status_old.value.decode(),
+            mode_old.value.decode(),
+            delay_old.value,
+            source_old.value.decode(),
+            width_old.value,
+        )
 
         if any(errs):
-            print("Warning! Errors detected in trigger setup. List: ", errs)
+            self.logger.warning("Errors detected in trigger setup: %s", errs)
 
     def setup_grabber(self, mode=0, frames=4000):
         """
@@ -1157,12 +1130,12 @@ class Cheetah640(Camera):
         errs.append(
             self.xeneth.XC_GetPropertyValueE(self.cam, b"Mode", byref(mode_old), 128)
         )
-        print("Previous capture mode: %s" % mode_old.value.decode())
+        self.logger.info("Previous capture mode: %s", mode_old.value.decode())
         errs.append(self.xeneth.XC_SetPropertyValueE(self.cam, b"Mode", modes[mode]))
         errs.append(
             self.xeneth.XC_GetPropertyValueE(self.cam, b"Mode", byref(mode_old), 128)
         )
-        print("     New capture mode: %s" % mode_old.value.decode())
+        self.logger.info("New capture mode: %s", mode_old.value.decode())
 
         # Set the buffer size
         errs.append(
@@ -1176,19 +1149,13 @@ class Cheetah640(Camera):
                 self.cam, b"FrameCount", byref(frames), 128
             )
         )
-        print("Buffer frame count set to %d frames" % frames.value)
+        self.logger.info("Buffer frame count set to %d frames", frames.value)
 
         if any(errs):
-            print("Warning! Error(s) encountered: ", errs)
+            self.logger.warning("Error(s) encountered: %s", errs)
 
-    def set_woi(self, woi=None, verbose=False):
-        """See :meth:`.Camera.set_woi`
-
-        Parameters
-        ----------
-        verbose : bool
-            Enable debug printout.
-        """
+    def set_woi(self, woi=None):
+        """See :meth:`.Camera.set_woi`"""
         if woi is None:
             woi = (0, self.default_shape[1], 0, self.default_shape[0])
 
@@ -1208,8 +1175,7 @@ class Cheetah640(Camera):
                 self.xeneth.XC_GetPropertyValueL(self.cam, prop, byref(prop_val))
             )
             report_str += "%s: %d | " % (prop.decode(), prop_val.value)
-        if verbose:
-            print(report_str)
+        self.logger.debug("%s", report_str)
 
         # Conservatively round inputs (make wider than requested) based on cam. reqts.
         min_w_factor = 16
@@ -1241,8 +1207,7 @@ class Cheetah640(Camera):
             )
             report_str += "%s: %d | " % (prop.decode(), prop_val.value)
             woi[i] = prop_val.value
-        if verbose:
-            print(report_str)
+        self.logger.debug("%s", report_str)
 
         # Reconfigure buffer based on new WOI
         self.shape = (woi[3] - woi[2] + 1, woi[1] - woi[0] + 1)
@@ -1252,7 +1217,7 @@ class Cheetah640(Camera):
         self.last_capture = np.empty(self.shape)
 
         if any(errs):
-            print("Warning! Error(s) encountered: ", errs)
+            self.logger.warning("Error(s) encountered: %s", errs)
 
         return self.woi
 
@@ -1269,10 +1234,10 @@ class Cheetah640(Camera):
         self.xeneth.XC_GetPropertyValueL(self.cam, b"LowGain", byref(gain_current))
         gain_current = bool(gain_current.value)
         if enable and not gain_current:
-            print("Enabling low gain mode...")
+            self.logger.info("Enabling low gain mode...")
             self.xeneth.XC_SetPropertyValueL(self.cam, b"LowGain", c_long(1), "")
         elif (not enable) and gain_current:
-            print("Disabling low gain mode...")
+            self.logger.info("Disabling low gain mode...")
             self.xeneth.XC_SetPropertyValueL(self.cam, b"LowGain", c_long(0), "")
 
     def enable_cooling(self, enable=True):
@@ -1288,10 +1253,10 @@ class Cheetah640(Camera):
         self.xeneth.XC_GetPropertyValueL(self.cam, b"Fan", byref(fan))
         fan_current = bool(fan.value)
         if enable and not fan_current:
-            print("Enabling cooling/high fan speed...")
+            self.logger.info("Enabling cooling/high fan speed...")
             self.xeneth.XC_SetPropertyValueL(self.cam, b"Fan", c_long(1), "")
         elif (not enable) and fan_current:
-            print("Disabling cooling/high fan speed...")
+            self.logger.info("Disabling cooling/high fan speed...")
             self.xeneth.XC_SetPropertyValueL(self.cam, b"Fan", c_long(0), "")
 
     ### Image Grabbing ###
@@ -1326,7 +1291,7 @@ class Cheetah640(Camera):
             # Start free-running capture
             self.start_capture()
         else:
-            print("Profile not found! Returning...")
+            self.logger.warning("Profile '%s' not found! Returning...", profile)
 
     def snap(self, conversion=False):
         """
@@ -1337,12 +1302,12 @@ class Cheetah640(Camera):
         conversion : bool
             Makes an internal 8 bit buffer for :meth:`xeneth.SaveData` and :meth:`xeneth.Blit`
         """
-        print("Starting capture...")
+        self.logger.info("Starting capture...")
         err = self.xeneth.XC_StartCapture(self.cam)
         if err != I_OK:
-            print("Could not start capturing, errorCode: %lu" % (err))
+            self.logger.warning("Could not start capturing, errorCode: %d", err)
         elif self.xeneth.XC_IsCapturing(self.cam):
-            print("Grabbing a frame...")
+            self.logger.info("Grabbing a frame...")
             if conversion:
                 err = self.xeneth.XC_GetFrame(
                     self.cam,
@@ -1360,13 +1325,13 @@ class Cheetah640(Camera):
                     self.frame_size,
                 )
             if err != I_OK:
-                print("Problem while fetching frame, errorCode %lu" % (err))
+                self.logger.warning("Problem while fetching frame, errorCode %d", err)
             else:
                 im = np.frombuffer(self.frame_buffer, c_ushort).reshape(self.shape)
-                print("Stopping capture...")
+                self.logger.info("Stopping capture...")
                 err = self.xeneth.XC_StopCapture(self.cam)
                 if err != I_OK:
-                    print("Could not stop capturing, errorCode: %lu" % (err))
+                    self.logger.warning("Could not stop capturing, errorCode: %d", err)
                 else:
                     return im
         return -1
@@ -1440,27 +1405,27 @@ class Cheetah640(Camera):
 
     def start_capture(self):
         """Initiates the current capture run"""
-        print("Starting capture...")
+        self.logger.info("Starting capture...")
         err = self.xeneth.XC_StartCapture(self.cam)
         if err != I_OK:
-            print("Could not start capturing, errorCode: %lu" % (err))
+            self.logger.warning("Could not start capturing, errorCode: %d", err)
         while not self.isCapturing():
-            print("Waiting for capture start...")
+            self.logger.debug("Waiting for capture start...")
             time.sleep(0.1)
 
     def stop_capture(self):
         """Terminates the current capture run"""
-        print("Stopping capture...")
+        self.logger.info("Stopping capture...")
         err = self.xeneth.XC_StopCapture(self.cam)
         if err != I_OK:
-            print("Could not stop capturing, errorCode: %lu" % (err))
+            self.logger.warning("Could not stop capturing, errorCode: %d", err)
 
     def abort_capture(self):
         """Cancels any long, live frame captures"""
-        print("Aborting capture...")
+        self.logger.info("Aborting capture...")
         err = self.xeneth.XC_SetPropertyValueE(self.cam, b"AbortExposure", b"Abort")
         if err != I_OK:
-            print("Could not abort capture, errorCode: %lu" % (err))
+            self.logger.warning("Could not abort capture, errorCode: %d", err)
 
     def flush(self, timeout_s=1):
         """See :meth:`.Camera.flush`"""
@@ -1492,11 +1457,11 @@ class Cheetah640(Camera):
             Enables autogain if True.
         """
         if enable and "autogain" not in self.filters.keys():
-            print("Enabling autogain...")
+            self.logger.info("Enabling autogain...")
             tag = self.xeneth.XC_FLT_Queue(self.cam, b"AutoOffsetAndGain", "")
             self.filters["autogain"] = tag
         elif (not enable) and "autogain" in self.filters.keys():
-            print("Disabling autogain...")
+            self.logger.info("Disabling autogain...")
             self.xeneth.XC_RemImageFilter(self.cam, self.filters["autogain"])
             self.filters.pop("autogain")
 
@@ -1514,17 +1479,20 @@ class Cheetah640(Camera):
             Time to allow autoexposure to settle.
         """
         if enable and "autoexposure" not in self.filters.keys():
-            print("Enabling autoexposure...")
+            self.logger.info("Enabling autoexposure...")
             tag = self.xeneth.XC_FLT_Queue(self.cam, b"AutoExposure", "")
             self.xeneth.XC_FLT_SetParameter(self.cam, tag, b"Target", b"50")
-            print(self.xeneth.XC_FLT_SetParameter(self.cam, tag, b"Outliers", b"0.0"))
+            self.logger.debug(
+                "Outliers parameter set: %s",
+                self.xeneth.XC_FLT_SetParameter(self.cam, tag, b"Outliers", b"0.0"),
+            )
             self.filters["autoexposure"] = tag
             t_start = time.perf_counter()
             while time.perf_counter() - t_start < t_settle:
                 self._get_image_hw()
 
         elif (not enable) and "autoexposure" in self.filters.keys():
-            print("Disabling autoexposure...")
+            self.logger.info("Disabling autoexposure...")
             self.xeneth.XC_RemImageFilter(self.cam, self.filters["autoexposure"])
             self.filters.pop("autoexposure")
 
@@ -1532,10 +1500,10 @@ class Cheetah640(Camera):
         """Deletes all current *tracked* filters in the stack."""
         errs = []
         for filter_key in self.filters:
-            print("Closing %s filter..." % filter_key)
+            self.logger.info("Closing %s filter...", filter_key)
             errs.append(
                 self.xeneth.XC_RemImageFilter(self.cam, self.filters[filter_key])
             )
         self.filters = {}
         if any(errs):
-            print("Errors when closing filters! Codes: ", errs)
+            self.logger.warning("Errors when closing filters! Codes: %s", errs)

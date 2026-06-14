@@ -19,6 +19,9 @@ except ImportError:
     cp = np
 
 from slmsuite.holography.toolbox import format_2vectors, _process_grid
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 from slmsuite.holography.toolbox.phase import zernike_sum, laguerre_gaussian
 from slmsuite.misc.math import REAL_TYPES
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
@@ -308,7 +311,7 @@ def _take_parse_shape(images, shape=None):
         (M, N) = shape
 
     if M*N < img_count:
-        warnings.warn("Not enough space to fit all images. Truncating the image count.")
+        logger.warning("Not enough space to fit all images. Truncating the image count.")
         img_count = M*N
 
     return img_count, (M, N)
@@ -1011,7 +1014,7 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
             if guess is True:
                 raise NotImplementedError(message)
             else:
-                warnings.warn(message)
+                logger.warning(message)
 
     # Fit and plot each image.
     for img_idx in range(image_count):
@@ -2268,22 +2271,22 @@ def blob_array_detect(
 
     # Warn the user if the mask was >= (or close to) camera size.
     if np.any(mask.shape > 0.95 * np.array(img_8bit.shape)):
-        warnings.warn(
+        logger.warning(
             "The computed Fourier grid size exceeds or approaches the camera size; "
             "calibration results may be improperly centered as a result."
         )
     # Also warn if computed positions approach camera FOV boundary.
     elif np.any(np.nanmax(true_positions, axis=1) > 0.95 * np.flip(np.array(img_8bit.shape))) or \
          np.any(np.nanmin(true_positions, axis=1) < 0.05 * np.flip(np.array(img_8bit.shape))):
-        warnings.warn(
+        logger.warning(
             "The fitted spot array approaches or exceeds the camera FOV; "
             "calibration results may be improperly centered as a result."
         )
     # Warn if the array does not match the received pattern on the camera.
     if region_fraction < .5:
-        warnings.warn(
-            f"{(1-region_fraction)*100:.1f}% of the image's power outside the spot array. "
-            "This might have caused the array fit to be poor."
+        logger.warning(
+            "%.1f%% of the image's power outside the spot array. "
+            "This might have caused the array fit to be poor.", (1 - region_fraction) * 100
         )
 
     if plot:

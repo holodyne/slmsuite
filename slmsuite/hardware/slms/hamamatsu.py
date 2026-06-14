@@ -30,6 +30,9 @@ from ctypes import *
 
 import numpy as np
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 try:
     _libname = "hpkSLMdaLV.dll"

@@ -20,6 +20,10 @@ except:
     tis = None
     warnings.warn("tisgrabber not installed. Install to use ImagingSource cameras.")
 
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
+
 
 # Change this DLL path if necessary
 DLL_PATH = "./tisgrabber_x64.dll"
@@ -88,7 +92,7 @@ class ImagingSource(Camera):
             if to_raise:
                 raise Exception(err_str)
             else:
-                print(err_str)
+                logger.error(err_str)
         return err
 
     def __init__(
@@ -96,7 +100,6 @@ class ImagingSource(Camera):
         serial="",
         vid_format=None,
         pitch_um=None,
-        verbose=True,
         **kwargs
     ):
         """
@@ -115,8 +118,6 @@ class ImagingSource(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -124,15 +125,14 @@ class ImagingSource(Camera):
             raise ImportError("tisgrabber not installed. Install to use ImagingSource cameras.")
 
         # Initialize the SDK if needed.
-        if verbose: print("TIS Camera SDK initializing... ", end="")
+        logger.debug("TIS Camera SDK initializing...")
         if ImagingSource.sdk is None:
             err = ImagingSource.init_sdk()
             if err != 1:
                 raise Exception("Error when loading SDK: " + str(err))
-        if verbose: print("success")
 
         # Then we load the camera from the SDK.
-        if verbose: print('"{}" initializing... '.format(serial), end="")
+        logger.debug('"%s" initializing...', serial)
 
         # cam will be the handle that represents the camera.
         self.cam = ImagingSource.sdk.IC_CreateGrabber()
@@ -172,7 +172,7 @@ class ImagingSource(Camera):
             pitch_um=pitch_um,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("ImagingSource camera initialized.")
 
     def close(self):
         """See :meth:`.Camera.close`."""

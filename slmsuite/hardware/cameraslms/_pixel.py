@@ -3,7 +3,6 @@ from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import ndimage
 from tqdm.auto import tqdm
-import warnings
 
 from slmsuite.holography import analysis
 from slmsuite.holography import toolbox
@@ -114,9 +113,9 @@ class _PixelCalibration(object):
             levels = int(2 ** (np.ceil(np.log2(levels))))
 
             if levels > self.slm.bitresolution:
-                warnings.warn(
-                    f"Requested {levels} levels are more than the "
-                    f"bitresolution. Truncating to {self.slm.bitresolution}."
+                self.logger.warning(
+                    "Requested %s levels are more than the bitresolution. Truncating to %s.",
+                    levels, self.slm.bitresolution,
                 )
                 levels = self.slm.bitresolution
 
@@ -571,7 +570,7 @@ class _PixelCalibration(object):
         r_squared = 1 - (ss_res / ss_tot)
 
         if r_squared < 0.9:
-            warnings.warn(f"Low R^2 value of {r_squared:.3f} for gamma fit. Fit may be inaccurate.")
+            self.logger.warning("Low R^2 value of %.3f for gamma fit. Fit may be inaccurate.", r_squared)
 
         if plot:
             plt.plot(levels, gamma, "o-", label="calibrated")

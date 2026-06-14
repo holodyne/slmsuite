@@ -174,9 +174,9 @@ class MultiplaneHologram(Hologram):
 
     # Overload user functions with meta functionality.
 
-    def _update_flags(self, method, verbose, feedback, stat_groups, **kwargs):
+    def _update_flags(self, method, feedback, stat_groups, **kwargs):
         # First update the parent flags.
-        super()._update_flags(method, verbose, feedback, stat_groups, **kwargs)
+        super()._update_flags(method, feedback, stat_groups, **kwargs)
 
         # Then update each of the child flags.
         for h in self.holograms:

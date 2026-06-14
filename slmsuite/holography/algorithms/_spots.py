@@ -4,6 +4,9 @@ from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._hologram import Hologram
 from slmsuite.holography.algorithms._feedback import FeedbackHologram
 from slmsuite._plotting import _slmsuite_plt_show
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 
 class _AbstractSpotHologram(FeedbackHologram):
@@ -378,7 +381,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
             # Warn the user that the piston is useless.
             if 0 in self.zernike_basis:
-                warnings.warn(
+                logger.warning(
                     "Found ANSI index '0' (Zernike piston) in the zernike_basis; "
                     "this is not necessary as spot phase is controlled externally."
                 )
@@ -460,7 +463,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         if self.spot_ij is not None:
             dist_ij = np.max([toolbox.smallest_distance(self.spot_ij) / 1.5, min_psf])
             if psf_ij > dist_ij:
-                warnings.warn(
+                logger.warning(
                     "The expected camera spot point-spread-function is too large. "
                     "Clipping to a smaller "
                 )
@@ -543,7 +546,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 self._nearfield2farfield()
                 self._farfield2nearfield()
             except Exception as e:
-                warnings.warn("Raw CUDA kernels failed to load. Falling back to cupy.\n" + str(e))
+                self.logger.warning("Raw CUDA kernels failed to load. Falling back to cupy: %s", e)
 
     def __len__(self):
         """
@@ -689,11 +692,11 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                     self.farfield = self._nearfield2farfield_cuda(nearfield)
                     self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
                 except Exception as err:    # Fallback to cupy upon error.
-                    warnings.warn("Falling back to cupy:\n" + str(err))
+                    self.logger.warning("Falling back to cupy: %s", err)
                     raise err
                     self.cuda = False
             else:
-                warnings.warn(
+                self.logger.warning(
                     "Custom compressed CUDA kernel is not supported for torch."
                 )
                 self.cuda = False
@@ -728,7 +731,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         threads_per_block = int(1024)
         assert self._near2far_cuda.max_threads_per_block >= threads_per_block
         if self._near2far_cuda.max_threads_per_block > threads_per_block:
-            warnings.warn(
+            self.logger.warning(
                 "Threads per block can be larger than the hardcoded limit of 1024. "
                 "Remove this limit for enhanced speed."
             )
@@ -800,9 +803,10 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             self._update_cupy_kernel()
             collapse_kernel(self._cupy_kernel, out=farfield)
         else:
-            warnings.warn(
-                f"Operating on {N} spots, larger than the threshold {N_BATCH_MAX} for a static kernel cache. "
-                f"Operating slmsuite's compressed kernel on a CUDA-capable GPU avoids a cycling cache."
+            self.logger.warning(
+                "Operating on %s spots, larger than the threshold %s for a static kernel cache. "
+                "Operating slmsuite's compressed kernel on a CUDA-capable GPU avoids a cycling cache.",
+                N, N_BATCH_MAX,
             )
             batches = int(np.ceil(N / N_BATCH_MAX))
             for batch in range(batches):
@@ -833,7 +837,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             try:
                 self._farfield2nearfield_cuda()
             except Exception as err:    # Fallback to cupy upon error.
-                warnings.warn("Falling back to cupy:\n" + str(err))
+                self.logger.warning("Falling back to cupy: %s", err)
                 raise err
                 self.cuda = False
 
@@ -863,7 +867,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         threads_per_block = int(1024)
         assert self._far2near_cuda.max_threads_per_block >= threads_per_block
         if self._far2near_cuda.max_threads_per_block > threads_per_block:
-            warnings.warn(
+            self.logger.warning(
                 "Threads per block can be larger than the hardcoded limit of 1024. "
                 "Remove this limit for enhanced speed."
             )
@@ -960,7 +964,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             feedback = self.flags["feedback"] = "computational_spot"
 
         if feedback == "experimental":
-            warnings.warn("CompressedSpotHologram feedback 'experimental' is interpreted as 'experimental_spot'")
+            self.logger.warning("CompressedSpotHologram feedback 'experimental' is interpreted as 'experimental_spot'")
             feedback = self.flags["feedback"] = "experimental_spot"    # experimental_spot will have trouble for 3D.
 
         # Weighting strategy depends on the chosen feedback method.
@@ -1579,7 +1583,7 @@ class SpotHologram(_AbstractSpotHologram):
         feedback = self.flags["feedback"]
 
         if feedback == "experimental":
-            warnings.warn("SpotHologram feedback 'experimental' is interpreted as 'experimental_spot'")
+            self.logger.warning("SpotHologram feedback 'experimental' is interpreted as 'experimental_spot'")
             feedback = self.flags["feedback"] = "experimental_spot"
 
         # Weighting strategy depends on the chosen feedback method.

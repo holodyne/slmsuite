@@ -292,14 +292,14 @@ class TestCamera:
         """Autoexposure converges to same result from different starting points."""
         with subtests.test("convergence"):
             camera.set_exposure(0.01)
-            result1 = camera.autoexposure(verbose=False)
+            result1 = camera.autoexposure()
             camera.set_exposure(1)
-            result2 = camera.autoexposure(verbose=False)
+            result2 = camera.autoexposure()
             assert pytest.approx(result1, rel=0.15) == result2
 
         with subtests.test("custom set_fraction"):
             camera.set_exposure(0.01)
-            result3 = camera.autoexposure(set_fraction=0.3, verbose=False)
+            result3 = camera.autoexposure(set_fraction=0.3)
             assert result3 > 0
 
     def test_autofocus(self, camera, slm, subtests):
@@ -308,13 +308,13 @@ class TestCamera:
         slm.set_source_analytic()
 
         fs = FourierSLM(camera, slm)
-        fs.fourier_calibrate(array_pitch=10, verbose=False)
+        fs.fourier_calibrate(array_pitch=10)
 
         defocus_zernike = 1
         slm.source["phase_sim"] = zernike(slm, 4, -defocus_zernike, use_mask=False)
 
         with subtests.test("recovers defocus"):
-            defocus_opt = camera.autofocus(set_z=slm, verbose=False)
+            defocus_opt = camera.autofocus(set_z=slm)
             assert pytest.approx(defocus_opt, rel=0.25) == defocus_zernike
 
         with subtests.test("set_z validation"):

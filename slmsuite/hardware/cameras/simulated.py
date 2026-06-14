@@ -189,7 +189,7 @@ class SimulatedCamera(Camera):
                 cp.amax(cp.abs(self.knm_cam[0] - self.shape_padded[0]/2)) > self.shape_padded[0]/2 or
                 cp.amax(cp.abs(self.knm_cam[1] - self.shape_padded[1]/2)) > self.shape_padded[1]/2
             ):
-                warnings.warn(
+                self.logger.warning(
                     "Camera extends beyond the accessible SLM k-space;"
                     " some pixels may not be targetable."
                 )

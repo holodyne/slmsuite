@@ -132,7 +132,7 @@ class _Common(_Viewable, _Loggable, ABC):
 
             # Warn the user if something is wrong.
             if dtype_bitdepth < self.bitdepth:
-                raise warnings.warn(
+                warnings.warn(
                     f"Hardware '{self.name}' bitdepth of {self.bitdepth} does not conform "
                     f"with the image type {self.dtype} with {self.dtype.itemsize} bytes."
                 )

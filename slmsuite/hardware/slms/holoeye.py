@@ -11,6 +11,9 @@ or otherwise add the installation folder to your python path.
 """
 import warnings
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 # Set the path for the SLM Display SDK
 import os

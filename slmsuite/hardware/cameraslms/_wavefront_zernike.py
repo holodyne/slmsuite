@@ -444,10 +444,11 @@ class _WavefrontCalibrationZernike(object):
                 max = np.max(take)
 
                 if max >= self.cam.bitresolution-1:
-                    warnings.warn("Image is overexposed.")
+                    self.logger.warning("Image is overexposed.")
                 elif max > .5*self.cam.bitresolution:
-                    warnings.warn(
-                        f"Image might become overexposed during optimization ({max}/{self.cam.bitresolution-1})."
+                    self.logger.warning(
+                        "Image might become overexposed during optimization (%s/%s).",
+                        max, self.cam.bitresolution-1,
                     )
 
                 self.cam.plot(img, title="Zernike Calibration Status")

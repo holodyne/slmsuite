@@ -13,8 +13,6 @@ import logging
 import logging.config
 import sys
 
-from slmsuite._pickling import _Picklable
-
 _DEFAULT_LEVEL = logging.INFO
 _BUFFER_CAPACITY = 10000
 
@@ -36,11 +34,11 @@ _LOGGER_COLORS = {
     "bold_italic_bright_red": "\033[1;3;91m",
 }
 
-_SLMSUITE_COLORS = {        # keyed by class name (see _infer_color), plus two specials
-    "Camera":    "bold_yellow",
-    "CameraSLM": "bold_green",
-    "SLM":       "bold_blue",
-    "Hologram":  "bold_cyan",
+_SLMSUITE_COLORS = {
+    "Camera":    "bold_blue",
+    "CameraSLM": "bold_cyan",
+    "SLM":       "bold_green",
+    "Hologram":  "bold_yellow",
     "slmsuite":  "bold_magenta",
     "default":   "reset",
 }
@@ -215,15 +213,22 @@ def make_logger(name, color="default"):
     Parameters
     ----------
     name : str
-        Logger name, prefixed with ``"slmsuite."`` automatically.
+        Logger name, prefixed with ``"slmsuite."`` automatically. Passing a module
+        ``__name__`` works too: a leading ``"slmsuite."`` is stripped to avoid doubling.
     color : str, optional
         Key into :data:`_LOGGER_COLORS` (e.g. ``"bold_cyan"``, ``"Hologram"``).
         Defaults to uncolored.
     """
+    name = name.removeprefix("slmsuite.")
     return logging.LoggerAdapter(
         logging.getLogger(f"slmsuite.{name}"),
         extra={"log_name": name, "log_color": _LOGGER_COLORS.get(color, _LOGGER_COLORS["reset"])},
     )
+
+# Imported here to avoid a circular import: _pickling pulls in
+# misc/analysis/toolbox, which import make_logger above.
+from slmsuite._pickling import _Picklable
+
 
 class _Loggable(_Picklable):
     """Gives an object a colorized logger and an isolated slice of the shared log buffer."""
