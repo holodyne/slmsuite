@@ -22,7 +22,8 @@ interfaces which support UC480 drivers.
 
 Note
 ~~~~
-Color camera functionality is not currently implemented, and will lead to undefined behavior.
+Color cameras reduce each frame to a single channel selected by the base-class
+:attr:`~slmsuite.hardware.cameras.camera.Camera.color_channel` setting.
 """
 
 import os
@@ -60,6 +61,11 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
             dll_path += "64_lib"
         else:
             dll_path += "32_lib"
+
+    if not os.path.exists(dll_path) or not os.path.isdir(dll_path):
+        warnings.warn(
+            f"Thorlabs camera DLL path does not exist.\n'{dll_path}'"
+        )
 
     if hasattr(os, "add_dll_directory"):
         try:

@@ -1,9 +1,18 @@
 """
 Abstract camera functionality.
 """
-import logging
+import asyncio
+import io
 import time
+import warnings
 from abc import ABC, abstractmethod
+
+import matplotlib.pyplot as plt
+import numpy as np
+import PIL
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from scipy.ndimage import zoom
+import logging
 
 import matplotlib.pyplot as plt
 from slmsuite._plotting import _slmsuite_plt_show
@@ -13,6 +22,8 @@ from scipy.optimize import curve_fit
 
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
+from slmsuite.holography.analysis import image_centroids, image_remove_field
+from slmsuite.holography.analysis.files import _gray2rgb
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
@@ -51,6 +62,11 @@ class Camera(_Common, ABC):
         Default setting for averaging (sums repeated measurements). See :meth:`.get_image()`.
     hdr : (int, int) OR None
         Default setting for multi-exposure High Dynamic Range imaging. See :meth:`.get_image()`.
+    color_channel : None OR int
+        For color cameras, selects which channel of a ``(height, width, channels)``
+        frame to keep as the grayscale image. See :meth:`.get_image()`.
+        If ``int``, returns the corresponding color channel.
+        If ``None``, defaults to 0.
     capture_attempts : int
         If the camera returns an error or exceeds a timeout,
         try again for a total of ``capture_attempts`` attempts.
@@ -104,8 +120,9 @@ class Camera(_Common, ABC):
         name="",
         exposure_bounds_s=None,
         averaging=None,
-        capture_attempts=5,
         hdr=None,
+        color_channel=None,
+        capture_attempts=5,
         rot="0",
         fliplr=False,
         flipud=False,
@@ -133,7 +150,7 @@ class Camera(_Common, ABC):
         name : str
             Defaults to ``"camera"``.
         exposure_bounds_s : (float, float) OR None
-            Exposure bounds in seconds for the camera. If ``None``, no bounds are applied.
+            Exposure bounds in seconds for the camera. If ``None``, no software bounds are applied.
         averaging : int or None
             Number of frames to average. Used to increase the effective bit depth of a camera by using
             pre-quantization noise (e.g. dark current, read-noise, etc.) to "dither" the pixel output
@@ -141,6 +158,11 @@ class Camera(_Common, ABC):
         hdr : int OR (int, int) OR None OR False
             Exposure information for `Multi-exposure High Dynamic Range (HDR) imaging
             <https://en.wikipedia.org/wiki/Multi-exposure_HDR_capture>`_
+        color_channel : None OR int
+            For color cameras, selects which channel of a ``(height, width, channels)``
+            frame to keep as the grayscale image. If ``int``, returns that channel index.
+            If ``None``, defaults to channel ``0``. A weighted combination of channels
+            (via a list of floats) is planned but not yet implemented.
         capture_attempts : int
             If the camera returns an error or exceeds a timeout,
             try again for a total of ``capture_attempts`` attempts.
@@ -194,6 +216,14 @@ class Camera(_Common, ABC):
 
         self.exposure_s = 1     # Default to 1s for Simulated cameras.
         self.exposure_s = self.get_exposure()
+
+        # Color handling. Set before _get_dtype() since the tolerant capture used to probe
+        # the dtype reduces color frames to grayscale via self.color_channel.
+        self.color_channel = color_channel
+
+        # Set datatype variables.
+        self.bitdepth = int(bitdepth)
+        self.dtype = self._get_dtype()
 
         # Frame averaging variables.
         self.averaging = self._parse_averaging(averaging, preserve_none=True)
@@ -397,13 +427,67 @@ class Camera(_Common, ABC):
 
     # Capture methods one level of abstraction above _get_image_hw().
 
+    def _parse_color_image(self, img):
+        """
+        Reduces a color image to grayscale according to :attr:`color_channel`.
+
+        The color channel is assumed to be the **last** axis, so this works both for a
+        single frame of shape ``(height, width, channels)`` and for a stack of frames of
+        shape ``(image_count, height, width, channels)``.
+
+        Parameters
+        ----------
+        img : numpy.ndarray
+            Color image (or stack of color images) with the channel as the last axis.
+
+        Returns
+        -------
+        numpy.ndarray
+            The image(s) with the color axis removed.
+        """
+        color_channel = self.color_channel
+        if color_channel is None:
+            color_channel = 0
+
+        if isinstance(color_channel, int):
+            return img[..., color_channel]
+        elif isinstance(color_channel, (list, np.ndarray)):
+            raise NotImplementedError("Weighted color handling is not implemented yet.")
+        else:
+            raise ValueError(f"Expected color_channel to be None or int. Found {self.color_channel}.")
+
     def _get_image_hw_tolerant(self, *args, **kwargs):
+        """
+        Wraps :meth:`._get_image_hw()` with error tolerance and color handling.
+
+        Retries the capture up to :attr:`capture_attempts` times, warning on intermediate
+        failures and re-raising the last error if every attempt fails. Color frames
+        (shape ``(height, width, channels)``) are reduced to grayscale via
+        :meth:`._parse_color_image()`.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Passed through to :meth:`._get_image_hw()`.
+
+        Returns
+        -------
+        numpy.ndarray
+            A 2D image of shape ``(height, width)``.
+        """
         err = None
         failures = 0
 
         for _ in range(self.capture_attempts):
             try:
-                img =  self._get_image_hw(*args, **kwargs)
+                img = np.array(self._get_image_hw(*args, **kwargs))
+
+                if len(img.shape) == 2:     # All good!
+                    pass
+                elif len(img.shape) == 3:     # Need to convert to grayscale.
+                    img = self._parse_color_image(img)
+                else:
+                    raise ValueError(f"Expected a 2D or 3D (color) image. Found {img.shape}.")
 
                 if failures > 0:
                     self.logger.warning("_get_image_hw() failed %s times before succeeding.", failures)
@@ -418,12 +502,33 @@ class Camera(_Common, ABC):
         raise err
 
     def _get_images_hw_tolerant(self, *args, **kwargs):
-        e = None
+        """
+        Wraps :meth:`._get_images_hw()` with error tolerance and color handling.
+
+        Retries the capture up to :attr:`capture_attempts` times, warning on intermediate
+        failures and re-raising the last error if every attempt fails. Color stacks
+        (shape ``(image_count, height, width, channels)``) are reduced to grayscale via
+        :meth:`._parse_color_image()`.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Passed through to :meth:`._get_images_hw()`.
+
+        Returns
+        -------
+        numpy.ndarray
+            A stack of 2D images of shape ``(image_count, height, width)``.
+        """
+        err = None
         failures = 0
 
         for _ in range(self.capture_attempts):
             try:
-                imgs = self._get_images_hw(*args, **kwargs)
+                imgs = np.array(self._get_images_hw(*args, **kwargs))
+
+                if imgs.ndim == 4:      # Stack of color images; reduce to grayscale.
+                    imgs = self._parse_color_image(imgs)
 
                 if failures > 0:
                     self.logger.warning("_get_images_hw() failed %s times before succeeding.", failures)
@@ -597,12 +702,16 @@ class Camera(_Common, ABC):
 
             try:
                 # Using the camera-specific batch method if available
-                imgs = self._get_images_hw(
+                imgs = np.array(self._get_images_hw(
                     averaging, timeout_s=timeout_s+self.exposure_s
-                ).astype(averaging_dtype)
+                ))
+
+                # Reduce color stacks to grayscale before summing.
+                if imgs.ndim == 4:
+                    imgs = self._parse_color_image(imgs)
 
                 # Cast as the proper type so we can sum.
-                img = np.sum(imgs, axis=0)
+                img = np.sum(imgs.astype(averaging_dtype), axis=0)
             except NotImplementedError:
                 # Brute-force collection as a backup
                 img = np.zeros(self.default_shape, dtype=averaging_dtype)
@@ -669,11 +778,15 @@ class Camera(_Common, ABC):
             self.flush()
 
         # Grab images (no transformation)
-        imgs = self._get_images_hw(
+        imgs = np.array(self._get_images_hw(
             image_count,
             timeout_s=timeout_s+self.exposure_s,
             out=out
-        )
+        ))
+
+        # Reduce color stacks to grayscale.
+        if imgs.ndim == 4:
+            imgs = self._parse_color_image(imgs)
 
         # Transform if desired. Future: make more efficient.
         if transform:
@@ -1334,19 +1447,21 @@ class Camera(_Common, ABC):
 
         # Show result if desired
         if plot:
-            plt.plot(z_list, counts, label="Data")
+            plt.scatter(z_list, counts, color="k", label="Data")
             plt.xlabel(r"$z$")
             plt.ylabel("Figure of Merit")
             plt.title("Autofocus Sweep")
-            plt.scatter(z_opt, c_opt, label="Result")
+            plt.scatter(z_opt, c_opt, color="r", label="Result")
+
+            z_list_fine = np.linspace(np.min(z_list), np.max(z_list), 1000)
 
             lfit = None
             try:
-                lfit = lorentzian(z_list, *popt)
+                lfit = lorentzian(z_list_fine, *popt)
             except BaseException:
                 lfit = None
             if lfit is not None:
-                plt.plot(z_list, lfit, label="Fit")
+                plt.plot(z_list_fine, lfit, color="r", label="Fit")
             plt.legend()
             _slmsuite_plt_show(name="autofocus")
 
