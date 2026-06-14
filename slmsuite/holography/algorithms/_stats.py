@@ -1,4 +1,5 @@
 from slmsuite.holography.algorithms._header import *
+from slmsuite._plotting import _slmsuite_plt_show
 
 class _HologramStats(object):
 
@@ -222,6 +223,8 @@ class _HologramStats(object):
 
         self._update_stats_dictionary(stats)
 
+    # These functions are somewhat superseded by pickle.
+
     def save_stats(self, file_path, include_state=True):
         """
         Uses :meth:`save_h5` to export the statistics hierarchy to a given h5 file.
@@ -422,7 +425,7 @@ class _HologramStats(object):
             fig.colorbar(im_phase, cax=cax, orientation="vertical", format=r"%1.1f$\pi$")
 
         fig.tight_layout()
-        plt.show()
+        _slmsuite_plt_show(name="plot_nearfield")
 
     def plot_farfield(
         self,
@@ -739,7 +742,7 @@ class _HologramStats(object):
 
         if _show:
             plt.tight_layout()
-            plt.show()
+            _slmsuite_plt_show(name="plot_farfield")
 
         return limits
 
@@ -842,6 +845,6 @@ class _HologramStats(object):
         ax.set_xlim([-0.75, len(stats_dict["method"]) - 0.25])
 
         if show:
-            plt.show()
+            _slmsuite_plt_show(name="plot_stats")
 
         return ax

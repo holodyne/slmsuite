@@ -1,46 +1,61 @@
 """
 Abstract camera functionality.
 """
-import time
 import asyncio
+import io
+import time
 import warnings
-import numpy as np
+from abc import ABC, abstractmethod
+
 import matplotlib.pyplot as plt
+import numpy as np
+import PIL
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from scipy.ndimage import zoom
+import logging
+
+import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
+import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.optimize import curve_fit
-from abc import ABC, abstractmethod
 
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
+from slmsuite.holography.analysis import image_centroids, image_remove_field
+from slmsuite.holography.analysis.files import _gray2rgb
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
-from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.misc.math import REAL_TYPES
 
 
 class Camera(_Common, ABC):
     """
     Abstract class for cameras.
-    Comes with transformations, averaging and HDR,
-    and helper functions like :meth:`.autoexposure()`.
+    Comes with transformations, averaging,  HDR,
+    and helper functions like :meth:`.autoexpose()`.
 
     Attributes
     ----------
     name : str
         Camera identifier.
     shape : (int, int)
-        Stores ``(height, width)`` of the camera in pixels, the same convention as
-        :attr:`numpy.ndarray.shape`.
+        ``(height, width)`` of the image returned by :meth:`.get_image()`, in the same
+        order as :attr:`numpy.ndarray.shape`. Read-only property derived from the current
+        WOI, binning, and orientation transform (a 90/270 rotation swaps the two), so
+        ``get_image().shape == shape`` always holds.
     bitdepth : int
         Depth of a camera pixel well in bits.
     bitresolution : int
-        Returns ``(2**bitdepth) * averaging``. The action of averaging is a sum rather
-        than a mean, so the effective bitresolution increases accordingly.
+        Returns ``(2**bitdepth) * averaging``. The action of averaging here is a sum
+        rather than a mean, so the effective bitresolution increases accordingly.
     dtype : np.dtype
         Stores the type returned by :meth:`._get_image_hw()`.
         This value is cached upon initialization.
     pitch_um : (float, float) OR None
         Pixel pitch in microns.
+        This is a property that updates with binning.
     exposure_s : float
         Caches the last result of :meth:`.get_exposure()`. Can be used if the user wants to
         avoid the overhead of calling the method.
@@ -50,25 +65,40 @@ class Camera(_Common, ABC):
         Default setting for averaging (sums repeated measurements). See :meth:`.get_image()`.
     hdr : (int, int) OR None
         Default setting for multi-exposure High Dynamic Range imaging. See :meth:`.get_image()`.
+    color_channel : None OR int
+        For color cameras, selects which channel of a ``(height, width, channels)``
+        frame to keep as the grayscale image. See :meth:`.get_image()`.
+        If ``int``, returns the corresponding color channel.
+        If ``None``, defaults to 0.
     capture_attempts : int
         If the camera returns an error or exceeds a timeout,
         try again for a total of ``capture_attempts`` attempts.
         This is useful for resilience against errors that happen with low probability.
         Defaults to 5.
-    woi : tuple
-        WOI (window of interest) in ``(x, width, y, height)`` form.
+    binning : (int, int)
+        Binning of the camera in the transformed orientation. Defaults to (1, 1) for no binning.
+    woi : (int, int, int, int)
+        WOI (window of interest) in ``(x, width, y, height)`` form, in the
+        **transformed, unbinned** frame (the orientation the user sees, at full sensor
+        resolution). Stored unbinned because the WOI marks a physical sensor region
+        independent of :attr:`binning`; this keeps it binning-invariant so
+        ``set_woi(get_woi())`` round-trips and the Fourier calibration stays valid. The
+        binned output size is reported by :attr:`shape` instead.
 
         Warning
         ~~~~~~~
         This feature is less fleshed out than most. There may be issues
         (e.g. :meth:`.get_image()` with the ``averaging`` or ``hdr`` flags).
-    default_shape : tuple
-        Default ``shape`` of the camera before any WOI or transform changes are made.
-    transform : function
-        Flip and/or rotation operator specified by the user in :meth:`__init__`.
-        The user is expected to apply this transform to the matrix returned in
-        :meth:`get_image()`. Note that WOI changes are applied on the camera hardware
-        **before** this transformation.
+    origin : (int, int)
+        Read-only ``(x, y)`` of the image's upper-left corner (the WOI offset), in the
+        same frame as :attr:`woi`. ``(0, 0)`` for a full-sensor WOI.
+    center : (float, float)
+        Read-only ``(x, y)`` center of the returned image, ``(shape[1]/2, shape[0]/2)``.
+    transform : callable
+        Orientation transform (:class:`~slmsuite.holography.analysis.OrientationTransform`)
+        of flips and 90 degree rotations, applied to raw camera frames before they are
+        returned to the user. Built from the ``rot``, ``fliplr``, and ``flipud`` arguments
+        to :meth:`__init__`.
     last_image : numpy.ndarray OR None
         Last captured image. Note that this is a pointer to the same data that the user
         receives (to avoid copying overhead). Thus, if the user modifies the returned data,
@@ -88,7 +118,9 @@ class Camera(_Common, ABC):
         "averaging",
         "hdr",
         "woi",
-        "default_shape",
+        "_shape",
+        "_software_woi",
+        "_software_binning",
     ]
     _pickle_data = [
         "last_image",
@@ -100,11 +132,12 @@ class Camera(_Common, ABC):
         resolution,
         bitdepth=8,
         pitch_um=None,
-        name="camera",
+        name="",
         exposure_bounds_s=None,
         averaging=None,
-        capture_attempts=5,
         hdr=None,
+        color_channel=None,
+        capture_attempts=5,
         rot="0",
         fliplr=False,
         flipud=False,
@@ -127,12 +160,12 @@ class Camera(_Common, ABC):
         bitdepth
             See :attr:`bitdepth`.
         pitch_um : (float, float) OR None
-            Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
+            Extra information about the pitch of a single pixel ``(dx_um, dy_um)``
             to use additional calibrations.
         name : str
             Defaults to ``"camera"``.
         exposure_bounds_s : (float, float) OR None
-            Exposure bounds in seconds for the camera. If ``None``, no bounds are applied.
+            Exposure bounds in seconds for the camera. If ``None``, no software bounds are applied.
         averaging : int or None
             Number of frames to average. Used to increase the effective bit depth of a camera by using
             pre-quantization noise (e.g. dark current, read-noise, etc.) to "dither" the pixel output
@@ -140,6 +173,11 @@ class Camera(_Common, ABC):
         hdr : int OR (int, int) OR None OR False
             Exposure information for `Multi-exposure High Dynamic Range (HDR) imaging
             <https://en.wikipedia.org/wiki/Multi-exposure_HDR_capture>`_
+        color_channel : None OR int
+            For color cameras, selects which channel of a ``(height, width, channels)``
+            frame to keep as the grayscale image. If ``int``, returns that channel index.
+            If ``None``, defaults to channel ``0``. A weighted combination of channels
+            (via a list of floats) is planned but not yet implemented.
         capture_attempts : int
             If the camera returns an error or exceeds a timeout,
             try again for a total of ``capture_attempts`` attempts.
@@ -158,28 +196,24 @@ class Camera(_Common, ABC):
         """
         width, height = format_shape(resolution)
 
-        # Set shape, depending upon transform.
-        if rot in ("90", 1, "270", 3):
-            self.shape = (width, height)
-            self.default_shape = (width, height)
-        else:
-            self.shape = (height, width)
-            self.default_shape = (height, width)
+        # Set woi, binning, and shape variables
+        # These are stored in **untransformed** raw camera coordinates.
+        self._binning = (1, 1)
+        self._woi = (0, width, 0, height)
+        self._shape = (height, width)
 
-        # Create image transformation.
+        # Detect hardware WOI / binning support (prefer hardware if
+        # defined in camera class, fall back to software).
+        self._software_woi = type(self)._set_woi_hw is Camera._set_woi_hw
+        self._software_binning = type(self)._set_binning_hw is Camera._set_binning_hw
+
+        # Create image transformation. Now shape properties can be used.
         self.transform = analysis.get_orientation_transformation(rot, fliplr, flipud)
 
         # Parse capture_attempts.
         self.capture_attempts = int(capture_attempts)
         if capture_attempts <= 0:
             raise ValueError("capture_attempts must be positive.")
-
-        # Update WOI information.
-        self.woi = (0, width, 0, height)
-        try:
-            self.set_woi()
-        except NotImplementedError:
-            pass
 
         # Variable for storing the last capture.
         self.last_image = None
@@ -191,8 +225,16 @@ class Camera(_Common, ABC):
             None
         )
 
-        self.exposure_s = 1     # Default to 1s for Simulated cameras.
-        self.exposure_s = self.get_exposure()
+        self._exposure_s = 1     # Default to 1s for Simulated cameras.
+        self._exposure_s = self.get_exposure()
+
+        # Color handling. Set before _get_dtype() since the tolerant capture used to probe
+        # the dtype reduces color frames to grayscale via self.color_channel.
+        self.color_channel = color_channel
+
+        # Set datatype variables.
+        self.bitdepth = int(bitdepth)
+        self.dtype = self._get_dtype()
 
         # Frame averaging variables.
         self.averaging = self._parse_averaging(averaging, preserve_none=True)
@@ -200,7 +242,8 @@ class Camera(_Common, ABC):
         self._flush_iterations = 2  # Hidden variable: how many frames to capture for a flush.
 
         # Initialize the common hardware attributes.
-        super().__init__(
+        _Common.__init__(
+            self,
             resolution=resolution,
             bitdepth=bitdepth,
             name=name,
@@ -209,10 +252,311 @@ class Camera(_Common, ABC):
         )
 
     @property
-    def bitresolution(self):
+    def bitresolution(self) -> int:
+        # This overwrites the _Common bitresolution to account for averaging.
         return (2**self.bitdepth) * (self.averaging if self.averaging is not None else 1)
 
-    # Core methods - to be implemented by subclass.
+    # Binning methods.
+
+    @property
+    def pitch_um(self) -> np.ndarray | None:
+        """Returns the pixel pitch in micrometers (potentially after binning)."""
+        if self._pitch_um is not None:
+            # Report in the transformed frame: transform the raw pitch the same way as
+            # binning, so a 90/270 swap pairs the correct pitch and binning per axis.
+            pitch = self.transform.transform_shape(self._pitch_um)
+            binning = self.binning
+            return np.array([pitch[0] * binning[0], pitch[1] * binning[1]])
+        else:
+            return None
+
+    @pitch_um.setter
+    def pitch_um(self, value):
+        self._pitch_um = value
+
+    @property
+    def binning(self) -> tuple[int, int]:
+        """Returns the current binning."""
+        return self.transform.transform_shape(self._binning)
+
+    @binning.setter
+    def binning(self, value):
+        # set_binning() handles parsing, the transform, and the no-op short circuit.
+        self.set_binning(value)
+
+    def set_binning(self, binning: int | tuple[int, int] = 1, update_woi=True):
+        """
+        Set pixel binning in the transformed orientation. See :attr:`transform`.
+
+        Parameters
+        ----------
+        binning : int or (int, int)
+            Binning factor as ``(binx, biny)``.
+            If a single integer is provided, uses the same binning for both dimensions.
+        update_woi : bool
+            Whether or not to adjust the WOI according to the new binning.
+        """
+        # Parse binning.
+        if isinstance(binning, INTEGER_TYPES):
+            binning = (binning, binning)
+
+        binning = self.transform.transform_shape(binning)
+
+        # Break if no change.
+        if self._binning == binning:
+            return
+
+        # Save original WOI.
+        old_woi = self.woi
+        old_shape = self.shape
+
+        if not self._software_binning:
+            # Send it off to the hardware.
+            self._set_binning_hw(binning)
+            # Never trust that it succeeded.
+            self._binning = self._get_binning_hw()
+        else:
+            self._binning = binning
+
+        # Try and retain the same WOI in unbinned camera coordinates.
+        if update_woi:
+            try:
+                self.set_woi(old_woi)
+            except:
+                pass
+
+        # Erase last_image if the shape or WOI changed, since the old image would no longer be valid.
+        if self.shape != old_shape or self.woi != old_woi:
+            self.last_image = None
+
+    def get_binning(self):
+        """
+        Returns the current binning.
+        """
+        if not self._software_binning:
+            self._binning = self._get_binning_hw()
+
+        return self.transform.transform_shape(self._binning)
+
+    def _set_binning_hw(self, binning: tuple[int, int]):
+        raise NotImplementedError(f"Camera {self.name} has not implemented binning")
+
+    def _get_binning_hw(self):
+        raise NotImplementedError(f"Camera {self.name} has not implemented binning")
+
+    # WOI methods.
+
+    @property
+    def shape(self):
+        """
+        Returns ``(height, width)`` of images returned by :meth:`.get_image()`.
+
+        Accounts for the current WOI, binning, and orientation transform so that
+        ``get_image().shape == camera.shape`` always holds.
+        """
+        h_bin = self._woi[3] // self._binning[1]
+        w_bin = self._woi[1] // self._binning[0]
+        return self.transform.transform_shape((h_bin, w_bin))
+
+    @shape.setter
+    def shape(self, _):
+        pass  # derived from _woi and _binning; _Common.__init__ sets this
+
+    @property
+    def origin(self):
+        """
+        Returns the ``(x, y)`` coordinate of the upper-left corner of the image in pixels,
+        i.e. the WOI offset in transformed, unbinned coordinates. Equals ``(0, 0)`` when
+        the WOI covers the full sensor. Together with :attr:`center`, this lives in the same
+        coordinate frame as the :attr:`woi` property.
+        """
+        woi = self.woi
+        return (woi[0], woi[2])
+
+    @property
+    def center(self):
+        """
+        Returns the ``(x, y)`` coordinate of the center of the image in pixels,
+        following the ``(shape[1] / 2, shape[0] / 2)`` convention used throughout
+        the package (e.g. the default Fourier-calibration offset). Accounts for the
+        current WOI, binning, and orientation transform via :attr:`shape`.
+        """
+        shape = self.shape
+        return (shape[1] / 2, shape[0] / 2)
+
+    @property
+    def _woi_untransformed_binned(self):
+        """
+        Returns the WOI ``(x, w, y, h)`` in raw binned camera coordinates.
+        """
+        return (
+            self._woi[0] // self._binning[0],    # x / binx
+            self._woi[1] // self._binning[0],    # w / binx
+            self._woi[2] // self._binning[1],    # y / biny
+            self._woi[3] // self._binning[1],    # h / biny
+        )
+
+    @property
+    def woi(self):
+        """
+        Returns the WOI ``(x, w, y, h)`` in transformed, unbinned pixel coordinates.
+
+        This is the same coordinate convention accepted by :meth:`set_woi` and returned
+        by :meth:`get_woi`, so it is invariant under changes to :attr:`binning`.
+        """
+        return self.transform.transform_woi(
+            self._woi,
+            shape=self._shape,
+            binning_in=1,
+            binning_out=1,
+        )
+
+    def _set_woi_hw(self, woi):
+        """
+        Sets the WOI on hardware in raw camera coordinates (untransformed, binned).
+        If the camera expects unbinned coordinates, the woi should be multiplied by the
+        untransformed binning factor ``_binning``.
+        """
+        raise NotImplementedError(f"Camera {self.name} has not implemented WOI")
+
+    def _get_woi_hw(self):
+        """
+        Gets the WOI from hardware in raw camera coordinates (untransformed, binned).
+        If the camera returns unbinned coordinates, the woi should be multiplied by the
+        untransformed binning factor ``_binning``.
+        """
+        raise NotImplementedError(f"Camera {self.name} has not implemented WOI")
+
+    def set_woi(self, woi=None):
+        """
+        Set the window of interest (WOI) for the camera.
+
+        Cameras without hardware WOI support use a software crop after each capture.
+        Cameras with hardware WOI support (``_set_woi_hw`` overridden) call that instead.
+
+        Parameters
+        ----------
+        woi : (int, int, int, int) or None
+            ``(x0, w, y0, h)`` in **transformed, unbinned** pixel coordinates
+            (i.e. the camera's image orientation at full sensor resolution).
+            If ``None``, resets to the full sensor.
+
+        Returns
+        -------
+        (int, int, int, int)
+            :attr:`~slmsuite.hardware.cameras.camera.Camera.woi` after the update.
+        """
+        old_woi = self.woi
+        old_shape = self.shape
+
+        binx, biny = self._binning[0], self._binning[1]
+
+        if woi is None:
+            # Full sensor in untransformed, unbinned coordinates.
+            woi_unt = (0, self._shape[1], 0, self._shape[0])
+        else:
+            # Get the WOI in raw camera coordinates.
+            transformed_shape = self.transform.transform_shape(self._shape)
+            woi_unt = self.transform.inverse_woi(woi, transformed_shape)
+
+            # Clip to sensor bounds.
+            x0 = max(0, int(woi_unt[0]))
+            y0 = max(0, int(woi_unt[2]))
+            x1 = min(self._shape[1], x0 + int(woi_unt[1]))
+            y1 = min(self._shape[0], y0 + int(woi_unt[3]))
+            clipped = (x0, x1 - x0, y0, y1 - y0)
+
+            if clipped != tuple(int(v) for v in woi_unt):
+                warnings.warn(
+                    f"Requested WOI {woi} extends beyond the sensor and was clipped."
+                )
+
+            woi_unt = clipped
+
+        # Store untransformed, unbinned WOI.
+        self._woi = woi_unt
+
+        if not self._software_woi:
+            # Pass untransformed, binned coordinates to the subclass.
+            # The subclass might muliply by binning again depending on the camera.
+            self._set_woi_hw(self._woi_untransformed_binned)
+            # Read back (hardware may snap to allowed boundaries)
+            woi_hw = self._get_woi_hw()
+            self._woi = (
+                woi_hw[0] * binx,
+                woi_hw[1] * binx,
+                woi_hw[2] * biny,
+                woi_hw[3] * biny,
+            )
+        # else: handled by _crop_to_woi()
+
+        # Erase last_image if the shape or WOI changed, since the old image would no longer be valid.
+        if self.shape != old_shape or self.woi != old_woi:
+            self.last_image = None
+
+        return self.woi
+
+    def get_woi(self):
+        """
+        Get the current WOI in transformed, unbinned pixel coordinates.
+
+        For cameras without hardware WOI support, returns the cached WOI directly.
+        For cameras with hardware WOI support, queries the hardware first.
+        The returned coordinates match what :meth:`set_woi` accepts, so
+        ``set_woi(get_woi())`` is always a valid no-op round-trip.
+
+        Returns
+        -------
+        (int, int, int, int)
+            ``(x0, w, y0, h)`` in transformed, unbinned pixel coordinates —
+            the same coordinate system accepted by :meth:`set_woi`.
+        """
+        if not self._software_woi:
+            woi_hw = self._get_woi_hw()
+            binx, biny = self._binning[0], self._binning[1]
+            self._woi = (
+                woi_hw[0] * binx,
+                woi_hw[1] * binx,
+                woi_hw[2] * biny,
+                woi_hw[3] * biny,
+            )
+
+        return self.transform.transform_woi(
+            self._woi,
+            shape=self._shape,
+            binning_in=1,
+            binning_out=1,
+        )
+
+    def _get_ijraw_to_ijcam(self):
+        """
+        Returns an :class:`~slmsuite.holography.analysis.Affine` mapping raw sensor
+        pixel coordinates ``(x=col, y=row)`` to camera-image pixel coordinates,
+        accounting for WOI offset, binning, and orientation.
+
+        Stored calibrations use ``ijraw``; this converts them for user-facing ``ijcam``.
+        """
+        binx, biny = self._binning[0], self._binning[1]
+        woi_x = self._woi[0]
+        woi_y = self._woi[2]
+        w_bin = self._woi[1] // binx
+        h_bin = self._woi[3] // biny
+
+        # subtract WOI origin, then divide by binning.
+        woi_bin = analysis.Affine(
+            np.diag([1.0 / binx, 1.0 / biny]),
+            np.array([0.0, 0.0]),
+            np.array([float(woi_x), float(woi_y)]),
+        )
+
+        # orientation transform with shape-dependent translation.
+        return self.transform.affine((h_bin, w_bin)) @ woi_bin
+
+    def _get_ijcam_to_ijraw(self):
+        """Inverse of :meth:`_get_ijraw_to_ijcam`."""
+        return self._get_ijraw_to_ijcam().inv
+
+    # Info method to discover cameras.
 
     @staticmethod
     def info(verbose=True):
@@ -223,33 +567,38 @@ class Camera(_Common, ABC):
         ----------
         verbose : bool
             Whether or not to print display information.
-
-        Returns
-        -------
-        list
-            An empty list.
         """
-        if verbose:
-            print(".info() NotImplemented.")
-        return []
+        raise NotImplementedError("Camera class has not implemented info()")
+
+    # Exposure methods.
+
+    @property
+    def exposure_s(self):
+        """Returns the current exposure time in seconds."""
+        return self._exposure_s
+
+    @exposure_s.setter
+    def exposure_s(self, value : float):
+        if self._exposure_s != value:
+            self.set_exposure(value)
 
     def get_exposure(self):
         """
         Get the frame integration time in seconds.
-        Used in :meth:`.autoexposure()`.
+        Used in :meth:`.autoexpose()`.
 
         Returns
         -------
         float
             Integration time in seconds.
         """
-        self.exposure_s = self._get_exposure_hw()
-        return self.exposure_s
+        self._exposure_s = float(self._get_exposure_hw())
+        return self._exposure_s
 
     def set_exposure(self, exposure_s):
         """
         Set the frame integration time in seconds.
-        Used in :meth:`.autoexposure()`.
+        Used in :meth:`.autoexpose()`.
 
         Parameters
         ----------
@@ -264,13 +613,15 @@ class Camera(_Common, ABC):
         if self.exposure_bounds_s is not None:
             exposure_s_ = np.clip(exposure_s, *self.exposure_bounds_s)
             if exposure_s_ != exposure_s:
-                warnings.warn(
-                    f"Requested exposure {exposure_s} s is out of bounds "
-                    f"{self.exposure_bounds_s} s. Clipping to {exposure_s_} s."
+                self.logger.warning(
+                    "Requested exposure %s s is out of bounds %s s. Clipping to %s s.",
+                    exposure_s, self.exposure_bounds_s, exposure_s_,
                 )
                 exposure_s = exposure_s_
         self._set_exposure_hw(exposure_s)
-        return self.get_exposure()
+
+        self._exposure_s = self.get_exposure()
+        return self._exposure_s
 
     @abstractmethod
     def _get_exposure_hw(self):
@@ -293,147 +644,7 @@ class Camera(_Common, ABC):
         """
         raise NotImplementedError(f"Camera {self.name} has not implemented _set_exposure_hw")
 
-    def set_woi(self, woi=None):
-        """
-        Method to narrow the imaging region to a 'window of interest'
-        for faster framerates.
-
-        Parameters
-        ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-            If ``None``, defaults to largest possible.
-
-        Returns
-        -------
-        woi : list
-            :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-        """
-        raise NotImplementedError()
-
-    def flush(self, timeout_s=1):
-        """
-        Cycle the image buffer such that all new :meth:`.get_image()` calls yield fresh frames.
-        Without this feature, optimizations could be working on outdated information.
-
-        Defaults to calling :meth:`.get_image()` twice, though cameras can implement
-        hardware-specific alternatives.
-
-        Parameters
-        ----------
-        timeout_s : float
-            The time in seconds to wait for each frame.
-            The frame exposure time is **added** to this timeout
-            such that there is always enough time to expose.
-        """
-        for _ in range(self._flush_iterations):
-            self._get_image_hw_tolerant(timeout_s=timeout_s+self.exposure_s)
-
-    @abstractmethod
-    def _get_image_hw(self, timeout_s):
-        """
-        Abstract method to capture camera images.
-
-        Parameters
-        ----------
-        timeout_s : float
-            The time in seconds to wait for the frame to be fetched.
-            The frame exposure time is **NOT added** to this timeout
-            such that there is always enough time to expose.
-
-        Returns
-        -------
-        numpy.ndarray
-            Array of shape :attr:`~slmsuite.hardware.cameras.camera.Camera.shape`.
-        """
-        raise NotImplementedError(f"Camera {self.name} has not implemented _get_image_hw")
-
-    def _get_out(self, image_count, out=None):
-        # Preallocate memory if necessary
-        out_shape = (int(image_count), self.default_shape[0], self.default_shape[1])
-        if out is None:
-            out = np.empty(out_shape, dtype=self.dtype)
-        else:
-            if out.shape != out_shape:
-                raise ValueError(f"Expected out to be of shape {out_shape}. Found {out.shape}.")
-            if out.dtype != self.dtype:
-                raise ValueError(f"Expected out to be of type {self.dtype}. Found {out.dtype}.")
-            out = np.array(out, copy=False, dtype=self.dtype)
-
-        return out
-
-    def _get_images_hw(self, image_count, timeout_s, out=None):
-        """
-        Abstract method to capture a series of image_count images using camera-specific
-        batch acquisition features.
-
-        Parameters
-        ----------
-        image_count : int
-            Number of frames to batch collect.
-        timeout_s : float
-            The time in seconds to wait for **each** frame to be fetched.
-            The frame exposure time is **added** to this timeout
-            such that there is always enough time to expose.
-        out : None OR numpy.ndarray
-            Preallocated memory for in-place operations, if applicable.
-
-        Returns
-        -------
-        numpy.ndarray
-            Array of shape ``(image_count, height, width)``.
-        """
-        # Preallocate memory if necessary
-        out = self._get_out(image_count, out)
-
-        for i in range(image_count):
-            out[i, :, :] = self._get_image_hw_tolerant(
-                timeout_s=timeout_s+self.exposure_s
-            )
-
-        return out
-
-    # Capture methods one level of abstraction above _get_image_hw().
-
-    def _get_image_hw_tolerant(self, *args, **kwargs):
-        err = None
-        failures = 0
-
-        for _ in range(self.capture_attempts):
-            try:
-                img =  self._get_image_hw(*args, **kwargs)
-
-                if failures > 0:
-                    warnings.warn(f"'{self.name}' _get_image_hw() failed {failures} times before succeeding.")
-
-                return img
-            except Exception as e:
-                failures += 1
-                err = e
-
-        warnings.warn(f"'{self.name}' _get_image_hw() failed {failures} times before quitting.")
-
-        raise err
-
-    def _get_images_hw_tolerant(self, *args, **kwargs):
-        e = None
-        failures = 0
-
-        for _ in range(self.capture_attempts):
-            try:
-                imgs = self._get_images_hw(*args, **kwargs)
-
-                if failures > 0:
-                    warnings.warn(f"'{self.name}' _get_images_hw() failed {failures} times before succeeding.")
-
-                return imgs
-            except Exception as e:
-                failures += 1
-                err = e
-
-        warnings.warn(f"'{self.name}' _get_images_hw() failed {failures} times before quitting.")
-
-        raise err
+    # Parsers for imaging settings.
 
     def _parse_averaging(self, averaging=None, preserve_none=False):
         """
@@ -442,18 +653,83 @@ class Camera(_Common, ABC):
         if averaging is None:
             if preserve_none:
                 return None
-            if not hasattr(self, "averaging") or self.averaging is None:
+            if self.averaging is None:
                 averaging = 1
             else:
                 averaging = self.averaging
         elif averaging is False:
             averaging = 1
-        averaging = int(averaging)
+        else:
+            averaging = int(averaging)
 
-        if averaging <= 0:
-            raise ValueError("Cannot have negative averaging.")
+            if averaging <= 0:
+                raise ValueError("Cannot have negative averaging.")
 
         return averaging
+
+    def get_dtype(self, averaging=None, hdr=None, binning=None):
+        """
+        Return the dtype that :meth:`.get_image()` will produce for the given settings.
+
+        Useful for pre-allocating output buffers with the correct type before capture.
+
+        Parameters
+        ----------
+        averaging : int or None or False
+            Number of frames to sum. ``None`` uses :attr:`averaging` (or 1 if unset).
+            ``False`` is equivalent to 1.
+        hdr : int or (int, int) or None or False
+            HDR exposure settings. ``None`` uses :attr:`hdr`.
+            Any active HDR (exposures > 1) forces ``float`` regardless of other settings.
+        binning : (int, int) or int or None
+            Software binning factor ``(binx, biny)`` to include in the overflow budget.
+            ``None`` auto-detects: uses :attr:`_binning` when ``_software_binning`` is
+            ``True``, otherwise ``(1, 1)`` (hardware binning does not widen the dtype).
+            Pass an explicit value to query a hypothetical configuration.
+
+        Returns
+        -------
+        dtype
+            The numpy dtype of the image returned by :meth:`.get_image()`.
+        """
+        # HDR always returns float.
+        (exposures, _) = self._parse_hdr(hdr)
+        if exposures > 1:
+            return float
+
+        # Parse averaging (default to self.averaging, fall back to 1 if unset).
+        if averaging is False:
+            averaging = 1
+        elif averaging is None:
+            averaging = self.averaging if self.averaging is not None else 1
+        averaging = int(averaging)
+        if averaging <= 0:
+            raise ValueError("averaging must be positive.")
+
+        # Parse software binning factor.
+        if binning is None:
+            eff_binning = self._binning if self._software_binning else (1, 1)
+        elif np.isscalar(binning):
+            eff_binning = (int(binning), int(binning))
+        else:
+            eff_binning = tuple(int(b) for b in binning)
+        bin_factor = eff_binning[0] * eff_binning[1]
+
+        # Integer promotion: check whether averaging * binning fits in the native dtype.
+        dtype = np.dtype(self.dtype) if not hasattr(self.dtype, 'kind') else self.dtype
+        if dtype.kind in ("i", "u"):
+            dtype_bitdepth = 8 * dtype.type(0).nbytes
+            if dtype.kind == "i":
+                dtype_bitdepth -= 1   # signed integers lose one bit
+            extra_bits = int(np.ceil(np.log2(max(1, averaging * bin_factor))))
+            if self.bitdepth + extra_bits <= dtype_bitdepth:
+                return self.dtype
+            else:
+                return float
+        elif dtype.kind == "f":
+            return self.dtype
+        else:
+            raise ValueError(f"Datatype {self.dtype} does not make sense as a camera return.")
 
     def _parse_hdr(self, exposures=None, preserve_none=False):
         """
@@ -476,44 +752,249 @@ class Camera(_Common, ABC):
             (exposures, exposure_power) = exposures
 
         # Force int so we have a chance of exposure aligning with camera clock.
+        if not float(exposure_power).is_integer():
+            warnings.warn(
+                f"HDR exposure base {exposure_power} is not an integer; "
+                f"truncating to {int(exposure_power)}."
+            )
         return (int(exposures), int(exposure_power))
 
-    def _get_averaging_dtype(self, averaging=None):
-        """Returns the appropriate image datatype for ``averaging`` levels of averaging."""
-        if averaging is None:
-            if self.averaging is None:
-                raise ValueError("Averaging is not enabled for this camera. Set the .averaging attribute.")
-            else:
-                averaging = self.averaging
-        averaging = int(averaging)
+    @property
+    def _hw_image_shape(self):
+        """
+        Shape that :meth:`._get_image_hw` returns before software WOI/binning is applied.
 
-        if averaging <= 0:
-            raise ValueError("Cannot have negative averaging.")
+        - Software WOI (``_software_woi=True``): hardware delivers the full sensor,
+          so the shape is ``_shape``.
+        - Hardware WOI + software binning: hardware crops to the WOI but does not bin,
+          so the shape is the unbinned WOI size.
+        - Hardware WOI + hardware binning: hardware both crops and bins,
+          so the shape is the binned WOI size in the untransformed frame.
+        """
+        if self._software_woi:
+            # Full sensor: crop happens later in _crop_to_woi().
+            return self._shape
+        # Hardware WOI: image is already cropped to the WOI region.
+        h_woi = self._woi[3]
+        w_woi = self._woi[1]
+        if self._software_binning:
+            # Binning happens later in _crop_to_woi(): return unbinned WOI size.
+            return (h_woi, w_woi)
+        # Hardware binning: return the WOI size after binning.
+        return (h_woi // self._binning[1], w_woi // self._binning[0])
 
-        # Get dtype instance from type if needed
-        dtype = np.dtype(self.dtype) if not hasattr(self.dtype, 'kind') else self.dtype
-
-        # Switch based on image type
-        if dtype.kind == "i" or dtype.kind == "u":
-            dtype_bitdepth = 8*dtype.type(0).nbytes
-
-            # Remove depth for signed integer.
-            if dtype.kind == "i":
-                dtype_bitdepth -= 1
-
-            extra_bits = int(np.rint(np.log2(averaging)))
-
-            if self.bitdepth + extra_bits <= dtype_bitdepth:
-                # If we can sustain the averaging with the current type, continue.
-                return self.dtype
-            else:
-                # Otherwise, force floating point.
-                return float
-        elif dtype.kind == "f":
-            # Return floating point.
-            return self.dtype
+    def _get_out(self, image_count, out=None):
+        # Preallocate memory if necessary
+        hw_shape = self._hw_image_shape
+        out_shape = (int(image_count), hw_shape[0], hw_shape[1])
+        if out is None:
+            out = np.empty(out_shape, dtype=self.dtype)
         else:
-            raise ValueError(f"Datatype {self.dtype} does not make sense as a camera return.")
+            if out.shape != out_shape:
+                raise ValueError(f"Expected out to be of shape {out_shape}. Found {out.shape}.")
+            if out.dtype != self.dtype:
+                raise ValueError(f"Expected out to be of type {self.dtype}. Found {out.dtype}.")
+            out = np.array(out, copy=False, dtype=self.dtype)
+
+        return out
+
+    def _crop_to_woi(self, img):
+        """
+        Software-apply WOI crop and/or binning to ``(H, W)`` image or ``(N, H, W)`` stack.
+        """
+        # Step 1: Software WOI crop.
+        if self._software_woi:
+            x0, w, y0, h = self._woi
+            if x0 != 0 or y0 != 0 or w != self._shape[1] or h != self._shape[0]:
+                img = img[..., y0:y0+h, x0:x0+w]
+
+        # Step 2: Software binning (block-sum of adjacent pixels).
+        if self._software_binning:
+            binx, biny = self._binning
+            if biny != 1 or binx != 1:
+                # Promote so the block-sum cannot overflow the raw dtype. Use
+                # promote_types (never narrows) so an already-wide float input from
+                # get_image's HDR/averaging path is preserved.
+                img = img.astype(np.promote_types(img.dtype, self.get_dtype(averaging=1)))
+                if img.ndim == 2:
+                    H, W = img.shape
+                    Ht, Wt = (H // biny) * biny, (W // binx) * binx
+                    img = img[:Ht, :Wt].reshape(Ht // biny, biny, Wt // binx, binx).sum(axis=(1, 3))
+                else:   # (N, H, W) stack
+                    N, H, W = img.shape
+                    Ht, Wt = (H // biny) * biny, (W // binx) * binx
+                    img = img[:, :Ht, :Wt].reshape(N, Ht // biny, biny, Wt // binx, binx).sum(axis=(2, 4))
+
+        return img
+
+    # Core capture methods to be implemented by subclass.
+
+    @abstractmethod
+    def _get_image_hw(self, timeout_s):
+        """
+        Abstract method to capture camera images.
+
+        Parameters
+        ----------
+        timeout_s : float
+            The time in seconds to wait for the frame to be fetched.
+
+        Returns
+        -------
+        numpy.ndarray
+            The raw, untransformed frame of shape :attr:`_hw_image_shape`.
+            WOI cropping, software binning, and :attr:`transform` are applied later by
+            :meth:`.get_image()`.
+        """
+        raise NotImplementedError(f"Camera {self.name} has not implemented _get_image_hw")
+
+    def _get_images_hw(self, image_count, timeout_s, out=None):
+        """
+        Abstract method to capture a series of image_count images using camera-specific
+        batch acquisition features.
+
+        Parameters
+        ----------
+        image_count : int
+            Number of frames to batch collect.
+        timeout_s : float
+            The time in seconds to wait for **each** frame to be fetched.
+        out : None OR numpy.ndarray
+            Preallocated memory for in-place operations, if applicable.
+
+        Returns
+        -------
+        numpy.ndarray
+            The raw, untransformed stack of shape ``(image_count, *_hw_image_shape)``.
+            WOI cropping, software binning, and :attr:`transform` are applied later by
+            :meth:`.get_images()`.
+        """
+        # Preallocate memory if necessary
+        out = self._get_out(image_count, out)
+
+        for i in range(image_count):
+            out[i, :, :] = self._get_image_hw(timeout_s)
+
+        return out
+
+    # Capture methods one level of abstraction above _get_image_hw().
+
+    def _parse_color_image(self, img):
+        """
+        Reduces a color image to grayscale according to :attr:`color_channel`.
+
+        The color channel is assumed to be the **last** axis, so this works both for a
+        single frame of shape ``(height, width, channels)`` and for a stack of frames of
+        shape ``(image_count, height, width, channels)``.
+
+        Parameters
+        ----------
+        img : numpy.ndarray
+            Color image (or stack of color images) with the channel as the last axis.
+
+        Returns
+        -------
+        numpy.ndarray
+            The image(s) with the color axis removed.
+        """
+        color_channel = self.color_channel
+        if color_channel is None:
+            color_channel = 0
+
+        if isinstance(color_channel, int):
+            return img[..., color_channel]
+        elif isinstance(color_channel, (list, np.ndarray)):
+            raise NotImplementedError("Weighted color handling is not implemented yet.")
+        else:
+            raise ValueError(f"Expected color_channel to be None or int. Found {self.color_channel}.")
+
+    def _get_image_hw_tolerant(self, *args, **kwargs):
+        """
+        Wraps :meth:`._get_image_hw()` with error tolerance and color handling.
+
+        Retries the capture up to :attr:`capture_attempts` times, warning on intermediate
+        failures and re-raising the last error if every attempt fails. Color frames
+        (shape ``(height, width, channels)``) are reduced to grayscale via
+        :meth:`._parse_color_image()`.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Passed through to :meth:`._get_image_hw()`.
+
+        Returns
+        -------
+        numpy.ndarray
+            A 2D image of shape ``(height, width)``.
+        """
+        err = None
+        failures = 0
+
+        for _ in range(self.capture_attempts):
+            try:
+                img = np.array(self._get_image_hw(*args, **kwargs))
+
+                if len(img.shape) == 2:     # All good!
+                    pass
+                elif len(img.shape) == 3:     # Need to convert to grayscale.
+                    img = self._parse_color_image(img)
+                else:
+                    raise ValueError(f"Expected a 2D or 3D (color) image. Found {img.shape}.")
+
+                if failures > 0:
+                    self.logger.warning("_get_image_hw() failed %s times before succeeding.", failures)
+
+                return img
+            except Exception as e:
+                failures += 1
+                err = e
+
+        self.logger.warning("_get_image_hw() failed %s times before quitting.", failures)
+
+        raise err
+
+    def _get_images_hw_tolerant(self, *args, **kwargs):
+        """
+        Wraps :meth:`._get_images_hw()` with error tolerance and color handling.
+
+        Retries the capture up to :attr:`capture_attempts` times, warning on intermediate
+        failures and re-raising the last error if every attempt fails. Color stacks
+        (shape ``(image_count, height, width, channels)``) are reduced to grayscale via
+        :meth:`._parse_color_image()`.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Passed through to :meth:`._get_images_hw()`.
+
+        Returns
+        -------
+        numpy.ndarray
+            A stack of 2D images of shape ``(image_count, height, width)``.
+        """
+        err = None
+        failures = 0
+
+        for _ in range(self.capture_attempts):
+            try:
+                imgs = np.array(self._get_images_hw(*args, **kwargs))
+
+                if imgs.ndim == 4:      # Stack of color images; reduce to grayscale.
+                    imgs = self._parse_color_image(imgs)
+
+                if failures > 0:
+                    self.logger.warning("_get_images_hw() failed %s times before succeeding.", failures)
+
+                return imgs
+            except Exception as e:
+                failures += 1
+                err = e
+
+        self.logger.warning("_get_images_hw() failed %s times before quitting.", failures)
+
+        raise err
+
+    # High-level capture methods.
 
     def get_image(self, timeout_s=1, transform=True, hdr=None, averaging=None):
         """
@@ -591,28 +1072,35 @@ class Camera(_Common, ABC):
                 averaging=averaging,
             )
         elif averaging > 1:     # Average many images.
-            averaging_dtype = self._get_averaging_dtype(averaging)
+            averaging_dtype = self.get_dtype(averaging=averaging)
 
             try:
                 # Using the camera-specific batch method if available
-                imgs = self._get_images_hw(
-                    averaging, timeout_s=timeout_s+self.exposure_s
-                ).astype(averaging_dtype)
+                imgs = np.array(self._get_images_hw(
+                    averaging, timeout_s=timeout_s + self.exposure_s
+                ))
+
+                # Reduce color stacks to grayscale before summing.
+                if imgs.ndim == 4:
+                    imgs = self._parse_color_image(imgs)
 
                 # Cast as the proper type so we can sum.
-                img = np.sum(imgs, axis=0)
+                img = np.sum(imgs.astype(averaging_dtype), axis=0)
             except NotImplementedError:
                 # Brute-force collection as a backup
-                img = np.zeros(self.default_shape, dtype=averaging_dtype)
+                img = np.zeros(self._hw_image_shape, dtype=averaging_dtype)
 
                 for _ in range(averaging):
                     img += self._get_image_hw_tolerant(
-                        timeout_s=timeout_s+self.exposure_s
+                        timeout_s=timeout_s + self.exposure_s
                     ).astype(averaging_dtype)
         else:                   # Normal image
             img = self._get_image_hw_tolerant(
-                timeout_s=timeout_s+self.exposure_s
+                timeout_s=timeout_s + self.exposure_s
             )
+
+        # Software WOI crop and/or binning (no-op when handled by hardware).
+        img = self._crop_to_woi(img)
 
         # self.transform implements the flipping and rotating keywords passed to the
         # superclass constructor.
@@ -667,22 +1155,22 @@ class Camera(_Common, ABC):
             self.flush()
 
         # Grab images (no transformation)
-        imgs = self._get_images_hw(
+        imgs = np.array(self._get_images_hw_tolerant(
             image_count,
-            timeout_s=timeout_s+self.exposure_s,
+            timeout_s=timeout_s + self.exposure_s,
             out=out
-        )
+        ))
+
+        # Reduce color stacks to grayscale.
+        if imgs.ndim == 4:
+            imgs = self._parse_color_image(imgs)
+
+        # Software WOI crop and/or binning (unused when handled by hardware).
+        imgs = self._crop_to_woi(imgs)
 
         # Transform if desired. Future: make more efficient.
         if transform:
-            imgs_ = np.empty(
-                (int(image_count), self.shape[0], self.shape[1]),
-                dtype=self.dtype
-            )
-            for i in range(image_count):
-                imgs_[i, :, :] = self.transform(imgs[i])
-
-            imgs = imgs_
+            imgs = self.transform(imgs)
 
         # Store the result locally.
         self.last_image = imgs[-1]
@@ -693,13 +1181,33 @@ class Camera(_Common, ABC):
 
         return imgs
 
+    def flush(self, timeout_s=1):
+        """
+        Cycle the image buffer such that all new :meth:`.get_image()` calls yield fresh frames.
+        Without this feature, optimizations could be working on outdated information.
+
+        Defaults to calling :meth:`.get_image()` twice, though cameras can implement
+        hardware-specific alternatives.
+
+        Parameters
+        ----------
+        timeout_s : float
+            The time in seconds to wait **for each** frame.
+            The frame exposure time is **added** to this timeout
+            such that there is always enough time to expose.
+        """
+        for _ in range(self._flush_iterations):
+            self._get_image_hw_tolerant(timeout_s=timeout_s + self.exposure_s)
+
+    # HDR imaging methods.
+
     def get_image_hdr(self, exposures=None, return_raw=False, **kwargs):
         r"""
         Often, the necessities of precision applications exceed the bitdepth of a
         camera. One way to recover High Dynamic Range (HDR) imaging is to use
         `multiple exposures <https://en.wikipedia.org/wiki/Multi-exposure_HDR_capture>`_
         each with increasing exposure time. Then, these images can be stitched together
-        as floating-point data, omitting data which is under- or over- exposed.
+        as **floating-point** data, omitting data which is under- or over- exposed.
 
         Tip
         ~~~
@@ -747,11 +1255,13 @@ class Camera(_Common, ABC):
 
         # Make empty data and grab the original exposure time.
         original_exposure = self.get_exposure()
-        imgs = np.zeros((exposures, self.shape[0], self.shape[1]), self.dtype)
+        # Store frames as float: the analysis immediately casts to float anyway,
+        # and this sidesteps any integer overflow from software binning or wide averaging.
+        imgs = np.zeros((exposures, self.shape[0], self.shape[1]), float)
         exposure_times = np.zeros((exposures,), dtype=float)
 
         for i in range(exposures):
-            # FUTURE: record the set exposures and use these to do better analysis.
+            # FUTURE: record the get_exposures and use these to do better analysis.
             exposure_times[i] = self.set_exposure(int(exposure_power ** i) * original_exposure)
             self.flush()    # Sometimes, cameras return bad frames after exposure change.
             imgs[i, :, :] = self.get_image(hdr=False, **kwargs)
@@ -772,7 +1282,7 @@ class Camera(_Common, ABC):
                 exposure_power=exposure_times,
             )
             if np.max(img) >= self.bitresolution:
-                warnings.warn("HDR image is overexposed.")
+                self.logger.warning("HDR image is overexposed.")
             # Store the result locally.
             self.last_image = img
             return img
@@ -929,15 +1439,24 @@ class Camera(_Common, ABC):
         except Exception as e:
             print(f"      HDR testing skipped: {e}")
 
-        # Test 3: Set WOI (if implemented)
-        print("  Testing set_woi...")
-        try:
-            orig_woi = getattr(self, 'woi', None)
-            self.set_woi()
-            if orig_woi is not None:
-                self.set_woi(orig_woi)
-        except NotImplementedError:
-            print("    set_woi not implemented - skipping")
+        # Test 3: WOI and binning (hardware only)
+        if not self._software_woi:
+            print("  Testing get_woi / set_woi...")
+            orig_woi = self.get_woi()
+            self.set_woi()                          # reset to full sensor
+            half_woi = (0, self.shape[1] // 2, 0, self.shape[0] // 2)
+            self.set_woi(half_woi)
+            assert self.get_image().shape == self.shape, "shape mismatch after set_woi"
+            self.set_woi(orig_woi)
+            assert self.get_woi() == orig_woi, "get_woi did not round-trip"
+
+        if not self._software_binning:
+            print("  Testing get_binning / set_binning...")
+            orig_binning = self.get_binning()
+            self.set_binning(1)
+            assert self.get_binning() == (1, 1), "get_binning mismatch after set_binning(1)"
+            assert self.get_image().shape == self.shape, "shape mismatch after set_binning"
+            self.set_binning(orig_binning)
 
         # Test 4: Info method
         print("  Testing info...")
@@ -948,7 +1467,7 @@ class Camera(_Common, ABC):
 
         return True
 
-    # Display methods.
+    # Display method.
 
     def plot(self, image=None, limits=None, title="Image", ax=None, cbar=True):
         """
@@ -967,7 +1486,7 @@ class Camera(_Common, ABC):
         ax : matplotlib.pyplot.axis OR None
             Axis to plot upon.
         cbar : bool
-            Also plot a colorbar.
+            Also plot a colorbar. Does not work if ``ax`` is passed.
 
         Returns
         -------
@@ -981,22 +1500,24 @@ class Camera(_Common, ABC):
             image = self.last_image
         image = np.array(image, copy=(False if np.__version__[0] == '1' else None))
 
-        if len(plt.get_fignums()) > 0:
-            fig = plt.gcf()
+        should_show = False
+        if ax is None:
+            if len(plt.get_fignums()) > 0:
+                fig = plt.gcf()
+            else:
+                fig = plt.figure(figsize=(20,8))
+                should_show = True
         else:
-            fig = plt.figure(figsize=(20,8))
-
-        if ax is not None:
+            fig = None
             plt.sca(ax)
 
         im = plt.imshow(image)
         ax = plt.gca()
 
-        if cbar:
+        if cbar and fig is not None:
             cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
             fig.colorbar(im, cax=cax, orientation="vertical")
 
-        # ax.invert_yaxis()
         ax.set_title(title)
 
         if limits is not None and limits != 1:
@@ -1021,9 +1542,12 @@ class Camera(_Common, ABC):
 
         plt.sca(ax)
 
+
+        if should_show:
+            _slmsuite_plt_show(name="camera_plot")
         return ax
 
-    # Other helper methods.
+    # Automated refinement methods.
 
     @staticmethod
     def _autoexpose_metric(img):
@@ -1067,7 +1591,8 @@ class Camera(_Common, ABC):
         timeout_s : float
             Stop attempting adjusting exposure after ``timeout_s`` seconds.
         verbose : bool
-            Whether to print exposure updates.
+            If ``True``, progress is logged at ``INFO``; otherwise at ``DEBUG``.
+            Visibility is ultimately governed by :func:`slmsuite.configure_logging`.
 
         Returns
         -------
@@ -1146,17 +1671,16 @@ class Camera(_Common, ABC):
             status = metric(img[sliced])
             err = np.abs(status - set_val) / self.bitresolution
 
-            if verbose:
-                print(
-                    f"Autoexpose: exposure = {exp:<.2e} s, "
-                    f"status = {status}/{self.bitresolution-(self.averaging if self.averaging is not None else 1)}, ",
-                )
+            self.logger.log(
+                logging.INFO if verbose else logging.DEBUG,
+                "Autoexpose: exposure = %.2e s, status = %s/%s",
+                exp, status, self.bitresolution - (self.averaging if self.averaging is not None else 1),
+            )
 
         # The loop targets 50% of resolution.
         # Now set the final exposure if different (TODO, improve).
         if set_fraction != 0.5:
-            exp = exp * (2 * set_fraction)
-            self.set_exposure(exp)
+            exp = self.set_exposure(exp * (2 * set_fraction))
 
         return exp
 
@@ -1181,7 +1705,7 @@ class Camera(_Common, ABC):
             axs[1].set_xticks([])
             axs[1].set_yticks([])
 
-            plt.show()
+            _slmsuite_plt_show(name="autofocus_metric")
 
         return fom
 
@@ -1218,7 +1742,8 @@ class Camera(_Common, ABC):
         plot : bool
             Whether to provide illustrative plots.
         verbose : bool
-            Whether to print progress updates during the sweep.
+            If ``True``, progress is logged at ``INFO``; otherwise at ``DEBUG`` (default).
+            Visibility is ultimately governed by :func:`slmsuite.configure_logging`.
 
         Returns
         -------
@@ -1253,12 +1778,13 @@ class Camera(_Common, ABC):
         if callable(get_z):
             z_base = get_z()
 
-        # Parse range_z
-        z_list = range_z
+        # Parse range_z. Build a fresh float array so we never mutate a caller's input
+        # and so counts can hold NaN sentinels (an integer z_list would not).
         if np.isscalar(range_z):
             z_list = np.linspace(-range_z, range_z, 11, endpoint=True)
-        z_list += z_base
-        z_list = sorted(z_list)
+        else:
+            z_list = np.asarray(range_z, dtype=float)
+        z_list = np.sort(z_list + z_base)
 
         # Parse metric
         if metric is None:
@@ -1266,12 +1792,11 @@ class Camera(_Common, ABC):
 
         # Setup for the sweep
         imlist = []
-        counts = np.full_like(z_list, np.nan)
+        counts = np.full(z_list.shape, np.nan)
 
         for i, z in enumerate(z_list):
             try:
-                if verbose:
-                    print(f"Moving to z = {z:<.2f}...          ", end="\r")
+                self.logger.debug("Moving to z = %.2f...", z)
                 set_z(z)
 
                 # Take image and evaluate metric.
@@ -1316,33 +1841,33 @@ class Camera(_Common, ABC):
             z_opt = popt[0]
             c_opt = popt[1] + popt[2]
         except BaseException:
-            if verbose:
-                print("Autofocus fit failed, using maximum fom as optimum...")
+            self.logger.warning("Autofocus fit failed, using maximum fom as optimum.")
             z_opt = z_list[I_max_count]
             c_opt = counts[I_max_count]
 
         # Goto the optimal position
-        if verbose:
-            print("Moving to optimized value, z = " + str(z_opt))
+        self.logger.log(logging.INFO if verbose else logging.DEBUG, "Moving to optimized value, z = %s", z_opt)
         set_z(z_opt)
 
         # Show result if desired
         if plot:
-            plt.plot(z_list, counts, label="Data")
+            plt.scatter(z_list, counts, color="k", label="Data")
             plt.xlabel(r"$z$")
             plt.ylabel("Figure of Merit")
             plt.title("Autofocus Sweep")
-            plt.scatter(z_opt, c_opt, label="Result")
+            plt.scatter(z_opt, c_opt, color="r", label="Result")
+
+            z_list_fine = np.linspace(np.min(z_list), np.max(z_list), 1000)
 
             lfit = None
             try:
-                lfit = lorentzian(z_list, *popt)
+                lfit = lorentzian(z_list_fine, *popt)
             except BaseException:
                 lfit = None
             if lfit is not None:
-                plt.plot(z_list, lfit, label="Fit")
+                plt.plot(z_list_fine, lfit, color="r", label="Fit")
             plt.legend()
-            plt.show()
+            _slmsuite_plt_show(name="autofocus")
 
         return z_opt
 

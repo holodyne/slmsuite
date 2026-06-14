@@ -16,6 +16,7 @@ import warnings
 from abc import ABC, abstractmethod
 
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PIL import Image
 
@@ -142,7 +143,7 @@ class SLM(_Common, ABC):
         self,
         resolution,
         bitdepth=8,
-        name="SLM",
+        name="",
         wav_um=1,
         wav_design_um=None,
         pitch_um=(8,8),
@@ -174,7 +175,8 @@ class SLM(_Common, ABC):
             See :attr:`settle_time_s`.
         """
         # Initialize the common hardware attributes.
-        super().__init__(
+        _Common.__init__(
+            self,
             resolution=resolution,
             bitdepth=bitdepth,
             name=name,
@@ -193,20 +195,19 @@ class SLM(_Common, ABC):
         else:
             self.wav_design_um = float(wav_design_um)
 
-        self.pitch = self.pitch_um / self.wav_um
-
-        # Make normalized coordinate grids. See `grid` property.
+        # Make normalized coordinate grids. ``_grid_base`` is the immutable geometric
+        # grid (centered on the SLM); the public ``grid`` property derives the
+        # aperture-centered working frame from it (see the ``grid`` property).
         height, width = self.shape
         xpix = (width  - 1) * np.linspace(-0.5, 0.5, width)
         ypix = (height - 1) * np.linspace(-0.5, 0.5, height)
-        self._grid = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
+        self._grid_base = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
+        self._grid = None            # cache for the aperture-centered working grid
+        self._grid_center = None     # aperture center the cache was built for
 
         # Aperture defaults to "cropped" (circumscribes the whole grid, so it
         # masks nothing until the user sets a real aperture). See set_aperture().
-        self.aperture = toolbox.Aperture(self._grid, "cropped")
-
-        # Multiplier for when the target wavelengths differ from the design wavelength.
-        self.phase_scaling = self.wav_um / self.wav_design_um
+        self.aperture = toolbox.Aperture(self._grid_base, "cropped")
 
         # Source profile dictionary
         self.source = {}
@@ -234,13 +235,16 @@ class SLM(_Common, ABC):
         are generated in.
         """
         center = None if self.aperture.center is None else tuple(self.aperture.center)
-        if center is None:
-            return self._grid
-        else:
-            return [
-                self._grid[0] - center[0],
-                self._grid[1] - center[1],
-            ]
+        if self._grid is None or self._grid_center != center:
+            if center is None:
+                self._grid = self._grid_base
+            else:
+                self._grid = [
+                    self._grid_base[0] - center[0],
+                    self._grid_base[1] - center[1],
+                ]
+            self._grid_center = center
+        return self._grid
 
     @property
     def aperture_mask(self):
@@ -375,7 +379,7 @@ class SLM(_Common, ABC):
         ax : matplotlib.pyplot.axis OR None
             Axis to plot upon.
         cbar : bool
-            Also plot a colorbar.
+            Also plot a colorbar. Does not work if ``ax`` is passed.
         aperture : bool
             If ``True`` (default), overlay the outline of the current :attr:`aperture`
             (when it crops the SLM).
@@ -390,25 +394,27 @@ class SLM(_Common, ABC):
         phase = np.array(phase, copy=(False if np.__version__[0] == '1' else None))
         phase = np.mod(phase, 2*np.pi) / np.pi
 
-        if len(plt.get_fignums()) > 0:
-            fig = plt.gcf()
+        should_show = False
+        if ax is None:
+            if len(plt.get_fignums()) > 0:
+                fig = plt.gcf()
+            else:
+                fig = plt.figure(figsize=(20,8))
+                should_show = True
         else:
-            fig = plt.figure(figsize=(20,8))
-
-        if ax is not None:
+            fig = None
             plt.sca(ax)
 
         im = plt.imshow(phase, clim=[0, 2], cmap="twilight", interpolation="none")
         ax = plt.gca()
 
-        if cbar:
+        if cbar and fig is not None:
             cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
             fig.colorbar(im, cax=cax, orientation="vertical")
             ticks = [0,1,2]
             cax.set_yticks([0,1,2])
             cax.set_yticklabels([f"${t}\\pi$" for t in ticks])
 
-        # ax.invert_yaxis()
         ax.set_title(title)
 
         if limits is not None and limits != 1:
@@ -436,7 +442,18 @@ class SLM(_Common, ABC):
 
         plt.sca(ax)
 
+        if should_show:
+            _slmsuite_plt_show(name="slm_plot")
+
         return ax
+
+    @property
+    def pitch(self):
+        return self.pitch_um / self.wav_um
+
+    @property
+    def phase_scaling(self):
+        return self.wav_um / self.wav_design_um
 
     # Writing methods
 
@@ -946,7 +963,7 @@ class SLM(_Common, ABC):
         self.phase = data["phase"]
 
         if not np.all(np.isclose(data["display"], self._format_phase_hw(data["phase"]))):
-            warnings.warn("Integer data in 'display' does not match 'phase' for this SLM.")
+            self.logger.warning("Integer data in 'display' does not match 'phase' for this SLM.")
 
         # Optional delay.
         if settle:
@@ -1019,17 +1036,17 @@ class SLM(_Common, ABC):
         # Now make all the children and return.
         children = []
 
-        for x in range(shape[1]):
-            for y in range(shape[0]):
-                x = x0 + x * w
-                y = y0 + y * h
+        for xi in range(shape[1]):
+            for yi in range(shape[0]):
+                x = x0 + xi * w
+                y = y0 + yi * h
 
-                # The last SLM should handle updates.
+                # The last SLM should handle updates by default.
                 child = SegmentedSLM(
                     parent=self,
                     window=(x, w, y, h),
                     name=f"{self.name}_segment_{x}_{y}",
-                    update=(x == shape[1] - 1 and y == shape[0] - 1)
+                    refresh=(xi == shape[1] - 1 and yi == shape[0] - 1)
                 )
 
                 children.append(child)
@@ -1132,7 +1149,7 @@ class SLM(_Common, ABC):
         elif units == "frac":
             # Fraction of the half-extent (the smaller of the two half-dimensions).
             factor = float(np.min([
-                np.nanmax(self._grid[0]), np.nanmax(self._grid[1])
+                np.nanmax(self._grid_base[0]), np.nanmax(self._grid_base[1])
             ]))
         elif units in toolbox.LENGTH_FACTORS:
             factor = toolbox.LENGTH_FACTORS[units] / self.wav_um
@@ -1188,7 +1205,7 @@ class SLM(_Common, ABC):
 
         center_norm = None if center is None else self._center_pix_to_norm(center)
 
-        self.aperture = toolbox.Aperture(self._grid, spec, center=center_norm)
+        self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
         self._grid = None
         return self.aperture
 
@@ -1225,7 +1242,7 @@ class SLM(_Common, ABC):
             ))
             spec = 1.0 / (2.0 * radius_norm)
             center_norm = self.aperture.center if not recenter else None
-            self.aperture = toolbox.Aperture(self._grid, spec, center=center_norm)
+            self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
             self._grid = None
             return self.aperture
 
@@ -1253,7 +1270,7 @@ class SLM(_Common, ABC):
         if recenter:
             center_norm = self._center_pix_to_norm(center_pix)
 
-        self.aperture = toolbox.Aperture(self._grid, spec, center=center_norm)
+        self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
         self._grid = None
         return self.aperture
 
@@ -1403,7 +1420,7 @@ class SLM(_Common, ABC):
 
         # Finalize the plot and return the axes.
         plt.tight_layout()
-        plt.show()
+        _slmsuite_plt_show(name="plot_source")
 
         return axs
 

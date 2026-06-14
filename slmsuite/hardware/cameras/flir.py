@@ -12,6 +12,9 @@ details on alternative approaches using the full Spinnaker API.
 import warnings
 import numpy as np
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 try:
     import PySpin
@@ -36,7 +39,7 @@ class FLIR(Camera):
     sdk = None
 
     ### Initialization and termination ###
-    def __init__(self, serial="", bitdepth=None, pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, serial="", bitdepth=None, pitch_um=None, **kwargs):
         """
         Initialize camera and attributes.
 
@@ -53,8 +56,6 @@ class FLIR(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -66,13 +67,11 @@ class FLIR(Camera):
 
         # Initialize SDK singleton if needed
         if FLIR.sdk is None:
-            if verbose:
-                print("PySpin initializing... ", end="")
+            logger.debug("PySpin initializing...")
             FLIR.sdk = PySpin.System.GetInstance()
 
         # Get camera list
-        if verbose:
-            print("Looking for cameras... ", end="")
+        logger.debug("Looking for cameras...")
         self.camera_list = FLIR.sdk.GetCameras()
 
         # Build serial list and validate camera selection
@@ -88,8 +87,8 @@ class FLIR(Camera):
         if serial == "":
             if num_cameras == 0:
                 raise RuntimeError("No cameras found by PySpin.")
-            if num_cameras > 1 and verbose:
-                print(f"No serial given... Choosing first of {serial_list}")
+            if num_cameras > 1:
+                logger.debug("No serial given; choosing first of %s", serial_list)
             self.cam = self.camera_list.GetByIndex(0)
             # Get actual serial for naming
             nodemap_tldevice = self.cam.GetTLDeviceNodeMap()
@@ -105,8 +104,7 @@ class FLIR(Camera):
                 )
 
         # Initialize camera
-        if verbose:
-            print(f"PySpin sn '{serial}' initializing... ", end="")
+        logger.debug("PySpin sn '%s' initializing...", serial)
 
         try:
             self.cam.Init()
@@ -127,53 +125,53 @@ class FLIR(Camera):
             if self.cam.GainAuto.GetAccessMode() == PySpin.RW:
                 self.cam.GainAuto.SetValue(PySpin.GainAuto_Off)
             else:
-                warnings.warn("GainAuto is not writable; could not set to Off.")
+                logger.warning("GainAuto is not writable; could not set to Off.")
             if self.cam.Gain.GetAccessMode() == PySpin.RW:
                 self.cam.Gain.SetValue(0.0)
             else:
-                warnings.warn("Gain is not writable; could not set to 0.0 dB.")
+                logger.warning("Gain is not writable; could not set to 0.0 dB.")
             if self.cam.ExposureAuto.GetAccessMode() == PySpin.RW:
                 self.cam.ExposureAuto.SetValue(PySpin.ExposureAuto_Off)
             else:
-                warnings.warn("ExposureAuto is not writable; could not set to Off.")
+                logger.warning("ExposureAuto is not writable; could not set to Off.")
             if self.cam.ExposureMode.GetAccessMode() == PySpin.RW:
                 self.cam.ExposureMode.SetValue(PySpin.ExposureMode_Timed)
             else:
-                warnings.warn("ExposureMode is not writable; could not set to Timed.")
+                logger.warning("ExposureMode is not writable; could not set to Timed.")
 
             # Black level: set to 0 for clean scientific imaging
             try:
                 if self.cam.BlackLevelSelector.GetAccessMode() == PySpin.RW:
                     self.cam.BlackLevelSelector.SetValue(PySpin.BlackLevelSelector_All)
                 else:
-                    warnings.warn("BlackLevelSelector is not writable; could not set to All.")
+                    logger.warning("BlackLevelSelector is not writable; could not set to All.")
                 if self.cam.BlackLevel.GetAccessMode() == PySpin.RW:
                     self.cam.BlackLevel.SetValue(0.0)
                 else:
-                    warnings.warn("BlackLevel is not writable; could not set to 0.0.")
+                    logger.warning("BlackLevel is not writable; could not set to 0.0.")
             except PySpin.SpinnakerException as ex:
-                warnings.warn(f"BlackLevel configuration failed: {ex}")
+                logger.warning(f"BlackLevel configuration failed: {ex}")
 
             # Gamma: disable for linear sensor response
             try:
                 if self.cam.GammaEnable.GetAccessMode() == PySpin.RW:
                     self.cam.GammaEnable.SetValue(False)
                 else:
-                    warnings.warn("GammaEnable is not writable; could not disable.")
+                    logger.warning("GammaEnable is not writable; could not disable.")
             except PySpin.SpinnakerException as ex:
                 try:
                     if self.cam.Gamma.GetAccessMode() == PySpin.RW:
                         self.cam.Gamma.SetValue(1.0)
                     else:
-                        warnings.warn("Gamma is not writable; could not set to 1.0.")
+                        logger.warning("Gamma is not writable; could not set to 1.0.")
                 except PySpin.SpinnakerException as ex:
-                    warnings.warn(f"Gamma configuration failed: {ex}")
+                    logger.warning(f"Gamma configuration failed: {ex}")
 
             # Configure pixel format
-            bitdepth = self._configure_adc_depth(bitdepth=bitdepth, verbose=verbose)
+            bitdepth = self._configure_adc_depth(bitdepth=bitdepth)
 
             # Configure frame rate
-            self._configure_frame_rate(verbose=verbose)
+            self._configure_frame_rate()
 
             # Set a reasonable default exposure so _get_dtype's test capture
             # doesn't time out waiting for the camera's power-on default
@@ -181,24 +179,24 @@ class FLIR(Camera):
             if self.cam.ExposureTime.GetAccessMode() == PySpin.RW:
                 self.cam.ExposureTime.SetValue(self.cam.ExposureTime.GetMin())
             else:
-                warnings.warn("ExposureTime is not writable; could not set to minimum.")
+                logger.warning("ExposureTime is not writable; could not set to minimum.")
 
             # Configure software trigger
             if self.cam.TriggerMode.GetAccessMode() == PySpin.RW:
                 self.cam.TriggerMode.SetValue(PySpin.TriggerMode_On)
             else:
-                warnings.warn("TriggerMode is not writable; could not set to On.")
+                logger.warning("TriggerMode is not writable; could not set to On.")
             if self.cam.TriggerSource.GetAccessMode() == PySpin.RW:
                 self.cam.TriggerSource.SetValue(PySpin.TriggerSource_Software)
             else:
-                warnings.warn("TriggerSource is not writable; could not set to Software.")
+                logger.warning("TriggerSource is not writable; could not set to Software.")
             if self.cam.TriggerSelector.GetAccessMode() == PySpin.RW:
                 self.cam.TriggerSelector.SetValue(PySpin.TriggerSelector_FrameStart)
             else:
-                warnings.warn("TriggerSelector is not writable; could not set to FrameStart.")
+                logger.warning("TriggerSelector is not writable; could not set to FrameStart.")
 
         except PySpin.SpinnakerException as ex:
-            warnings.warn(f"Failed to configure camera: {ex}")
+            logger.warning(f"Failed to configure camera: {ex}")
 
         # Begin acquisition
         try:
@@ -223,8 +221,7 @@ class FLIR(Camera):
         except PySpin.SpinnakerException:
             pass
 
-        if verbose:
-            print(f"Successfully initialized FLIR cam {serial}.")
+        self.logger.debug("Successfully initialized FLIR cam %s.", serial)
 
     def close(self):
         """See :meth:`.Camera.close`."""
@@ -314,7 +311,7 @@ class FLIR(Camera):
 
     ### Internal Configuration Helpers ###
 
-    def _configure_adc_depth(self, bitdepth=None, verbose=True):
+    def _configure_adc_depth(self, bitdepth=None):
         """
         Configure ADC bit depth and corresponding pixel format.
 
@@ -373,18 +370,16 @@ class FLIR(Camera):
                         self.cam.AdcBitDepth.SetValue(adc_depth)
                 except PySpin.SpinnakerException:
                     pass
-                if verbose:
-                    print(f"PixelFormat set to {name} ({bits}-bit)... ", end="")
+                logger.debug("PixelFormat set to %s (%s-bit)...", name, bits)
                 return bits
             except PySpin.SpinnakerException:
                 continue
 
         # Fallback
-        if verbose:
-            warnings.warn("Could not set preferred pixel format; using current setting.")
+        logger.warning("Could not set preferred pixel format; using current setting.")
         return _read_adc_depth()
 
-    def _configure_frame_rate(self, verbose=True):
+    def _configure_frame_rate(self):
         """
         Set camera frame rate to maximum. Called during init and after WOI changes,
         since the maximum allowed frame rate depends on the current resolution.
@@ -399,8 +394,7 @@ class FLIR(Camera):
             if self.cam.AcquisitionFrameRate.GetAccessMode() == PySpin.RW:
                 max_fps = self.cam.AcquisitionFrameRate.GetMax()
                 self.cam.AcquisitionFrameRate.SetValue(max_fps)
-                if verbose:
-                    print(f"Frame rate set to {max_fps:.1f} Hz... ", end="")
+                logger.debug("Frame rate set to %.1f Hz...", max_fps)
         except PySpin.SpinnakerException:
             pass  # Not all cameras support frame rate control
 
@@ -514,21 +508,12 @@ class FLIR(Camera):
 
         self.cam.ExposureTime.SetValue(exposure_us)
 
-    def set_woi(self, woi=None):
-        """
-        See :meth:`.Camera.set_woi`.
-
-        Note: WOI changes require stopping and restarting acquisition.
-        """
-        w_max = int(self.cam.WidthMax.GetValue())
-        h_max = int(self.cam.HeightMax.GetValue())
-
-        if woi is None:
-            woi = (0, w_max, 0, h_max)
-
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
+        # FLIR ROI coordinates (OffsetX/Width/Height) are in binned pixels when binning is active.
+        # https://softwareservices.flir.com/BFS-U3-89S6/latest/Model/public/ImageFormatControl.html
         x, w, y, h = [int(v) for v in woi]
 
-        # Snap values to camera increment requirements
         def _snap(node, value):
             try:
                 inc = node.GetInc()
@@ -541,15 +526,6 @@ class FLIR(Camera):
         w = _snap(self.cam.Width, w)
         h = _snap(self.cam.Height, h)
 
-        # Clamp to valid range: dimensions must be at least GetMin() and must
-        # not overflow the sensor boundary.
-        try:
-            w = max(int(self.cam.Width.GetMin()), min(w, w_max - x))
-            h = max(int(self.cam.Height.GetMin()), min(h, h_max - y))
-        except PySpin.SpinnakerException:
-            pass
-
-        # WOI changes require stopping acquisition
         acquisition_active = False
         try:
             if self.cam.IsStreaming():
@@ -559,45 +535,73 @@ class FLIR(Camera):
             pass
 
         try:
-            # Shrink dimensions first to avoid offset constraint violations
-            if self.cam.Height.GetAccessMode() == PySpin.RW:
-                self.cam.Height.SetValue(self.cam.Height.GetMin())
-            if self.cam.Width.GetAccessMode() == PySpin.RW:
-                self.cam.Width.SetValue(self.cam.Width.GetMin())
-
-            # Set offsets
             if self.cam.OffsetX.GetAccessMode() == PySpin.RW:
-                self.cam.OffsetX.SetValue(x)
+                self.cam.OffsetX.SetValue(0)
             if self.cam.OffsetY.GetAccessMode() == PySpin.RW:
-                self.cam.OffsetY.SetValue(y)
-
-            # Set desired dimensions
+                self.cam.OffsetY.SetValue(0)
             if self.cam.Width.GetAccessMode() == PySpin.RW:
                 self.cam.Width.SetValue(w)
             if self.cam.Height.GetAccessMode() == PySpin.RW:
                 self.cam.Height.SetValue(h)
-
-            self.woi = (x, w, y, h)
-
-            # Update shape to match new WOI, preserving the row/col convention
-            # established in Camera.__init__ (swapped for 90/270 rotations).
-            if self.default_shape[0] == h_max:  # normal orientation: rows=height
-                self.shape = (h, w)
-            else:                                # 90/270 rotation: rows=width
-                self.shape = (w, h)
-
-            # Reconfigure frame rate since max depends on resolution
+            if self.cam.OffsetX.GetAccessMode() == PySpin.RW:
+                self.cam.OffsetX.SetValue(x)
+            if self.cam.OffsetY.GetAccessMode() == PySpin.RW:
+                self.cam.OffsetY.SetValue(y)
             self._configure_frame_rate(verbose=False)
-
         except PySpin.SpinnakerException as ex:
             raise RuntimeError(f"Failed to set WOI: {ex}")
-
         finally:
             if acquisition_active:
                 try:
                     self.cam.BeginAcquisition()
                 except PySpin.SpinnakerException as ex:
                     raise RuntimeError(f"Failed to restart acquisition after WOI change: {ex}")
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
+        return (
+            int(self.cam.OffsetX.GetValue()),
+            int(self.cam.Width.GetValue()),
+            int(self.cam.OffsetY.GetValue()),
+            int(self.cam.Height.GetValue()),
+        )
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`. **(Untested)**"""
+        binx, biny = int(binning[0]), int(binning[1])
+        acquisition_active = False
+        try:
+            if self.cam.IsStreaming():
+                self.cam.EndAcquisition()
+                acquisition_active = True
+        except PySpin.SpinnakerException:
+            pass
+        try:
+            nodemap = self.cam.GetNodeMap()
+            bh = PySpin.CIntegerPtr(nodemap.GetNode("BinningHorizontal"))
+            bv = PySpin.CIntegerPtr(nodemap.GetNode("BinningVertical"))
+            if not PySpin.IsWritable(bh) or not PySpin.IsWritable(bv):
+                raise NotImplementedError(f"Camera {self.name} does not support binning.")
+            bh.SetValue(binx)
+            bv.SetValue(biny)
+        except PySpin.SpinnakerException as ex:
+            raise NotImplementedError(f"Camera {self.name} does not support binning: {ex}")
+        finally:
+            if acquisition_active:
+                try:
+                    self.cam.BeginAcquisition()
+                except PySpin.SpinnakerException:
+                    pass
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        try:
+            nodemap = self.cam.GetNodeMap()
+            bh = PySpin.CIntegerPtr(nodemap.GetNode("BinningHorizontal"))
+            bv = PySpin.CIntegerPtr(nodemap.GetNode("BinningVertical"))
+            return (int(bh.GetValue()), int(bv.GetValue()))
+        except PySpin.SpinnakerException:
+            return (1, 1)
 
     def _get_image_hw(self, timeout_s = 1.0):
         """
@@ -613,9 +617,10 @@ class FLIR(Camera):
         """
 
         try:
-            # Only fire software trigger if in software trigger mode.
-            # if self.cam.TriggerSource.GetValue() == PySpin.TriggerSource_Software:
-            self.cam.TriggerSoftware.Execute()
+            # Only fire software trigger if in software trigger mode; an externally
+            # triggered camera must not be force-triggered here.
+            if self.cam.TriggerSource.GetValue() == PySpin.TriggerSource_Software:
+                self.cam.TriggerSoftware.Execute()
 
             # Get image (software-triggered or externally triggered).
             frame = self.cam.GetNextImage(int(timeout_s * 1e3))
@@ -627,7 +632,7 @@ class FLIR(Camera):
                 raise RuntimeError(f"Image incomplete with status {status}")
 
             # Get numpy array from image
-            image_data = frame.GetNDArray()
+            image_data = np.copy(frame.GetNDArray())
 
             # Release frame to free buffer
             frame.Release()

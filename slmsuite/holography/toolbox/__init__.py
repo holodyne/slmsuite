@@ -7,10 +7,14 @@ from scipy.spatial import distance
 from scipy.spatial import Voronoi, voronoi_plot_2d
 import cv2
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import warnings
 
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
 from slmsuite.holography.toolbox._aperture import Aperture as Aperture
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 
 # Unit definitions.
@@ -140,13 +144,15 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``.
 
     -  ``"ij"``
-        Camera pixel units, relative to the origin of the camera.
+        Camera pixel units, relative to the origin of the camera (potentially with WOI or binning applied).
+        When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``.
         See :meth:`~slmsuite.hardware.cameraslms.FourierSLM.kxyslm_to_ijcam`
         and :meth:`~slmsuite.hardware.cameraslms.FourierSLM.ijcam_to_kxyslm`.
 
     -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
-        Camera position in metric length units, relative to the origin of the camera.
+        Camera position in metric length units, relative to the origin of the camera (potentially with WOI applied).
+        When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
         along with knowledge of the camera pixel size ``pitch_um``.
 
@@ -255,8 +261,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units in CAMERA_UNITS or to_units in CAMERA_UNITS:
         if cameraslm is None or not "fourier" in cameraslm.calibrations:
-            warnings.warn(
-                f"CameraSLM must be passed as slm for conversion '{from_units}' to '{to_units}'"
+            logger.warning(
+                "CameraSLM must be passed as slm for conversion '%s' to '%s'", from_units, to_units
             )
             return np.full_like(vector_parsed, np.nan)
 
@@ -265,9 +271,9 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         if cam_pitch_um is None:
             # Don't error if ij.
             if from_units in CAMERA_UNITS[1:] or to_units in CAMERA_UNITS[1:]:
-                warnings.warn(
-                    f"Camera must have filled attribute pitch_um "
-                    "for conversion '{from_units}' to '{to_units}'"
+                logger.warning(
+                    "Camera must have filled attribute pitch_um "
+                    "for conversion '%s' to '%s'", from_units, to_units
                 )
                 return np.full_like(vector_parsed, np.nan)
         else:
@@ -276,7 +282,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     # Generate conversion factors for various units.
     if from_units == "freq" or to_units == "freq":
         if slm is None:
-            warnings.warn("slm is required for unit 'freq'")
+            logger.warning("slm is required for unit 'freq'")
             pitch_um = np.nan
             wav_um = np.nan
         else:
@@ -285,7 +291,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units == "lpmm" or to_units == "lpmm":
         if slm is None:
-            warnings.warn("slm is required for units 'lpmm'")
+            logger.warning("slm is required for units 'lpmm'")
             wav_um = np.nan
         else:
             wav_um = slm.wav_um
@@ -298,7 +304,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
         if shape is None:
             if slm is None:
-                warnings.warn("shape or slm is required for unit 'knm'")
+                logger.warning("shape or slm is required for unit 'knm'")
                 shape = (np.nan, np.nan)
             else:
                 shape = np.array(slm.shape, dtype=float)
@@ -584,8 +590,8 @@ def window_extent(window, padding_frac=0, padding_pix=0):
         if len(window) == 4:  # Handle the (x, w, y, h) case
             b = 2*(1-a)
             limit = np.array([window[b], window[b] + window[b + 1]])
-        elif len(window) == 2:  # Handle two list case
-            limit = np.array([np.amin(window[a]), np.amax(window[a]) + 1])
+        elif len(window) == 2:  # Handle two list case: window = (y_ind, x_ind)
+            limit = np.array([np.amin(window[1 - a]), np.amax(window[1 - a]) + 1])
         elif np.ndim(window) == 2:  # Handle the boolean array case
             collapsed = np.where(np.any(window, axis=a))  # Collapse the other axis
             limit = np.array([np.amin(collapsed), np.amax(collapsed) + 1])
@@ -596,8 +602,8 @@ def window_extent(window, padding_frac=0, padding_pix=0):
         padding_ = int((np.floor(np.diff(limit) * padding_frac) + padding_pix).item())
         limit += np.array([-padding_, padding_])
 
-        # Clip the padding to shape.
-        if np.ndim(window) == 2:
+        # Clip the padding to shape (boolean array only — index-list tuples have no .shape).
+        if isinstance(window, np.ndarray) and np.ndim(window) == 2:
             limit = np.clip(limit, 0, window.shape[1 - a])
 
         limits.append(tuple(limit))
@@ -696,7 +702,7 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
         plt.ylim(1.05 * sy, -0.05 * sy)
         plt.gca().set_aspect("equal")
         plt.title("Voronoi Cells")
-        plt.show()
+        _slmsuite_plt_show(name="voronoi_windows")
 
     # Gather data from scipy Voronoi and return as a list of boolean windows.
     N = np.shape(vectors)[1]
@@ -968,6 +974,104 @@ def format_2vectors(vectors):
         If the vector input was inappropriate.
     """
     return format_vectors(vectors, expected_dimension=2, handle_dimension="crop")
+
+
+def build_affine(
+    f_eff,
+    units="ij",
+    theta=0,
+    shear_angle=0,
+    offset=(0, 0),
+    cam_pitch_um=None,
+    wav_um=None,
+):
+    r"""
+    Builds an affine transformation :math:`\vec{y} = M \cdot \vec{x} + \vec{b}` mapping
+    SLM Fourier space (``"kxy"``) to camera pixels from a known effective focal length.
+
+    This is the analytic counterpart to a measured Fourier calibration; see
+    :meth:`~slmsuite.hardware.cameraslms.FourierSLM.fourier_calibration_build` and
+    :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.build_affine`, which
+    both delegate here.
+
+    Parameters
+    ----------
+    f_eff : float OR (float, float)
+        Effective focal length of the optical train separating the Fourier-domain SLM
+        from the camera. If a ``float`` is provided, ``f_eff`` is isotropic; otherwise it
+        is defined along the SLM's :math:`x` and :math:`y` axes.
+    units : str {"norm", "ij", "m", "cm", "mm", "um", "nm"}
+        Units for the focal length ``f_eff``.
+
+        -  ``"ij"``
+            Focal length in units of camera pixels. The default.
+        -  ``"norm"``
+            Normalized focal length in wavelengths according to ``wav_um``.
+            Requires ``wav_um`` and ``cam_pitch_um``.
+        -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
+            Focal length in metric units. Requires ``cam_pitch_um``.
+
+    theta : float
+        Rotation angle (in radians, ccw) of the camera relative to the SLM orientation.
+    shear_angle : float OR (float, float)
+        Shearing angles (in radians) along the SLM's :math:`x` and :math:`y` axes.
+        If a ``float`` is provided, shear is applied isotropically.
+    offset : (float, float) OR None
+        Lateral displacement (in pixel units) of the SLM's optical axis from the camera's
+        origin. ``None`` is treated as ``(0, 0)``.
+    cam_pitch_um : float OR (float, float) OR None
+        Camera pixel pitch in microns. Required for all units except ``"ij"``.
+    wav_um : float OR None
+        Wavelength in microns. Required for ``"norm"`` units.
+
+    Returns
+    -------
+    M : numpy.ndarray
+        Affine matrix :math:`M`. Shape ``(2, 2)``.
+    b : numpy.ndarray
+        Affine vector :math:`b`. Shape ``(2, 1)``.
+    """
+    # Parse scalars.
+    if isinstance(f_eff, REAL_TYPES):
+        f_eff = [f_eff, f_eff]
+    if isinstance(cam_pitch_um, REAL_TYPES):
+        cam_pitch_um = [cam_pitch_um, cam_pitch_um]
+    else:
+        cam_pitch_um = np.ravel(cam_pitch_um)
+    if isinstance(shear_angle, REAL_TYPES):
+        shear_angle = [shear_angle, shear_angle]
+    if offset is None:
+        offset = (0, 0)
+
+    f_eff = np.squeeze(f_eff).astype(float)
+    shear_angle = np.squeeze(shear_angle)
+
+    # Convert.
+    if units == "ij":
+        pass
+    elif units == "norm":
+        if wav_um is None:
+            raise ValueError(f"wav_um is required for unit '{units}'")
+        if cam_pitch_um is None or cam_pitch_um[0] is None:
+            raise ValueError(f"cam_pitch_um is required for unit '{units}'")
+
+        f_eff *= wav_um / np.squeeze(cam_pitch_um)
+    elif units in LENGTH_FACTORS.keys():
+        if cam_pitch_um is None or cam_pitch_um[0] is None:
+            raise ValueError(f"cam_pitch_um is required for unit '{units}'")
+
+        f_eff *= LENGTH_FACTORS[units] / np.squeeze(cam_pitch_um)
+    else:
+        raise ValueError(f"Unit '{units}' not recognized as a length.")
+
+    mag = np.array([[f_eff[0], 0], [0, f_eff[1]]])
+    shear = np.array([[1, np.tan(shear_angle[0])], [np.tan(shear_angle[1]), 1]])
+    rot = np.array([[np.cos(-theta), np.sin(-theta)], [-np.sin(-theta), np.cos(-theta)]])
+
+    M = mag @ shear @ rot
+    b = format_2vectors(offset)
+
+    return M, b
 
 
 def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_check=False):
@@ -1360,7 +1464,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
             plt.ylim(1.05 * sy, -0.05 * sy)
             plt.gca().set_aspect("equal")
             plt.title("Voronoi Cells")
-            plt.show()
+            _slmsuite_plt_show(name="lloyds_algorithm")
 
         for i in range(result.shape[1]):
             # Don't move points that don't make sense.

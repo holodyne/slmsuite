@@ -20,8 +20,11 @@ For example, the following code loads a UC480 camera:
 
 Note
 ~~~~
-Color camera functionality is not currently implemented, and will lead to undefined behavior.
+Color cameras reduce each frame to a single channel selected by the base-class
+:attr:`~slmsuite.hardware.cameras.camera.Camera.color_channel` setting, for both
+single-frame and batch/averaging acquisition.
 """
+import numpy as np
 import warnings
 from slmsuite.hardware.cameras.camera import Camera
 
@@ -30,6 +33,10 @@ try:
 except:
     ICamera = None
     warnings.warn("pylablib not installed. Install to use PyLabLib cameras.")
+
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 class PyLabLib(Camera):
     """
@@ -43,7 +50,7 @@ class PyLabLib(Camera):
 
     ### Initialization and termination ###
 
-    def __init__(self, cam=None, pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, cam=None, pitch_um=None, **kwargs):
         """
         Initialize camera and attributes. Initial profile is ``"single"``.
 
@@ -69,8 +76,6 @@ class PyLabLib(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         kwargs
             See :meth:`.Camera.__init__` for permissible options.
 
@@ -103,18 +108,18 @@ class PyLabLib(Camera):
             name = "pylablibcamera"
         name = kwargs.pop("name", name)
 
-        if verbose: print(f"Cam {name} parsing... ", end="")
+        logger.debug("Cam %s parsing...", name)
         height, width = cam.get_data_dimensions()
         self.cam = cam
 
         super().__init__(
             (width, height),
-            bitdepth=8,         # Currently defaults to 8 because pylablib doesn't cache this. Update in the future, maybe.
-            pitch_um=pitch_um,  # Currently unset because pylablib doesn't cache this. Update in the future, maybe.
+            bitdepth=kwargs.pop("bitdepth", 8),     # Currently defaults to 8 because pylablib doesn't cache this for most cameras. Update in the future, maybe.
+            pitch_um=pitch_um,                      # Currently unset because pylablib doesn't cache this. Update in the future, maybe.
             name=name,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("PyLabLib camera initialized.")
 
     def close(self):
         """
@@ -122,8 +127,10 @@ class PyLabLib(Camera):
         """
         try:
             self.cam.close()
-        except:
-            raise RuntimeError("This instrumental camera does not support .close().")
+        except Exception as e:
+            raise RuntimeError(
+                "This pylablib camera failed to close:\n{}".format(e)
+            ) from e
 
     @staticmethod
     def info(verbose=True):
@@ -148,23 +155,61 @@ class PyLabLib(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self.cam.set_exposure(float(exposure_s))
 
-    def set_woi(self, woi=None):
-        """
-        Method to narrow the imaging region to a 'window of interest'
-        for faster framerates.
+    def _get_roi(self, woi=None, binning=None):
+        if woi is None:
+            woi = self._woi
+        if binning is None:
+            binx, biny = self._binning
+        else:
+            binx, biny = binning
+        x, w, y, h = [int(v) for v in woi]
+        x_p, w_p, y_p, h_p = x * binx, w * binx, y * biny, h * biny
 
-        Parameters
-        ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-            If ``None``, defaults to largest possible.
+        return (x_p, x_p + w_p, y_p, y_p + h_p, binx, biny)
 
-        Returns
-        -------
-        woi : list
-            :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-        """
-        raise NotImplementedError()
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
+        # pylablib ROI coordinates are physical (unbinned) sensor pixels, exclusive end.
+        # https://pylablib.readthedocs.io/en/stable/_modules/pylablib/devices/Thorlabs/TLCamera.html
+        hstart, hend, vstart, vend, binx, biny = self._get_roi(woi=woi, binning=None)
+        try:
+            self.cam.set_roi(
+                hstart=hstart, hend=hend,
+                vstart=vstart, vend=vend,
+                hbin=binx, vbin=biny
+            )
+        except:
+            # Some pylablib cameras don't support setting binning alongside ROI. Try setting ROI without binning.
+            self.cam.set_roi(
+                hstart=hstart, hend=hend,
+                vstart=vstart, vend=vend
+            )
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
+        # pylablib get_roi() returns (hstart, hend, vstart, vend[, hbin, vbin]) in physical pixels.
+        binx, biny = self._binning
+        roi = self.cam.get_roi()
+        x_p = int(roi[0])
+        w_p = int(roi[1]) - x_p
+        y_p = int(roi[2])
+        h_p = int(roi[3]) - y_p
+        return (x_p // binx, w_p // binx, y_p // biny, h_p // biny)
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        # pylablib set_roi accepts hbin/vbin to set binning alongside ROI.
+        hstart, hend, vstart, vend, binx, biny = self._get_roi(woi=None, binning=binning)
+
+        self.cam.set_roi(hstart=hstart, hend=hend, vstart=vstart, vend=vend, hbin=binx, vbin=biny)
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        # get_roi() includes (hbin, vbin) as elements 4 and 5 when binning is supported.
+        roi = self.cam.get_roi()
+        if len(roi) >= 6:
+            return (int(roi[4]), int(roi[5]))
+        return (1, 1)
 
     def _get_image_hw(self, timeout_s):
         """
@@ -184,4 +229,9 @@ class PyLabLib(Camera):
 
     def _get_images_hw(self, image_count, timeout_s, out=None):
         """See :meth:`.Camera._get_images_hw`."""
-        return self.cam.grab(nframes=image_count, frame_timeout=timeout_s)
+        imgs = self.cam.grab(nframes=image_count, frame_timeout=timeout_s)
+        if out is not None:
+            out[...] = imgs
+            return out
+        else:
+            return np.array(imgs)

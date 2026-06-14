@@ -1,5 +1,8 @@
 from slmsuite.holography.algorithms._header import *
+from slmsuite._logging import _Loggable, make_logger
 from slmsuite.holography.algorithms._stats import _HologramStats
+
+logger = make_logger(__name__)
 
 
 if torch is not None:
@@ -23,7 +26,7 @@ if torch is not None:
             return -torch.sum(torch.square(torch.abs(input))) + 10 * torch.std(torch.abs(input))
 
 
-class Hologram(_HologramStats):
+class Hologram(_HologramStats, _Loggable):
     r"""
     Phase retrieval methods applied to holography (DFT-based).
     See :meth:`.optimize()` to learn about the methods implemented for hologram optimization.
@@ -192,6 +195,23 @@ class Hologram(_HologramStats):
 
         See :meth:`._update_stats()` and :meth:`.plot_stats()`.
     """
+
+    _pickle = [
+        "slm_shape",
+        "shape",
+        "iter",
+        "method",
+        "flags",
+        "stats",
+    ]
+    _pickle_data = [
+        "phase",
+        "amp",
+        "target",
+        "weights",
+        "phase_ff",
+        "propagation_kernel",
+    ]
 
     def __init__(
         self,
@@ -438,6 +458,8 @@ class Hologram(_HologramStats):
             except:
                 pass
 
+        self.name = self.__class__.__name__
+        _Loggable.__init__(self)
     # Initialization helper functions.
     def reset(self, reset_phase=True, reset_flags=False):
         r"""
@@ -1345,7 +1367,7 @@ class Hologram(_HologramStats):
         """
         # 1) Update flags based upon the arguments.
         name = kwargs.pop("name", None)
-        self._update_flags(method, verbose, feedback, stat_groups, **kwargs)
+        self._update_flags(method, feedback, stat_groups, **kwargs)
 
         # 2) Prepare the iterations iterable.
         iterations = range(maxiter)
@@ -1362,7 +1384,7 @@ class Hologram(_HologramStats):
         else:
             raise ValueError(f"Unsupported optimization method '{method}'")
 
-    def _update_flags(self, method, verbose, feedback, stat_groups, **kwargs):
+    def _update_flags(self, method, feedback, stat_groups, **kwargs):
         """
         Helper function for :meth:`optimize()` to parse arguments.
         """
@@ -1404,19 +1426,13 @@ class Hologram(_HologramStats):
                 )
             self.flags["feedback"] = feedback
 
-        # 1.4) Print the flags if verbose.
-        if verbose > 1:
-            print(
-                f"Optimizing with '{method}' using the following method-specific flags:"
-            )
-            pprint.pprint(
-                {
-                    key: value
-                    for (key, value) in self.flags.items()
-                    if key in ALGORITHM_DEFAULTS[method]
-                }
-            )
-            print("", end="", flush=True)  # Prevent tqdm conflicts.
+        # 1.4) Log the method-specific flags.
+        self.logger.debug(
+            "Optimizing with '%s' using method-specific flags: %s",
+            method,
+            {key: value for (key, value) in self.flags.items()
+             if key in ALGORITHM_DEFAULTS[method]},
+        )
 
     # GS- or WGS-type optimization.
     def optimize_gs(self, iterations, callback):
@@ -1975,11 +1991,7 @@ class Hologram(_HologramStats):
         with cp.cuda.Device(device):
             mempool.set_limit(size=size, fraction=fraction)
 
-            print(
-                "cupy memory pool limit set to {:.2f} GB...".format(
-                    mempool.get_limit() / (1024.0**3)
-                )
-            )
+            logger.info("cupy memory pool limit set to %.2f GB.", mempool.get_limit() / (1024.0**3))
 
     @staticmethod
     def get_mempool_limit(device=0):

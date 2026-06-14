@@ -16,6 +16,10 @@ except ImportError:
     pymmcore = None
     warnings.warn("pymmcore not installed. Install to use Micro-Manager cameras.")
 
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
+
 class MMCore(Camera):
     """
     Micro-Manager camera.
@@ -31,7 +35,6 @@ class MMCore(Camera):
         config,
         path="C:\\Program Files\\Micro-Manager-2.0",
         pitch_um=None,
-        verbose=True,
         **kwargs
     ):
         """
@@ -51,8 +54,6 @@ class MMCore(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -67,16 +68,12 @@ class MMCore(Camera):
             config_path = os.path.join(path, config_path)
 
         # Load mmcore.
-        if verbose:
-            print("CMMCore initializing... ", end="")
+        logger.debug("CMMCore initializing...")
         self.cam = pymmcore.CMMCore()
         self.cam.setDeviceAdapterSearchPaths([path])
-        if verbose:
-            print("success")
 
         # Load the camera using the config.
-        if verbose:
-            print(f"'{config}' initializing... ", end="")
+        logger.debug("'%s' initializing...", config)
         self.cam.loadSystemConfiguration(os.path.join(config_path, config + ".cfg"))
 
         # Fill in slmsuite variables.
@@ -87,7 +84,7 @@ class MMCore(Camera):
             name=config,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("Micro-Manager camera initialized.")
 
     @staticmethod
     def info(path="C:\\Program Files\\Micro-Manager-2.0"):
@@ -136,11 +133,32 @@ class MMCore(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self.cam.setExposure(1e3 * exposure_s)
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        return
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # MMCore setROI / getROI coordinates are in binned pixels (camera-driver convention).
+        # https://micro-manager.org/apidoc/MMCore/latest/class_c_m_m_core.html
+        x, w, y, h = [int(v) for v in woi]
+        self.cam.setROI(x, y, w, h)
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        # getROI() returns (x, y, xSize, ySize)
+        roi = self.cam.getROI()
+        return (int(roi[0]), int(roi[2]), int(roi[1]), int(roi[3]))
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        binx, biny = int(binning[0]), int(binning[1])
+        if binx != biny:
+            raise ValueError(f"MMCore requires symmetric binning. Received (binx={binx}, biny={biny}).")
+        self.cam.setBinning(binx)
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        b = int(self.cam.getBinning())
+        return (b, b)
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
-        self.cam.snapImage();
+        self.cam.snapImage()
         return self.cam.getImage()

@@ -1,5 +1,6 @@
 import time
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from tqdm.auto import tqdm
 from scipy import optimize
@@ -114,12 +115,6 @@ class _SettleCalibration(object):
         times = self.calibrations["settle"]["times"]
         results = self.calibrations["settle"]["data"]
 
-        if plot:
-            plt.plot(times, np.squeeze(results), "k.")
-            plt.ylabel("Signal [a.u.]")
-            plt.xlabel("Time [sec]")
-            plt.show()
-
         # Function to interpolate
         def exponential_jump(x, x0, a, b, c):
             return (c - a*np.exp(-(x-x0) / b)) * np.heaviside(x - x0, 0)
@@ -135,7 +130,7 @@ class _SettleCalibration(object):
             maxfev=10000
         )
         x0, a, b, c = params
-        print(params)
+        self.logger.debug("settle fit params: %s", params)
 
         relax_time = b
         com_time = x0
@@ -158,7 +153,7 @@ class _SettleCalibration(object):
             plt.xlabel("Time [sec]")
             plt.ylabel("Signal [a.u.]")
             plt.title(title)
-            plt.show()
+            _slmsuite_plt_show(name="settle_calibration_process")
 
         # Update dictionary with results. FUTURE: Return error bars?
         processed = {

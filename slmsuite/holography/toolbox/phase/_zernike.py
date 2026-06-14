@@ -17,8 +17,15 @@ from math import factorial
 
 import matplotlib.pyplot as plt
 from scipy import special
+from typing import Tuple, Union, Callable
 
 from slmsuite.holography.toolbox import Aperture, _process_grid
+from slmsuite._plotting import _slmsuite_plt_show
+from slmsuite.misc.math import REAL_TYPES
+from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 # Load CUDA code. This is used for cupy.RawKernels in this file and elsewhere.
 
@@ -948,8 +955,7 @@ def zernike_pyramid_plot(
     ):
     r"""
     Plots :meth:`.zernike()` on a pyramid of subplots corresponding to the radial and
-    azimuthal order. The user can resize the figure with ``plt.figure()`` beforehand
-    and force ``plt.show()`` afterward.
+    azimuthal order. The user can resize the figure with ``plt.figure()`` beforehand.
 
     Parameters
     ----------
@@ -1053,6 +1059,8 @@ def zernike_pyramid_plot(
         box = box.translated(dx * pitch, 0)
         a.set_position(box)
 
+    _slmsuite_plt_show(name="zernike_pyramid_plot")
+
 
 def _zernike_overlap(
     grid, indices, aperture=None, use_mask=True
@@ -1099,10 +1107,10 @@ def _zernike_overlap(
 
 
 def _zernike_cache_plot():
-    plt.figure(figsize=(10,10))
     plt.imshow(np.log2(_zernike_cache_vectorized))
     plt.ylabel("Zernike Index (ANSI)")
     plt.xlabel("Monomial Index (Cantor)")
+    _slmsuite_plt_show(name="zernike_cache_plot")
 
 
 # Old style dictionary.     {(n,m) : {(nx, ny) : w, ... }, ... }
@@ -1279,6 +1287,7 @@ def _zernike_test(grid, indices):
     # Parse grid.
     (x_grid, y_grid) = _process_grid(grid)
     scale = Aperture.resolve(grid)._isotropic_scale()
+    logger.debug("source Zernike scaling: %s", scale)
     x_grid = cp.array(x_grid, copy=True, dtype=np.float32)
     y_grid = cp.array(y_grid, copy=True, dtype=np.float32)
 

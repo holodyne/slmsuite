@@ -20,6 +20,10 @@ except:
     tis = None
     warnings.warn("tisgrabber not installed. Install to use ImagingSource cameras.")
 
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
+
 
 # Change this DLL path if necessary
 DLL_PATH = "./tisgrabber_x64.dll"
@@ -88,7 +92,7 @@ class ImagingSource(Camera):
             if to_raise:
                 raise Exception(err_str)
             else:
-                print(err_str)
+                logger.error(err_str)
         return err
 
     def __init__(
@@ -96,7 +100,6 @@ class ImagingSource(Camera):
         serial="",
         vid_format=None,
         pitch_um=None,
-        verbose=True,
         **kwargs
     ):
         """
@@ -115,8 +118,6 @@ class ImagingSource(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -124,15 +125,14 @@ class ImagingSource(Camera):
             raise ImportError("tisgrabber not installed. Install to use ImagingSource cameras.")
 
         # Initialize the SDK if needed.
-        if verbose: print("TIS Camera SDK initializing... ", end="")
+        logger.debug("TIS Camera SDK initializing...")
         if ImagingSource.sdk is None:
             err = ImagingSource.init_sdk()
             if err != 1:
                 raise Exception("Error when loading SDK: " + str(err))
-        if verbose: print("success")
 
         # Then we load the camera from the SDK.
-        if verbose: print('"{}" initializing... '.format(serial), end="")
+        logger.debug('"%s" initializing...', serial)
 
         # cam will be the handle that represents the camera.
         self.cam = ImagingSource.sdk.IC_CreateGrabber()
@@ -172,7 +172,7 @@ class ImagingSource(Camera):
             pitch_um=pitch_um,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("ImagingSource camera initialized.")
 
     def close(self):
         """See :meth:`.Camera.close`."""
@@ -227,41 +227,69 @@ class ImagingSource(Camera):
         ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertySwitch, 1, self.cam, tis.T("Exposure"), tis.T("Auto"), 0)
         ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyAbsoluteValue, 1, self.cam, tis.T("Exposure"), tis.T("Value"), ctypes.c_float(exposure_s))
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        if woi is None:
-            width = ctypes.c_long()
-            height = ctypes.c_long()
-            bpp = ctypes.c_int()    # Bits per pixel
-            COLORFORMAT = ctypes.c_int()
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
+        # ImagingSource: width/height in the video format string are output (binned) pixels.
+        # Partial scan X/Y offsets are in physical (unbinned) sensor pixels.
+        # Ref: https://www.theimagingsource.com/en-us/documentation/icpython/properties.html
+        binx, biny = self._binning
+        x, w, y, h = [int(v) for v in woi]
+        x_phys, y_phys = x * binx, y * biny
+        idx = self.vid_format.find("(")
+        this_vid_format = self.vid_format[:idx]
+        tot_format = this_vid_format + "(" + str(w) + "x" + str(h) + ")"
+        ImagingSource.safe_call(ImagingSource.sdk.IC_SetVideoFormat, 1, self.cam, tis.T(tot_format))
+        ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertySwitch, 1, self.cam, tis.T("Partial scan"), tis.T("Auto-center"), 0)
+        ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyValue, 1, self.cam, tis.T("Partial scan"), tis.T("X Offset"), x_phys)
+        ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyValue, 1, self.cam, tis.T("Partial scan"), tis.T("Y Offset"), y_phys)
 
-            ImagingSource.safe_call(ImagingSource.sdk.IC_GetImageDescription, 1, self.cam, width, height, bpp, COLORFORMAT)
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
+        # width/height from IC_GetImageDescription are output (binned) pixels.
+        # X/Y offsets from IC_GetPropertyValue are physical pixels; divide by binning.
+        binx, biny = self._binning
+        width = ctypes.c_long()
+        height = ctypes.c_long()
+        bpp = ctypes.c_int()
+        COLORFORMAT = ctypes.c_int()
+        ImagingSource.safe_call(ImagingSource.sdk.IC_GetImageDescription, 1, self.cam, width, height, bpp, COLORFORMAT)
+        x_offset = ctypes.c_long()
+        y_offset = ctypes.c_long()
+        ImagingSource.sdk.IC_GetPropertyValue(self.cam, tis.T("Partial scan"), tis.T("X Offset"), x_offset)
+        ImagingSource.sdk.IC_GetPropertyValue(self.cam, tis.T("Partial scan"), tis.T("Y Offset"), y_offset)
+        return (int(x_offset.value) // binx, int(width.value), int(y_offset.value) // biny, int(height.value))
 
-            width = width.value
-            height = height.value
-            self.woi = (0, width, 0, height)
-        else:
-            # Format for woi is specified in :meth:`.Camera.set_woi`.
-            width = int(woi[1])
-            height = int(woi[3])
-            xpos = int(woi[0])
-            ypos = int(woi[2])
-            # This keeps the original format
-            idx = self.vid_format.find("(")    # TODO: is this general?
-            this_vid_format = self.vid_format[:idx]
-            # We bring in the new width and height specified in the video format
-            tot_format = this_vid_format + "(" + str(width) +"x" + str(height) + ")"
-            ImagingSource.safe_call(ImagingSource.sdk.IC_SetVideoFormat, 1, self.cam, tis.T(tot_format))
-            # Now offset
-            ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertySwitch, 1, self.cam, tis.T("Partial scan"), tis.T("Auto-center"), 0)
-            ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyValue, 1, self.cam, tis.T("Partial scan"), tis.T("X Offset"), xpos)
-            ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyValue, 1, self.cam, tis.T("Partial scan"), tis.T("Y Offset"), ypos)
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`. **(Untested)**"""
+        biny, binx = int(binning[0]), int(binning[1])
+        if biny != binx:
+            raise NotImplementedError("ImagingSource requires symmetric binning.")
+        buf = tis.T(str(biny))
+        err = ImagingSource.sdk.IC_SetPropertyMapStrings(
+            self.cam, tis.T("Binning factor"), tis.T("Value"), buf
+        )
+        if err <= 0:
+            raise NotImplementedError(f"Camera {self.name} does not support binning.")
 
-        self.shape = (height, width)
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        buf = (ctypes.c_char * 128)()
+        err = ImagingSource.sdk.IC_GetPropertyMapStrings(
+            self.cam, tis.T("Binning factor"), tis.T("Value"), buf, ctypes.sizeof(buf)
+        )
+        if err > 0:
+            try:
+                return (int(buf.value.decode()), int(buf.value.decode()))
+            except (ValueError, UnicodeDecodeError):
+                pass
+        return (1, 1)
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
-        buffer_size = 3 * self.bitdepth * self.shape[0] * self.shape[1] # times 3 is because even Y800 is RGB
+        # Raw, untransformed frame shape that hardware delivers (WOI/binning applied in hardware).
+        H, W = self._hw_image_shape
+        # 8-bit RGB: 3 bytes per pixel (even Y800 mono is delivered as RGB).
+        buffer_size = 3 * H * W
         # Starts the image acquisition
         ImagingSource.safe_call(ImagingSource.sdk.IC_StartLive, 0, self.cam, 0)
         # Snap image
@@ -274,7 +302,8 @@ class ImagingSource(Camera):
         img_ptr = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_ubyte * buffer_size))
         # Reshape the image according to the width and height.
         # TODO: there are more efficient ways to reshape the array only considering the R component.
-        img = np.ndarray(buffer=img_ptr.contents, dtype=np.uint8, shape=(self.shape[0], self.shape[1], 3)) # 3 for RGB
+        img = np.ndarray(buffer=img_ptr.contents, dtype=np.uint8, shape=(H, W, 3)) # 3 for RGB
         ImagingSource.safe_call(ImagingSource.sdk.IC_StopLive, 0, self.cam)
         # We take only the 1st component, assuming that the image is monochromatic.
-        return self.transform(img[:,:,0])
+        # Return the raw untransformed frame; the base class applies self.transform.
+        return np.copy(img[:, :, 0])

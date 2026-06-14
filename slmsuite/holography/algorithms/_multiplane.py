@@ -256,7 +256,7 @@ class MultiplaneHologram(Hologram):
                 "Otherwise, we have no reference for the scale of a wavelength."
             )
 
-        f_eff = np.sqrt(np.abs(np.linalg.det(cameraslm.calibrations["fourier"]["M"])))
+        f_eff = cameraslm.get_effective_focal_length()
         w0_kxy = cameraslm.slm.get_spot_radius_kxy()
         w0_pix = f_eff * w0_kxy
         w0_um = w0_pix * np.mean(cameraslm.cam.pitch_um)
@@ -278,9 +278,9 @@ class MultiplaneHologram(Hologram):
 
     # Overload user functions with meta functionality.
 
-    def _update_flags(self, method, verbose, feedback, stat_groups, **kwargs):
+    def _update_flags(self, method, feedback, stat_groups, **kwargs):
         # First update the parent flags.
-        super()._update_flags(method, verbose, feedback, stat_groups, **kwargs)
+        super()._update_flags(method, feedback, stat_groups, **kwargs)
 
         # Then update each of the child flags.
         for h in self.holograms:

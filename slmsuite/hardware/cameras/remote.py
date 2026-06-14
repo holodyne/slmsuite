@@ -64,6 +64,9 @@ class RemoteCamera(_Client, Camera):
             **kwargs
         )
 
+        self._software_woi = pickled.get("_software_woi", self._software_woi)
+        self._software_binning = pickled.get("_software_binning", self._software_binning)
+
     def close(self):
         pass
 
@@ -89,6 +92,22 @@ class RemoteCamera(_Client, Camera):
             kwargs=dict(exposure_s=exposure_s)
         )
 
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        return self._com(command="_set_woi_hw", kwargs=dict(woi=woi))
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        return self._com(command="_get_woi_hw")
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        return self._com(command="_set_binning_hw", kwargs=dict(binning=binning))
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        return self._com(command="_get_binning_hw")
+
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
         t = time.perf_counter()
@@ -96,13 +115,13 @@ class RemoteCamera(_Client, Camera):
             command="_get_image_hw",
             kwargs=dict(timeout_s=timeout_s)
         )
-        print(time.perf_counter()-t)
+        self.logger.debug("get_image latency: %s s", time.perf_counter()-t)
         return img
 
     def _get_images_hw(self, image_count, timeout_s, out=None):
         """See :meth:`.Camera._get_images_hw`."""
         if out is not None:
-            warnings.warn("Remote camera does not support in-place operations.")
+            self.logger.warning("Remote camera does not support in-place operations.")
 
         return self._com(
             command="_get_images_hw",

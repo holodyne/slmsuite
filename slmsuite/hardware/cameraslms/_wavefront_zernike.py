@@ -1,5 +1,6 @@
 import copy
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import optimize
 from scipy.spatial import Delaunay
@@ -243,7 +244,7 @@ class _WavefrontCalibrationZernike(object):
                 plt.xlim(-.5, result.shape[1]-.5)
                 plt.ylim(np.max(sweep), np.min(sweep))
                 cbar.ax.set_ylabel("Figure of Merit [norm]") #, rotation=270)
-                plt.show()
+                _slmsuite_plt_show(name=f"wavefront_calibrate_zernike_{term}")
 
             return x, dx, railed
 
@@ -443,10 +444,11 @@ class _WavefrontCalibrationZernike(object):
                 max = np.max(take)
 
                 if max >= self.cam.bitresolution-1:
-                    warnings.warn("Image is overexposed.")
+                    self.logger.warning("Image is overexposed.")
                 elif max > .5*self.cam.bitresolution:
-                    warnings.warn(
-                        f"Image might become overexposed during optimization ({max}/{self.cam.bitresolution-1})."
+                    self.logger.warning(
+                        "Image might become overexposed during optimization (%s/%s).",
+                        max, self.cam.bitresolution-1,
                     )
 
                 self.cam.plot(img, title="Zernike Calibration Status")
@@ -457,7 +459,7 @@ class _WavefrontCalibrationZernike(object):
                     # plt.imshow(tiled)
                     analysis.take_plot(take, separate_axes=False)
                     plt.title("Zernike Calibration Status (Zoom)")
-                    plt.show()
+                    _slmsuite_plt_show(name="wavefront_calibrate_zernike")
 
             return hologram
 
@@ -548,6 +550,7 @@ class _WavefrontCalibrationZernike(object):
         cbar.ax.set_ylabel("Aberration Correction [rad]") #, rotation=270)
         plt.clim(-lim, lim)
         plt.title(f"Zernike $Z_{zernike_indices[index]}$")
+        _slmsuite_plt_show(name="wavefront_calibrate_zernike_plot_raw")
 
     @staticmethod
     def _wavefront_calibrate_zernike_default_metric(images):

@@ -4,11 +4,11 @@ import numpy as np
 from yaml import warnings
 
 from slmsuite.hardware._viewer import _Viewable
-from slmsuite.hardware._pickle import _Picklable
+from slmsuite._logging import _Loggable
 from slmsuite.holography.toolbox import format_shape
 from slmsuite.misc.math import REAL_TYPES
 
-class _Common(_Viewable, _Picklable, ABC):
+class _Common(_Viewable, _Loggable, ABC):
     """
     Handles common properties and methods for both cameras and SLMs.
     """
@@ -24,12 +24,14 @@ class _Common(_Viewable, _Picklable, ABC):
         width, height = format_shape(resolution)
         self.shape = (height, width)
 
+        # Remember the name.
+        self.name = str(name)
+        if len(self.name) == 0:
+            self.name = str(self.__class__.__name__)
+
         # Parse datatype variables.
         self.bitdepth = int(bitdepth)
         self.dtype = self._get_dtype()
-
-        # Remember the name.
-        self.name = str(name)
 
         # Parse spatial dimensions.
         if pitch_um is None:
@@ -51,7 +53,11 @@ class _Common(_Viewable, _Picklable, ABC):
         self.is_slm = bool(is_slm)
 
         # Initialize viewer.
-        super().__init__()
+        _Viewable.__init__(self)
+
+        # Initialize logger.
+        _Loggable.__init__(self)
+        self.log_state()
 
     @abstractmethod
     def close(self):
@@ -126,7 +132,7 @@ class _Common(_Viewable, _Picklable, ABC):
 
             # Warn the user if something is wrong.
             if dtype_bitdepth < self.bitdepth:
-                raise warnings.warn(
+                warnings.warn(
                     f"Hardware '{self.name}' bitdepth of {self.bitdepth} does not conform "
                     f"with the image type {self.dtype} with {self.dtype.itemsize} bytes."
                 )

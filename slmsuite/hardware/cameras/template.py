@@ -4,6 +4,9 @@ Outlines which camera superclass functions must be implemented.
 """
 
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 class Template(Camera):
     """
@@ -27,7 +30,6 @@ class Template(Camera):
         self,
         serial="",
         pitch_um=None,
-        verbose=True,
         **kwargs
     ):
         """
@@ -41,8 +43,6 @@ class Template(Camera):
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
             TODO: See if the SDK can pull this information directly from the camera.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -56,13 +56,12 @@ class Template(Camera):
         # - Gathering parameters such a width, height, and bitdepth.
 
         # Most cameras have an SDK that needs to be loaded before the camera
-        if verbose: print("Template SDK initializing... ", end="")
+        logger.debug("Template SDK initializing...")
         raise NotImplementedError()
         Template.sdk = something()                      # TODO: Fill in proper function.
-        if verbose: print("success")
 
         # Then we load the camera from the SDK
-        if verbose: print(f"'{serial}' initializing... ", end="")
+        logger.debug("'%s' initializing...", serial)
         raise NotImplementedError()
         self.cam = sdk.something(serial)                # TODO: Fill in proper function.
 
@@ -76,7 +75,7 @@ class Template(Camera):
             name=serial,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("Template camera initialized.")
 
     def close(self):
         """See :meth:`.Camera.close`."""
@@ -104,7 +103,10 @@ class Template(Camera):
         serial_list = Template.sdk.get_serial_list()    # TODO: Fill in proper function.
         return serial_list
 
-    ### Property Configuration ###
+    ### Required Methods ###
+
+    ## Exposure (used in autoexpose and other functions)
+    # User-facing is in seconds. SDK might require different units (e.g. milliseconds).
 
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
@@ -116,10 +118,7 @@ class Template(Camera):
         raise NotImplementedError()
         self.cam.set_exposure(1e3 * exposure_s)         # TODO: Fill in proper function.
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        raise NotImplementedError()
-        # Use self.cam to crop the window of interest.
+    ## Core imaging
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
@@ -131,7 +130,9 @@ class Template(Camera):
         # method should be limited to camera-interface specific functions.
         return self.cam.get_image_function()     # TODO: Fill in proper function.
 
-# Optional methods:
+    ### Optional Methods ###
+
+    ### Secondary imaging (some cameras offer batch image capture)
 
     # def _get_images_hw(self, image_count, timeout_s, out=None):
     #     """See :meth:`.Camera._get_images_hw`."""
@@ -140,6 +141,28 @@ class Template(Camera):
     #     # frame batches. If not defined, the superclass captures and averages sequential
     #     # _get_image_hw images.
     #     return self.cam.get_images_function()     # TODO: Fill in proper function.
+
+    ## Setting window of interest (WOI)
+
+    # def _set_woi_hw(self, woi):
+    #     """See :meth:`.Camera._set_woi_hw`."""
+    #     pass # TODO: Fill in proper function. Do not fill in if the camera does not support WOI.
+
+    # def _get_woi_hw(self):
+    #     """See :meth:`.Camera._get_woi_hw`."""
+    #     pass # TODO: Fill in proper function. Do not fill in if the camera does not support WOI.
+
+    ## Setting binning
+
+    # def _set_binning_hw(self, binning):
+    #     """See :meth:`.Camera._set_binning_hw`."""
+    #     pass # TODO: Fill in proper function. Do not fill in if the camera does not support binning.
+
+    # def _get_binning_hw(self):
+    #     """See :meth:`.Camera._get_binning_hw`."""
+    #     pass # TODO: Fill in proper function. Do not fill in if the camera does not support binning.
+
+    ## Clear the image buffer (superclass default method calls get_image successively)
 
     # def flush(self, timeout_s=1):
     #     """See :meth:`.Camera.flush`."""

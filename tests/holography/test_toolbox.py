@@ -1,6 +1,8 @@
 """
 Unit tests for slmsuite.holography.toolbox module.
 """
+import logging
+
 import pytest
 import numpy as np
 
@@ -11,7 +13,7 @@ from slmsuite.holography.toolbox import *
 from slmsuite.holography.toolbox import phase
 
 
-def test_convert_vector(slm, subtests):
+def test_convert_vector(slm, subtests, caplog):
     """Comprehensive tests for convert_vector unit conversions."""
     vec = np.array([[0.1], [-0.2]])
     hw = {"hardware": slm}
@@ -132,14 +134,18 @@ def test_convert_vector(slm, subtests):
 
     for unit in ["freq", "lpmm", "knm"]:
         with subtests.test(f"{unit} without hardware warns"):
-            with pytest.warns(UserWarning):
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                caplog.clear()
                 result = convert_vector(vec, from_units=unit, to_units="norm")
+            assert any(r.levelno == logging.WARNING for r in caplog.records)
             assert np.all(np.isnan(result))
 
     for unit in ["ij", "um"]:
         with subtests.test(f"{unit} without cameraslm warns"):
-            with pytest.warns(UserWarning, match="CameraSLM"):
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                caplog.clear()
                 result = convert_vector(vec, from_units=unit, to_units="norm")
+            assert any("CameraSLM" in r.getMessage() for r in caplog.records)
             assert np.all(np.isnan(result))
 
     with subtests.test("cross-unit mrad -> deg"):

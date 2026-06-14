@@ -22,7 +22,8 @@ interfaces which support UC480 drivers.
 
 Note
 ~~~~
-Color camera functionality is not currently implemented, and will lead to undefined behavior.
+Color cameras reduce each frame to a single channel selected by the base-class
+:attr:`~slmsuite.hardware.cameras.camera.Camera.color_channel` setting.
 """
 
 import os
@@ -32,6 +33,9 @@ import numpy as np
 import warnings
 
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 DEFAULT_DLL_PATH = (
     "C:\\Program Files\\Thorlabs\\Scientific Imaging\\"
@@ -57,6 +61,11 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
             dll_path += "64_lib"
         else:
             dll_path += "32_lib"
+
+    if not os.path.exists(dll_path) or not os.path.isdir(dll_path):
+        warnings.warn(
+            f"Thorlabs camera DLL path does not exist.\n'{dll_path}'"
+        )
 
     if hasattr(os, "add_dll_directory"):
         try:
@@ -104,7 +113,7 @@ class ThorCam(Camera):
 
     ### Initialization and termination ###
 
-    def __init__(self, serial="", verbose=True, **kwargs):
+    def __init__(self, serial="", **kwargs):
         """
         Initialize camera and attributes. Initial profile is ``"single"``.
 
@@ -127,26 +136,20 @@ class ThorCam(Camera):
             raise ImportError("thorlabs_tsi_sdk not installed. Install to use Thorlabs cameras.")
 
         if ThorCam.sdk is None:
-            if verbose:
-                print("TLCameraSDK initializing... ", end="")
+            logger.debug("TLCameraSDK initializing...")
             try:
                 ThorCam.sdk = TLCameraSDK()
             except:
-                print("failure")
+                logger.error("TLCameraSDK initialization failed.")
                 raise RuntimeError(
                     "TLCameraSDK() open failed. "
                     "Is thorlabs_tsi_sdk installed? "
                     "Are the .dlls in the directory added by _configure_tlcam_dll_path? "
                     "Sometimes adding the .dlls to the working directory can help."
                 )
-            if verbose:
-                print("success")
 
-        if verbose:
-            print("Looking for cameras... ", end="")
+        logger.debug("Looking for cameras...")
         camera_list = ThorCam.sdk.discover_available_cameras()
-        if verbose:
-            print("success")
 
         if serial == "":
             if len(camera_list) == 0:
@@ -157,8 +160,7 @@ class ThorCam(Camera):
                 f"Serial '{serial}' not found by TLCameraSDK. Availible: {camera_list}"
             )
 
-        if verbose:
-            print(f"ThorCam sn '{serial}' initializing... ", end="")
+        logger.debug("ThorCam sn '%s' initializing...", serial)
         self.cam = ThorCam.sdk.open_camera(serial)
 
         self.cam.is_led_on = False
@@ -177,7 +179,7 @@ class ThorCam(Camera):
             name=serial,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("ThorCam initialized.")
 
     def close(self, close_sdk=False):
         """
@@ -260,89 +262,49 @@ class ThorCam(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self.cam.exposure_time_us = int(exposure_s * 1e6)
 
-    def set_binning(self, bx=None, by=None):
-        """
-        Set the binning of the camera. Will error if a certain binning is not supported.
-
-        Parameters
-        ----------
-        bx : int
-            The binning value in the horizontal direction.
-        by : int
-            The binning value in the vertical direction.
-        """
-        # Save old profile and disarm
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
+        # ThorCam expects physical (unbinned) sensor pixel coordinates.
+        # tl_camera_set_roi / ROI object use physical pixels.
+        # Ref: https://pylablib.readthedocs.io/en/stable/_modules/pylablib/devices/Thorlabs/TLCamera.html
         profile = self.profile
         self.setup(None)
-
-        if bx is None:
-            bx = 1
-        if by is None:
-            by = 1
-        self.cam.binx = int(bx)
-        self.cam.biny = int(by)
-
-        # Restore profile
-        self.setup(profile)
-
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        # Save old profile and disarm
-        profile = self.profile
-        self.setup(None)
-
-        if woi is None:  # Default to maximum WOI
-            woi = (
-                self.cam.roi_range.upper_left_x_pixels_min,
-                self.cam.roi_range.lower_right_x_pixels_max
-                - self.cam.roi_range.upper_left_x_pixels_min + 1,
-                self.cam.roi_range.upper_left_y_pixels_min,
-                self.cam.roi_range.lower_right_y_pixels_max
-                - self.cam.roi_range.upper_left_y_pixels_min + 1,
-            )
-
-        self.woi = woi
-
+        binx, biny = self._binning
+        x, w, y, h = [int(v) for v in woi]
+        x_p, w_p, y_p, h_p = x * binx, w * binx, y * biny, h * biny
+        max_x = self.cam.roi_range.lower_right_x_pixels_max
         newroi = ROI(
-            self.cam.roi_range.lower_right_x_pixels_max - woi[0] - woi[1] + 1,
-            woi[2],
-            self.cam.roi_range.lower_right_x_pixels_max - woi[0],
-            woi[2] + woi[3] - 1,
+            max_x - x_p - w_p + 1,
+            y_p,
+            max_x - x_p,
+            y_p + h_p - 1,
         )
-
-        assert (
-            self.cam.roi_range.upper_left_x_pixels_min
-            <= newroi.upper_left_x_pixels
-            <= self.cam.roi_range.upper_left_x_pixels_max
-        )
-        assert (
-            self.cam.roi_range.upper_left_y_pixels_min
-            <= newroi.upper_left_y_pixels
-            <= self.cam.roi_range.upper_left_y_pixels_max
-        )
-        assert (
-            self.cam.roi_range.lower_right_x_pixels_min
-            <= newroi.lower_right_x_pixels
-            <= self.cam.roi_range.lower_right_x_pixels_max
-        )
-        assert (
-            self.cam.roi_range.lower_right_y_pixels_min
-            <= newroi.lower_right_y_pixels
-            <= self.cam.roi_range.lower_right_y_pixels_max
-        )
-
-        # Update the woi
         self.cam.roi = newroi
-        self.woi = woi
-
-        # Update the shape (test the transform; maybe make this more efficient in the future)
-        test = np.zeros((woi[3], woi[1]))
-        self.shape = np.shape(self.transform(test))
-
-        # Restore profile
         self.setup(profile)
 
-        return woi
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
+        # ThorCam ROI is in physical pixels; divide by binning to return binned coords.
+        binx, biny = self._binning
+        roi = self.cam.roi
+        max_x = self.cam.roi_range.lower_right_x_pixels_max
+        x_p = max_x - roi.lower_right_x_pixels
+        w_p = roi.lower_right_x_pixels - roi.upper_left_x_pixels + 1
+        y_p = roi.upper_left_y_pixels
+        h_p = roi.lower_right_y_pixels - roi.upper_left_y_pixels + 1
+        return (x_p // binx, w_p // binx, y_p // biny, h_p // biny)
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        profile = self.profile
+        self.setup(None)
+        self.cam.binx = int(binning[0])
+        self.cam.biny = int(binning[1])
+        self.setup(profile)
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        return (int(self.cam.binx), int(self.cam.biny))
 
     def setup(self, profile):
         """
@@ -412,7 +374,12 @@ class ThorCam(Camera):
             while time.time() - t < timeout_s and frame is None:
                 frame = self.cam.get_pending_frame_or_null()
 
-            ret = np.copy(frame.image_buffer) if frame is not None else None
+            if frame is None:
+                raise RuntimeError(
+                    f"'{self.name}' timed out waiting for a frame after {timeout_s} s."
+                )
+
+            ret = np.copy(frame.image_buffer)
 
         return ret
 

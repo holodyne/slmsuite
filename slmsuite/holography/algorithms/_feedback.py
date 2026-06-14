@@ -182,10 +182,9 @@ class FeedbackHologram(Hologram):
         b1 = np.matmul(M1, -toolbox.format_2vectors(np.flip(np.squeeze(self.shape)) / 2))
 
         # Second transformation.
-        M2 = self.cameraslm.calibrations["fourier"]["M"].copy()
-        b2 = self.cameraslm.calibrations["fourier"]["b"].copy()
-        if "a" in self.cameraslm.calibrations["fourier"]:
-            b2 -= np.matmul(M2, self.cameraslm.calibrations["fourier"]["a"])
+        affine = self.cameraslm.fourier_affine
+        M2 = affine.M
+        b2 = affine.b
 
         # Composite transformation (along with xy -> yx).
         M = cp.array(np.flip(np.flip(np.matmul(M2, M1), axis=0), axis=1))

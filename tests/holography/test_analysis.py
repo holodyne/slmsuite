@@ -2,6 +2,7 @@
 Unit tests for slmsuite.holography.analysis module.
 """
 import warnings
+import logging
 
 import pytest
 import numpy as np
@@ -386,7 +387,7 @@ def test_image_relative_strehl(subtests):
         assert strehl > 0.5
 
 
-def test_image_fit(subtests, benchmark):
+def test_image_fit(subtests, benchmark, caplog):
     """Test image_fit() Gaussian fitting."""
     x = np.linspace(-10, 10, 50)
     y = np.linspace(-10, 10, 50)
@@ -434,9 +435,11 @@ def test_image_fit(subtests, benchmark):
             return a * xy[0] + b * xy[1]
 
         img = np.random.rand(1, 20, 20)
-        with pytest.warns(UserWarning, match="not implemented"):
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
             result = analysis.image_fit(img, grid=grid[:20, :20] if False else None,
                                         function=custom_fn, guess=None)
+        assert any("not implemented" in r.getMessage() for r in caplog.records)
 
         assert result.shape[0] == 1
 
@@ -626,7 +629,7 @@ def test_image_zernike_fit(subtests):
         assert np.allclose(grad_coeffs[:, 0], weights, atol=1e-2)
 
 
-def test_take(subtests, benchmark):
+def test_take(subtests, benchmark, caplog):
     """Test take(), take_tile(), take_plot(), and _take_parse_shape()."""
     with subtests.test("benchmark"):
         rng = np.random.default_rng(42)
@@ -678,9 +681,11 @@ def test_take(subtests, benchmark):
 
     with subtests.test("_take_parse_shape warns on truncation"):
         test_images = np.random.rand(3, 10, 10)
-        with pytest.warns(UserWarning, match="Not enough space"):
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
             img_count3, (M3, N3) = analysis._take_parse_shape(test_images, shape=(1, 2))
-            assert img_count3 == 2
+        assert any("Not enough space" in r.getMessage() for r in caplog.records)
+        assert img_count3 == 2
 
     with subtests.test("take_plot does not crash"):
         import matplotlib.pyplot as plt
@@ -1241,3 +1246,180 @@ def test_take_gpu(benchmark, has_cupy):
 
     result = benchmark(analysis.take, image, vectors=vectors, size=20, centered=True, xp=cp)
     assert result.shape == (50, 20, 20)
+
+
+# ---------------------------------------------------------------------------
+# Affine tests
+# ---------------------------------------------------------------------------
+
+def test_affine_apply(subtests):
+    """Affine(M, b) applies y = M @ x + b correctly."""
+    M = np.array([[2., 0.], [0., 3.]])
+    b = np.array([1., -1.])
+
+    aff = analysis.Affine(M, b)
+
+    with subtests.test("single column vector"):
+        x = np.array([[4.], [5.]])
+        expected = M @ x + b[:, None]
+        np.testing.assert_allclose(aff @ x, expected)
+
+    with subtests.test("multiple column vectors"):
+        X = np.array([[1., 2.], [3., 4.]])
+        np.testing.assert_allclose(aff @ X, M @ X + b[:, None])
+
+    with subtests.test("a-parameter: y = M @ (x - a) + b"):
+        a = np.array([1., 2.])
+        aff_a = analysis.Affine(M, b, a)
+        x = np.array([[5.], [6.]])
+        expected = M @ (x - a[:, None]) + b[:, None]
+        np.testing.assert_allclose(aff_a @ x, expected)
+
+
+def test_affine_to_dict(subtests):
+    """Affine.to_dict serializes and can be reconstructed to an equivalent Affine."""
+    M = np.array([[2., 1.], [0., 3.]])
+    b = np.array([5., -3.])
+    a = np.array([1., 2.])
+    aff = analysis.Affine(M, b, a)
+
+    with subtests.test("to_dict keys"):
+        d = aff.to_dict()
+        assert set(d.keys()) >= {"M", "b", "a"}
+
+    with subtests.test("reconstructed Affine matches original"):
+        d = aff.to_dict()
+        aff2 = analysis.Affine(d["M"], d["b"])
+        x = np.array([[4.], [6.]])
+        np.testing.assert_allclose(aff @ x, aff2 @ x, atol=1e-12)
+
+    with subtests.test("a stored as zeros after centering is baked in"):
+        d = aff.to_dict()
+        np.testing.assert_allclose(d["a"], np.zeros((2, 1)), atol=1e-12)
+
+
+def test_affine_compose(subtests):
+    """A @ B composes correctly: (A @ B) @ x == A @ (B @ x)."""
+    A = analysis.Affine(np.array([[2., 1.], [0., 3.]]), np.array([1., -1.]))
+    B = analysis.Affine(np.array([[0., 1.], [1., 0.]]), np.array([0.5, 0.5]))
+
+    AB = A @ B
+    x = np.array([[3.], [7.]])
+
+    with subtests.test("composition result type"):
+        assert isinstance(AB, analysis.Affine)
+
+    with subtests.test("composition is associative"):
+        np.testing.assert_allclose(AB @ x, A @ (B @ x))
+
+
+def test_affine_inv(subtests):
+    """Affine.inv is a property and round-trips correctly."""
+    M = np.array([[3., 1.], [0., 2.]])
+    b = np.array([4., -2.])
+    aff = analysis.Affine(M, b)
+
+    with subtests.test("inv is a property, not a method"):
+        # Accessing .inv returns an Affine, not a bound method.
+        assert isinstance(aff.inv, analysis.Affine)
+
+    with subtests.test("round-trip forward → inverse"):
+        x = np.array([[5.], [3.]])
+        np.testing.assert_allclose(aff.inv @ (aff @ x), x, atol=1e-10)
+
+    with subtests.test("round-trip inverse → forward"):
+        y = np.array([[1.], [2.]])
+        np.testing.assert_allclose(aff @ (aff.inv @ y), y, atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# OrientationTransform tests
+# ---------------------------------------------------------------------------
+
+def _all_transforms():
+    """Yield (label, OrientationTransform) for all 8 D4 codes."""
+    OT = analysis.OrientationTransform
+    return [
+        ("identity",   OT.from_code(OT.D_4.IDENTITY)),
+        ("rot90",      OT.from_code(OT.D_4.ROT90)),
+        ("rot180",     OT.from_code(OT.D_4.ROT180)),
+        ("rot270",     OT.from_code(OT.D_4.ROT270)),
+        ("flip",       OT.from_code(OT.D_4.FLIP)),
+        ("flip_rot90", OT.from_code(OT.D_4.FLIP_ROT90)),
+        ("flip_rot180",OT.from_code(OT.D_4.FLIP_ROT180)),
+        ("flip_rot270",OT.from_code(OT.D_4.FLIP_ROT270)),
+    ]
+
+
+def test_orientation_matrix_properties(subtests):
+    """
+    matrix is an orthogonal matrix (isometry):
+      - det = ±1
+      - M^T @ M == I
+    These hold for all 8 D4 transforms.
+    """
+    for label, t in _all_transforms():
+        M = t.M
+
+        with subtests.test(f"{label} : det = ±1"):
+            d = np.linalg.det(M)
+            assert abs(abs(d) - 1.0) < 1e-10, f"{label}: det={d}"
+
+        with subtests.test(f"{label} : orthogonal (M^T @ M == I)"):
+            np.testing.assert_allclose(
+                M.T @ M, np.eye(2), atol=1e-10,
+                err_msg=f"{label}: M^T @ M != I"
+            )
+
+
+def test_orientation_affine_matches_image_transform(subtests):
+    """
+    affine(shape) maps pixel (x, y) to exactly the position where
+    OrientationTransform.__call__ moves that pixel in the transformed image.
+    """
+    H, W = 4, 6   # non-square to expose axis-swap bugs
+
+    # Unique integer label for each pixel (value = col * 100 + row, arbitrary but unique).
+    img = np.arange(H * W, dtype=float).reshape(H, W)
+
+    for label, t in _all_transforms():
+        transformed = t(img)          # apply the image transform
+
+        # For each pixel (x=col, y=row) in the original, affine tells us
+        # where it ends up.  Verify that the value at that destination matches.
+        aff = t.affine((H, W))
+
+        errors = []
+        for y in range(H):
+            for x in range(W):
+                src = img[y, x]
+                dst = aff @ np.array([[float(x)], [float(y)]])
+                x_dst = int(round(dst[0, 0]))
+                y_dst = int(round(dst[1, 0]))
+                actual = transformed[y_dst, x_dst]
+                if not np.isclose(actual, src):
+                    errors.append(f"  ({x},{y})→({x_dst},{y_dst}): expected {src}, got {actual}")
+
+        with subtests.test(label):
+            assert not errors, "\n".join([f"{label} pixel mapping errors:"] + errors)
+
+
+def test_orientation_affine_translation_formula(subtests):
+    """
+    The translation vector t of affine satisfies
+    t[i] = max(0,-M[i,0])*(W-1) + max(0,-M[i,1])*(H-1),
+    which means the origin (0,0) always maps to a non-negative corner.
+    """
+    H, W = 5, 9
+    for label, t in _all_transforms():
+        aff = t.affine((H, W))
+        origin_out = aff @ np.zeros((2, 1))
+        with subtests.test(f"{label} : origin maps to non-negative corner"):
+            assert origin_out[0, 0] >= 0 and origin_out[1, 0] >= 0, (
+                f"{label}: origin mapped to negative coords {origin_out.flatten()}"
+            )
+        with subtests.test(f"{label} : last pixel maps within bounds"):
+            out_shape = t.transform_shape((H, W))
+            corner = aff @ np.array([[float(W - 1)], [float(H - 1)]])
+            assert 0 <= corner[0, 0] <= out_shape[1] - 1
+            assert 0 <= corner[1, 0] <= out_shape[0] - 1

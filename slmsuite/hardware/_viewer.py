@@ -172,7 +172,7 @@ class _ViewerObject(object):
 
     def parse(self, img=None):
         is_cam = not self.parent.is_slm
-        
+
         if img is not None:
             self.prev_img = img
         if self.prev_img is None:

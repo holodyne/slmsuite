@@ -1,8 +1,8 @@
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import ndimage
 from tqdm.auto import tqdm
-import warnings
 
 from slmsuite.holography import analysis
 from slmsuite.holography import toolbox
@@ -113,9 +113,9 @@ class _PixelCalibration(object):
             levels = int(2 ** (np.ceil(np.log2(levels))))
 
             if levels > self.slm.bitresolution:
-                warnings.warn(
-                    f"Requested {levels} levels are more than the "
-                    f"bitresolution. Truncating to {self.slm.bitresolution}."
+                self.logger.warning(
+                    "Requested %s levels are more than the bitresolution. Truncating to %s.",
+                    levels, self.slm.bitresolution,
                 )
                 levels = self.slm.bitresolution
 
@@ -262,7 +262,7 @@ class _PixelCalibration(object):
                     )
                     canvas += mask
             self.cam.plot(canvas, title="Order integration mask")
-            plt.show()
+            _slmsuite_plt_show(name="pixel_calibrate_masks")
 
         show_tqdm = True
 
@@ -343,7 +343,7 @@ class _PixelCalibration(object):
                             )
 
                             if test_index is None:
-                                # Only autoexpose for the first test index, if autoexposure is enabled.
+                                # Only autoexpose for the first test index, if autoexpose is enabled.
                                 autoexpose = False
                             else:
                                 autoexposure_results.append(self.cam.get_exposure())
@@ -367,17 +367,17 @@ class _PixelCalibration(object):
                             self.cam.plot(
                                 title=(
                                     f"Pixel Calibrate index {index} "
-                                    f"at direction {['x', 'y'][i]}, period {periods[j]}, "
+                                    f"at direction {('x', 'y')[i]}, period {periods[j]}, "
                                     f"levels {levels[k]}, {levels[l]}"
                                 )
                             )
-                            plt.show()
+                            _slmsuite_plt_show(name="pixel_calibrate_result")
 
                             # Turn plotting off after the first test index.
                             if test_index is None:
                                 plot = False
 
-                        # (3c) Handle test index results collection and maybe autoexposure adjustment.
+                        # (3c) Handle test index results collection and maybe autoexpose adjustment.
                         if test_index is not None:
                             results.append(data[i,j,k,l,:].copy())
 
@@ -503,7 +503,7 @@ class _PixelCalibration(object):
                         axs[o].set_title(f"Order ${order:+d}$")
 
                     fig.suptitle(f"${direction}$-grating, {period} pixel period")
-                    plt.show()
+                    _slmsuite_plt_show(name="pixel_calibration_plot")
         else:
             data_summed = self._pixel_calibration_process_get_summed(orders=orders)
             cmin = np.min(data_summed)
@@ -520,7 +520,7 @@ class _PixelCalibration(object):
 
             ax.set_title(f"Summed Orders")
 
-            plt.show()
+            _slmsuite_plt_show(name="pixel_calibration_plot")
 
     def pixel_calibration_process_gamma(self, plot=False):
         """
@@ -570,12 +570,12 @@ class _PixelCalibration(object):
         r_squared = 1 - (ss_res / ss_tot)
 
         if r_squared < 0.9:
-            warnings.warn(f"Low R^2 value of {r_squared:.3f} for gamma fit. Fit may be inaccurate.")
+            self.logger.warning("Low R^2 value of %.3f for gamma fit. Fit may be inaccurate.", r_squared)
 
         if plot:
             plt.plot(levels, gamma, "o-", label="calibrated")
             plt.title(f"Gamma fit R^2: {r_squared:.3f}")
-            plt.show()
+            _slmsuite_plt_show(name="pixel_calibration_process_gamma_fit")
 
             fig, axs = plt.subplots(1, 3, figsize=(10, 5))
             data_fit = model(None, *popt).reshape(data_summed.shape)
@@ -584,7 +584,7 @@ class _PixelCalibration(object):
             axs[0].imshow(data_summed)
             axs[1].imshow(data_fit)
             axs[2].imshow(data_resid, cmap="bwr", vmin=-M, vmax=M)
-            plt.show()
+            _slmsuite_plt_show(name="pixel_calibration_process_gamma_residuals")
 
         # TODO: apply data to SLM.
 
@@ -642,7 +642,7 @@ class _PixelCalibration(object):
         y = ndimage.convolve1d(y, K, mode="wrap")
 
         plt.plot(x, y)
-        plt.show()
+        _slmsuite_plt_show(name="pixel_calibrate_simulate_x")
 
         kx = np.arange(float(N)) #/ supersample
         kx -= np.mean(kx)
@@ -655,4 +655,4 @@ class _PixelCalibration(object):
         plt.scatter(kx, np.square(np.abs(Y)))
         plt.scatter(kx, np.square(np.abs(Y2)))
         # plt.xlim(-10, 10)
-        plt.show()
+        _slmsuite_plt_show(name="pixel_calibrate_simulate_k")

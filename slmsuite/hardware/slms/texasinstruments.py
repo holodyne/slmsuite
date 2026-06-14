@@ -35,6 +35,9 @@ from enum import IntEnum
 import numpy as np
 from slmsuite.hardware._pyglet import _WindowThread
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 try:
     import cupy as cp
@@ -119,8 +122,7 @@ class PLM(ScreenMirrored):
     def __init__(
         self,
         model_name,
-        display_number=None,
-        verbose=True,
+        display_number,
         configure_usb=False,
         video_input="displayport",
         pixel_mode=None,
@@ -143,9 +145,7 @@ class PLM(ScreenMirrored):
             Monitor number for display.
             Use :func:`ScreenMirrored.info()` to list available displays and their numbers.
             If ``None`` and ``configure_usb=True``, the display will appear after the USB
-            is configured. 
-        verbose : bool, optional
-            Whether to print extra information. Defaults to ``True``.
+            is configured.
         configure_usb : bool, optional
             If ``True``, automatically configure the DLPC900 EVM via USB before
             initializing the display. Requires ``hidapi``
@@ -192,9 +192,8 @@ class PLM(ScreenMirrored):
         else:
             self.xp = np
 
-        if verbose:
-            backend = "GPU (cupy)" if self.xp is not np else "CPU (numpy)"
-            print(f"PLM using {backend} backend")
+        backend = "GPU (cupy)" if self.xp is not np else "CPU (numpy)"
+        logger.debug("PLM using %s backend", backend)
 
         # Extract model parameters
         model_shape = tuple(self.model_config["shape"])  # (rows, cols) - input phase shape
@@ -211,7 +210,7 @@ class PLM(ScreenMirrored):
                 product_id=usb_product_id,
                 device_number=usb_device_number
             )
-            PLM._usb_pre_configure(self.dlpc900, video_input, pixel_mode, display_number, verbose)
+            PLM._usb_pre_configure(self.dlpc900, video_input, pixel_mode, display_number)
 
         # Compute bitdepth from number of displacement ratios
         n_phases = len(self.model_config["displacement_ratios"])
@@ -221,7 +220,6 @@ class PLM(ScreenMirrored):
         # The SLM.shape should represent the input phase dimensions
         super().__init__(
             display_number,
-            verbose=verbose,
             slm_shape=model_shape[::-1],  # ScreenMirrored expects (width, height)
             bitdepth=bitdepth,
             pitch_um=pitch_um,
@@ -251,7 +249,7 @@ class PLM(ScreenMirrored):
 
         # USB post-config: wait for source lock and switch to video-pattern mode.
         if configure_usb:
-            PLM._usb_post_configure(self.dlpc900, video_input, pixel_mode, verbose)
+            PLM._usb_post_configure(self.dlpc900, video_input, pixel_mode)
 
         # Pre-compute quantization LUT
         self._init_quantize_lut()
@@ -299,13 +297,12 @@ class PLM(ScreenMirrored):
 
     @staticmethod
     def configure_usb(
-        vendor_id=None, 
-        product_id=None, 
-        device_number=0, 
-        video_input=None, 
-        pixel_mode=None, 
-        display_number=None, 
-        verbose=True
+        vendor_id=None,
+        product_id=None,
+        device_number=0,
+        video_input=None,
+        pixel_mode=None,
+        display_number=None,
     ):
         """
         Convenience method to configure USB in one step.
@@ -341,20 +338,18 @@ class PLM(ScreenMirrored):
             video_input=video_input,
             pixel_mode=pixel_mode,
             display_number=display_number,
-            verbose=verbose
         )
 
         PLM._usb_post_configure(
             dlpc=dlpc,
             video_input=video_input,
             pixel_mode=pixel_mode,
-            verbose=verbose
         )
 
         return dlpc
 
     @staticmethod
-    def _usb_pre_configure(dlpc, video_input, pixel_mode, display_number, verbose=True):
+    def _usb_pre_configure(dlpc, video_input, pixel_mode, display_number):
         """
         USB setup steps that must happen before the pyglet window is created.
 
@@ -362,9 +357,11 @@ class PLM(ScreenMirrored):
         so the EVM is ready to accept video signal from the display. Polls pyglet
         to confirm the target display is available before proceeding.
         """
-        if verbose:
-            fw = dlpc.get_firmware_version()
-            print(f"DLPC900 connected: firmware {fw}")
+        from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
+
+        dlpc = self.dlpc900
+
+        logger.debug("DLPC900 connected: firmware %s", dlpc.get_firmware_version())
 
         # Resolve video_input default
         if video_input is None:
@@ -393,11 +390,9 @@ class PLM(ScreenMirrored):
                 error_msg=f"Display {display_number} not detected.",
             )
 
-        if verbose:
-            print("DLPC900 pre-configured (video mode, display detected)")
+        logger.debug("DLPC900 pre-configured (video mode, display detected)")
 
-    @staticmethod
-    def _usb_post_configure(dlpc, video_input, pixel_mode, verbose=True):
+    def _usb_post_configure(self, video_input, pixel_mode):
         """
         USB setup steps that happen after the pyglet window is created.
 
@@ -414,8 +409,7 @@ class PLM(ScreenMirrored):
             lambda: dlpc.get_main_status()["source_locked"],
             error_msg=("DLPC900: Video source failed to lock. "))
 
-        if verbose:
-            print("DLPC900 source locked, switching to video-pattern mode...")
+        logger.debug("DLPC900 source locked, switching to video-pattern mode...")
 
         # Switch to video-pattern mode and wait for confirmation
         dlpc.set_display_mode("video-pattern")
@@ -458,8 +452,7 @@ class PLM(ScreenMirrored):
             ),
         )
 
-        if verbose:
-            print("DLPC900 configured successfully - pattern sequence running")
+        logger.debug("DLPC900 configured successfully - pattern sequence running")
 
     def close(self, close_usb=True):
         """Close the PLM, stopping the pattern sequence and releasing USB."""
@@ -852,7 +845,7 @@ class DLPC900:
                 # print(" ".join(f"{b:02X}" for b in ret))
                 return ret
             except Exception:
-                print("Read command failed; ensure PLM GUI is closed.")
+                logger.error("Read command failed; ensure PLM GUI is closed.")
 
         # A bit of time for stability
         time.sleep(0.1)
