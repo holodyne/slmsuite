@@ -302,7 +302,7 @@ class FourierSLM(
             averaging=self.cam.averaging,
             hdr=self.cam.hdr,
             pitch_um=self.cam.pitch_um,
-            name=self.cam.name+"_sim"
+            name=self.cam.name+"_sim",
         )
         cam_sim.transform = copy.copy(self.cam.transform)
 

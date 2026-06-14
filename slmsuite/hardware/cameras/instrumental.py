@@ -128,8 +128,10 @@ class Instrumental(Camera):
         """
         try:
             self.cam.close()
-        except:
-            raise RuntimeError("This instrumental camera does not support .close().")
+        except Exception as e:
+            raise RuntimeError(
+                "This instrumental camera failed to close:\n{}".format(e)
+            ) from e
 
     @staticmethod
     def info(verbose=True):
@@ -154,24 +156,6 @@ class Instrumental(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self.cam.exposure = 1000. * float(exposure_s)
 
-    def set_woi(self, woi=None):
-        """
-        Method to narrow the imaging region to a 'window of interest'
-        for faster framerates.
-
-        Parameters
-        ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-            If ``None``, defaults to largest possible.
-
-        Returns
-        -------
-        woi : list
-            :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-        """
-        raise NotImplementedError()
-
     def _get_image_hw(self, timeout_s):
         """
         Method to pull an image from the camera and return.
@@ -186,4 +170,5 @@ class Instrumental(Camera):
         numpy.ndarray
             Array of shape :attr:`~slmsuite.hardware.cameras.camera.Camera.shape`.
         """
+        # TODO: binning and WOI appears to be implemented through grab_image?
         return self.cam.grab_image(timeout=str(timeout_s) + "s", copy=True)

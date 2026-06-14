@@ -46,15 +46,15 @@ class TestCamera:
             assert cam3.exposure_s is not None
             assert cam3.averaging is None or isinstance(cam3.averaging, int)
 
-        with subtests.test("rotation sets default_shape to (width, height)"):
+        with subtests.test("rotation changes shape to match get_image output"):
             cam_rot = SimulatedCamera(
                 slm=slm, resolution=(200, 100), rot="90"
             )
-            # _Common always stores shape as (height, width); rotation does not
-            # change self.shape but DOES change self.default_shape.
-            assert cam_rot.shape == (100, 200)
-            assert cam_rot.default_shape == (200, 100)
-            assert cam_rot.default_shape != cam_rot.shape
+            # shape always equals the shape of images returned by get_image().
+            # ROT90 of a 100-row × 200-col sensor → 200-row × 100-col output.
+            assert cam_rot.shape == (200, 100)
+            img = cam_rot.get_image()
+            assert img.shape == cam_rot.shape
 
         cam.close()
 
@@ -144,7 +144,7 @@ class TestCamera:
 
         with subtests.test("preallocated out buffer is filled with correct shape and dtype"):
             out = np.empty(
-                (count, camera.default_shape[0], camera.default_shape[1]),
+                (count, camera.shape[0], camera.shape[1]),
                 dtype=camera.dtype,
             )
             imgs = camera.get_images(count, out=out, transform=False)
@@ -212,30 +212,42 @@ class TestCamera:
         finally:
             camera.averaging = orig_averaging
 
-    def test_get_averaging_dtype(self, camera, subtests):
-        """_get_averaging_dtype returns correct dtype for various averaging levels."""
-        orig_averaging = camera.averaging
+    def test_get_dtype(self, camera, subtests):
+        """get_dtype() returns the correct effective dtype for various settings."""
+        with subtests.test("averaging=1 keeps hardware dtype"):
+            assert camera.get_dtype(averaging=1) == camera.dtype
 
-        try:
-            with subtests.test("averaging=1 keeps dtype"):
-                camera.averaging = 1
-                assert camera._get_averaging_dtype(1) == camera.dtype
+        with subtests.test("averaging=False keeps hardware dtype"):
+            assert camera.get_dtype(averaging=False) == camera.dtype
 
-            with subtests.test("high averaging may promote to float"):
-                camera.averaging = 1000
-                dtype_high = camera._get_averaging_dtype(1000)
-                assert dtype_high == camera.dtype or dtype_high == float
+        with subtests.test("high averaging may promote to float"):
+            dtype_high = camera.get_dtype(averaging=1000)
+            assert dtype_high == camera.dtype or dtype_high == float
 
-            with subtests.test("None with no averaging raises"):
-                camera.averaging = None
-                with pytest.raises(ValueError, match="Averaging is not enabled"):
-                    camera._get_averaging_dtype()
+        with subtests.test("averaging=None defaults to self.averaging or 1"):
+            orig = camera.averaging
+            camera.averaging = None
+            assert camera.get_dtype(averaging=None) == camera.get_dtype(averaging=1)
+            camera.averaging = orig
 
-            with subtests.test("negative raises"):
-                with pytest.raises(ValueError, match="Cannot have negative averaging"):
-                    camera._get_averaging_dtype(-1)
-        finally:
-            camera.averaging = orig_averaging
+        with subtests.test("hdr active forces float"):
+            assert camera.get_dtype(hdr=2) == float
+
+        with subtests.test("negative averaging raises"):
+            with pytest.raises(ValueError, match="averaging must be positive"):
+                camera.get_dtype(averaging=-1)
+
+        with subtests.test("software binning widens dtype"):
+            # 2x2 binning on uint8: max sum = 4*255 = 1020, needs >8 bits → float or uint16
+            dtype_bin = camera.get_dtype(averaging=1, binning=(2, 2))
+            max_val = (2 ** camera.bitdepth - 1) * 4
+            if dtype_bin != float:
+                assert np.iinfo(dtype_bin).max >= max_val, (
+                    f"dtype {dtype_bin} cannot hold max binned value {max_val}"
+                )
+
+        with subtests.test("binning=(1,1) keeps hardware dtype"):
+            assert camera.get_dtype(averaging=1, binning=(1, 1)) == camera.dtype
 
     def test_parse_hdr(self, camera, subtests):
         """_parse_hdr returns correct tuples for various inputs."""
@@ -292,14 +304,14 @@ class TestCamera:
         """Autoexposure converges to same result from different starting points."""
         with subtests.test("convergence"):
             camera.set_exposure(0.01)
-            result1 = camera.autoexposure()
+            result1 = camera.autoexpose(verbose=False)
             camera.set_exposure(1)
-            result2 = camera.autoexposure()
+            result2 = camera.autoexpose(verbose=False)
             assert pytest.approx(result1, rel=0.15) == result2
 
         with subtests.test("custom set_fraction"):
             camera.set_exposure(0.01)
-            result3 = camera.autoexposure(set_fraction=0.3)
+            result3 = camera.autoexpose(set_fraction=0.3, verbose=False)
             assert result3 > 0
 
     def test_autofocus(self, camera, slm, subtests):
@@ -320,6 +332,20 @@ class TestCamera:
         with subtests.test("set_z validation"):
             with pytest.raises(ValueError, match="set_z must be"):
                 camera.autofocus(set_z="not_callable")
+
+        with subtests.test("range_z as list does not raise and is not mutated"):
+            # Regression: a Python list previously raised TypeError on `z_list += z_base`.
+            range_z = [-1.0, -0.5, 0.0, 0.5, 1.0]
+            range_z_copy = list(range_z)
+            camera.autofocus(set_z=slm, get_z=0.5, range_z=range_z, verbose=False)
+            assert range_z == range_z_copy, "caller's range_z list was mutated"
+
+        with subtests.test("range_z as integer numpy array is not mutated"):
+            # Regression: an int array was mutated in place and could not hold NaN counts.
+            range_z = np.array([-1, 0, 1])
+            range_z_copy = range_z.copy()
+            camera.autofocus(set_z=slm, get_z=0, range_z=range_z, verbose=False)
+            assert np.array_equal(range_z, range_z_copy), "caller's range_z array was mutated"
 
     def test_woi(self, camera, subtests):
         """
@@ -347,7 +373,7 @@ class TestCamera:
 
         # Determine normal vs rotated orientation once.
         # default_shape is (height, width) for normal, (width, height) for 90/270 rot.
-        normal_orientation = (camera.default_shape[0] == h_max)
+        normal_orientation = (camera.shape[0] == h_max)
 
         def expected_shape(w, h):
             """Return numpy (rows, cols) shape for a WOI of pixel dims (w, h)."""
@@ -449,3 +475,455 @@ class TestCamera:
             ax = camera.plot(image=False)
             assert ax.get_images()[0].get_array().shape == stored_shape
             plt.close("all")
+
+    # ------------------------------------------------------------------
+    # WOI / binning coordinate-system tests
+    # ------------------------------------------------------------------
+
+    def test_ijraw_to_ijcam(self, slm, subtests):
+        """
+        _get_ijraw_to_ijcam() maps raw sensor pixels to camera-image pixels correctly
+        for all 8 orientation codes, WOI offsets, and binning factors.
+        """
+        from slmsuite.holography.analysis import OrientationTransform
+
+        # Sensor: width=200, height=100 (non-square to expose axis-swap bugs).
+        W, H = 200, 100
+        WOI = (20, 80, 10, 60)   # (x0=20, w=80, y0=10, h=60)  unbinned, untransformed
+        BINNING = (2, 4)          # (binx=2, biny=4)
+
+        # WOI = (x0=20, w=80, y0=10, h=60), BINNING = (binx=2, biny=4)
+        # → w_bin=20, h_bin=30
+        # The push-orientation matrix maps unt=(0,0) to t (the translation vector).
+        # Each row below: (label, cam-kwargs, expected-ijcam-of-WOI-origin)
+        binx, biny = BINNING[0], BINNING[1]
+        w_bin = WOI[1] // binx   # 20
+        h_bin = WOI[3] // biny   # 30
+
+        rot_configs = [
+            ("identity",   dict(rot="0"),                  (0,         0        )),
+            ("rot90",      dict(rot="90"),                 (0,         w_bin - 1)),
+            ("rot180",     dict(rot="180"),                (w_bin - 1, h_bin - 1)),
+            ("rot270",     dict(rot="270"),                (h_bin - 1, 0        )),
+            ("flip",       dict(fliplr=True),              (w_bin - 1, 0        )),
+            ("flip_rot90", dict(rot="90",  fliplr=True),  (0,         0        )),
+            ("flip_rot180",dict(rot="180", fliplr=True),  (0,         h_bin - 1)),
+            ("flip_rot270",dict(rot="270", fliplr=True),  (h_bin - 1, w_bin - 1)),
+        ]
+
+        for label, kwargs, expected_origin_cam in rot_configs:
+            cam = SimulatedCamera(slm, resolution=(W, H), **kwargs)
+            cam.close()
+
+            # Apply WOI and binning directly to the private attributes so we
+            # can test the transform without going through hardware I/O.
+            cam._woi = WOI
+            cam._binning = BINNING
+
+            affine = cam._get_ijraw_to_ijcam()
+            inv = cam._get_ijcam_to_ijraw()
+
+            # --- WOI untransformed origin maps to a known corner of the camera image ---
+            # The push-orientation transform moves the WOI origin to the corner
+            # that becomes (0,0) of the RESULT IMAGE only for IDENTITY/FLIP_ROT90.
+            # For other orientations it maps to the translation vector t.
+            woi_origin = np.array([[float(WOI[0])], [float(WOI[2])]])   # (x0, y0)
+            cam_at_origin = affine @ woi_origin
+            with subtests.test(f"{label} : WOI origin → correct corner"):
+                np.testing.assert_allclose(
+                    cam_at_origin.flatten(),
+                    list(expected_origin_cam),
+                    atol=1e-9,
+                    err_msg=f"label={label} got {cam_at_origin.flatten()} expected {expected_origin_cam}",
+                )
+
+            # --- A step of one binned pixel in x maps to a shift of 1 in the
+            #     appropriate output axis ---
+            binx, biny = BINNING[0], BINNING[1]
+            pt_x = np.array([[float(WOI[0] + binx)], [float(WOI[2])]])  # x+1binned-step
+            pt_y = np.array([[float(WOI[0])], [float(WOI[2] + biny)]])  # y+1binned-step
+
+            delta_x = (affine @ pt_x - cam_at_origin).flatten()
+            delta_y = (affine @ pt_y - cam_at_origin).flatten()
+
+            with subtests.test(f"{label} : binned x-step magnitude = 1"):
+                assert abs(np.linalg.norm(delta_x) - 1.0) < 1e-9, \
+                    f"label={label} delta_x={delta_x}"
+
+            with subtests.test(f"{label} : binned y-step magnitude = 1"):
+                assert abs(np.linalg.norm(delta_y) - 1.0) < 1e-9, \
+                    f"label={label} delta_y={delta_y}"
+
+            # --- Round-trip: ijraw → ijcam → ijraw ---
+            test_pts = np.array([
+                [WOI[0], WOI[2]],
+                [WOI[0] + WOI[1] - 1, WOI[2] + WOI[3] - 1],
+                [WOI[0] + binx * 3, WOI[2] + biny * 2],
+            ], dtype=float).T   # shape (2, N)
+
+            cam_pts = affine @ test_pts
+            raw_pts_rt = inv @ cam_pts
+
+            with subtests.test(f"{label} : round-trip"):
+                np.testing.assert_allclose(raw_pts_rt, test_pts, atol=1e-9,
+                                           err_msg=f"label={label}")
+
+    def test_woi_with_rotation(self, slm, subtests):
+        """
+        set_woi() + rotation: shape and woi are consistent for a non-square camera.
+
+        WOI coordinates passed to set_woi() are in transformed (rotated/flipped),
+        unbinned pixel coordinates — the orientation the user sees.
+        """
+        W, H = 200, 100  # non-square
+
+        rot_configs = [
+            ("identity",   dict(rot="0"),   False),   # (label, kwargs, axes_swapped)
+            ("rot90",      dict(rot="90"),  True),
+            ("rot180",     dict(rot="180"), False),
+            ("rot270",     dict(rot="270"), True),
+            ("flip",       dict(fliplr=True), False),
+            ("flip_rot90", dict(rot="90", fliplr=True), True),
+        ]
+
+        for label, kwargs, axes_swapped in rot_configs:
+            cam = SimulatedCamera(slm, resolution=(W, H), **kwargs)
+            cam.close()
+
+            # Full-sensor dims in the transformed (user-visible) frame.
+            full_W_t = H if axes_swapped else W   # width in transformed frame
+            full_H_t = W if axes_swapped else H   # height in transformed frame
+
+            # Request a centred sub-window in the transformed frame (unbinned).
+            sub_w, sub_h = full_W_t // 2, full_H_t // 2
+            x0_t, y0_t  = full_W_t // 4, full_H_t // 4
+            woi_req = (x0_t, sub_w, y0_t, sub_h)
+
+            with subtests.test(f"{label} : set_woi and shape"):
+                cam.set_woi(woi_req)
+
+                # camera.shape is the shape of the image returned by get_image().
+                # It equals (sub_h, sub_w) in the user-visible (transformed) frame.
+                assert cam.shape == (sub_h, sub_w), (
+                    f"{label}: cam.shape={cam.shape} expected ({sub_h},{sub_w})"
+                )
+
+            with subtests.test(f"{label} : get_image shape matches default_shape"):
+                img = cam.get_image()
+                assert img.shape == cam.shape, (
+                    f"{label}: img.shape={img.shape} != default_shape={cam.shape}"
+                )
+
+            with subtests.test(f"{label} : reset to full sensor"):
+                cam.set_woi(None)
+                # shape equals the full-sensor size in the transformed (user-visible) frame.
+                expected_full = cam.transform.transform_shape((H, W))
+                assert cam.shape == expected_full, (
+                    f"{label}: reset failed, shape={cam.shape} expected {expected_full}"
+                )
+
+    def test_woi_clipping(self, slm, subtests):
+        """set_woi() clips out-of-bounds coordinates to the sensor boundaries."""
+        cam = SimulatedCamera(slm, resolution=(200, 100))
+        cam.close()
+        W, H = 200, 100
+
+        # WOI that extends past the right and bottom edges.
+        with subtests.test("clips right+bottom overflow"):
+            cam.set_woi((150, 100, 60, 80))   # x0+w=250>W, y0+h=140>H
+            x, w, y, h = cam.woi
+            assert x + w <= W, f"x+w={x+w} exceeds W={W}"
+            assert y + h <= H, f"y+h={y+h} exceeds H={H}"
+            assert w > 0 and h > 0
+
+        # WOI entirely inside sensor.
+        with subtests.test("no clipping needed"):
+            cam.set_woi((10, 80, 5, 40))
+            x, w, y, h = cam.woi
+            assert (x, w, y, h) == (10, 80, 5, 40), f"woi changed unexpectedly: {cam.woi}"
+
+        cam.set_woi(None)
+
+    def test_binning_shape(self, slm, subtests):
+        """set_binning() halves camera.shape and updates woi correctly."""
+        cam = SimulatedCamera(slm, resolution=(200, 100))
+        cam.close()
+
+        with subtests.test("shape after 2x2 binning"):
+            cam.set_binning(2)
+            assert cam.shape == (50, 100), f"shape={cam.shape}"   # (H//2, W//2)
+
+        with subtests.test("woi property is binning-invariant (unbinned coords)"):
+            # The woi property reports transformed, *unbinned* coordinates so that it
+            # agrees with get_woi()/set_woi() and survives binning changes. The binned
+            # dimensions are available via cam.shape instead.
+            x, w, y, h = cam.woi
+            assert (x, w, y, h) == (0, 200, 0, 100), f"woi={cam.woi}"
+            assert cam.woi == cam.get_woi(), "woi property must match get_woi()"
+
+        with subtests.test("shape reset after binning=1"):
+            cam.set_binning(1)
+            assert cam.shape == (100, 200), f"shape={cam.shape}"
+
+    def test_woi_and_binning(self, slm, subtests):
+        """Combined WOI + binning: shape and get_image() shape are correct."""
+        cam = SimulatedCamera(slm, resolution=(200, 100))
+        cam.close()
+
+        # set_woi accepts unbinned (full-resolution) transformed coordinates.
+        # With no rotation: unbinned WOI (0, 120, 0, 80) covers 120×80 pixels.
+        # Then apply 2x2 binning → binned shape = (40, 60).
+        cam.set_woi((0, 120, 0, 80))   # unbinned, transformed
+        cam.set_binning(2)
+
+        with subtests.test("shape with WOI + binning"):
+            assert cam.shape == (40, 60), f"shape={cam.shape}"   # 80//2, 120//2
+
+        with subtests.test("woi reports unbinned coords (binning-invariant)"):
+            # woi is unbinned: the 120×80 window is reported verbatim regardless of
+            # binning. The binned shape (40, 60) is asserted separately above.
+            x, w, y, h = cam.woi
+            assert (x, w, y, h) == (0, 120, 0, 80), f"woi={cam.woi}"
+            assert cam.woi == cam.get_woi(), "woi property must match get_woi()"
+
+        with subtests.test("get_image shape with WOI + binning"):
+            img = cam.get_image()
+            assert img.shape == cam.shape, (
+                f"img.shape={img.shape} != default_shape={cam.shape}"
+            )
+
+        cam.set_binning(1)
+        cam.set_woi(None)
+
+    def test_get_images_woi(self, camera, subtests):
+        """get_images() returns (N, h, w) matching camera.shape after set_woi."""
+        try:
+            camera.set_woi()
+        except NotImplementedError:
+            pytest.skip("set_woi not implemented")
+
+        camera.set_woi((0, camera.shape[1] // 2, 0, camera.shape[0] // 2))
+        N = 3
+
+        with subtests.test("stack shape with WOI"):
+            imgs = camera.get_images(N)
+            assert imgs.shape == (N, *camera.shape), (
+                f"imgs.shape={imgs.shape} expected (N={N}, *{camera.shape})"
+            )
+
+        with subtests.test("individual images match default_shape"):
+            for i, img in enumerate(imgs):
+                assert img.shape == camera.shape, (
+                    f"imgs[{i}].shape={img.shape} != {camera.shape}"
+                )
+
+        camera.set_woi(None)
+
+    def test_averaging_woi(self, camera, subtests):
+        """get_image(averaging=N) returns shape matching default_shape after set_woi."""
+        try:
+            camera.set_woi()
+        except NotImplementedError:
+            pytest.skip("set_woi not implemented")
+
+        camera.set_woi((0, camera.shape[1] // 2, 0, camera.shape[0] // 2))
+
+        with subtests.test("averaging=2 shape with WOI"):
+            img = camera.get_image(averaging=2)
+            assert img.shape == camera.shape, (
+                f"img.shape={img.shape} != default_shape={camera.shape}"
+            )
+
+        with subtests.test("averaging=4 shape with WOI"):
+            img = camera.get_image(averaging=4)
+            assert img.shape == camera.shape
+
+        camera.set_woi(None)
+
+    def test_woi_none_resets_full_sensor(self, camera, subtests):
+        """set_woi(None) restores full sensor shape."""
+        try:
+            camera.set_woi()
+        except NotImplementedError:
+            pytest.skip("set_woi not implemented")
+
+        orig_shape = camera.shape
+
+        with subtests.test("shrink then reset"):
+            camera.set_woi((0, orig_shape[1] // 3, 0, orig_shape[0] // 3))
+            camera.set_woi(None)
+            assert camera.shape == orig_shape, (
+                f"after set_woi(None): shape={camera.shape} != {orig_shape}"
+            )
+
+        with subtests.test("shape after None reset matches get_image"):
+            img = camera.get_image()
+            assert img.shape == camera.shape
+
+    def test_software_binning_dtype(self, slm, subtests):
+        """
+        Software binning must not overflow the raw pixel dtype.
+
+        A block-sum of N×M pixels can produce values up to (N*M) * max_pixel, which
+        overflows uint8 for any binning > 1×1.  The fix is to promote the accumulation
+        dtype before summing; verify that both the averaging=1 (single-frame) path and
+        the averaging>1 (multi-frame) path preserve the correct values.
+        """
+        # Use a camera with software WOI + software binning (base Camera with no hw overrides).
+        # SimulatedCamera has hardware binning, so we test software binning by patching flags.
+        cam = SimulatedCamera(slm, resolution=(64, 64), bitdepth=8)
+        cam.close()
+
+        # Force software binning by overriding the flag (without real hardware).
+        cam._software_binning = True
+        cam._binning = (2, 2)   # 2×2 → bin_factor = 4, max sum = 255*4 = 1020 > uint8 max
+
+        # Capture a full-sensor image so _hw_image_shape is the full sensor.
+        cam._software_woi = True   # also software WOI so image comes from full sensor path
+
+        with subtests.test("averaging=1 dtype does not overflow"):
+            img = cam.get_image(averaging=False)
+            # Values should not wrap around: a binned sum of 4 pixels is ≥ any individual pixel.
+            raw = cam.get_image.__wrapped__(cam) if hasattr(cam.get_image, '__wrapped__') else None
+            # The key invariant: dtype is wide enough to represent the summed value.
+            max_possible_bin_sum = (2**cam.bitdepth - 1) * cam._binning[0] * cam._binning[1]
+            assert img.dtype.itemsize * 8 >= max_possible_bin_sum.bit_length(), (
+                f"dtype {img.dtype} cannot hold max bin sum {max_possible_bin_sum}"
+            )
+            # Shape must match the binned camera shape.
+            assert img.shape == cam.shape, f"img.shape={img.shape} cam.shape={cam.shape}"
+
+        with subtests.test("averaging=2 dtype does not overflow"):
+            img2 = cam.get_image(averaging=2)
+            max_possible = (2**cam.bitdepth - 1) * cam._binning[0] * cam._binning[1] * 2
+            assert img2.dtype.itemsize * 8 >= max_possible.bit_length(), (
+                f"dtype {img2.dtype} cannot hold max averaged+binned sum {max_possible}"
+            )
+            assert img2.shape == cam.shape
+
+        with subtests.test("software binning values are additive not truncated"):
+            # Create a camera where we can predict the raw pixel values:
+            # SimulatedCamera at very high exposure so pixels saturate to bitresolution-1.
+            cam2 = SimulatedCamera(slm, resolution=(64, 64), bitdepth=8)
+            cam2.close()
+            cam2._software_binning = True
+            cam2._binning = (2, 2)
+            cam2._software_woi = True
+
+            # Get the unbinned raw image by temporarily disabling binning.
+            # (Flipping _software_binning instead would now invoke SimulatedCamera's
+            # hardware binning emulation and return an already-binned frame.)
+            cam2._binning = (1, 1)
+            raw_img = cam2.get_image(averaging=False)
+            cam2._binning = (2, 2)
+
+            # Now get the binned image.
+            binned_img = cam2.get_image(averaging=False)
+
+            # Each binned pixel should equal the sum of its 2×2 block in the raw image.
+            H, W = raw_img.shape
+            expected = raw_img.reshape(H//2, 2, W//2, 2).sum(axis=(1, 3))
+            np.testing.assert_array_equal(
+                binned_img, expected,
+                err_msg="Binned pixel values do not equal the raw block sum"
+            )
+
+        with subtests.test("get_images stack does not overflow under software binning"):
+            # get_images() routes through _crop_to_woi() too, so the same dtype
+            # promotion must apply to the batched path (regression: it did not).
+            N = 3
+            stack = cam2.get_images(N, transform=False)
+            assert stack.shape == (N, *cam2.shape), (
+                f"stack.shape={stack.shape} expected (N={N}, *{cam2.shape})"
+            )
+            # Each frame must equal its raw 2×2 block sum (no wrap-around).
+            for i in range(N):
+                np.testing.assert_array_equal(
+                    stack[i], expected,
+                    err_msg=f"get_images frame {i} binned values do not equal raw block sum"
+                )
+
+    def test_get_binning(self, slm, subtests):
+        """get_binning() returns current binning in transformed coordinates."""
+        cam = SimulatedCamera(slm, resolution=(200, 100))
+        cam.close()
+
+        with subtests.test("default is (1, 1)"):
+            assert cam.get_binning() == (1, 1)
+
+        with subtests.test("matches binning property at default"):
+            assert cam.get_binning() == cam.binning
+
+        with subtests.test("matches binning property after set_binning(2)"):
+            cam.set_binning(2)
+            assert cam.get_binning() == (2, 2)
+            assert cam.get_binning() == cam.binning
+            cam.set_binning(1)
+
+        with subtests.test("asymmetric _binning=(2, 4) with software binning"):
+            cam._software_binning = True
+            cam._binning = (2, 4)
+            assert cam.get_binning() == (2, 4)
+            assert cam.get_binning() == cam.binning
+            cam._binning = (1, 1)
+
+        with subtests.test("90-degree rotation swaps binning axes"):
+            cam_rot = SimulatedCamera(slm, resolution=(200, 100), rot="90")
+            cam_rot.close()
+            cam_rot._software_binning = True
+            cam_rot._binning = (2, 4)   # untransformed (bx=2, by=4)
+            # ROT90 swaps x↔y, so get_binning() returns (by, bx) = (4, 2)
+            assert cam_rot.get_binning() == (4, 2)
+            assert cam_rot.get_binning() == cam_rot.binning
+
+        with subtests.test("binning setter round-trips under rotation"):
+            # Regression: the setter must not double-apply the orientation transform.
+            cam_rot = SimulatedCamera(slm, resolution=(200, 100), rot="90")
+            cam_rot.close()
+            cam_rot.binning = (2, 4)            # transformed (user-visible) coordinates
+            assert cam_rot.binning == (2, 4), f"binning={cam_rot.binning}"
+            assert cam_rot.get_binning() == (2, 4)
+
+    def test_get_woi(self, slm, subtests):
+        """get_woi() returns the current WOI in the same coordinates as the woi property."""
+        cam = SimulatedCamera(slm, resolution=(200, 100))
+        cam.close()
+
+        with subtests.test("full sensor at default"):
+            assert cam.get_woi() == (0, 200, 0, 100)
+
+        with subtests.test("matches woi property when binning=1"):
+            # binning=1 → binned == unbinned, so get_woi() and woi agree
+            assert cam.get_woi() == cam.woi
+
+        with subtests.test("set_woi then get_woi round-trips"):
+            cam.set_woi((20, 80, 10, 60))
+            assert cam.get_woi() == (20, 80, 10, 60)
+            cam.set_woi(None)
+
+        with subtests.test("woi and get_woi both return unbinned coords when binning != 1"):
+            cam._software_binning = True
+            cam._binning = (2, 2)
+            # Both report unbinned (full-sensor: 200×100), not binned (100×50);
+            # the binned dimensions are exposed via cam.shape instead.
+            assert cam.get_woi() == (0, 200, 0, 100)
+            assert cam.woi == (0, 200, 0, 100)
+            assert cam.woi == cam.get_woi()
+            assert cam.shape == (50, 100)
+            cam._binning = (1, 1)
+
+        with subtests.test("set_woi(get_woi()) is a valid round-trip"):
+            cam.set_woi((10, 40, 20, 30))
+            cam.set_woi(cam.get_woi())
+            assert cam.get_woi() == (10, 40, 20, 30)
+            cam.set_woi(None)
+
+        with subtests.test("90-degree rotation: get_woi in transformed frame"):
+            cam_rot = SimulatedCamera(slm, resolution=(200, 100), rot="90")
+            cam_rot.close()
+            # Untransformed sensor: W=200, H=100.  After ROT90: W_t=100, H_t=200.
+            # Full-sensor woi in transformed frame: (x=0, w=100, y=0, h=200)
+            assert cam_rot.get_woi() == (0, 100, 0, 200)
+
+        with subtests.test("get_woi equals woi property when binning=1"):
+            assert cam.get_woi() == cam.woi

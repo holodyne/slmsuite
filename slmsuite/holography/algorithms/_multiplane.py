@@ -154,7 +154,7 @@ class MultiplaneHologram(Hologram):
                 "Otherwise, we have no reference for the scale of a wavelength."
             )
 
-        f_eff = np.sqrt(np.abs(np.linalg.det(cameraslm.calibrations["fourier"]["M"])))
+        f_eff = cameraslm.get_effective_focal_length()
         w0_kxy = cameraslm.slm.get_spot_radius_kxy()
         w0_pix = f_eff * w0_kxy
         w0_um = w0_pix * np.mean(cameraslm.cam.pitch_um)

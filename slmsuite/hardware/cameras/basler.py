@@ -61,12 +61,11 @@ class Basler(Camera):
 
         serial_list = [dev.GetSerialNumber() for dev in device_list]
         if serial is None or serial == "":
-            if len(device_list)==0:
+            if len(device_list) == 0:
                 raise RuntimeError("No cameras found by pylon.")
-            if len(device_list) > 0:
-                logger.info("No serial given; choosing first of %s", serial_list)
-                serial = serial_list[0]
-                device = Basler.sdk.CreateDevice(device_list[0])
+            logger.info("No serial given; choosing first of %s", serial_list)
+            serial = serial_list[0]
+            device = Basler.sdk.CreateDevice(device_list[0])
         else:
             if serial in serial_list:
                 device = Basler.sdk.CreateDevice(device_list[serial_list.index(serial)])
@@ -238,6 +237,7 @@ class Basler(Camera):
             if str(bitdepth) in value[0]:
                 self.cam.PixelSize.SetValue(value[1])
                 break
+        else:
             raise RuntimeError("ADC bitdepth {} not found.".format(bitdepth))
 
     def get_adc_bitdepth(self):
@@ -261,48 +261,39 @@ class Basler(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self.cam.ExposureTime.SetValue(float(1e6 * exposure_s))   # in seconds
 
-    def _set_woi(self, woi):
-        """
-        Sets the window of interest (WOI).
-
-        Parameters
-        ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-        """
-        # Set the width and height to very small values
-        # such that setting the offsets will not error.
-
-        # Now set the WOI.
-        x, w, y, h = woi
-
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # "ROI settings refer to the binned rows and columns"
+        # https://docs.baslerweb.com/binning
+        x, w, y, h = [int(v) for v in woi]
+        self.cam.OffsetX.SetValue(0)
+        self.cam.OffsetY.SetValue(0)
+        self.cam.Width.SetValue(w)
+        self.cam.Height.SetValue(h)
         self.cam.OffsetX.SetValue(x)
         self.cam.OffsetY.SetValue(y)
-        self.cam.Height.SetValue(h)
-        self.cam.Width.SetValue(w)
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        err = None
-        maxwoi = (0, self.cam.Width.GetMax(), 0, self.cam.Height.GetMax())
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        return (
+            int(self.cam.OffsetX.GetValue()),
+            int(self.cam.Width.GetValue()),
+            int(self.cam.OffsetY.GetValue()),
+            int(self.cam.Height.GetValue()),
+        )
 
-        # Default WOI to max.
-        if woi is None:
-            woi = maxwoi
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        binx, biny = int(binning[0]), int(binning[1])
+        self.cam.BinningHorizontal.SetValue(binx)
+        self.cam.BinningVertical.SetValue(biny)
 
-        try:
-            # Try to set the WOI.
-            self._set_woi(woi)
-            self.woi = woi
-        except Exception as e:
-            # Reset to previous WOI (max if undefined) upon failure.
-            woi = self.woi if self.woi is not None else maxwoi
-            self._set_woi(woi)
-            err = e
-
-        if err is not None:
-            raise err
-
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        return (
+            int(self.cam.BinningHorizontal.GetValue()),
+            int(self.cam.BinningVertical.GetValue()),
+        )
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera.get_image`."""
@@ -311,17 +302,20 @@ class Basler(Camera):
             pylon.GrabLoop_ProvidedByUser
         )
 
-        if self.cam.IsGrabbing():
+        try:
+            if not self.cam.IsGrabbing():
+                raise RuntimeError("Basler camera failed to start grabbing.")
+
             self.cam.ExecuteSoftwareTrigger()
 
             grab = self.cam.RetrieveResult(int(timeout_s*1000), pylon.TimeoutHandling_Return)
 
             # Image grabbed successfully?
             if not grab.GrabSucceeded():
-                self.cam.StopGrabbing()
                 raise RuntimeError(f"Basler error {grab.GetErrorCode()}: {grab.GetErrorDescription()}")
 
             im = grab.GetArray() # This returns an np.array
+        finally:
             self.cam.StopGrabbing()
 
         return im

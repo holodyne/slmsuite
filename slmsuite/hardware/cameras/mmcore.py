@@ -133,11 +133,32 @@ class MMCore(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self.cam.setExposure(1e3 * exposure_s)
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        return
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # MMCore setROI / getROI coordinates are in binned pixels (camera-driver convention).
+        # https://micro-manager.org/apidoc/MMCore/latest/class_c_m_m_core.html
+        x, w, y, h = [int(v) for v in woi]
+        self.cam.setROI(x, y, w, h)
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        # getROI() returns (x, y, xSize, ySize)
+        roi = self.cam.getROI()
+        return (int(roi[0]), int(roi[2]), int(roi[1]), int(roi[3]))
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        binx, biny = int(binning[0]), int(binning[1])
+        if binx != biny:
+            raise ValueError(f"MMCore requires symmetric binning. Received (binx={binx}, biny={biny}).")
+        self.cam.setBinning(binx)
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        b = int(self.cam.getBinning())
+        return (b, b)
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
-        self.cam.snapImage();
+        self.cam.snapImage()
         return self.cam.getImage()

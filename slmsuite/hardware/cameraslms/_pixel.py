@@ -343,7 +343,7 @@ class _PixelCalibration(object):
                             )
 
                             if test_index is None:
-                                # Only autoexpose for the first test index, if autoexposure is enabled.
+                                # Only autoexpose for the first test index, if autoexpose is enabled.
                                 autoexpose = False
                             else:
                                 autoexposure_results.append(self.cam.get_exposure())
@@ -367,7 +367,7 @@ class _PixelCalibration(object):
                             self.cam.plot(
                                 title=(
                                     f"Pixel Calibrate index {index} "
-                                    f"at direction {["x", "y"][i]}, period {periods[j]}, "
+                                    f"at direction {('x', 'y')[i]}, period {periods[j]}, "
                                     f"levels {levels[k]}, {levels[l]}"
                                 )
                             )
@@ -377,7 +377,7 @@ class _PixelCalibration(object):
                             if test_index is None:
                                 plot = False
 
-                        # (3c) Handle test index results collection and maybe autoexposure adjustment.
+                        # (3c) Handle test index results collection and maybe autoexpose adjustment.
                         if test_index is not None:
                             results.append(data[i,j,k,l,:].copy())
 
