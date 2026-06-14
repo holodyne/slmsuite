@@ -1,26 +1,27 @@
 """
 Abstract camera functionality.
 """
-import time
 import asyncio
-import warnings
-import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from scipy.optimize import curve_fit
-from scipy.ndimage import zoom
-import PIL
 import io
+import time
+import warnings
 from abc import ABC, abstractmethod
+
+import matplotlib.pyplot as plt
+import numpy as np
+import PIL
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from scipy.ndimage import zoom
+from scipy.optimize import curve_fit
 
 from slmsuite.hardware import _Picklable
 from slmsuite.holography import analysis
+from slmsuite.holography.analysis import image_centroids, image_remove_field
+from slmsuite.holography.analysis.files import _gray2rgb
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
-from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
-from slmsuite.holography.analysis import image_centroids, image_remove_field
-from slmsuite.holography.analysis.files import _gray2rgb
+from slmsuite.misc.math import REAL_TYPES
 
 
 class Camera(_Picklable, ABC):
@@ -55,9 +56,10 @@ class Camera(_Picklable, ABC):
         Default setting for averaging (sums repeated measurements). See :meth:`.get_image()`.
     hdr : (int, int) OR None
         Default setting for multi-exposure High Dynamic Range imaging. See :meth:`.get_image()`.
-    color_handling : None OR int
-        Determines how to convert color images to grayscale.
-        If  ``int``, returns the corresponding color channel.
+    color_channel : None OR int
+        For color cameras, selects which channel of a ``(height, width, channels)``
+        frame to keep as the grayscale image. See :meth:`.get_image()`.
+        If ``int``, returns the corresponding color channel.
         If ``None``, defaults to 0.
     capture_attempts : int
         If the camera returns an error or exceeds a timeout,
@@ -113,7 +115,7 @@ class Camera(_Picklable, ABC):
         exposure_bounds_s=None,
         averaging=None,
         hdr=None,
-        color_handling=None,
+        color_channel=None,
         capture_attempts=5,
         rot="0",
         fliplr=False,
@@ -150,10 +152,11 @@ class Camera(_Picklable, ABC):
         hdr : int OR (int, int) OR None OR False
             Exposure information for `Multi-exposure High Dynamic Range (HDR) imaging
             <https://en.wikipedia.org/wiki/Multi-exposure_HDR_capture>`_
-        color_handling : None OR int OR list of float
-            Determines how to convert color images to grayscale.
-            If  ``int``, returns the corresponding color channel.
-            If ``None``, defaults to 0.
+        color_channel : None OR int
+            For color cameras, selects which channel of a ``(height, width, channels)``
+            frame to keep as the grayscale image. If ``int``, returns that channel index.
+            If ``None``, defaults to channel ``0``. A weighted combination of channels
+            (via a list of floats) is planned but not yet implemented.
         capture_attempts : int
             If the camera returns an error or exceeds a timeout,
             try again for a total of `capture_attempts` attempts.
@@ -211,6 +214,10 @@ class Camera(_Picklable, ABC):
         self.exposure_s = 1     # Default to 1s for Simulated cameras.
         self.exposure_s = self.get_exposure()
 
+        # Color handling. Set before _get_dtype() since the tolerant capture used to probe
+        # the dtype reduces color frames to grayscale via self.color_channel.
+        self.color_channel = color_channel
+
         # Set datatype variables.
         self.bitdepth = int(bitdepth)
         self.dtype = self._get_dtype()
@@ -218,7 +225,6 @@ class Camera(_Picklable, ABC):
         # Frame averaging variables.
         self.averaging = self._parse_averaging(averaging, preserve_none=True)
         self.hdr = self._parse_hdr(hdr, preserve_none=True)
-        self.color_handling = color_handling
         self._flush_iterations = 2  # Hidden variable: how many frames to capture for a flush.
 
         # Spatial dimensions.
@@ -437,20 +443,52 @@ class Camera(_Picklable, ABC):
 
     def _parse_color_image(self, img):
         """
-        Helper function to parse color images according to :attr:`color_handling`.
-        """
-        color_handling = self.color_handling
-        if color_handling is None:
-            color_handling = 0
+        Reduces a color image to grayscale according to :attr:`color_channel`.
 
-        if isinstance(color_handling, int):
-            return img[:, :, color_handling]
-        elif isinstance(color_handling, (list, np.ndarray)):
+        The color channel is assumed to be the **last** axis, so this works both for a
+        single frame of shape ``(height, width, channels)`` and for a stack of frames of
+        shape ``(image_count, height, width, channels)``.
+
+        Parameters
+        ----------
+        img : numpy.ndarray
+            Color image (or stack of color images) with the channel as the last axis.
+
+        Returns
+        -------
+        numpy.ndarray
+            The image(s) with the color axis removed.
+        """
+        color_channel = self.color_channel
+        if color_channel is None:
+            color_channel = 0
+
+        if isinstance(color_channel, int):
+            return img[..., color_channel]
+        elif isinstance(color_channel, (list, np.ndarray)):
             raise NotImplementedError("Weighted color handling is not implemented yet.")
         else:
-            raise ValueError(f"Expected color_handling to be None or int. Found {self.color_handling}.")
+            raise ValueError(f"Expected color_channel to be None or int. Found {self.color_channel}.")
 
     def _get_image_hw_tolerant(self, *args, **kwargs):
+        """
+        Wraps :meth:`._get_image_hw()` with error tolerance and color handling.
+
+        Retries the capture up to :attr:`capture_attempts` times, warning on intermediate
+        failures and re-raising the last error if every attempt fails. Color frames
+        (shape ``(height, width, channels)``) are reduced to grayscale via
+        :meth:`._parse_color_image()`.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Passed through to :meth:`._get_image_hw()`.
+
+        Returns
+        -------
+        numpy.ndarray
+            A 2D image of shape ``(height, width)``.
+        """
         err = None
         failures = 0
 
@@ -478,12 +516,33 @@ class Camera(_Picklable, ABC):
         raise err
 
     def _get_images_hw_tolerant(self, *args, **kwargs):
-        e = None
+        """
+        Wraps :meth:`._get_images_hw()` with error tolerance and color handling.
+
+        Retries the capture up to :attr:`capture_attempts` times, warning on intermediate
+        failures and re-raising the last error if every attempt fails. Color stacks
+        (shape ``(image_count, height, width, channels)``) are reduced to grayscale via
+        :meth:`._parse_color_image()`.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Passed through to :meth:`._get_images_hw()`.
+
+        Returns
+        -------
+        numpy.ndarray
+            A stack of 2D images of shape ``(image_count, height, width)``.
+        """
+        err = None
         failures = 0
 
         for _ in range(self.capture_attempts):
             try:
-                imgs = self._get_images_hw(*args, **kwargs)
+                imgs = np.array(self._get_images_hw(*args, **kwargs))
+
+                if imgs.ndim == 4:      # Stack of color images; reduce to grayscale.
+                    imgs = self._parse_color_image(imgs)
 
                 if failures > 0:
                     warnings.warn(f"'{self.name}' _get_images_hw() failed {failures} times before succeeding.")
@@ -705,12 +764,16 @@ class Camera(_Picklable, ABC):
 
             try:
                 # Using the camera-specific batch method if available
-                imgs = self._get_images_hw(
+                imgs = np.array(self._get_images_hw(
                     averaging, timeout_s=timeout_s+self.exposure_s
-                ).astype(averaging_dtype)
+                ))
+
+                # Reduce color stacks to grayscale before summing.
+                if imgs.ndim == 4:
+                    imgs = self._parse_color_image(imgs)
 
                 # Cast as the proper type so we can sum.
-                img = np.sum(imgs, axis=0)
+                img = np.sum(imgs.astype(averaging_dtype), axis=0)
             except NotImplementedError:
                 # Brute-force collection as a backup
                 img = np.zeros(self.default_shape, dtype=averaging_dtype)
@@ -777,11 +840,15 @@ class Camera(_Picklable, ABC):
             self.flush()
 
         # Grab images (no transformation)
-        imgs = self._get_images_hw(
+        imgs = np.array(self._get_images_hw(
             image_count,
             timeout_s=timeout_s+self.exposure_s,
             out=out
-        )
+        ))
+
+        # Reduce color stacks to grayscale.
+        if imgs.ndim == 4:
+            imgs = self._parse_color_image(imgs)
 
         # Transform if desired. Future: make more efficient.
         if transform:
@@ -1188,8 +1255,8 @@ class Camera(_Picklable, ABC):
             )
 
         try:
-            from ipywidgets import Image
             from IPython.display import display
+            from ipywidgets import Image
         except ImportError:
             raise ImportError("jupyter must be installed to use .live().")
 
@@ -1663,15 +1730,25 @@ class _CameraViewer:
         self.render()
 
     def init_image(self):
-        from ipywidgets import Image
         from IPython.display import display
+        from ipywidgets import Image
 
         self.image = Image(value=self.parse(self.cam.get_image()), format="png")
         self.image.on_click = self.on_click
         display(self.image)
 
     def init_widgets(self):
-        from ipywidgets import HTML, IntRangeSlider, ToggleButton, Button, Checkbox, Dropdown, FloatLogSlider, Output, Layout
+        from ipywidgets import (
+            HTML,
+            Button,
+            Checkbox,
+            Dropdown,
+            FloatLogSlider,
+            IntRangeSlider,
+            Layout,
+            Output,
+            ToggleButton,
+        )
 
         item_layout = Layout(width="auto")
         range_layout = Layout(width="70%")
@@ -1749,8 +1826,8 @@ class _CameraViewer:
             else:
                 w.observe(self.update, "value")
 
-        from ipywidgets import HBox, VBox
         from IPython.display import display
+        from ipywidgets import HBox, VBox
 
         # self.widgets["layout"] = VBox([
         #     HBox([

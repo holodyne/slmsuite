@@ -22,7 +22,8 @@ interfaces which support UC480 drivers.
 
 Note
 ~~~~
-Color camera functionality is not currently implemented, and will lead to undefined behavior.
+Color cameras reduce each frame to a single channel selected by the base-class
+:attr:`~slmsuite.hardware.cameras.camera.Camera.color_channel` setting.
 """
 
 import os
