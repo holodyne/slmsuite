@@ -2381,6 +2381,8 @@ def _make_8bit(img):
     return img.astype(np.uint8)
 
 
+# Transformations
+
 
 class Affine(object):
     """
@@ -2421,6 +2423,7 @@ class Affine(object):
     def to_dict(self):
         return {"M": self.M, "b": self.b, "a": 0 * self.b}
 
+
 class OrientationTransform:
     """
     Camera-specific orientation transform.
@@ -2439,8 +2442,8 @@ class OrientationTransform:
     flipud : bool
         Apply an up-down flip *before* rotation.
     """
-
-    class Code(enum.IntEnum):
+    # Dihedral group elements.
+    class D_4(enum.IntEnum):
         """Enums for image orientations."""
         IDENTITY    = 0  # no transform
         ROT90       = 1  # 90° CCW
@@ -2452,7 +2455,7 @@ class OrientationTransform:
         FLIP_ROT270 = 7  # left-right flip then 270° CCW (= anti-transpose)
 
     # Inverse elements
-    _INVERSE_CODE = [0, 3, 2, 1, 4, 5, 6, 7]
+    _INVERSE_D_4 = [0, 3, 2, 1, 4, 5, 6, 7]
 
     # 2x2 matrix
     _MATRICES = (
@@ -2489,13 +2492,13 @@ class OrientationTransform:
         else:
             has_flip, extra_rot = bool(fliplr), 0
 
-        self.code = self.Code((rot_steps + extra_rot) % 4 + (4 if has_flip else 0))
+        self.code = self.D_4((rot_steps + extra_rot) % 4 + (4 if has_flip else 0))
 
     @classmethod
     def from_code(cls, code):
-        """Construct directly from a :class:`Code` value or integer (0-7)."""
+        """Construct directly from a :class:`D_4` value or integer (0-7)."""
         obj = cls.__new__(cls)
-        obj.code = cls.Code(int(code))
+        obj.code = cls.D_4(int(code))
         return obj
 
     def __mul__(self, other):
@@ -2517,25 +2520,31 @@ class OrientationTransform:
     def swaps_xy(self):
         """bool : True if x and y axes are exchanged (image shape changes for non-square inputs)."""
         return self.code in (
-            self.Code.ROT90, self.Code.ROT270,
-            self.Code.FLIP_ROT90, self.Code.FLIP_ROT270,
+            self.D_4.ROT90, self.D_4.ROT270,
+            self.D_4.FLIP_ROT90, self.D_4.FLIP_ROT270,
         )
 
     @property
     def inverse(self):
         """OrientationTransform : The inverse transformation."""
-        return self.from_code(self._INVERSE_CODE[self.code.value])
+        return self.from_code(self._INVERSE_D_4[self.code.value])
 
-    @property
-    def matrix(self):
+    def M(self):
         """
-        numpy.ndarray : 2x2 **push** (forward) matrix for pixel-space ``(x=col, y=row)`` mapping.
-
-        This is the forward pixel mapping — i.e. where each input pixel
-        *goes* in the output image.  The translation component depends on the image
-        shape; use :meth:`affine` to get the complete :class:`Affine`.
+        numpy.ndarray : 2x2 matrix transformation
         """
         return np.array(self._MATRICES[self.code.value], dtype=float)
+
+    def b(self, shape):
+        """
+        numpy.ndarray : 2-vector translation.
+        """
+        H, W = shape
+        M = self.M()
+        return np.array([
+            max(0., -M[0, 0]) * (W - 1) + max(0., -M[0, 1]) * (H - 1),
+            max(0., -M[1, 0]) * (W - 1) + max(0., -M[1, 1]) * (H - 1),
+        ])
 
     def affine(self, shape):
         """
@@ -2550,13 +2559,7 @@ class OrientationTransform:
         -------
         Affine
         """
-        H, W = shape
-        M = self.matrix
-        t = np.array([
-            max(0., -M[0, 0]) * (W - 1) + max(0., -M[0, 1]) * (H - 1),
-            max(0., -M[1, 0]) * (W - 1) + max(0., -M[1, 1]) * (H - 1),
-        ])
-        return Affine(M, t)
+        return Affine(self.M(), self.b(shape))
 
     # Actual transform
 
@@ -2578,7 +2581,7 @@ class OrientationTransform:
         """
         img = np.asarray(img)
         c = self.code
-        C = self.Code
+        C = self.D_4
         # Operates on the last two axes, so 2D and ND (batched) inputs share one path.
         if   c == C.IDENTITY:
             return img

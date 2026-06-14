@@ -1297,14 +1297,14 @@ def _all_transforms():
     """Yield (label, OrientationTransform) for all 8 D4 codes."""
     OT = analysis.OrientationTransform
     return [
-        ("identity",   OT.from_code(OT.Code.IDENTITY)),
-        ("rot90",      OT.from_code(OT.Code.ROT90)),
-        ("rot180",     OT.from_code(OT.Code.ROT180)),
-        ("rot270",     OT.from_code(OT.Code.ROT270)),
-        ("flip",       OT.from_code(OT.Code.FLIP)),
-        ("flip_rot90", OT.from_code(OT.Code.FLIP_ROT90)),
-        ("flip_rot180",OT.from_code(OT.Code.FLIP_ROT180)),
-        ("flip_rot270",OT.from_code(OT.Code.FLIP_ROT270)),
+        ("identity",   OT.from_code(OT.D_4.IDENTITY)),
+        ("rot90",      OT.from_code(OT.D_4.ROT90)),
+        ("rot180",     OT.from_code(OT.D_4.ROT180)),
+        ("rot270",     OT.from_code(OT.D_4.ROT270)),
+        ("flip",       OT.from_code(OT.D_4.FLIP)),
+        ("flip_rot90", OT.from_code(OT.D_4.FLIP_ROT90)),
+        ("flip_rot180",OT.from_code(OT.D_4.FLIP_ROT180)),
+        ("flip_rot270",OT.from_code(OT.D_4.FLIP_ROT270)),
     ]
 
 
@@ -1316,7 +1316,7 @@ def test_orientation_matrix_properties(subtests):
     These hold for all 8 D4 transforms.
     """
     for label, t in _all_transforms():
-        M = t.matrix
+        M = t.M
 
         with subtests.test(f"{label} : det = ±1"):
             d = np.linalg.det(M)
