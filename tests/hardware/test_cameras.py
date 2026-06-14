@@ -46,26 +46,110 @@ class TestCamera:
             assert cam3.exposure_s is not None
             assert cam3.averaging is None or isinstance(cam3.averaging, int)
 
-        with subtests.test("rotation swaps axes"):
+        with subtests.test("rotation sets default_shape to (width, height)"):
             cam_rot = SimulatedCamera(
                 slm=slm, resolution=(200, 100), rot="90"
             )
-            assert cam_rot.shape == (200, 100)
+            # _Common always stores shape as (height, width); rotation does not
+            # change self.shape but DOES change self.default_shape.
+            assert cam_rot.shape == (100, 200)
+            assert cam_rot.default_shape == (200, 100)
+            assert cam_rot.default_shape != cam_rot.shape
 
         cam.close()
 
     def test_basic_properties(self, camera, subtests):
-        """Basic properties and attributes are correctly set."""
-        from slmsuite.misc.math import INTEGER_TYPES
+        """bitresolution equals 2^bitdepth and scales correctly with averaging."""
 
-        with subtests.test("has shape"):
-            assert hasattr(camera, "shape")
-            assert len(camera.shape) == 2
-            assert all(isinstance(dim, INTEGER_TYPES) and dim > 0 for dim in camera.shape)
-
-        with subtests.test("has bitresolution"):
-            assert hasattr(camera, "bitresolution")
+        with subtests.test("bitresolution equals 2^bitdepth"):
             assert camera.bitresolution == 2 ** camera.bitdepth
+
+        with subtests.test("bitresolution scales with averaging"):
+            orig_avg = camera.averaging
+            camera.averaging = 4
+            assert camera.bitresolution == (2 ** camera.bitdepth) * 4
+            camera.averaging = orig_avg
+
+    def test_get_image(self, camera, subtests):
+        """get_image() returns correct shape, dtype, last_image pointer, and pixel range."""
+
+        with subtests.test("shape matches camera.shape"):
+            img = camera.get_image()
+            assert img.shape == camera.shape
+
+        with subtests.test("dtype matches camera.dtype"):
+            img = camera.get_image()
+            assert img.dtype == camera.dtype
+
+        with subtests.test("last_image is the returned image"):
+            img = camera.get_image()
+            assert camera.last_image is img
+
+        with subtests.test("pixel values are non-negative"):
+            img = camera.get_image()
+            assert np.all(img >= 0)
+
+        with subtests.test("pixel values do not exceed bitresolution - 1"):
+            img = camera.get_image()
+            assert np.all(img <= camera.bitresolution - 1)
+
+        with subtests.test("image contains nonzero signal"):
+            img = camera.get_image()
+            assert np.any(img > 0)
+
+    def test_averaging_sum(self, camera, subtests):
+        """get_image(averaging=N) sums N frames; pixel values scale as N, not 1."""
+        saved_exposure = camera.exposure_s
+        # Low exposure keeps every pixel well below saturation so each of N
+        # identical (noise-free) frames contributes the same value.
+        camera.set_exposure(saved_exposure * 0.05)
+
+        try:
+            with subtests.test("averaging=2 doubles single-frame pixel values"):
+                img1 = camera.get_image(averaging=1)
+                img2 = camera.get_image(averaging=2)
+                img1_f = img1.astype(float)
+                # Only evaluate on pixels that are not saturated in the single frame.
+                unsaturated = img1_f < (camera.bitresolution - 1) * 0.9
+                assert np.any(unsaturated), "expected unsaturated pixels at reduced exposure"
+                np.testing.assert_allclose(
+                    img2[unsaturated],
+                    2.0 * img1_f[unsaturated],
+                    rtol=1e-6,
+                )
+
+            with subtests.test("averaging=False is equivalent to averaging=1"):
+                img_one = camera.get_image(averaging=1)
+                img_false = camera.get_image(averaging=False)
+                np.testing.assert_array_equal(img_one, img_false)
+
+        finally:
+            camera.set_exposure(saved_exposure)
+
+    def test_get_images(self, camera, subtests):
+        """get_images() returns a frame stack with correct shape, dtype, and last_image update."""
+        count = 3
+
+        with subtests.test("shape is (count, H, W)"):
+            imgs = camera.get_images(count)
+            assert imgs.shape == (count, camera.shape[0], camera.shape[1])
+
+        with subtests.test("dtype matches camera.dtype"):
+            imgs = camera.get_images(2)
+            assert imgs.dtype == camera.dtype
+
+        with subtests.test("last_image is the final captured frame"):
+            imgs = camera.get_images(count)
+            np.testing.assert_array_equal(camera.last_image, imgs[-1])
+
+        with subtests.test("preallocated out buffer is filled with correct shape and dtype"):
+            out = np.empty(
+                (count, camera.default_shape[0], camera.default_shape[1]),
+                dtype=camera.dtype,
+            )
+            imgs = camera.get_images(count, out=out, transform=False)
+            assert imgs.shape == out.shape
+            assert imgs.dtype == camera.dtype
 
     def test_get_dtype(self, camera, subtests):
         """_get_dtype infers dtype from various get_image callables."""
@@ -208,14 +292,14 @@ class TestCamera:
         """Autoexposure converges to same result from different starting points."""
         with subtests.test("convergence"):
             camera.set_exposure(0.01)
-            result1 = camera.autoexposure(verbose=False)
+            result1 = camera.autoexposure()
             camera.set_exposure(1)
-            result2 = camera.autoexposure(verbose=False)
+            result2 = camera.autoexposure()
             assert pytest.approx(result1, rel=0.15) == result2
 
         with subtests.test("custom set_fraction"):
             camera.set_exposure(0.01)
-            result3 = camera.autoexposure(set_fraction=0.3, verbose=False)
+            result3 = camera.autoexposure(set_fraction=0.3)
             assert result3 > 0
 
     def test_autofocus(self, camera, slm, subtests):
@@ -224,13 +308,13 @@ class TestCamera:
         slm.set_source_analytic()
 
         fs = FourierSLM(camera, slm)
-        fs.fourier_calibrate(array_pitch=10, verbose=False)
+        fs.fourier_calibrate(array_pitch=10)
 
         defocus_zernike = 1
         slm.source["phase_sim"] = zernike(slm, 4, -defocus_zernike, use_mask=False)
 
         with subtests.test("recovers defocus"):
-            defocus_opt = camera.autofocus(set_z=slm, verbose=False)
+            defocus_opt = camera.autofocus(set_z=slm)
             assert pytest.approx(defocus_opt, rel=0.25) == defocus_zernike
 
         with subtests.test("set_z validation"):
@@ -345,22 +429,23 @@ class TestCamera:
             )
 
     def test_plot(self, camera, subtests):
-        """Camera plot method produces an axes."""
+        """Camera.plot() renders the correct array shape and applies metadata."""
         import matplotlib.pyplot as plt
 
-        with subtests.test("plot with captured image"):
-            ax = camera.plot()
-            assert ax is not None
-            plt.close("all")
-
-        with subtests.test("plot with last_image"):
-            camera.get_image()
-            ax = camera.plot(image=False)
-            assert ax is not None
-            plt.close("all")
-
-        with subtests.test("plot with explicit image"):
+        with subtests.test("plotted array shape matches camera shape"):
             img = np.zeros(camera.shape, dtype=camera.dtype)
-            ax = camera.plot(image=img, title="Test", limits=0.5)
-            assert ax is not None
+            ax = camera.plot(image=img, title="Shape Test")
+            assert ax.get_images()[0].get_array().shape == camera.shape
+            plt.close("all")
+
+        with subtests.test("title is applied"):
+            ax = camera.plot(image=np.zeros(camera.shape), title="MyTitle")
+            assert ax.get_title() == "MyTitle"
+            plt.close("all")
+
+        with subtests.test("last_image rendered when image=False"):
+            camera.get_image()
+            stored_shape = camera.last_image.shape
+            ax = camera.plot(image=False)
+            assert ax.get_images()[0].get_array().shape == stored_shape
             plt.close("all")

@@ -55,7 +55,7 @@ or directly in
 
 ## Support
 
-Users are encouraged to submit [issues](https://github.com/holodyne/slmsuite/issues) and [discussions](https://github.com/holodyne/slmsuite/discussions) via GitHub. 
+Users are encouraged to submit [issues](https://github.com/holodyne/slmsuite/issues) and [discussions](https://github.com/holodyne/slmsuite/discussions) via GitHub.
 
 <p align="center">
 <picture>
@@ -64,4 +64,4 @@ Users are encouraged to submit [issues](https://github.com/holodyne/slmsuite/iss
 </picture>
 </p>
 
-`slmsuite` is maintained by [Holodyne Labs, Inc](www.holodyne.com). Contact slmsuite@holodyne.com for additional information. 
+`slmsuite` is maintained by [Holodyne Labs, Inc](https://www.holodyne.com). Contact slmsuite@holodyne.com for additional information.

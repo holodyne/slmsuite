@@ -3,8 +3,10 @@ import importlib.util
 import logging
 
 import pytest
-from pytest_notebook.execution import execute_notebook
-import nbformat
+
+pytest_notebook = pytest.importorskip("pytest_notebook", reason="pytest_notebook not installed")
+execute_notebook = pytest_notebook.execution.execute_notebook
+nbformat = pytest.importorskip("nbformat", reason="nbformat not installed")
 
 # Suppress verbose debug logging from notebook execution (kernel messages, etc.).
 logging.getLogger("pytest_notebook").setLevel(logging.WARNING)

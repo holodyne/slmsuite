@@ -7,9 +7,13 @@ from scipy.spatial import distance
 from scipy.spatial import Voronoi, voronoi_plot_2d
 import cv2
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import warnings
 
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 
 # Unit definitions.
@@ -153,7 +157,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     -  ``"mag_m"``, ``"mag_cm"``, ``"mag_mm"``, ``"mag_um"``, ``"mag_nm"``
         Scales the corresponding metric length unit according to the value stored in
         :attr:`~slmsuite.hardware.cameraslms.FourierSLM.mag` to match the true
-        dimensions of the experiment plane, apposed to the camera plane.
+        dimensions of the experiment plane, as opposed to the camera plane.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
         along with knowledge of the camera pixel size ``pitch_um``.
 
@@ -188,7 +192,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     Warning
     ~~~~~~~
     The units ``"freq"``, ``"knm"``, and ``"lpmm"`` depend on SLM pixel size,
-    so a SLM should be passed to ``hardware``
+    so an SLM should be passed to ``hardware``
     (otherwise returns an array of ``nan`` values).
     The unit ``"zernike"`` also requires an SLM.
     The unit ``"knm"`` additionally requires the ``shape`` of the computational space.
@@ -255,8 +259,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units in CAMERA_UNITS or to_units in CAMERA_UNITS:
         if cameraslm is None or not "fourier" in cameraslm.calibrations:
-            warnings.warn(
-                f"CameraSLM must be passed as slm for conversion '{from_units}' to '{to_units}'"
+            logger.warning(
+                "CameraSLM must be passed as slm for conversion '%s' to '%s'", from_units, to_units
             )
             return np.full_like(vector_parsed, np.nan)
 
@@ -265,9 +269,9 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         if cam_pitch_um is None:
             # Don't error if ij.
             if from_units in CAMERA_UNITS[1:] or to_units in CAMERA_UNITS[1:]:
-                warnings.warn(
-                    f"Camera must have filled attribute pitch_um "
-                    "for conversion '{from_units}' to '{to_units}'"
+                logger.warning(
+                    "Camera must have filled attribute pitch_um "
+                    "for conversion '%s' to '%s'", from_units, to_units
                 )
                 return np.full_like(vector_parsed, np.nan)
         else:
@@ -276,7 +280,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     # Generate conversion factors for various units.
     if from_units == "freq" or to_units == "freq":
         if slm is None:
-            warnings.warn("slm is required for unit 'freq'")
+            logger.warning("slm is required for unit 'freq'")
             pitch_um = np.nan
             wav_um = np.nan
         else:
@@ -285,7 +289,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units == "lpmm" or to_units == "lpmm":
         if slm is None:
-            warnings.warn("slm is required for units 'lpmm'")
+            logger.warning("slm is required for units 'lpmm'")
             wav_um = np.nan
         else:
             wav_um = slm.wav_um
@@ -298,7 +302,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
         if shape is None:
             if slm is None:
-                warnings.warn("shape or slm is required for unit 'knm'")
+                logger.warning("shape or slm is required for unit 'knm'")
                 shape = (np.nan, np.nan)
             else:
                 shape = np.array(slm.shape, dtype=float)
@@ -435,7 +439,7 @@ def convert_radius(radius, from_units="norm", to_units="norm", hardware=None, sh
         The scalar radius to convert.
     from_units, to_units : str
         Passed to :meth:`convert_vector`.
-    hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.CameraSLM` OR None
+    hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Passed to :meth:`convert_vector`.
     shape : (int, int) OR None
         Passed to :meth:`convert_vector`.
@@ -462,23 +466,24 @@ def convert_radius(radius, from_units="norm", to_units="norm", hardware=None, sh
 
 def window_slice(window, shape=None, centered=False, circular=False):
     """
-    Parses the slices that describe the window's view into the larger array.
+    Parses the slices that describe the window's view into the larger 2D array.
 
     Parameters
     ----------
-    window : (int, int, int, int) OR (array_like, array_like) OR array_like
+    window : (int, int, int, int) OR (array_like, array_like) OR array_like OR None
         A number of formats are accepted:
 
         - List in ``(x, w, y, h)`` format, where ``w`` and ``h`` are the width and height of
           the region and  ``(x,y)`` is the upper-left coordinate.
 
-          - If ``centered``, then ``(x,y)`` is instead the center of the region to imprint.
-          - If ``circular``, then an elliptical region circumscribed by the rectangular region is returned.
+            - If ``centered``, then ``(x,y)`` is instead the center of the region to imprint.
+            - If ``circular``, then an elliptical region circumscribed by the rectangular region is returned.
 
-        - Tuple containing arrays of identical length corresponding to y and x indices.
+        - Tuple containing arrays of identical length corresponding to y and x indices of points in the window.
           ``centered`` and ``circular`` are ignored.
         - Boolean array of same ``shape`` as ``matrix``; the window is defined where ``True`` pixels are.
           ``centered`` and ``circular`` are ignored.
+        - If ``None``, the window is the full slice of the 2D array.
 
     shape : (int, int) OR None
         The (height, width) of the array that the window is a view into.
@@ -496,25 +501,28 @@ def window_slice(window, shape=None, centered=False, circular=False):
     if shape is not None:
         shape = format_shape(shape)
 
-    # Case 1: (v.x, w, v.y, h) format
-    if len(window) == 4:
+    # Case 0: No window, so return the full slice.
+    if window is None:
+        slice_ = (slice(None), slice(None))
+    # Case 1: (x, w, y, h) format
+    elif len(window) == 4:
         # Prepare helper vars
-        xi = int(window[0] - ((window[1] - 2) / 2 if centered else 0))
+        xi = int(window[0] - ((window[1] - 1) / 2 if centered else 0))
         xf = xi + int(window[1])
-        yi = int(window[2] - ((window[3] - 2) / 2 if centered else 0))
+        yi = int(window[2] - ((window[3] - 1) / 2 if centered else 0))
         yf = yi + int(window[3])
 
+        xc = xi + int((window[1] - 1) / 2)
+        yc = yi + int((window[3] - 1) / 2)
+
         if shape is not None:
-            [xi, xf] = np.clip([xi, xf], 0, shape[1] - 1)
-            [yi, yf] = np.clip([yi, yf], 0, shape[0] - 1)
+            [xi, xf] = np.clip([xi, xf], 0, shape[1])
+            [yi, yf] = np.clip([yi, yf], 0, shape[0])
 
         if circular:  # If a circular window is desired, compute this.
             x_list = np.arange(xi, xf)
             y_list = np.arange(yi, yf)
             x_grid, y_grid = np.meshgrid(x_list, y_list)
-
-            xc = xi + int((window[1] - 1) / 2)
-            yc = yi + int((window[3] - 1) / 2)
 
             rr_grid = (
                 (window[3] ** 2) * np.square(x_grid.astype(float) - xc) +
@@ -548,7 +556,7 @@ def window_slice(window, shape=None, centered=False, circular=False):
 
 def window_extent(window, padding_frac=0, padding_pix=0):
     """
-    Find a square that covers the active region of the 2D boolean mask ``window``.
+    Find a rectangle that covers the active region of the 2D boolean mask ``window``.
 
     Parameters
     ----------
@@ -558,7 +566,8 @@ def window_extent(window, padding_frac=0, padding_pix=0):
         If this default window has width ``w`` and height ``h``,
         ``padding_frac`` proportionally changes these dimensions all sides.
         For instance, ``padding_frac=.5`` would modify the dimensions to be
-        ``w = 1.5w`` and ``h = 1.5h``.
+        ``w = 1.5w`` and ``h = 1.5h`` and adjust the position of the window
+        accordingly to keep it centered on the same region.
     padding_pix : float
         Additional padding to add, in pixels.
         This is applied after ``padding_frac``.
@@ -566,7 +575,7 @@ def window_extent(window, padding_frac=0, padding_pix=0):
     Returns
     -------
     window_extent : (int, int, int, int)
-        A rectangle that centered on the active region of ``window``
+        A rectangle centered on the active region of ``window``
         in the format ``(x, w, y, h)`` where
         ``(x, y)`` is the upper left coordinate, and
         ``(w, h)`` define the extent.
@@ -576,8 +585,11 @@ def window_extent(window, padding_frac=0, padding_pix=0):
 
     # For each axis...
     for a in [0, 1]:
-        if len(window) == 2:  # Handle two list case
-            limit = np.array([np.amin(window[a]), np.amax(window[a]) + 1])
+        if len(window) == 4:  # Handle the (x, w, y, h) case
+            b = 2*(1-a)
+            limit = np.array([window[b], window[b] + window[b + 1]])
+        elif len(window) == 2:  # Handle two list case: window = (y_ind, x_ind)
+            limit = np.array([np.amin(window[1 - a]), np.amax(window[1 - a]) + 1])
         elif np.ndim(window) == 2:  # Handle the boolean array case
             collapsed = np.where(np.any(window, axis=a))  # Collapse the other axis
             limit = np.array([np.amin(collapsed), np.amax(collapsed) + 1])
@@ -588,8 +600,8 @@ def window_extent(window, padding_frac=0, padding_pix=0):
         padding_ = int((np.floor(np.diff(limit) * padding_frac) + padding_pix).item())
         limit += np.array([-padding_, padding_])
 
-        # Clip the padding to shape.
-        if np.ndim(window) == 2:
+        # Clip the padding to shape (boolean array only — index-list tuples have no .shape).
+        if isinstance(window, np.ndarray) and np.ndim(window) == 2:
             limit = np.clip(limit, 0, window.shape[1 - a])
 
         limits.append(tuple(limit))
@@ -688,7 +700,7 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
         plt.ylim(1.05 * sy, -0.05 * sy)
         plt.gca().set_aspect("equal")
         plt.title("Voronoi Cells")
-        plt.show()
+        _slmsuite_plt_show(name="voronoi_windows")
 
     # Gather data from scipy Voronoi and return as a list of boolean windows.
     N = np.shape(vectors)[1]
@@ -734,7 +746,7 @@ def imprint(
     **kwargs,
 ):
     r"""
-    Imprints a region (defined by ``window``) of a ``matrix`` with a ``function``.
+    Imprints a region (defined by ``window``) of a ``matrix`` with a ``function`` in-place.
     This ``function`` must be in the style of :mod:`~slmsuite.holography.toolbox.phase`
     phase helper functions, which expect a ``grid`` parameter to define the coordinate basis
     (see :meth:`~slmsuite.holography.toolbox.phase.blaze()` or
@@ -756,6 +768,7 @@ def imprint(
     ----------
     matrix : numpy.ndarray
         The data to imprint a ``function`` onto.
+        This operation occurs in-place (original array is modified).
     window
         Passed to :meth:`~slmsuite.holography.toolbox.window_slice()`.
         See :meth:`~slmsuite.holography.toolbox.window_slice()` for various options.
@@ -809,13 +822,13 @@ def imprint(
         For passing additional arguments accepted by ``function``.
 
     Returns
-    ----------
+    -------
     matrix : numpy.ndarray
         The modified image. Note that the matrix is modified in place, and this return
         is merely a copy of the user's pointer to the data.
 
     Raises
-    ----------
+    ------
     ValueError
         If invalid ``window`` or ``imprint_operation`` are provided.
     """
@@ -940,7 +953,7 @@ def format_2vectors(vectors):
     """
     Validates that an array of 2-dimensional vectors is a ``numpy.ndarray`` of shape ``(2, N)``.
     Handles shaping and transposing if, for instance, tuples or row vectors are passed.
-    This a wrapper of :meth:`format_vectors` for backwards compatibility.
+    This is a wrapper of :meth:`format_vectors` for backwards compatibility.
 
     Parameters
     ----------
@@ -983,10 +996,10 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
         # In this case, the requested 5x5 indices results in an array with shape (2,25)
         vector_array =  fit_3pt(y0, y1, y2, N=(5,5))
 
-    However, ``fit_3pt`` is more powerful that this, and can fit an affine
+    However, ``fit_3pt`` is more powerful than this, and can fit an affine
     transformation to semi-arbitrary sets of points with known indices
-    in the coordinate  system of the dependent variable :math:`\vec{x}`,
-    as long as the passed indices ``x0``, ``x1``, ``x2`` are not colinear.
+    in the coordinate system of the dependent variable :math:`\vec{x}`,
+    as long as the passed indices ``x0``, ``x1``, ``x2`` are not collinear.
 
     .. highlight:: python
     .. code-block:: python
@@ -1032,7 +1045,7 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
     x0, x1 : array_like OR None
         See ``x2``.
     x2 : array_like OR None
-        Should not be colinear.
+        Should not be collinear.
         If ``x0`` is ``None``, defaults to the origin ``(0,0)``.
         If ``x1`` or ``x2`` are ``None``, ``y1`` or ``y2`` are interpreted as
         **differences** between ``(0,0)`` and ``(1,0)`` or ``(0,0)`` and ``(0,1)``,
@@ -1271,7 +1284,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
         area = 0.5 * np.sum(cross)
 
         if np.isclose(area, 0):
-            return 0, np.mean(polygon, axis=0)
+            return np.mean(polygon, axis=0)
 
         cx = np.sum((x + x_shift) * cross) / (6 * area)
         cy = np.sum((y + y_shift) * cross) / (6 * area)
@@ -1351,7 +1364,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
             plt.ylim(1.05 * sy, -0.05 * sy)
             plt.gca().set_aspect("equal")
             plt.title("Voronoi Cells")
-            plt.show()
+            _slmsuite_plt_show(name="lloyds_algorithm")
 
         for i in range(result.shape[1]):
             # Don't move points that don't make sense.
@@ -1425,7 +1438,7 @@ def lloyds_points(grid, n_points, iterations=10, plot=False):
         return result
     else:
         result = np.rint(result).astype(int)
-        return np.vstack((x_grid[result[0], result[1]], y_grid[result[0], result[1]]))
+        return np.vstack((x_grid[result[1], result[0]], y_grid[result[1], result[0]]))
 
 
 def assign_vectors(vectors, assignment_options):
@@ -1449,7 +1462,7 @@ def assign_vectors(vectors, assignment_options):
     -------
     numpy.ndarray
         For each vector, the index of the closest ``assignment_options``.
-        Of shape ``(option_count,)``.
+        Of shape ``(vector_count,)``.
     """
     vectors = format_vectors(vectors)[:, np.newaxis, :]
     assignment_options = format_vectors(assignment_options)[:, :, np.newaxis]
@@ -1476,7 +1489,7 @@ def _process_grid(grid):
         such a class can be passed instead of the grids directly.
 
     Returns
-    --------
+    -------
     (array_like, array_like)
         The grids in ``(x_grid, y_grid)`` form.
     """
@@ -1518,7 +1531,7 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
         If a scalar is passed, this is the angle to rotate the basis of the lens by.
         Defaults to zero if ``None``.
         If a 2x2 matrix is passed, transforms the :math:`x` and :math:`y` grids
-        according to :math:`x' = M_{00}x + M_{01}y`,  :math:`y' = M_{10}y + M_{11}y`.
+        according to :math:`x' = M_{00}x + M_{01}y`,  :math:`y' = M_{10}x + M_{11}y`.
     shift : (float, float) OR None OR True
         Translational shift of the grid in normalized :math:`\frac{x}{\lambda}` coordinates
         ("fwd" direction). Defaults to no shift if ``None``.
@@ -1575,8 +1588,8 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
         # Use the matrix to transform the grid.
         if direction == "fwd":
             return (
-                transform[0, 0] * x_grid + shift[0] + transform[0, 1] * y_grid + shift[1],
-                transform[1, 0] * x_grid + shift[0] + transform[1, 1] * y_grid + shift[1],
+                transform[0, 0] * x_grid + transform[0, 1] * y_grid + shift[0],
+                transform[1, 0] * x_grid + transform[1, 1] * y_grid + shift[1],
             )
         elif direction == "rev":
             transform = np.linalg.inv(transform)
@@ -1678,10 +1691,10 @@ def unpad(matrix, shape):
         If ``None``, the ``matrix`` is returned unchanged.
 
     Returns
-    ----------
+    -------
     numpy.ndarray OR (int, int, int, int)
         Either the unpadded ``matrix`` or the four slicing integers used to unpad such a matrix,
-        depending what is passed as ``matrix``.
+        depending on what is passed as ``matrix``.
     """
     mshape = np.shape(matrix)
     return_args = False

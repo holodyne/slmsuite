@@ -44,3 +44,5 @@ or directly in
 <p align="center">
 <img alt="qp-slm" src="https://raw.githubusercontent.com/holodyne/slmsuite-examples/main/examples/ex-zernike-spots.gif" width="512">
 </p>
+
+`slmsuite` is maintained by [Holodyne Labs, Inc](https://www.holodyne.com). Contact slmsuite@holodyne.com for additional information.

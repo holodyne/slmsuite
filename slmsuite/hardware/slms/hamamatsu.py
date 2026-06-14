@@ -3,7 +3,7 @@
 For DVI mode, reset the SLM to DVI mode externally and
 project information onto the appropriate screen using
 :class:`~slmsuite.hardware.slms.screenmirrored.ScreenMirrored`.
-A previous verions was tested with Hamamatsu LCOS-SLM X15213-02.
+A previous version was tested with Hamamatsu LCOS-SLM X15213-02.
 
 Important
 ~~~~~~~~~
@@ -30,6 +30,9 @@ from ctypes import *
 
 import numpy as np
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 try:
     _libname = "hpkSLMdaLV.dll"
@@ -172,7 +175,7 @@ class Hamamatsu(SLM):
             this variable may be renamed in a future slmsuite release to
             conform with eventual implementation of this feature in other SLMs.
         """
-        array_size = int(self.shape[1] * self.shape[1])
+        array_size = int(self.shape[0] * self.shape[1])
         array = display.astype(c_uint8)  # TODO: check if this is necessary
 
         write_fmemarray = Lcoslib.Write_FMemArray
@@ -212,7 +215,7 @@ class Hamamatsu(SLM):
         """
         display = np.zeros(self.shape, dtype=np.uint8)
         array = display.astype(c_uint8)  # TODO: check if this is necessary
-        array_size = int(self.shape[1] * self.shape[1])
+        array_size = int(self.shape[0] * self.shape[1])
 
         get_display = Lcoslib.Get_Display
         get_display.argtyes = [c_uint8, c_int32, c_uint32, c_uint32, c_uint8*array_size]

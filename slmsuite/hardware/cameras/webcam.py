@@ -6,6 +6,9 @@ import cv2
 import time
 
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 class Webcam(Camera):
     """
@@ -26,7 +29,7 @@ class Webcam(Camera):
     Attributes
     ----------
     cam : cv2.VideoCapture
-        Most cameras will wrap some handle which connects to the the hardware.
+        Most cameras will wrap some handle which connects to the hardware.
     """
 
     def __init__(
@@ -34,7 +37,6 @@ class Webcam(Camera):
         identifier=0,
         capture_api=cv2.CAP_ANY,
         pitch_um=None,
-        verbose=True,
         **kwargs
     ):
         """
@@ -54,14 +56,12 @@ class Webcam(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
         # Then we load the camera from the SDK
         id = f'{identifier}' if isinstance(identifier, str) else identifier
-        if verbose: print(f"Webcam {id} initializing... ", end="")
+        logger.debug("Webcam %s initializing...", id)
         self.cam = cv2.VideoCapture(identifier, capture_api)
         time.sleep(.5)
         if not self.cam.isOpened():
@@ -87,7 +87,7 @@ class Webcam(Camera):
         time.sleep(.5)
         self.set_exposure(self.get_exposure())
         time.sleep(.5)
-        if verbose: print("success")
+        self.logger.debug("Webcam initialized.")
 
     def close(self):
         """See :meth:`.Camera.close`."""

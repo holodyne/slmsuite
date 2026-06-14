@@ -1,4 +1,5 @@
 from slmsuite.holography.algorithms._header import *
+from slmsuite._plotting import _slmsuite_plt_show
 
 class _HologramStats(object):
 
@@ -109,7 +110,7 @@ class _HologramStats(object):
                 ratio_pwr_full[mask] = ratio_pwr
             else:
                 final_stats["raw_pwr"] = xp.square(feedback_amp).get()
-                ratio_pwr_full[mask] = ratio_pwr.get()
+                ratio_pwr_full[mask.get()] = ratio_pwr.get()
 
             final_stats["raw_pwr_ratio"] = ratio_pwr_full
 
@@ -222,14 +223,22 @@ class _HologramStats(object):
 
         self._update_stats_dictionary(stats)
 
+    # These functions are somewhat superseded by pickle.
+
     def save_stats(self, file_path, include_state=True):
         """
         Uses :meth:`save_h5` to export the statistics hierarchy to a given h5 file.
 
+        Tip
+        ~~~
+        Enabling the ``"raw_stats"`` flag will save feedback data from each iteration
+        instead of only derived statistics. Consider enabling this to save more detailed
+        information.
+
         Parameters
         ----------
         file_path : str
-            Full path to the file to read the data from.
+            Full path to the file to write the data to.
         include_state : bool
             If ``True``, also includes all other attributes of :class:`Hologram`
             except for :attr:`dtype` (cannot pickle) and :attr:`amp_ff` (can regenerate).
@@ -271,13 +280,8 @@ class _HologramStats(object):
 
     def load_stats(self, file_path, include_state=True):
         """
-        Uses :meth:`save_h5` to import the statistics hierarchy from a given h5 file.
+        Uses :meth:`load_h5` to import the statistics hierarchy from a given h5 file.
 
-        Tip
-        ~~~
-        Enabling the ``"raw_stats"`` flag will export feedback data from each iteration
-        instead of only derived statistics. Consider enabling this to save more detailed
-        information upon export.
 
         Parameters
         ----------
@@ -338,13 +342,13 @@ class _HologramStats(object):
         return limits
 
     def plot_nearfield(
-            self,
-            source=None,
-            title="",
-            padded=False,
-            figsize=(8,4),
-            cbar=False
-        ):
+        self,
+        source=None,
+        title="",
+        padded=False,
+        figsize=(8,4),
+        cbar=False
+    ):
         """
         Plots the amplitude (left) and phase (right) of the nearfield (plane of the SLM).
         The amplitude is assumed (whether uniform, assumed, or measured) while the
@@ -352,6 +356,8 @@ class _HologramStats(object):
 
         Parameters
         ----------
+        source : array_like OR None
+            Source to plot. If ``None``, defaults to the current amplitude and phase.
         title : str
             Title of the plots.
         padded : bool
@@ -419,19 +425,19 @@ class _HologramStats(object):
             fig.colorbar(im_phase, cax=cax, orientation="vertical", format=r"%1.1f$\pi$")
 
         fig.tight_layout()
-        plt.show()
+        _slmsuite_plt_show(name="plot_nearfield")
 
     def plot_farfield(
-            self,
-            source=None,
-            title="",
-            limits=None,
-            units="knm",
-            limit_padding=0.1,
-            figsize=(8,4),
-            cbar=False,
-            axs=None
-        ):
+        self,
+        source=None,
+        title="",
+        limits=None,
+        units="knm",
+        limit_padding=0.1,
+        figsize=(8,4),
+        cbar=False,
+        axs=None
+    ):
         """
         Plots an overview (left) and zoom (right) view of ``source``.
 
@@ -473,22 +479,36 @@ class _HologramStats(object):
             Used ``limits``, which may be autocomputed. Autocomputed limits are returned
             as integers.
         """
-        # Parse source.
         if source is None:
-            source = self.amp_ff
+            source = "amp_ff"
 
-            if source is None or len(source.shape) == 1:
-                source = self.get_farfield(get=False)
+        if isinstance(source, str):
+            titles = {
+                "amp_ff" : "Farfield Amplitude",
+                "phase_ff" : "Farfield Amplitude",
+                "target" : "Target Amplitude",
+            }
+            if source in titles.keys():
+                source_str = source
+                source = getattr(self, source)
 
-            if limits is None:
-                if len(self.target.shape) == 2:
-                    if np == cp:
-                        limits = self._compute_limits(self.target, limit_padding=limit_padding)
+                if source is None or len(source.shape) == 1:
+                    if source_str == "amp_ff":
+                        source = self.get_farfield(get=False)
                     else:
-                        limits = self._compute_limits(self.target.get(), limit_padding=limit_padding)
+                        raise ValueError(f"Could not retrieve source={source_str}")
 
-            if len(title) == 0:
-                title = "Farfield Amplitude"
+                if len(title) == 0:
+                    title = titles[source_str]
+
+                if limits is None:
+                    if len(self.target.shape) == 2:
+                        if np == cp:
+                            limits = self._compute_limits(self.target, limit_padding=limit_padding)
+                        else:
+                            limits = self._compute_limits(self.target.get(), limit_padding=limit_padding)
+            else:
+                raise ValueError(f"Did not recognize source {source}. Must be one of {list(titles.keys())}")
 
         # Interpret source and convert to numpy for plotting.
         isphase = "phase" in title.lower()
@@ -533,7 +553,7 @@ class _HologramStats(object):
         # Plot the full target, blurred so single pixels are visible in low res
         b = 2 * int(np.amax(self.shape) / 400) + 1  # FUTURE: fix arbitrary
         npsource_blur = cv2.GaussianBlur(npsource, (b, b), 0)
-        
+
         full = axs[0].imshow(
             npsource_blur,
             vmin=0, vmax=np.nanmax(npsource),
@@ -603,7 +623,7 @@ class _HologramStats(object):
                 ax.set_ylabel(toolbox.BLAZE_LABELS[units][1])
 
         # Scale aspect; knm might be displaying a non-square array.
-        if units == "knm":  
+        if units == "knm":
             aspect = float(npsource.shape[1]) / float(npsource.shape[0])
         else:
             aspect = 1
@@ -624,7 +644,7 @@ class _HologramStats(object):
                 np.any(_cam_points[0, :4] < 0)
                 or np.any(_cam_points[1, :4] < 0)
                 or np.any(_cam_points[0, :4] >= npsource.shape[1])
-                or np.any(_cam_points[1, :4] >= npsource.shape[1])
+                or np.any(_cam_points[1, :4] >= npsource.shape[0])
             )
 
             # If so, plot a labeled green rectangle to show the extents of knm space.
@@ -722,7 +742,7 @@ class _HologramStats(object):
 
         if _show:
             plt.tight_layout()
-            plt.show()
+            _slmsuite_plt_show(name="plot_farfield")
 
         return limits
 
@@ -741,7 +761,7 @@ class _HologramStats(object):
             Allows the user to pass in desired y limits.
             If ``None``, the default y limits are used.
         show : bool
-            Whether or not to immediately show the plot. Defaults to false.
+            Whether or not to immediately show the plot. Defaults to ``False``.
         """
         if stats_dict is None:
             stats_dict = self.stats
@@ -825,6 +845,6 @@ class _HologramStats(object):
         ax.set_xlim([-0.75, len(stats_dict["method"]) - 0.25])
 
         if show:
-            plt.show()
+            _slmsuite_plt_show(name="plot_stats")
 
         return ax

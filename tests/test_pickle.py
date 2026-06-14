@@ -7,7 +7,7 @@ import os
 
 import h5py
 
-from slmsuite.hardware import _Picklable
+from slmsuite._pickling import _Picklable
 from slmsuite import __version__
 
 

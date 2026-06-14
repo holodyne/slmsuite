@@ -25,6 +25,9 @@ from platform import system
 from typing import Union, Optional, Tuple, List
 
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 #: str: Default location in which Meadowlark Optics software is installed
 _DEFAULT_MEADOWLARK_PATH = "C:\\Program Files\\Meadowlark Optics\\"
@@ -93,7 +96,6 @@ class Meadowlark(SLM):
         lut_path: Optional[str] = None,
         wav_um: float = 1,
         pitch_um: Optional[Tuple[float, float]] = None,
-        verbose: bool = True,
         **kwargs,
     ):
         r"""
@@ -101,8 +103,6 @@ class Meadowlark(SLM):
 
         Arguments
         ---------
-        verbose : bool
-            Whether to print extra information.
         slm_number : int
             The board number of the SLM to connect to,
             in the case of multiple PCIe SLMs. Defaults to 1.
@@ -140,8 +140,7 @@ class Meadowlark(SLM):
         """
         # Validates the DPI awareness of this context, which is presumably important
         # for scaling.
-        if verbose:
-            print("Validating DPI awareness...", end="")
+        logger.debug("Validating DPI awareness...")
 
         awareness = ctypes.c_int()
         error_get = ctypes.windll.shcore.GetProcessDpiAwareness(
@@ -157,17 +156,13 @@ class Meadowlark(SLM):
                 f"{awareness.value}"
             )
 
-        if verbose:
-            print("success")
-            print("Constructing Blink SDK...", end="")
+        logger.debug("Constructing Blink SDK...")
 
         # Locate the blink wrapper file in the sdk_path. If no sdk_path is provided,
         # search for the most recently installed SDK (if it exists)
         self.sdk_mode: _SDK_MODE = self._load_lib(sdk_path)
         if self.sdk_mode == _SDK_MODE.NULL:
             raise ValueError(f"Could not find SDK within path '{sdk_path}'")
-        elif verbose:
-            print("success")
 
         # Parse slm_number
         self.slm_number = int(slm_number)
@@ -195,11 +190,10 @@ class Meadowlark(SLM):
             Meadowlark._slm_lib[self.sdk_mode].Set_true_frames(ctypes.c_int(3))
 
         # Load LUT.
-        if verbose:
-            print("Loading LUT file...", end="")
+        logger.debug("Loading LUT file...")
         true_lut_path = self.load_lut(lut_path)
-        if verbose and true_lut_path != lut_path:
-            print(f"success\n(loaded from '{true_lut_path}')")
+        if true_lut_path != lut_path:
+            logger.debug("Loaded LUT from '%s'", true_lut_path)
 
         # If using a legacy 512x512, then the SLM needs to be powered on
         if self.sdk_mode == _SDK_MODE.PCIE_LEGACY:
@@ -219,7 +213,7 @@ class Meadowlark(SLM):
         )
 
         if self.bitdepth > 8:
-            warnings.warn(
+            logger.warning(
                 f"Bitdepth of {self.bitdepth} > 8 detected; "
                 "this has not been tested and might fail.",
                 stacklevel=2,
@@ -262,7 +256,7 @@ class Meadowlark(SLM):
         try:
             Meadowlark._slm_lib[self.sdk_mode].Delete_SDK()
         except OSError as exc:
-            warnings.warn(f"Failed to delete SDK: {exc}", stacklevel=2)
+            logger.warning(f"Failed to delete SDK: {exc}", stacklevel=2)
         finally:
             # noinspection PyProtectedMember
             if not unloader(Meadowlark._slm_lib[self.sdk_mode]._handle):
@@ -280,7 +274,7 @@ class Meadowlark(SLM):
         Parameters
         ----------
         verbose : bool
-            Whether to print the information.discovered
+            Whether to print the information discovered.
         sdk_path : str
             Path of the Blink SDK installation folder to explore.
 
@@ -586,7 +580,7 @@ class Meadowlark(SLM):
                 Meadowlark._slm_lib[self.sdk_mode].SetOutputPulse(slm_number, ctypes.c_bool(on))
             elif self.sdk_mode == _SDK_MODE.PCIE_MODERN_6:
                 if on_refresh is not None:
-                    warnings.warn(
+                    logger.warning(
                         "on_refresh argument is ignored for this SDK version.",
                         stacklevel=2,
                     )
@@ -754,7 +748,7 @@ class Meadowlark(SLM):
         # If we got to here, we need to actually load the SDK.
         if len(cases) > 1:
             options = ',\n'.join([f"'{case[1]}' ({_SDK_MODE_NAMES[case[0]]})" for case in cases])
-            warnings.warn(
+            logger.warning(
                 f"Multiple Meadowlark SDKs located. "
                 f"Defaulting to the most recent one"
                 f" '{dll_path}'. "
@@ -836,7 +830,7 @@ class Meadowlark(SLM):
 
                 Meadowlark._number_of_boards[mode] = number_of_boards.value
         except Exception as exc:
-            print("Failed to construct SDK.")
+            logger.error("Failed to construct SDK.")
             raise
 
         return mode
@@ -877,7 +871,7 @@ class Meadowlark(SLM):
                     return mode, dll_path, trace
 
             if warn:
-                warnings.warn(
+                logger.warning(
                     f"Your SDK's header has (create, write) argument trace {trace}, which is not "
                     "recognized. Contact Meadowlark and slmsuite support to update your SDK version."
                 )
@@ -885,10 +879,10 @@ class Meadowlark(SLM):
             return _SDK_MODE.NULL, "", None
         elif dll_present:
             if warn:
-                warnings.warn(f"Found dll '{dll_path}' but not header '{header_path}'.")
+                logger.warning(f"Found dll '{dll_path}' but not header '{header_path}'.")
         elif header_present:
             if warn:
-                warnings.warn(f"Found header '{header_path}' but not dll '{dll_path}'.")
+                logger.warning(f"Found header '{header_path}' but not dll '{dll_path}'.")
         return _SDK_MODE.NULL, "", None
 
     # LUT stuff
@@ -957,7 +951,7 @@ class Meadowlark(SLM):
                     ctypes.c_int(self.slm_number), lut_path.encode("utf-8")
                 )
                 if success != 1:
-                    warnings.warn(f"Failed to load LUT file: '{lut_path}'")
+                    logger.warning(f"Failed to load LUT file: '{lut_path}'")
             else:
                 raise RuntimeError("Failed to load LUT file due to unknown SDK mode")
         except RuntimeError as exc:
@@ -1008,7 +1002,7 @@ class Meadowlark(SLM):
                     return str(files.pop())
             # If there are still multiple LUTs, default to the most recent one.
             lut_path_ = max(files, key=os.path.getctime)
-            warnings.warn(
+            logger.warning(
                 f"Multiple LUT files located. Defaulting to the most recent one: "
                 f"{lut_path_}.",
                 stacklevel=3,

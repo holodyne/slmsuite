@@ -85,6 +85,7 @@ test = [
     "imageio",
     "pytest",
     "pytest-benchmark",
+    "pytest-cov",
     "pytest-subtests",
     "pytest-notebook",
     "nbformat",
@@ -117,3 +118,22 @@ slmsuite = ["holography/toolbox/cuda.cu"]
 [tool.uv]
 # pyqt5-qt5 >= 5.15.3 dropped Windows wheels; cap to last working version.
 constraint-dependencies = ["pyqt5-qt5<=5.15.2"]
+
+[tool.coverage.run]
+# Don't include hardware drivers in coverage reports, as we cannot autotest them.
+include = [
+    "slmsuite/*.py",
+    "slmsuite/hardware/_common.py",
+    "slmsuite/hardware/_pickle.py",
+    "slmsuite/hardware/remote.py",
+    "slmsuite/hardware/cameraslms/*.py",
+    "slmsuite/hardware/cameras/camera.py",
+    "slmsuite/hardware/cameras/simulated.py",
+    "slmsuite/hardware/cameras/remote.py",
+    "slmsuite/hardware/slms/slm.py",
+    "slmsuite/hardware/slms/simulated.py",
+    "slmsuite/hardware/slms/remote.py",
+    "slmsuite/hardware/slms/segmented.py",
+    "slmsuite/holography/**/*.py",
+    "slmsuite/misc/*.py",
+]

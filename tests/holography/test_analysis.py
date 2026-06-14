@@ -2,6 +2,7 @@
 Unit tests for slmsuite.holography.analysis module.
 """
 import warnings
+import logging
 
 import pytest
 import numpy as np
@@ -386,7 +387,7 @@ def test_image_relative_strehl(subtests):
         assert strehl > 0.5
 
 
-def test_image_fit(subtests, benchmark):
+def test_image_fit(subtests, benchmark, caplog):
     """Test image_fit() Gaussian fitting."""
     x = np.linspace(-10, 10, 50)
     y = np.linspace(-10, 10, 50)
@@ -434,9 +435,11 @@ def test_image_fit(subtests, benchmark):
             return a * xy[0] + b * xy[1]
 
         img = np.random.rand(1, 20, 20)
-        with pytest.warns(UserWarning, match="not implemented"):
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
             result = analysis.image_fit(img, grid=grid[:20, :20] if False else None,
                                         function=custom_fn, guess=None)
+        assert any("not implemented" in r.getMessage() for r in caplog.records)
 
         assert result.shape[0] == 1
 
@@ -588,7 +591,7 @@ def test_image_zernike_fit(subtests):
             print(f"leastsquares fit error (may be expected): {e}")
 
 
-def test_take(subtests, benchmark):
+def test_take(subtests, benchmark, caplog):
     """Test take(), take_tile(), take_plot(), and _take_parse_shape()."""
     with subtests.test("benchmark"):
         rng = np.random.default_rng(42)
@@ -610,8 +613,9 @@ def test_take(subtests, benchmark):
     with subtests.test("integration sums region"):
         image = np.ones((100, 100))
         result = analysis.take(image, vectors=[50, 50], size=10, centered=True, integrate=True)
-        assert result.shape == ()
-        assert float(result) == pytest.approx(100)
+        # 2D image + single vector: shape is (vector_count,) per docstring
+        assert result.shape == (1,)
+        assert result[0] == pytest.approx(100)
 
     with subtests.test("take_tile with explicit shape"):
         test_images = np.random.rand(3, 10, 10)
@@ -639,9 +643,11 @@ def test_take(subtests, benchmark):
 
     with subtests.test("_take_parse_shape warns on truncation"):
         test_images = np.random.rand(3, 10, 10)
-        with pytest.warns(UserWarning, match="Not enough space"):
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
             img_count3, (M3, N3) = analysis._take_parse_shape(test_images, shape=(1, 2))
-            assert img_count3 == 2
+        assert any("Not enough space" in r.getMessage() for r in caplog.records)
+        assert img_count3 == 2
 
     with subtests.test("take_plot does not crash"):
         import matplotlib.pyplot as plt
@@ -683,12 +689,17 @@ def test_take(subtests, benchmark):
         canvas = analysis.take(image, vectors=[40, 40], size=10, centered=True, return_mask=2)
         assert canvas.shape == (80, 80)
         nan_count = np.sum(np.isnan(canvas))
-        assert nan_count > 0
+        # 80*80 pixels total, 10*10=100 filled from image; rest are NaN
+        assert nan_count == 80 * 80 - 100
+        # Non-NaN pixels must equal the source image values
+        assert np.allclose(canvas[~np.isnan(canvas)], image[~np.isnan(canvas)])
 
     with subtests.test("3D image stack with integrate"):
-        images = np.random.rand(3, 100, 100)
+        images = np.ones((3, 100, 100))
         result = analysis.take(images, vectors=[50, 50], size=10, centered=True, integrate=True)
-        assert result.shape == (3,)
+        # 3D stack + single vector: shape is (image_count, vector_count) per docstring
+        assert result.shape == (3, 1)
+        assert np.allclose(result[:, 0], 100.0)
 
     with subtests.test("clip=True fully in-bounds sets clip=False"):
         image = np.random.rand(100, 100)
@@ -736,29 +747,96 @@ def test_take(subtests, benchmark):
 
         assert result.shape == (1, 10, 10)
 
+    with subtests.test("centered=False uses upper-left anchor"):
+        image = np.zeros((100, 100))
+        image[10:20, 20:30] = 5.0  # rows [10,19], cols [20,29]
+        result = analysis.take(image, vectors=[20, 10], size=10, centered=False)
+        assert result.shape == (1, 10, 10)
+        assert np.all(result == 5.0)
 
-def test_image_positions():
-    """Test image_positions() returns (x, y)."""
-    image = np.zeros((100, 100))
-    image[30:40, 60:70] = 1
-    image = image[np.newaxis, :, :]
+    with subtests.test("extracted values match source image"):
+        image = np.zeros((100, 100))
+        image[45:55, 45:55] = 7.0
+        result = analysis.take(image, vectors=[50, 50], size=10, centered=True)
+        assert result.shape == (1, 10, 10)
+        assert np.all(result == 7.0)
 
-    positions = analysis.image_positions(image)
+    with subtests.test("float vectors get floored"):
+        image = np.zeros((100, 100))
+        image[45:55, 45:55] = 3.0
+        result_int = analysis.take(image, vectors=[50, 50], size=10, centered=True)
+        result_float = analysis.take(image, vectors=[50.7, 50.3], size=10, centered=True)
+        assert np.allclose(result_int, result_float)
 
-    assert len(positions) == 2
+    with subtests.test("images as shape tuple returns boolean mask"):
+        mask = analysis.take((80, 60), vectors=[30, 20], size=10, centered=True)
+        assert mask.shape == (80, 60)
+        assert mask.dtype == bool
+        assert np.sum(mask) == 100
+
+    with subtests.test("multiple vectors integrate shape for 2D image"):
+        image = np.ones((100, 100))
+        vectors = np.array([[25, 50, 75], [50, 50, 50]])
+        result = analysis.take(image, vectors=vectors, size=10, centered=True, integrate=True)
+        # 2D image + 3 vectors: shape is (vector_count,) per docstring
+        assert result.shape == (3,)
+        assert np.allclose(result, 100.0)
+
+    with subtests.test("3D stack without integrate gives (image_count, vector_count, h, w)"):
+        images = np.random.rand(4, 100, 100)
+        vectors = np.array([[25, 75], [25, 75]])
+        result = analysis.take(images, vectors=vectors, size=10, centered=True)
+        assert result.shape == (4, 2, 10, 10)
+
+    with subtests.test("out-of-range index without clip raises IndexError"):
+        image = np.random.rand(50, 50)
+        with pytest.raises(IndexError):
+            analysis.take(image, vectors=[100, 100], size=10, centered=True, clip=False)
+
+    with subtests.test("4D images raises RuntimeError"):
+        image = np.random.rand(2, 3, 50, 50)
+        with pytest.raises(RuntimeError):
+            analysis.take(image, vectors=[25, 25], size=10)
 
 
-def test_image_std():
-    """Test image_std() returns positive standard deviations."""
-    image = np.zeros((100, 100))
-    Y, X = np.ogrid[:100, :100]
-    image = np.exp(-((X-50)**2 + (Y-50)**2) / (2 * 10**2))
-    image = image[np.newaxis, :, :]
+def test_image_positions(subtests):
+    """Test image_positions() returns correct centroid positions."""
+    with subtests.test("off-center spot has correct position"):
+        image = np.zeros((100, 100))
+        image[30:40, 60:70] = 1  # center at row=35, col=65; offset from 50 -> x=+15, y=-15
+        image = image[np.newaxis, :, :]
+        positions = analysis.image_positions(image)
+        assert positions.shape == (2, 1)
+        assert positions[0, 0] == pytest.approx(15, abs=1)
+        assert positions[1, 0] == pytest.approx(-15, abs=1)
 
-    std = analysis.image_std(image)
+    with subtests.test("centered spot returns near-zero position"):
+        image = np.zeros((100, 100))
+        image[45:55, 45:55] = 1
+        image = image[np.newaxis, :, :]
+        positions = analysis.image_positions(image)
+        assert positions[0, 0] == pytest.approx(0, abs=1)
+        assert positions[1, 0] == pytest.approx(0, abs=1)
 
-    assert len(std) == 2
-    assert all(s > 0 for s in std)
+
+def test_image_std(subtests):
+    """Test image_std() returns correct standard deviations for a Gaussian blob."""
+    with subtests.test("isotropic Gaussian sigma=10 gives std≈10 in both axes"):
+        Y, X = np.ogrid[:100, :100]
+        image = np.exp(-((X - 50)**2 + (Y - 50)**2) / (2 * 10**2))
+        image = image[np.newaxis, :, :]
+        std = analysis.image_std(image)
+        assert std.shape == (2, 1)
+        assert std[0, 0] == pytest.approx(10, rel=0.01)
+        assert std[1, 0] == pytest.approx(10, rel=0.01)
+
+    with subtests.test("elliptical Gaussian has different x and y stds"):
+        Y, X = np.ogrid[:100, :100]
+        image = np.exp(-((X - 50)**2 / (2 * 5**2) + (Y - 50)**2 / (2 * 15**2)))
+        image = image[np.newaxis, :, :]
+        std = analysis.image_std(image)
+        assert std[0, 0] == pytest.approx(5, rel=0.05)
+        assert std[1, 0] == pytest.approx(15, rel=0.05)
 
 
 def test_fit_affine(subtests):
@@ -932,15 +1010,13 @@ def test_image_vortices(subtests):
 
         assert len(weights) == 0
 
-    with subtests.test("return_vortices_negative creates cancellation field"):
+    with subtests.test("return_vortices_negative gives same result as in-place"):
         phase = np.arctan2(Y - cy, X - cx)
-        correction = analysis.image_remove_vortices(phase, return_vortices_negative=True)
-        corrected = phase + correction
-
-        before = np.count_nonzero(analysis.image_vortices(phase))
-        after = np.count_nonzero(analysis.image_vortices(corrected))
+        correction = analysis.image_remove_vortices(phase.copy(), return_vortices_negative=True)
+        in_place = analysis.image_remove_vortices(phase.copy())
+        # The documented contract: phase + correction == in-place-modified phase
         assert correction.shape == phase.shape
-        assert after < before
+        np.testing.assert_array_equal(phase + correction, in_place)
 
     with subtests.test("in-place removal returns same-shape phase"):
         phase = np.arctan2(Y - cy, X - cx)

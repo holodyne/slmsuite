@@ -180,16 +180,16 @@ class SimulatedCamera(Camera):
             # Convert kxy -> knm (0,0 at corner): 1/dx -> Npx
             self.knm_cam = cp.array(
                 [
-                    self.shape_padded[0] * self._slm.pitch[1] * self.grid[1] + self.shape_padded[0] / 2,
+                    self.shape_padded[0] * self._slm.pitch[0] * self.grid[1] + self.shape_padded[0] / 2,
                     self.shape_padded[1] * self._slm.pitch[1] * self.grid[0] + self.shape_padded[1] / 2,
                 ]
             )
 
             if (
-                cp.amax(cp.abs(self.knm_cam[0] - self.shape_padded[0]/2)) > self.shape_padded[1]/2 or
-                cp.amax(cp.abs(self.knm_cam[1] - self.shape_padded[1]/2)) > self.shape_padded[0]/2
+                cp.amax(cp.abs(self.knm_cam[0] - self.shape_padded[0]/2)) > self.shape_padded[0]/2 or
+                cp.amax(cp.abs(self.knm_cam[1] - self.shape_padded[1]/2)) > self.shape_padded[1]/2
             ):
-                warnings.warn(
+                self.logger.warning(
                     "Camera extends beyond the accessible SLM k-space;"
                     " some pixels may not be targetable."
                 )
@@ -246,7 +246,7 @@ class SimulatedCamera(Camera):
             If a ``float`` is provided, shear is applied isotropically.
             Defaults to zero (i.e., no shear).
         offset : (float, float) OR None
-            Lateral displacement (in pixels units) of the SLM's optical axis
+            Lateral displacement (in pixel units) of the SLM's optical axis
             from the camera's origin. If ``None``, defaults to be centered on the center
             of the camera.
 

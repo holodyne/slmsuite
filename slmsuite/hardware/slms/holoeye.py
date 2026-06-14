@@ -10,7 +10,10 @@ Check that the SLM Display SDK is in the default folder
 or otherwise add the installation folder to your python path.
 """
 import warnings
-from .slm import SLM
+from slmsuite.hardware.slms.slm import SLM
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 # Set the path for the SLM Display SDK
 import os
@@ -37,7 +40,7 @@ except ImportError:
 
 class Holoeye(SLM):
     """
-    Interfaces with Holoeye SLMs via the the ``HEDS`` library.
+    Interfaces with Holoeye SLMs via the ``HEDS`` library.
 
     Attributes
     ----------

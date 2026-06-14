@@ -4,6 +4,9 @@ Outlines which camera superclass functions must be implemented.
 """
 
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 class Template(Camera):
     """
@@ -17,7 +20,7 @@ class Template(Camera):
         Many cameras have a singleton SDK class which handles all the connected cameras
         of a certain brand. This is generally implemented as a class variable.
     cam : object
-        Most cameras will wrap some handle which connects to the the hardware.
+        Most cameras will wrap some handle which connects to the hardware.
     """
 
     # Class variable (same for all instances of Template) pointing to a singleton SDK.
@@ -27,7 +30,6 @@ class Template(Camera):
         self,
         serial="",
         pitch_um=None,
-        verbose=True,
         **kwargs
     ):
         """
@@ -41,8 +43,6 @@ class Template(Camera):
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
             TODO: See if the SDK can pull this information directly from the camera.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -56,13 +56,12 @@ class Template(Camera):
         # - Gathering parameters such a width, height, and bitdepth.
 
         # Most cameras have an SDK that needs to be loaded before the camera
-        if verbose: print("Template SDK initializing... ", end="")
+        logger.debug("Template SDK initializing...")
         raise NotImplementedError()
         Template.sdk = something()                      # TODO: Fill in proper function.
-        if verbose: print("success")
 
         # Then we load the camera from the SDK
-        if verbose: print(f"'{serial}' initializing... ", end="")
+        logger.debug("'%s' initializing...", serial)
         raise NotImplementedError()
         self.cam = sdk.something(serial)                # TODO: Fill in proper function.
 
@@ -76,7 +75,7 @@ class Template(Camera):
             name=serial,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("Template camera initialized.")
 
     def close(self):
         """See :meth:`.Camera.close`."""

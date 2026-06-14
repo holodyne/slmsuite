@@ -21,6 +21,9 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 from slmsuite.holography.analysis import _make_8bit
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 from slmsuite.holography.toolbox import pad
 
 
@@ -426,8 +429,8 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
         Size of the lookup table for the colormap. This determines the number of colors
         the resulting image has. This can be larger than 256 values because RGB data can
         realize more colors than grayscale.
-        If ``None`, Defaults to ``mpl.rcParams['image.lut']`` (if the image is floating
-        point) or the maximum of the image (if the image )
+        If ``None``, defaults to ``mpl.rcParams['image.lut']`` (if the image is floating
+        point) or the maximum of the image (if the image is an integer type).
     normalize : bool
         If ``True``, the maximum of the image is taken as the image maximum.
         If ``False`` and using integer data, the data is unchanged.
@@ -460,4 +463,4 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
         except ImportError:
             warnings.warn("pip install pygifsicle to optimize .gif file size.")
         except Exception as e:
-            warnings.warn(f"pygifsicle optimization failed: {e}")
+            logger.warning("pygifsicle optimization failed: %s", e)

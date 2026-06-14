@@ -9,7 +9,6 @@ import os
 import warnings
 import h5py
 import numpy as np
-from unittest.mock import patch, mock_open
 
 
 def _safe_unlink(path, retries=5, delay=0.1):
@@ -264,73 +263,138 @@ def test_save_and_load_h5(subtests):
                 _safe_unlink(path)
 
 
+
+# Test files functions TODO
+
+def test_generate_path(subtests):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with subtests.test("first path starts at zero"):
+            p = generate_path(tmpdir, "data", extension="h5")
+            assert os.path.basename(p) == "data_00000.h5"
+
+        with subtests.test("second call increments id"):
+            open(p, "w").close()
+            p2 = generate_path(tmpdir, "data", extension="h5")
+            assert os.path.basename(p2) == "data_00001.h5"
+
+        with subtests.test("no extension"):
+            p3 = generate_path(tmpdir, "run")
+            assert os.path.basename(p3) == "run_00000"
+
+        with subtests.test("creates parent directories"):
+            subdir = os.path.join(tmpdir, "a", "b", "c")
+            generate_path(subdir, "test", extension="txt")
+            assert os.path.isdir(subdir)
+
+        with subtests.test("path_count returns list of sequential paths"):
+            paths = generate_path(tmpdir, "batch", extension="npy", path_count=3)
+            assert len(paths) == 3
+            bases = [os.path.basename(q) for q in paths]
+            assert bases[1] == bases[0].replace("_00000", "_00001")
+            assert bases[2] == bases[0].replace("_00000", "_00002")
+
+
+def test_latest_path(subtests):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with subtests.test("returns None when no files exist"):
+            result = latest_path(tmpdir, "missing", extension="h5")
+            assert result is None
+
+        with subtests.test("returns highest numeric id"):
+            open(os.path.join(tmpdir, "file_00000.h5"), "w").close()
+            open(os.path.join(tmpdir, "file_00002.h5"), "w").close()
+            result = latest_path(tmpdir, "file", extension="h5")
+            assert os.path.basename(result) == "file_00002.h5"
+
+        with subtests.test("ignores files with different names"):
+            open(os.path.join(tmpdir, "other_00099.h5"), "w").close()
+            result = latest_path(tmpdir, "file", extension="h5")
+            assert os.path.basename(result) == "file_00002.h5"
+
+
+def test_save_load_h5(subtests):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "test.h5")
+
+        with subtests.test("roundtrip numeric array"):
+            arr = np.array([1.0, 2.0, 3.0])
+            save_h5(fpath, {"arr": arr})
+            data = load_h5(fpath)
+            np.testing.assert_array_equal(data["arr"], arr)
+
+        with subtests.test("roundtrip string decoded to str"):
+            save_h5(fpath, {"label": "hello"})
+            data = load_h5(fpath)
+            assert data["label"] == "hello"
+            assert isinstance(data["label"], str)
+
+        with subtests.test("roundtrip nested dict"):
+            nested = {"outer": {"inner": np.array([1, 2, 3])}}
+            save_h5(fpath, nested)
+            data = load_h5(fpath)
+            np.testing.assert_array_equal(data["outer"]["inner"], nested["outer"]["inner"])
+
+        with subtests.test("None is written as False"):
+            save_h5(fpath, {"nothing": None})
+            data = load_h5(fpath)
+            assert data["nothing"] == False
+
+        with subtests.test("integer array dtype preserved"):
+            arr = np.array([1, 2, 3], dtype=np.int32)
+            save_h5(fpath, {"iarr": arr})
+            data = load_h5(fpath)
+            assert data["iarr"].dtype == np.int32
+
+        with subtests.test("2D array roundtrip"):
+            arr2d = np.arange(12, dtype=float).reshape(3, 4)
+            save_h5(fpath, {"mat": arr2d})
+            data = load_h5(fpath)
+            np.testing.assert_array_equal(data["mat"], arr2d)
+
+
 def test_load_image(subtests):
     """Test _load_image for error handling, basic loading, inversion, and rotation."""
     with subtests.test("file not found raises ValueError"):
         with pytest.raises(ValueError, match="Image not found"):
             _load_image("nonexistent_file.png", (100, 100))
 
-    with subtests.test("basic grayscale load"):
-        mock_image = np.ones((100, 100), dtype=np.uint8) * 50
-        with patch("cv2.imread", return_value=mock_image) as mock_imread:
-            result = _load_image("test.png", (100, 100))
-            assert result.shape == (100, 100)
-            mock_imread.assert_called_once_with("test.png", 0)
-
-    with subtests.test("bright image is inverted"):
-        mock_image = np.ones((100, 100), dtype=np.uint8) * 200
-        with patch("cv2.imread", return_value=mock_image):
-            with patch("cv2.bitwise_not") as mock_invert:
-                mock_invert.return_value = np.ones((100, 100), dtype=np.uint8) * 55
-                _load_image("test.png", (100, 100))
-                assert mock_invert.call_count >= 1
-
-    with subtests.test("rotation applied"):
-        mock_image = np.ones((100, 100), dtype=np.uint8) * 50
-        with patch("cv2.imread", return_value=mock_image):
-            with patch("scipy.ndimage.rotate", return_value=mock_image) as mock_rot:
-                _load_image("test.png", (100, 100), angle=45)
-                mock_rot.assert_called_once_with(mock_image, 45)
-
-    with subtests.test("target_shape zoom"):
-        mock_image = np.ones((100, 100), dtype=np.uint8) * 50
-        with patch("cv2.imread", return_value=mock_image):
-            result = _load_image("test.png", (200, 200), target_shape=(50, 50))
-            assert result.shape == (200, 200)
-
     import cv2
 
-    with subtests.test("real image end-to-end"):
+    with subtests.test("loads image to requested shape"):
         with tempfile.TemporaryDirectory() as d:
             img_path = os.path.join(d, "test.png")
             img = np.zeros((80, 80), dtype=np.uint8)
-            img[20:60, 20:60] = 200
+            img[20:60, 20:60] = 100
             cv2.imwrite(img_path, img)
-            dummy = np.zeros((120, 120))
-            with patch("slmsuite.holography.analysis.files.pad", return_value=dummy):
-                result = _load_image(img_path, (120, 120))
-                assert result.shape == (120, 120)
+            result = _load_image(img_path, (100, 100))
+            assert result.shape == (100, 100)
 
-    with subtests.test("real image with target_shape"):
+    with subtests.test("target_shape zoom reduces image before padding"):
         with tempfile.TemporaryDirectory() as d:
             img_path = os.path.join(d, "test2.png")
             img = np.zeros((100, 100), dtype=np.uint8)
-            img[10:90, 10:90] = 180
+            img[10:90, 10:90] = 120
             cv2.imwrite(img_path, img)
-            dummy = np.zeros((200, 200))
-            with patch("slmsuite.holography.analysis.files.pad", return_value=dummy):
-                result = _load_image(img_path, (200, 200), target_shape=(50, 50))
-                assert result.shape == (200, 200)
+            # zoom 100→80 via target_shape, then pad to 100
+            result = _load_image(img_path, (100, 100), target_shape=(80, 80))
+            assert result.shape == (100, 100)
 
-    with subtests.test("real bright image inverted"):
+    with subtests.test("bright image is inverted before sqrt"):
         with tempfile.TemporaryDirectory() as d:
             img_path = os.path.join(d, "bright.png")
-            img = np.ones((80, 80), dtype=np.uint8) * 220
-            cv2.imwrite(img_path, img)
-            dummy = np.zeros((100, 100))
-            with patch("slmsuite.holography.analysis.files.pad", return_value=dummy):
-                result = _load_image(img_path, (100, 100))
-                assert result.shape == (100, 100)
+            # dark image: mean ~30, not inverted; sqrt(30)≈5.5
+            img_dark = np.ones((80, 80), dtype=np.uint8) * 30
+            cv2.imwrite(img_path, img_dark)
+            result_dark = _load_image(img_path, (100, 100))
+            # bright image: mean ~220, inverted to ~35; sqrt(35)≈5.9
+            img_bright = np.ones((80, 80), dtype=np.uint8) * 220
+            cv2.imwrite(img_path, img_bright)
+            result_bright = _load_image(img_path, (100, 100))
+            # Both should produce similar-magnitude results since inversion normalises
+            assert result_dark.shape == (100, 100)
+            assert result_bright.shape == (100, 100)
+            # Bright image inverts before sqrt; peak values should be comparable
+            assert result_bright.max() == pytest.approx(result_dark.max(), rel=0.5)
 
 
 def test_gray2rgb(subtests):
@@ -480,17 +544,6 @@ def test_save_image(subtests):
             save_image(path, imgs)
             assert os.path.exists(path)
 
-    with subtests.test("gif triggers pygifsicle warning"):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "test.gif")
-            imgs = np.random.randint(0, 255, (3, 10, 10), dtype=np.uint8)
-            with patch(
-                "slmsuite.holography.analysis.files.warnings.warn"
-            ) as mock_warn:
-                with patch.dict("sys.modules", {"pygifsicle": None}):
-                    save_image(path, imgs)
-            # pygifsicle not installed → either warns or succeeds silently
-
     with subtests.test("float image"):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test_float.png")
@@ -517,6 +570,7 @@ def test_save_image(subtests):
         img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test.png")
-            with patch.dict(sys.modules, {"imageio": None}):
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setitem(sys.modules, "imageio", None)
                 with pytest.raises(ValueError, match="imageio is required"):
                     save_image(path, img)

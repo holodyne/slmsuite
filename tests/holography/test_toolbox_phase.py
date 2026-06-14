@@ -451,10 +451,10 @@ def test_zernike_convert_index(subtests):
         # Noll is 1-indexed; j=0 (piston) -> noll=1
         assert noll.ravel()[0] == 1
 
-    with subtests.test("ansi -> fringe raises NotImplementedError (known bug)"):
-        # Bug: `to_index == 'fringe'` is incorrectly checked in the from_index branch
-        with pytest.raises(NotImplementedError):
-            phase.zernike_convert_index([0, 1, 2], from_index="ansi", to_index="fringe")
+    with subtests.test("ansi -> fringe"):
+        fringe = phase.zernike_convert_index([0, 1, 2], from_index="ansi", to_index="fringe")
+        # Fringe is 1-indexed; piston j=0->1, x-tilt j=1->3 (odd), y-tilt j=2->2
+        np.testing.assert_array_equal(fringe.ravel(), [1, 3, 2])
 
     with subtests.test("ansi -> wyant"):
         wyant = phase.zernike_convert_index([0, 1, 2], from_index="ansi", to_index="wyant")
@@ -833,38 +833,283 @@ def test_hermite_gaussian(simple_grid, subtests):
 
 
 def test_ince_gaussian(simple_grid, subtests):
-    """Test ince_gaussian() parameter validation and NotImplementedError."""
-    with subtests.test("valid parameters raises NotImplementedError"):
-        with pytest.raises(NotImplementedError):
-            phase.ince_gaussian(simple_grid, p=2, m=1)
+    """Test ince_gaussian() structured light generation."""
+    from slmsuite.holography.toolbox.phase import _ince_polynomial
 
-    with subtests.test("even parity invalid raises ValueError"):
+    with subtests.test("even parity invalid m>p raises ValueError"):
         with pytest.raises(ValueError, match="invalid Ince"):
             phase.ince_gaussian(simple_grid, p=2, m=5, parity=1)
 
-    with subtests.test("odd parity invalid raises ValueError"):
+    with subtests.test("odd parity m=0 raises ValueError"):
         with pytest.raises(ValueError, match="invalid Ince"):
             phase.ince_gaussian(simple_grid, p=2, m=0, parity=-1)
 
-    with subtests.test("valid even parity (p=3, m=2) raises NotImplementedError"):
-        with pytest.raises(NotImplementedError):
-            phase.ince_gaussian(simple_grid, p=3, m=2, parity=1)
+    with subtests.test("parity mismatch p even m odd raises ValueError"):
+        with pytest.raises(ValueError, match="same parity"):
+            phase.ince_gaussian(simple_grid, p=2, m=1, parity=1)
 
-    with subtests.test("valid odd parity (p=3, m=1) raises NotImplementedError"):
-        with pytest.raises(NotImplementedError):
-            phase.ince_gaussian(simple_grid, p=3, m=1, parity=-1)
+    with subtests.test("parity mismatch p odd m even raises ValueError"):
+        with pytest.raises(ValueError, match="same parity"):
+            phase.ince_gaussian(simple_grid, p=3, m=2, parity=-1)
+
+    with subtests.test("even mode shape matches grid"):
+        result = phase.ince_gaussian(simple_grid, p=2, m=2, parity=1)
+        assert result.shape == simple_grid[0].shape
+
+    with subtests.test("odd mode shape matches grid"):
+        result = phase.ince_gaussian(simple_grid, p=3, m=1, parity=-1)
+        assert result.shape == simple_grid[0].shape
+
+    with subtests.test("helical mode shape matches grid"):
+        result = phase.ince_gaussian(simple_grid, p=4, m=2, parity=0)
+        assert result.shape == simple_grid[0].shape
+
+    with subtests.test("even mode all finite"):
+        result = phase.ince_gaussian(simple_grid, p=2, m=2, parity=1)
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("odd mode all finite"):
+        result = phase.ince_gaussian(simple_grid, p=3, m=1, parity=-1)
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("helical mode all finite"):
+        result = phase.ince_gaussian(simple_grid, p=4, m=2, parity=0)
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("even mode binary phase (0 or pi)"):
+        result = phase.ince_gaussian(simple_grid, p=4, m=2, parity=1)
+        unique = np.unique(np.round(result, 8))
+        assert set(unique).issubset({0.0, np.round(np.pi, 8), np.round(-np.pi, 8)})
+
+    with subtests.test("odd mode binary phase (0 or pi)"):
+        result = phase.ince_gaussian(simple_grid, p=3, m=1, parity=-1)
+        unique = np.unique(np.round(result, 8))
+        assert set(unique).issubset({0.0, np.round(np.pi, 8), np.round(-np.pi, 8)})
+
+    with subtests.test("helical mode continuous phase"):
+        result = phase.ince_gaussian(simple_grid, p=4, m=2, parity=0)
+        unique = np.unique(np.round(result, 4))
+        # Helical modes should have many distinct phase values, not binary
+        assert len(unique) > 10
+
+    with subtests.test("helical phase in [-pi, pi]"):
+        result = phase.ince_gaussian(simple_grid, p=4, m=2, parity=0)
+        assert np.all(result >= -np.pi - 1e-10)
+        assert np.all(result <= np.pi + 1e-10)
+
+    with subtests.test("(p=2, m=0) even works"):
+        result = phase.ince_gaussian(simple_grid, p=2, m=0, parity=1)
+        assert result.shape == simple_grid[0].shape
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("(p=4, m=4) even works"):
+        result = phase.ince_gaussian(simple_grid, p=4, m=4, parity=1)
+        assert result.shape == simple_grid[0].shape
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("(p=5, m=3) odd works"):
+        result = phase.ince_gaussian(simple_grid, p=5, m=3, parity=-1)
+        assert result.shape == simple_grid[0].shape
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("(p=6, m=2) helical works"):
+        result = phase.ince_gaussian(simple_grid, p=6, m=2, parity=0)
+        assert result.shape == simple_grid[0].shape
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("different p changes pattern"):
+        r1 = phase.ince_gaussian(simple_grid, p=2, m=2, parity=1)
+        r2 = phase.ince_gaussian(simple_grid, p=4, m=2, parity=1)
+        assert not np.allclose(r1, r2)
+
+    with subtests.test("different m changes pattern"):
+        r1 = phase.ince_gaussian(simple_grid, p=4, m=2, parity=1)
+        r2 = phase.ince_gaussian(simple_grid, p=4, m=4, parity=1)
+        assert not np.allclose(r1, r2)
+
+    with subtests.test("different ellipticity changes pattern"):
+        r1 = phase.ince_gaussian(simple_grid, p=4, m=2, parity=1, ellipticity=1)
+        r2 = phase.ince_gaussian(simple_grid, p=4, m=2, parity=1, ellipticity=5)
+        assert not np.allclose(r1, r2)
+
+    with subtests.test("different w changes pattern"):
+        r1 = phase.ince_gaussian(simple_grid, p=4, m=2, parity=1, w=2.0)
+        r2 = phase.ince_gaussian(simple_grid, p=4, m=2, parity=1, w=5.0)
+        assert not np.allclose(r1, r2)
+
+    with subtests.test("Ince poly orthogonality (same p, different m, weighted)"):
+        # C_p^m and C_p^{m'} with same p but different m are orthogonal
+        # under weight exp(-eps*cos(2z)/2) (Sturm-Liouville for Whittaker-Hill eq)
+        eps = 2.0
+        z = np.linspace(0, 2 * np.pi, 4000, endpoint=False)
+        dz = z[1] - z[0]
+        weight = np.exp(-eps * np.cos(2 * z) / 2)
+        f1 = _ince_polynomial(4, 0, 1, eps, z)
+        f2 = _ince_polynomial(4, 4, 1, eps, z)
+        integral = np.sum(f1 * f2 * weight) * dz
+        assert abs(integral) < 0.05, f"Orthogonality failed: integral={integral}"
+
+    with subtests.test("Ince poly norm is approximately 1"):
+        # Normalization: (1/pi) int_0^{2pi} (C_p^m)^2 dz = 1
+        eps = 2.0
+        z = np.linspace(0, 2 * np.pi, 2000, endpoint=False)
+        f = _ince_polynomial(4, 2, 1, eps, z)
+        dz = z[1] - z[0]
+        norm = np.sum(f ** 2) * dz / np.pi
+        assert abs(norm - 1.0) < 0.02, f"Norm failed: {norm} != 1"
+
+    with subtests.test("Ince poly eps=0 even limit: cos(m*z)"):
+        z = np.linspace(0, 2 * np.pi, 500, endpoint=False)
+        f = _ince_polynomial(4, 2, 1, 1e-10, z)
+        expected = np.cos(2 * z)
+        # Normalize both for comparison
+        f_norm = f / np.sqrt(np.sum(f ** 2))
+        e_norm = expected / np.sqrt(np.sum(expected ** 2))
+        assert np.allclose(np.abs(f_norm), np.abs(e_norm), atol=0.01)
+
+    with subtests.test("Ince poly eps=0 odd limit: sin(m*z)"):
+        z = np.linspace(0, 2 * np.pi, 500, endpoint=False)
+        f = _ince_polynomial(3, 1, -1, 1e-10, z)
+        expected = np.sin(1 * z)
+        f_norm = f / np.sqrt(np.sum(f ** 2))
+        e_norm = expected / np.sqrt(np.sum(expected ** 2))
+        assert np.allclose(np.abs(f_norm), np.abs(e_norm), atol=0.01)
+
+    with subtests.test("Ince poly handles complex argument"):
+        z_complex = 1j * np.linspace(0, 3, 50)
+        result = _ince_polynomial(2, 2, 1, 2.0, z_complex)
+        assert np.all(np.isfinite(result))
+        assert result.shape == z_complex.shape
 
 
-def test_matheui_gaussian_not_implemented(simple_grid):
-    """Test that matheui_gaussian() raises NotImplementedError."""
-    with pytest.raises(NotImplementedError):
-        phase.matheui_gaussian(simple_grid, r=1, q=1)
+def test_mathieu_gaussian(simple_grid, subtests):
+    """Test mathieu_gaussian() structured light generation."""
+    with subtests.test("even mode shape matches grid"):
+        result = phase.mathieu_gaussian(simple_grid, r=1, q=5)
+        assert result.shape == simple_grid[0].shape
+
+    with subtests.test("odd mode shape matches grid"):
+        result = phase.mathieu_gaussian(simple_grid, r=-1, q=5)
+        assert result.shape == simple_grid[0].shape
+
+    with subtests.test("even mode all finite"):
+        result = phase.mathieu_gaussian(simple_grid, r=1, q=5)
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("odd mode all finite"):
+        result = phase.mathieu_gaussian(simple_grid, r=-1, q=5)
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("r=0 even mode works"):
+        result = phase.mathieu_gaussian(simple_grid, r=0, q=5)
+        assert result.shape == simple_grid[0].shape
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("phase within [-pi, pi]"):
+        result = phase.mathieu_gaussian(simple_grid, r=2, q=10)
+        assert np.all(result >= -np.pi - 1e-10)
+        assert np.all(result <= np.pi + 1e-10)
+
+    with subtests.test("different r changes pattern"):
+        r1 = phase.mathieu_gaussian(simple_grid, r=1, q=5)
+        r2 = phase.mathieu_gaussian(simple_grid, r=2, q=5)
+        assert not np.allclose(r1, r2)
+
+    with subtests.test("even vs odd changes pattern"):
+        r_even = phase.mathieu_gaussian(simple_grid, r=1, q=5)
+        r_odd = phase.mathieu_gaussian(simple_grid, r=-1, q=5)
+        assert not np.allclose(r_even, r_odd)
+
+    with subtests.test("different q changes pattern"):
+        r1 = phase.mathieu_gaussian(simple_grid, r=1, q=2)
+        r2 = phase.mathieu_gaussian(simple_grid, r=1, q=20)
+        assert not np.allclose(r1, r2)
+
+    with subtests.test("different w changes pattern"):
+        r1 = phase.mathieu_gaussian(simple_grid, r=1, q=5, w=2.0)
+        r2 = phase.mathieu_gaussian(simple_grid, r=1, q=5, w=5.0)
+        assert not np.allclose(r1, r2)
+
+    with subtests.test("even r=3 works"):
+        result = phase.mathieu_gaussian(simple_grid, r=3, q=5)
+        assert result.shape == simple_grid[0].shape
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("odd r=-3 works"):
+        result = phase.mathieu_gaussian(simple_grid, r=-3, q=5)
+        assert result.shape == simple_grid[0].shape
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("q=0 works (circular limit)"):
+        result = phase.mathieu_gaussian(simple_grid, r=1, q=0)
+        assert result.shape == simple_grid[0].shape
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("w=None uses default"):
+        result = phase.mathieu_gaussian(simple_grid, r=1, q=5, w=None)
+        assert result.shape == simple_grid[0].shape
+        assert np.all(np.isfinite(result))
 
 
-def test_airy_not_implemented(simple_grid):
-    """Test that airy() raises an error (not yet implemented)."""
-    with pytest.raises((NotImplementedError, UnboundLocalError)):
-        phase.airy(simple_grid)
+def test_airy(simple_grid, subtests):
+    """Test airy() cubic phase generation."""
+    with subtests.test("shape matches grid"):
+        result = phase.airy(simple_grid, f=(1.0, 1.0))
+        assert result.shape == simple_grid[0].shape
+
+    with subtests.test("all finite"):
+        result = phase.airy(simple_grid, f=(1.0, 1.0))
+        assert np.all(np.isfinite(result))
+
+    with subtests.test("f=(inf,inf) gives zeros"):
+        result = phase.airy(simple_grid)
+        assert np.allclose(result, 0)
+
+    with subtests.test("explicit f=(inf,inf) gives zeros"):
+        result = phase.airy(simple_grid, f=(np.inf, np.inf))
+        assert np.allclose(result, 0)
+
+    with subtests.test("f=(1, inf) only varies in x"):
+        result = phase.airy(simple_grid, f=(1.0, np.inf))
+        # Rows should all be identical (no y dependence)
+        for i in range(1, result.shape[0]):
+            assert np.allclose(result[i, :], result[0, :])
+
+    with subtests.test("f=(inf, 1) only varies in y"):
+        result = phase.airy(simple_grid, f=(np.inf, 1.0))
+        # Columns should all be identical (no x dependence)
+        for j in range(1, result.shape[1]):
+            assert np.allclose(result[:, j], result[:, 0])
+
+    with subtests.test("cubic phase is antisymmetric in x"):
+        result = phase.airy(simple_grid, f=(1.0, np.inf))
+        # x^3 is odd: phase(-x) = -phase(x)
+        flipped = result[:, ::-1]
+        assert np.allclose(result, -flipped, atol=1e-10)
+
+    with subtests.test("cubic phase is antisymmetric in y"):
+        result = phase.airy(simple_grid, f=(np.inf, 1.0))
+        flipped = result[::-1, :]
+        assert np.allclose(result, -flipped, atol=1e-10)
+
+    with subtests.test("smaller f gives larger phase magnitude"):
+        r_small = phase.airy(simple_grid, f=(0.5, np.inf))
+        r_large = phase.airy(simple_grid, f=(2.0, np.inf))
+        assert np.max(np.abs(r_small)) > np.max(np.abs(r_large))
+
+    with subtests.test("phase scales as 1/f^3"):
+        f1, f2 = 1.0, 2.0
+        r1 = phase.airy(simple_grid, f=(f1, np.inf))
+        r2 = phase.airy(simple_grid, f=(f2, np.inf))
+        # (x/(f1*w))^3 / (x/(f2*w))^3 = (f2/f1)^3
+        ratio = (f2 / f1) ** 3
+        assert np.allclose(r1, ratio * r2, atol=1e-10)
+
+    with subtests.test("2D airy is sum of x and y contributions"):
+        rx = phase.airy(simple_grid, f=(1.0, np.inf))
+        ry = phase.airy(simple_grid, f=(np.inf, 1.0))
+        rxy = phase.airy(simple_grid, f=(1.0, 1.0))
+        assert np.allclose(rxy, rx + ry)
 
 
 def test_parse_focal_length(subtests):
@@ -1021,6 +1266,25 @@ def test_determine_source_radius(simple_grid, subtests):
         assert _determine_source_radius(FakeCameraSLM(), w=None) == 99.0
 
 
+def test_zernike_order_number(subtests):
+    """Test zernike_order_number() formula (n+1)(n+2)//2."""
+    with subtests.test("order 0 gives 1 (only piston)"):
+        assert phase.zernike_order_number(0) == 1
+
+    with subtests.test("order 1 gives 3"):
+        assert phase.zernike_order_number(1) == 3
+
+    with subtests.test("order 2 gives 6"):
+        assert phase.zernike_order_number(2) == 6
+
+    with subtests.test("order 3 gives 10"):
+        assert phase.zernike_order_number(3) == 10
+
+    with subtests.test("order N matches formula"):
+        for n in range(8):
+            assert phase.zernike_order_number(n) == (n + 1) * (n + 2) // 2
+
+
 def test_zernike_build_and_coefficients(subtests):
     """Test _zernike_build_order, _zernike_build_indices, _zernike_coefficients."""
     with subtests.test("build_order populates cache"):
@@ -1056,31 +1320,13 @@ def test_zernike_populate_basis_map(subtests):
 
 
 def test_zernike_pyramid_plot(normalized_grid, subtests):
-    """Test zernike_pyramid_plot() (L1189-1264)."""
+    """Test zernike_pyramid_plot()."""
     with subtests.test("order=2 runs without error"):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         plt.figure(figsize=(6, 6))
         phase.zernike_pyramid_plot(normalized_grid, order=2, use_mask=False)
-        plt.close("all")
-
-    with subtests.test("noborder and nan mask"):
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        plt.figure(figsize=(6, 6))
-        phase.zernike_pyramid_plot(normalized_grid, order=1, noborder=True,
-                                    use_mask=np.nan)
-        plt.close("all")
-
-    with subtests.test("noborder with use_mask=False"):
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        plt.figure(figsize=(6, 6))
-        phase.zernike_pyramid_plot(normalized_grid, order=1, noborder=True,
-                                    use_mask=False)
         plt.close("all")
 
 

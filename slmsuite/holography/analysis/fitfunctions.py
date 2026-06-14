@@ -51,7 +51,7 @@ def parabola(x, a, x0, y0):
     Returns
     -------
     y : numpy.ndarray
-        Line evaluated at all ``x``.
+        Parabola evaluated at all ``x``.
     """
     return a * np.square(x - x0) + y0
 
@@ -69,7 +69,7 @@ def hyperbola(z, w0, z0, zr):
     w0 : float
         Beamradius at :math:`z = z_0`.
     z0 : float
-        Plane of focus :math:`x_0`, the center of the hyperbola.
+        Plane of focus :math:`z_0`, the center of the hyperbola.
     zr : float
         Rayleigh length :math:`z_R`, the depth of focus.
 
@@ -125,7 +125,7 @@ def lorentzian(x, x0, a, c, w):
     c : float
         Constant offset.
     w : float
-        Full width at half maximum (FWHM).
+        Half width at half maximum (HWHM).
 
     Returns
     -------
@@ -150,7 +150,7 @@ def gaussian(x, x0, a, c, w):
     a : float
         Amplitude.
     c : float
-        constant offset.
+        Constant offset.
     w : float
         The standard deviation of the normal distribution.
         Equivalent to the :math:`1/e` radius.
@@ -181,7 +181,7 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
                                 \frac{(y-y_0)^2}{2w_y^2}
                                 \right].
 
-    When ``wxy`` is nonzero, the 2D Gaussian to have second
+    When ``wxy`` is nonzero, this allows the 2D Gaussian to have second
     order central moments (equivalent to variance;
     see :meth:`~slmsuite.holography.analysis.image_variances()`) satisfying:
 
@@ -196,7 +196,7 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
                     w_{xy} & w_y^2
                 \end{bmatrix}.
 
-    The following satisfies satisfying the above condition:
+    The following satisfies the above condition:
 
     .. math:: z(x,y) = c + a \exp \left[
                                 -\frac{1}{2}\left(
@@ -237,7 +237,7 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
     a : float
         Amplitude.
     c : float
-        constant offset.
+        Constant offset.
     wx, wy : float
         The standard deviation of the normal distribution.
         Equivalent to the :math:`1/e` radius.
@@ -346,7 +346,7 @@ def sinc2d(xy, x0, y0, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
 
 def _sinc2d_nomod(xy, x0, y0, R, a=1, d=0):
     r"""
-    For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
+    For fitting a 2D rectangular sinc distribution, without sinusoidal modulation.
 
     .. math:: z(x,y) =  d + a * \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
 
@@ -378,7 +378,7 @@ def _sinc2d_nomod(xy, x0, y0, R, a=1, d=0):
 
 def _sinc2d_nomod_taylor(xy, x0, y0, R, a=1, d=0):
     r"""
-    For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
+    For fitting a 2D rectangular sinc distribution, without sinusoidal modulation.
 
     .. math:: z(x,y) =  d + a * \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
 
@@ -413,7 +413,7 @@ def _sinc2d_centered(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
 
     .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right) *
-                        \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
+                        \text{sinc}^2(\pi x / R) * \text{sinc}^2(\pi y / R).
 
     where
 
@@ -434,7 +434,7 @@ def _sinc2d_centered(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     d : float
         Global offset.
     kx, ky : float
-        Vector phase scale factor. Default is 1.
+        Vector phase scale factor. Default is 0.
 
     Returns
     -------
@@ -451,7 +451,7 @@ def _sinc2d_centered_taylor(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
 
     .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right) *
-                        \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
+                        \text{sinc}^2(\pi x / R) * \text{sinc}^2(\pi y / R).
 
     where
 
@@ -472,7 +472,7 @@ def _sinc2d_centered_taylor(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     d : float
         Global offset.
     kx, ky : float
-        Vector phase scale factor. Default is 1.
+        Vector phase scale factor. Default is 0.
 
     Returns
     -------

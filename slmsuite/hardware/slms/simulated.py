@@ -1,9 +1,9 @@
 """
-Simulated SLM.
+A simulated SLM.
 """
 
 import numpy as np
-from .slm import SLM
+from slmsuite.hardware.slms.slm import SLM
 
 class SimulatedSLM(SLM):
     """
@@ -28,7 +28,7 @@ class SimulatedSLM(SLM):
         Parameters
         ----------
         resolution
-            The width and height of the camera in ``(width, height)`` form.
+            The width and height of the SLM in ``(width, height)`` form.
 
             Important
             ~~~~~~~~~

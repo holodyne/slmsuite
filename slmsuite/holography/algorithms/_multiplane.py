@@ -83,6 +83,9 @@ class MultiplaneHologram(Hologram):
     def __len__(self):
         return len(self.holograms)
 
+    def __getitem__(self, index):
+        return self.holograms[index]
+
     @staticmethod
     def get_multiplane_defocus_blur(
         cameraslm,
@@ -94,7 +97,7 @@ class MultiplaneHologram(Hologram):
         """
         From a stack of target (power) images at ``target_depths``, generate a stack
         of images at ``return_depths``, accounting for defocus blur.
-        Power is summed as if all depths were transparent; i.e. objects do no block
+        Power is summed as if all depths were transparent; i.e. objects do not block
         objects further behind.
         This is a partial farfield implementation of
         `realistic defocus blur <https://doi.org/10.48550/arXiv.2205.07030>`_.
@@ -123,7 +126,7 @@ class MultiplaneHologram(Hologram):
             If ``None``, use ``target_depths``.
         sharp_focus : bool
             If ``False``, depths at focal planes are blurred by the point spread radius
-            of a focussed spot.
+            of a focused spot.
             If ``True``, all the blurring is reduced by the focused point spread radius,
             keeping images that are in focus sharp.
         """
@@ -171,9 +174,9 @@ class MultiplaneHologram(Hologram):
 
     # Overload user functions with meta functionality.
 
-    def _update_flags(self, method, verbose, feedback, stat_groups, **kwargs):
+    def _update_flags(self, method, feedback, stat_groups, **kwargs):
         # First update the parent flags.
-        super()._update_flags(method, verbose, feedback, stat_groups, **kwargs)
+        super()._update_flags(method, feedback, stat_groups, **kwargs)
 
         # Then update each of the child flags.
         for h in self.holograms:
@@ -285,5 +288,5 @@ class MultiplaneHologram(Hologram):
         for h, mraf in zip(self.holograms, mraf_variables):
             h._gs_farfield_routines(mraf)
 
-    def remove_vortices(self):
-        for h in self.holograms: h.remove_vortices()
+    def _remove_vortices(self):
+        for h in self.holograms: h._remove_vortices()

@@ -37,14 +37,14 @@ class RemoteCamera(_Client, Camera):
         the server, as a security precaution.
 
         :param name:
-            Name of the SLM on the server to connect to.
+            Name of the camera on the server to connect to.
         :param host:
             Hostname or IP address of the server. Defaults to ``"localhost"``.
         :param port:
             Port number of the server. Defaults to ``5025`` (commonly used for instrument control).
         :param timeout:
             Timeout in seconds for the connection. Defaults to ``1.0``.
-        :param **kwargs:
+        :param \*\*kwargs:
             See :meth:`.Camera.__init__` for permissible options, except for
             ``resolution``, ``bitdepth``, and ``pitch_um`` which are set by the server.
         """
@@ -96,13 +96,13 @@ class RemoteCamera(_Client, Camera):
             command="_get_image_hw",
             kwargs=dict(timeout_s=timeout_s)
         )
-        print(time.perf_counter()-t)
+        self.logger.debug("get_image latency: %s s", time.perf_counter()-t)
         return img
 
     def _get_images_hw(self, image_count, timeout_s, out=None):
         """See :meth:`.Camera._get_images_hw`."""
         if out is not None:
-            warnings.warn("Remote camera does not support in-place operations.")
+            self.logger.warning("Remote camera does not support in-place operations.")
 
         return self._com(
             command="_get_images_hw",

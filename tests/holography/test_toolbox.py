@@ -1,6 +1,8 @@
 """
 Unit tests for slmsuite.holography.toolbox module.
 """
+import logging
+
 import pytest
 import numpy as np
 
@@ -11,7 +13,7 @@ from slmsuite.holography.toolbox import *
 from slmsuite.holography.toolbox import phase
 
 
-def test_convert_vector(slm, subtests):
+def test_convert_vector(slm, subtests, caplog):
     """Comprehensive tests for convert_vector unit conversions."""
     vec = np.array([[0.1], [-0.2]])
     hw = {"hardware": slm}
@@ -132,14 +134,18 @@ def test_convert_vector(slm, subtests):
 
     for unit in ["freq", "lpmm", "knm"]:
         with subtests.test(f"{unit} without hardware warns"):
-            with pytest.warns(UserWarning):
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                caplog.clear()
                 result = convert_vector(vec, from_units=unit, to_units="norm")
+            assert any(r.levelno == logging.WARNING for r in caplog.records)
             assert np.all(np.isnan(result))
 
     for unit in ["ij", "um"]:
         with subtests.test(f"{unit} without cameraslm warns"):
-            with pytest.warns(UserWarning, match="CameraSLM"):
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                caplog.clear()
                 result = convert_vector(vec, from_units=unit, to_units="norm")
+            assert any("CameraSLM" in r.getMessage() for r in caplog.records)
             assert np.all(np.isnan(result))
 
     with subtests.test("cross-unit mrad -> deg"):
@@ -673,6 +679,7 @@ def test_lloyds_points(subtests):
         grid = np.meshgrid(range(shape[1]), range(shape[0]))
         result = lloyds_points(grid, 6, iterations=10)
         assert result.shape == (2, 6)
+        assert smallest_distance(result) > 0
 
     with subtests.test("no duplicates"):
         np.random.seed(0)
@@ -723,7 +730,8 @@ def test_assign_vectors(subtests):
 
     with subtests.test("tuple inputs"):
         result = assign_vectors([(5, 5)], [(0, 10), (0, 10)])
-        assert np.isfinite(result).all()
+        # (5,5) is equidistant from (0,0) and (10,10); argmin picks index 0
+        np.testing.assert_array_equal(result, [0])
 
 
 def test_format_shape(subtests):
@@ -829,3 +837,288 @@ def test_pad_unpad(subtests):
         assert result.shape == (3, 4)
         recovered = unpad(result, (2, 3))
         np.testing.assert_array_equal(recovered, small)
+
+
+def test_window_slice(subtests):
+    with subtests.test("(x,w,y,h) basic slice"):
+        sl = window_slice([10, 20, 5, 15])
+        assert sl == (slice(5, 20), slice(10, 30))
+
+    with subtests.test("(x,w,y,h) centered"):
+        # xi = int(10 - (20-1)/2) = 0; xf = 20
+        # yi = int(5 - (15-1)/2) = -2; yf = 13
+        sl = window_slice([10, 20, 5, 15], centered=True)
+        assert sl == (slice(-2, 13), slice(0, 20))
+
+    with subtests.test("shape clips out-of-bounds"):
+        sl = window_slice([0, 20, 0, 20], shape=(10, 10))
+        assert sl == (slice(0, 10), slice(0, 10))
+
+    with subtests.test("shape clips negative start to zero"):
+        sl = window_slice([-5, 10, -5, 10], shape=(20, 20))
+        assert sl == (slice(0, 5), slice(0, 5))
+
+    with subtests.test("window fills expected region"):
+        mat = np.zeros((20, 20))
+        sl = window_slice([5, 4, 3, 6])
+        mat[sl] = 1
+        np.testing.assert_array_equal(mat[3:9, 5:9], 1)
+        assert np.sum(mat) == 4 * 6
+
+    with subtests.test("window size=1 fills single pixel"):
+        sl = window_slice([7, 1, 4, 1])
+        assert sl == (slice(4, 5), slice(7, 8))
+
+    with subtests.test("(y_ind, x_ind) returned as index tuple"):
+        y_idx = np.array([0, 1, 2])
+        x_idx = np.array([3, 4, 5])
+        sl = window_slice((y_idx, x_idx))
+        np.testing.assert_array_equal(sl[0], y_idx)
+        np.testing.assert_array_equal(sl[1], x_idx)
+
+    with subtests.test("(y_ind, x_ind) indexes correct pixels"):
+        mat = np.zeros((10, 10))
+        y_idx = np.array([1, 2, 3])
+        x_idx = np.array([5, 5, 5])
+        mat[window_slice((y_idx, x_idx))] = 1
+        for yi, xi in zip(y_idx, x_idx):
+            assert mat[yi, xi] == 1
+        assert np.sum(mat) == 3
+
+    with subtests.test("boolean array returned as-is"):
+        mask = np.zeros((5, 5), dtype=bool)
+        mask[2, 3] = True
+        sl = window_slice(mask)
+        assert sl is mask
+
+    with subtests.test("circular returns array indices, not slices"):
+        sl = window_slice([5, 6, 5, 6], shape=(20, 20), circular=True)
+        assert isinstance(sl, tuple)
+        assert isinstance(sl[0], np.ndarray)
+
+    with subtests.test("circular center pixel is included"):
+        sl = window_slice([5, 6, 5, 6], shape=(20, 20), circular=True)
+        mat = np.zeros((20, 20))
+        mat[sl] = 1
+        # center of window [x=5, w=6, y=5, h=6]: xc=7, yc=7
+        xc = 5 + int((6 - 1) / 2)
+        yc = 5 + int((6 - 1) / 2)
+        assert mat[yc, xc] == 1
+
+    with subtests.test("circular corners excluded"):
+        # A 4x4 window: corners should be outside the inscribed circle
+        sl = window_slice([0, 4, 0, 4], shape=(10, 10), circular=True)
+        mat = np.zeros((10, 10))
+        mat[sl] = 1
+        # Corners of [0:4, 0:4] should be outside the inscribed circle
+        assert mat[0, 0] == 0 or mat[0, 3] == 0  # at least one corner excluded
+
+
+def test_window_extent(subtests):
+    with subtests.test("rectangular region"):
+        mask = np.zeros((10, 10), dtype=bool)
+        mask[2:5, 3:7] = True
+        assert window_extent(mask) == (3, 4, 2, 3)
+
+    with subtests.test("single pixel"):
+        mask = np.zeros((10, 10), dtype=bool)
+        mask[5, 7] = True
+        assert window_extent(mask) == (7, 1, 5, 1)
+
+    with subtests.test("roundtrip with window_slice"):
+        mask = np.zeros((12, 15), dtype=bool)
+        mask[1:4, 2:8] = True
+        extent = window_extent(mask)
+        recovered = np.zeros_like(mask)
+        recovered[window_slice(extent)] = True
+        np.testing.assert_array_equal(recovered, mask)
+
+    with subtests.test("full mask"):
+        mask = np.ones((8, 6), dtype=bool)
+        assert window_extent(mask) == (0, 6, 0, 8)
+
+    with subtests.test("padding_frac expands extent"):
+        mask = np.zeros((20, 20), dtype=bool)
+        mask[5:10, 5:10] = True
+        base = window_extent(mask, padding_frac=0)
+        padded = window_extent(mask, padding_frac=0.5)
+        _, w0, _, h0 = base
+        _, wp, _, hp = padded
+        assert wp > w0
+        assert hp > h0
+
+    with subtests.test("padding_pix expands extent by exact pixels"):
+        mask = np.zeros((20, 20), dtype=bool)
+        mask[5:10, 5:10] = True
+        base = window_extent(mask, padding_pix=0)
+        padded = window_extent(mask, padding_pix=3)
+        _, w0, _, h0 = base
+        _, wp, _, hp = padded
+        assert wp == w0 + 6
+        assert hp == h0 + 6
+
+    with subtests.test("L-shaped region"):
+        mask = np.zeros((10, 10), dtype=bool)
+        mask[1:5, 2:4] = True
+        mask[3:6, 2:7] = True
+        x, w, y, h = window_extent(mask)
+        # Bounding box must contain all True pixels
+        assert x <= 2 and x + w >= 7
+        assert y <= 1 and y + h >= 6
+
+
+def test_convert_radius(slm, subtests):
+    with subtests.test("identity norm to norm"):
+        assert convert_radius(0.05, "norm", "norm") == pytest.approx(0.05)
+
+    with subtests.test("zero radius"):
+        assert convert_radius(0.0, "norm", "mrad") == pytest.approx(0.0)
+
+    with subtests.test("norm to mrad scales by 1000"):
+        assert convert_radius(0.1, "norm", "mrad") == pytest.approx(100.0)
+
+    with subtests.test("norm to deg scales by 180/pi"):
+        assert convert_radius(0.1, "norm", "deg") == pytest.approx(0.1 * 180 / np.pi)
+
+    with subtests.test("mrad to norm roundtrip"):
+        r = 50.0
+        rt = convert_radius(convert_radius(r, "norm", "mrad"), "mrad", "norm")
+        assert rt == pytest.approx(r)
+
+    with subtests.test("deg to norm roundtrip"):
+        r = 0.05
+        rt = convert_radius(convert_radius(r, "norm", "deg"), "deg", "norm")
+        assert rt == pytest.approx(r)
+
+    with subtests.test("matches convert_vector magnitude for isotropic units"):
+        r = 0.1
+        result = convert_radius(r, "norm", "mrad")
+        vx = convert_vector((r, 0), "norm", "mrad")
+        assert result == pytest.approx(float(np.linalg.norm(vx)))
+
+    with subtests.test("norm to freq with SLM"):
+        r = 0.1
+        pitch_um = np.mean(slm.pitch_um)
+        wav_um = slm.wav_um
+        result = convert_radius(r, "norm", "freq", hardware=slm)
+        assert result == pytest.approx(r * pitch_um / wav_um)
+
+    with subtests.test("freq to norm roundtrip with SLM"):
+        r = 0.02
+        rt = convert_radius(
+            convert_radius(r, "norm", "freq", hardware=slm),
+            "freq", "norm", hardware=slm,
+        )
+        assert rt == pytest.approx(r)
+
+
+def test_transform_grid(subtests):
+    xs = np.linspace(0.0, 1.0, 5)
+    ys = np.linspace(0.0, 1.0, 5)
+    x_grid, y_grid = np.meshgrid(xs, ys)
+    grid = (x_grid, y_grid)
+
+    with subtests.test("identity: no transform no shift"):
+        xr, yr = transform_grid(grid)
+        np.testing.assert_allclose(xr, x_grid)
+        np.testing.assert_allclose(yr, y_grid)
+
+    with subtests.test("shift adds offset"):
+        xr, yr = transform_grid(grid, shift=(0.5, -0.3))
+        np.testing.assert_allclose(xr, x_grid + 0.5)
+        np.testing.assert_allclose(yr, y_grid - 0.3)
+
+    with subtests.test("rotation 90 degrees"):
+        xr, yr = transform_grid(grid, transform=np.pi / 2)
+        np.testing.assert_allclose(xr, -y_grid, atol=1e-14)
+        np.testing.assert_allclose(yr, x_grid, atol=1e-14)
+
+    with subtests.test("rotation 180 degrees"):
+        xr, yr = transform_grid(grid, transform=np.pi)
+        np.testing.assert_allclose(xr, -x_grid, atol=1e-13)
+        np.testing.assert_allclose(yr, -y_grid, atol=1e-13)
+
+    with subtests.test("matrix transform scales axes"):
+        M = np.array([[2.0, 0.0], [0.0, 3.0]])
+        xr, yr = transform_grid(grid, transform=M)
+        np.testing.assert_allclose(xr, 2.0 * x_grid)
+        np.testing.assert_allclose(yr, 3.0 * y_grid)
+
+    with subtests.test("fwd then rev returns original"):
+        angle = np.pi / 3
+        shift = (0.2, -0.3)
+        x1, y1 = transform_grid(grid, transform=angle, shift=shift)
+        x2, y2 = transform_grid((x1, y1), transform=angle, shift=shift, direction="rev")
+        np.testing.assert_allclose(x2, x_grid, atol=1e-13)
+        np.testing.assert_allclose(y2, y_grid, atol=1e-13)
+
+    with subtests.test("shift=True centers grid to zero mean"):
+        xr, yr = transform_grid(grid, shift=True)
+        np.testing.assert_allclose(np.mean(xr), 0.0, atol=1e-14)
+        np.testing.assert_allclose(np.mean(yr), 0.0, atol=1e-14)
+
+    with subtests.test("shift=True matches manual mean shift"):
+        xr, yr = transform_grid(grid, shift=True)
+        np.testing.assert_allclose(xr, x_grid - np.mean(x_grid))
+        np.testing.assert_allclose(yr, y_grid - np.mean(y_grid))
+
+    with subtests.test("trivial transform returns copy, not original"):
+        xr, yr = transform_grid(grid)
+        assert xr is not x_grid
+        assert yr is not y_grid
+
+    with subtests.test("rotation and shift are applied in correct order"):
+        # fwd: rotate then shift
+        angle = np.pi / 2
+        shift = (1.0, 0.0)
+        xr, yr = transform_grid(grid, transform=angle, shift=shift)
+        # xr = cos(90)*x - sin(90)*y + 1 = -y + 1
+        np.testing.assert_allclose(xr, -y_grid + 1.0, atol=1e-14)
+        np.testing.assert_allclose(yr, x_grid, atol=1e-14)
+
+
+def test_voronoi_windows(subtests):
+    shape = (40, 40)
+    vectors = np.array([[10, 30, 10, 30], [10, 10, 30, 30]])
+
+    with subtests.test("returns one window per vector"):
+        windows = voronoi_windows(shape, vectors)
+        assert len(windows) == 4
+
+    with subtests.test("windows are boolean arrays of correct shape"):
+        windows = voronoi_windows(shape, vectors)
+        for w in windows:
+            assert w.shape == shape
+            assert w.dtype == bool
+
+    with subtests.test("union covers all pixels"):
+        windows = voronoi_windows(shape, vectors)
+        combined = np.zeros(shape, dtype=bool)
+        for w in windows:
+            combined |= w
+        assert np.all(combined)
+
+    with subtests.test("no pixel belongs to two windows"):
+        windows = voronoi_windows(shape, vectors)
+        overlap = np.zeros(shape, dtype=int)
+        for w in windows:
+            overlap += w.astype(int)
+        assert np.all(overlap <= 1)
+
+    with subtests.test("each vector lies inside its own window"):
+        windows = voronoi_windows(shape, vectors)
+        for i in range(vectors.shape[1]):
+            x, y = int(vectors[0, i]), int(vectors[1, i])
+            assert windows[i][y, x]
+
+    with subtests.test("radius crops windows to circle"):
+        windows_full = voronoi_windows(shape, vectors)
+        windows_crop = voronoi_windows(shape, vectors, radius=5)
+        for wf, wc in zip(windows_full, windows_crop):
+            assert np.sum(wc) <= np.sum(wf)
+
+    with subtests.test("single vector window covers all pixels"):
+        center = np.array([[20], [20]])
+        windows = voronoi_windows(shape, center)
+        assert len(windows) == 1
+        assert np.all(windows[0])

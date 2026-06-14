@@ -1,16 +1,18 @@
-"""Interface to experimental devices."""
+"""
+Handles pickling of objects.
+"""
 import warnings
 import datetime
 
 from slmsuite import __version__
 from slmsuite.misc.files import generate_path, latest_path, save_h5, load_h5
 
-class _Picklable:
+class _Picklable(object):
     """
     Class for hardware objects to handle state saving.
     """
     _pickle = []        # Baseline parameters to pickle.
-    _pickle_data = []   #
+    _pickle_data = []
 
     def pickle(self, attributes=True, metadata=True):
         """
@@ -29,7 +31,7 @@ class _Picklable:
             ``"__meta__"`` value of a superdictionary which also contains:
             ``"__version__"``, the current slmsuite version,
             ``"__time__"``, the time formatted as a date string, and
-            ``"__timestamp__"``, the time formatting as a floating point timestamp.
+            ``"__timestamp__"``, the time formatted as a floating point timestamp.
             This information is used as standard metadata for calibrations and saving.
         """
         # Parse attributes.
@@ -39,7 +41,7 @@ class _Picklable:
 
         # Assemble the dictionary.
         pickled = {}
-        pickled["__class__"] = str(self)
+        pickled["__class__"] = self.__class__.__name__
 
         for k in attributes:
             if not hasattr(self, k):
@@ -55,6 +57,8 @@ class _Picklable:
         # Return the result.
         if metadata:
             t = datetime.datetime.now()
+            if hasattr(self, "get_log"):
+                pickled["__log__"] = "\n".join(self.get_log())
             return {
                 "__version__" : __version__,
                 "__time__" : str(t),

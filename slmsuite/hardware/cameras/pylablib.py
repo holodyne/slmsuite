@@ -34,9 +34,13 @@ except:
     ICamera = None
     warnings.warn("pylablib not installed. Install to use PyLabLib cameras.")
 
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
+
 class PyLabLib(Camera):
     """
-    A wrapped :mod:`instrumental` camera.
+    A wrapped :mod:`pylablib` camera.
 
     Attributes
     ----------
@@ -46,7 +50,7 @@ class PyLabLib(Camera):
 
     ### Initialization and termination ###
 
-    def __init__(self, cam=None, pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, cam=None, pitch_um=None, **kwargs):
         """
         Initialize camera and attributes. Initial profile is ``"single"``.
 
@@ -72,8 +76,6 @@ class PyLabLib(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         kwargs
             See :meth:`.Camera.__init__` for permissible options.
 
@@ -106,7 +108,7 @@ class PyLabLib(Camera):
             name = "pylablibcamera"
         name = kwargs.pop("name", name)
 
-        if verbose: print(f"Cam {name} parsing... ", end="")
+        logger.debug("Cam %s parsing...", name)
         height, width = cam.get_data_dimensions()
         self.cam = cam
 
@@ -117,7 +119,7 @@ class PyLabLib(Camera):
             name=name,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("PyLabLib camera initialized.")
 
     def close(self):
         """
@@ -163,7 +165,7 @@ class PyLabLib(Camera):
             If ``None``, defaults to largest possible.
 
         Returns
-        ----------
+        -------
         woi : list
             :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
         """

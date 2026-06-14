@@ -4,6 +4,7 @@
 *$py.class
 *egg-info
 .conda/
+.benchmarks/
 
 # venv
 .venv/

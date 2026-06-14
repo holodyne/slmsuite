@@ -54,6 +54,10 @@ try:
 except ImportError:
     cp = None
 
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
+
 
 class _Window(__Window):
     """
@@ -141,7 +145,7 @@ class _Window(__Window):
             img512x512 =    pyglet.image.load(path + '512x512.png')
             self.set_icon(img16x16, img32x32, img512x512)
         except Exception as e:
-            print(e)
+            logger.warning("Failed to set window icon: %s", e)
 
     # Event handlers: consume all events to prevent OS default behavior
     # (modal drag loops, window resizing, accidental close) that would
@@ -563,7 +567,7 @@ class _Window(__Window):
         return screen_list
 
 
-class _WindowThread:
+class _WindowThread(object):
     """
     Manages a dedicated :class:`~threading.Thread` for a single :class:`_Window`.
 
@@ -837,7 +841,7 @@ class _WindowThread:
             self._thread.join(timeout=3.0)
 
 
-class _WindowManager:
+class _WindowManager(object):
     """
     Singleton that manages the lifecycle of all :class:`_WindowThread` instances.
 
