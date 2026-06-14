@@ -195,19 +195,15 @@ class SLM(_Common, ABC):
 
         self.pitch = self.pitch_um / self.wav_um
 
-        # Make normalized coordinate grids. ``_grid_base`` is the immutable geometric
-        # grid (centered on the SLM); the public ``grid`` property derives the
-        # aperture-centered working frame from it (see the ``grid`` property).
+        # Make normalized coordinate grids. See `grid` property.
         height, width = self.shape
         xpix = (width  - 1) * np.linspace(-0.5, 0.5, width)
         ypix = (height - 1) * np.linspace(-0.5, 0.5, height)
-        self._grid_base = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
-        self._grid = None            # cache for the aperture-centered working grid
-        self._grid_center = None     # aperture center the cache was built for
+        self._grid = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
 
         # Aperture defaults to "cropped" (circumscribes the whole grid, so it
         # masks nothing until the user sets a real aperture). See set_aperture().
-        self.aperture = toolbox.Aperture(self._grid_base, "cropped")
+        self.aperture = toolbox.Aperture(self._grid, "cropped")
 
         # Multiplier for when the target wavelengths differ from the design wavelength.
         self.phase_scaling = self.wav_um / self.wav_design_um
@@ -235,21 +231,16 @@ class SLM(_Common, ABC):
         :math:`(x, y)` coordinate meshgrids of the SLM's pixels in normalized units
         (wavelengths), measured from the **aperture center**. This is the working
         coordinate frame that analytic phase functions (lenses, gratings, Zernike, ...)
-        are generated in. It is derived non-destructively from the immutable geometric
-        grid and :attr:`aperture` ``.center``; setting or fitting an aperture simply
-        re-derives it.
+        are generated in.
         """
         center = None if self.aperture.center is None else tuple(self.aperture.center)
-        if self._grid is None or self._grid_center != center:
-            if center is None:
-                self._grid = self._grid_base
-            else:
-                self._grid = [
-                    self._grid_base[0] - center[0],
-                    self._grid_base[1] - center[1],
-                ]
-            self._grid_center = center
-        return self._grid
+        if center is None:
+            return self._grid
+        else:
+            return [
+                self._grid[0] - center[0],
+                self._grid[1] - center[1],
+            ]
 
     @property
     def aperture_mask(self):
@@ -490,7 +481,7 @@ class SLM(_Common, ABC):
     def _gray2display(self, gray):
         """
         Helper function to send integer data to a format understood by the SLM.
-        For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`), 
+        For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`),
         this is a more complicated step to convert from grayscale to an electrode bitmap.
         """
         xp = _xp(gray)
@@ -1141,7 +1132,7 @@ class SLM(_Common, ABC):
         elif units == "frac":
             # Fraction of the half-extent (the smaller of the two half-dimensions).
             factor = float(np.min([
-                np.nanmax(self._grid_base[0]), np.nanmax(self._grid_base[1])
+                np.nanmax(self._grid[0]), np.nanmax(self._grid[1])
             ]))
         elif units in toolbox.LENGTH_FACTORS:
             factor = toolbox.LENGTH_FACTORS[units] / self.wav_um
@@ -1151,7 +1142,7 @@ class SLM(_Common, ABC):
 
     def set_aperture(self, spec=None, *, radius=None, center=None, units="norm"):
         r"""
-        Sets the SLM's :attr:`aperture` --- the single source of truth for the working
+        Sets the SLM's :attr:`aperture` which defines the working
         coordinate frame (:attr:`grid` centering), the Zernike lateral scaling
         (:attr:`zernike_scaling`), the in-use mask (:attr:`aperture_mask`), and the
         effective (masked) source amplitude and phase.
@@ -1197,7 +1188,7 @@ class SLM(_Common, ABC):
 
         center_norm = None if center is None else self._center_pix_to_norm(center)
 
-        self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
+        self.aperture = toolbox.Aperture(self._grid, spec, center=center_norm)
         self._grid = None
         return self.aperture
 
@@ -1205,7 +1196,7 @@ class SLM(_Common, ABC):
         r"""
         Fits the SLM's :attr:`aperture` to the measured source amplitude distribution in
         :attr:`source` ``["amplitude"]`` (analyzed via ``"moments"`` or least-squares
-        ``"fit"``). This sets a circular aperture whose source (:math:`1/e`) radius
+        ``"fit"``). This sets a circular aperture whose source amplitude radius (:math:`1/e`)
         matches the radial standard deviation of the amplitude, and (if ``recenter``)
         whose center matches the amplitude centroid.
 
@@ -1234,7 +1225,7 @@ class SLM(_Common, ABC):
             ))
             spec = 1.0 / (2.0 * radius_norm)
             center_norm = self.aperture.center if not recenter else None
-            self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
+            self.aperture = toolbox.Aperture(self._grid, spec, center=center_norm)
             self._grid = None
             return self.aperture
 
@@ -1262,7 +1253,7 @@ class SLM(_Common, ABC):
         if recenter:
             center_norm = self._center_pix_to_norm(center_pix)
 
-        self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
+        self.aperture = toolbox.Aperture(self._grid, spec, center=center_norm)
         self._grid = None
         return self.aperture
 
