@@ -245,7 +245,7 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
     # Gather helper variables and set the min and max of all the subplots.
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
-    
+
     if isinstance(images, cp.ndarray):
         images = cp.asnumpy(images)
 
@@ -1122,29 +1122,22 @@ def image_zernike_fit(
     leastsquares=True,
     aperture=None,
     use_mask=True,
-    gradient=False,
+    gradient=True,
 ):
     r"""
     Fits sets of Zernike polynomials to a stack of ``phase_images``.
 
-    Because :meth:`~slmsuite.holography.toolbox.phase.zernike_sum` is linear in its
-    weights, fitting Zernike coefficients is a linear least-squares problem. It is
-    therefore solved exactly in one step via the normal equations
-    :math:`G\vec{c} = B\vec{\phi}`, where :math:`B` is the (flattened) Zernike
-    basis and :math:`G = BB^T` is its Gram matrix. This runs on the GPU when
-    ``phase_images`` (or ``grid``) are :mod:`cupy` arrays.
-
-    Gradient mode
-    ~~~~~~~~~~~~~
     When ``gradient=True``, the fit is performed against the *gradient* of the
-    phase rather than the phase itself. The wrap-aware gradient of a wrapped
+    phase rather than the phase itself. The gradient of a :math:`2\pi`-wrapped
     phase equals the gradient of the true unwrapped phase everywhere except at
     vortices, so this recovers accurate coefficients from a phase-wrapped image
-    without any (expensive, fragile) 2D unwrapping. The gradient basis is the
-    discrete central-difference gradient of the Zernike basis -- the same
-    stencil applied to the data -- so the fit stays an exact linear
-    least-squares problem. Piston is unrecoverable (its gradient is zero) but is
-    omitted from the return anyway, so the contract is unchanged.
+    without any expensive and fragile 2D unwrapping. In this case,
+    fitting Zernike coefficients is a linear least-squares problem
+    (at the cost of the omission of the piston term).
+    This runs on the GPU when ``phase_images`` (or ``grid``) are :mod:`cupy` arrays.
+
+    When ``gradient=False``, imperfect unwrapping breaks the assumption of linearity,
+    so large phase wraps can lead to inaccurate fits.
 
     Note
     ~~~~
@@ -1185,7 +1178,7 @@ def image_zernike_fit(
         If ``True``, fit the wrap-aware phase gradient against the gradient
         Zernike basis instead of fitting the phase directly. This recovers
         accurate coefficients from a phase-wrapped ``phase_images`` without
-        unwrapping. See the *Gradient mode* note above.
+        unwrapping. See the note above.
 
     Returns
     -------
@@ -1248,7 +1241,7 @@ def image_zernike_fit(
     b = basis.basis_flat @ phase_flat.T                                 # (D, image_count)
 
     if leastsquares:
-        # Exact least-squares fit: solve via the precomputed inverse of the Gram matrix.
+        # Least-squares fit: solve via the precomputed inverse of the Gram matrix.
         # Avoids xp.linalg.solve (cuSOLVER) kernel launch overhead on GPU.
         vectors_zernike = basis.gram_inv @ b
     else:
