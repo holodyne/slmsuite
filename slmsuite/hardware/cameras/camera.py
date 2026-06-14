@@ -27,7 +27,7 @@ from slmsuite.holography.analysis.files import _gray2rgb
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
-from slmsuite.misc.math import REAL_TYPES
+from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
 
 
 class Camera(_Common, ABC):

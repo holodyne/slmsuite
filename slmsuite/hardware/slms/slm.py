@@ -1286,7 +1286,7 @@ class SLM(_Common, ABC):
         The effective source amplitude: the measured amplitude (or unity if unmeasured)
         masked by the :attr:`aperture`.
         """
-        if "amplitude" in self.source:
+        if self.source.get("amplitude") is not None:
             amp = self.source["amplitude"]
             if not self.aperture.crops:
                 # No cropping: skip the all-True mask multiply. Copy so callers may
@@ -1303,7 +1303,7 @@ class SLM(_Common, ABC):
         The effective source phase: the measured phase (or zero if unmeasured) masked by
         the :attr:`aperture`.
         """
-        if "phase" in self.source:
+        if self.source.get("phase") is not None:
             phase = self.source["phase"]
             if not self.aperture.crops:
                 # No cropping: skip the all-True mask multiply. Copy so callers may

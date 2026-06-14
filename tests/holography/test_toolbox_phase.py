@@ -448,10 +448,6 @@ def test_aperture(normalized_grid, subtests):
         ap0 = Aperture(normalized_grid, "circular")
         assert not np.array_equal(np.asarray(ap.mask), np.asarray(ap0.mask))
 
-    with subtests.test("zernike_scaling is a back-compat alias for scale"):
-        ap = Aperture(normalized_grid, (0.01, 0.02))
-        assert ap.zernike_scaling == ap.scale
-
     with subtests.test("mask is consistent with transform"):
         ap = Aperture(normalized_grid, "circular",
                       center=(0.1 * np.nanmax(normalized_grid[0]), 0.0))

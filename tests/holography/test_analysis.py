@@ -495,11 +495,12 @@ def test_image_fit(subtests, benchmark, caplog):
         image = image[np.newaxis, :, :]
 
         shown = {"called": False}
-        def _show():
+        def _show(*args, **kwargs):
             shown["called"] = True
 
+        # Internal plots route through analysis._slmsuite_plt_show; patch that.
         monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(analysis.plt, "show", _show)
+        monkeypatch.setattr(analysis, "_slmsuite_plt_show", _show)
         try:
             result = analysis.image_fit(image, grid=grid, function=gaussian2d, plot=True)
         finally:
@@ -608,7 +609,7 @@ def test_image_zernike_fit(subtests):
         assert np.ptp(phase_image[basis.mask.astype(bool)]) > 2 * np.pi
 
         grad_coeffs = analysis.image_zernike_fit(wrapped, basis, gradient=True)
-        plain_coeffs = analysis.image_zernike_fit(wrapped, basis)
+        plain_coeffs = analysis.image_zernike_fit(wrapped, basis, gradient=False)
 
         grad_err = np.max(np.abs(grad_coeffs[:, 0] - weights))
         plain_err = np.max(np.abs(plain_coeffs[:, 0] - weights))
@@ -751,11 +752,13 @@ def test_take(subtests, benchmark, caplog):
 
         image = np.random.rand(60, 60)
         shown = {"called": False}
-        def _show2():
+        def _show2(*args, **kwargs):
             shown["called"] = True
 
+        # Internal plots route through analysis._slmsuite_plt_show (the conftest
+        # installs a save-handler), so patch that rather than plt.show.
         monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(analysis.plt, "show", _show2)
+        monkeypatch.setattr(analysis, "_slmsuite_plt_show", _show2)
         try:
             canvas = analysis.take(image, vectors=[30, 30], size=10, centered=True,
                                    return_mask=True, plot=True)
@@ -1001,11 +1004,12 @@ def test_fit_affine(subtests):
         y = x + np.array([[0.5], [0.25]])
         shown = {"called": False}
 
-        def _show():
+        def _show(*args, **kwargs):
             shown["called"] = True
 
+        # Internal plots route through analysis._slmsuite_plt_show; patch that.
         monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(analysis.plt, "show", _show)
+        monkeypatch.setattr(analysis, "_slmsuite_plt_show", _show)
         try:
             result = analysis.fit_affine(x, y, plot=True)
         finally:
@@ -1359,7 +1363,7 @@ def test_orientation_matrix_properties(subtests):
     These hold for all 8 D4 transforms.
     """
     for label, t in _all_transforms():
-        M = t.M
+        M = t.M()
 
         with subtests.test(f"{label} : det = ±1"):
             d = np.linalg.det(M)
