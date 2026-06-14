@@ -59,22 +59,33 @@ class SegmentedSLM(SLM):
         self.parent = parent
         self.refresh = bool(refresh)
 
-        # Parse window.
+        # Parse window — preserve original for unclipped bounds checking.
+        window_raw = window
         window = window_slice(window, shape=parent.shape)  # 2 slice, 2 indices, or boolean array format
 
         # Get the rectangular extent of the window.
-        extent = window_extent(window)                     # (x, w, y, h) format
-        self.extent_slice = window_slice(extent)           # 2 slice format
-
-        # Handle the case where the window is not rectangular.
         self.subwindow = None
-        if np.ndim(window) == 2:    # Boolean array
-            self.subwindow = window[*self.extent_slice]
-        elif len(window) == 2 and not isinstance(window[0], slice):     # Lists of indices
-            self.subwindow = (
-                window[0] - extent[0],
-                window[1] - extent[2]
-            )
+        if isinstance(window[0], slice):
+            # Rectangular window: build (x, w, y, h) extent from the ORIGINAL (unclipped)
+            # coordinates so the bounds check below can detect out-of-bounds windows.
+            xi = int(window_raw[0])
+            xf = xi + int(window_raw[1])
+            yi = int(window_raw[2])
+            yf = yi + int(window_raw[3])
+            extent = (xi, xf - xi, yi, yf - yi)
+            self.extent_slice = window               # clipped slices for actual indexing
+        else:
+            extent = window_extent(window)           # (x, w, y, h) format
+            self.extent_slice = window_slice(extent) # 2 slice format
+
+            # Handle the case where the window is not rectangular.
+            if isinstance(window, np.ndarray):    # Boolean array
+                self.subwindow = window[*self.extent_slice]
+            else:                                 # Lists of indices (y_ind, x_ind)
+                self.subwindow = (
+                    window[0] - extent[2],        # y_ind - y_start
+                    window[1] - extent[0],        # x_ind - x_start
+                )
 
         # Error check the window against the parent SLM's shape.
         if (
@@ -94,9 +105,10 @@ class SegmentedSLM(SLM):
             settle_time_s=parent.settle_time_s,
         )
 
-        # Load source data from the parent SLM.
-        self.source["amplitude"] = self.parent.source["amplitude"][*self.extent_slice]
-        self.source["phase"] = self.parent.source["phase"][*self.extent_slice]
+        # Load source data from the parent SLM when available.
+        for key in ("amplitude", "phase"):
+            if key in self.parent.source:
+                self.source[key] = self.parent.source[key][*self.extent_slice]
 
     def close(self):
         """Raise an error when attempting to close a segmented SLM."""
@@ -133,13 +145,13 @@ class SegmentedSLM(SLM):
         if self.subwindow is None:                  # Rectangular window case
             self.parent.display[*self.extent_slice] = display
         else:                                       # Non-rectangular window case
-            self.parent.display[*self.extent_slice][*self.subwindow] = display[*self.subwindow]
+            self.parent.display[*self.extent_slice][self.subwindow] = display[self.subwindow]
 
         # Update the parent SLM's hardware if desired.
         if refresh is None:
             refresh = self.refresh
         if refresh:
-            self.parent._set_phase_hw(self.parent.display["phase"])
+            self.parent._set_phase_hw(self.parent.display)
 
     def set_input_trigger(self, on : bool = False):
         r"""

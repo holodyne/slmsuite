@@ -3,6 +3,9 @@ Template for writing a subclass for SLM hardware control in :mod:`slmsuite`.
 Outlines which SLM superclass functions must be implemented.
 """
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 class Template(SLM):
     """

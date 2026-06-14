@@ -13,6 +13,10 @@ except ImportError:
     pylon = None
     warnings.warn("pypylon not installed. Install to use Basler cameras.")
 
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
+
 
 class Basler(Camera):
     """
@@ -29,7 +33,7 @@ class Basler(Camera):
     # Class variable (same for all instances of Basler) pointing to a singleton SDK.
     sdk = None
 
-    def __init__(self, serial=None, pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, serial=None, pitch_um=None, **kwargs):
         """
         Initialize Basler camera and attributes.
 
@@ -42,8 +46,6 @@ class Basler(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -51,24 +53,17 @@ class Basler(Camera):
             raise ImportError("pypylon not installed. Install to use Basler cameras.")
 
         if Basler.sdk is None:
-            if verbose:
-                print("pylon initializing... ", end="")
+            logger.debug("pylon initializing...")
             Basler.sdk = pylon.TlFactory.GetInstance()
-            if verbose:
-                print("success")
 
-        if verbose:
-            print("Looking for cameras... ", end="")
+        logger.debug("Looking for cameras...")
         device_list = Basler.sdk.EnumerateDevices()
-        if verbose:
-            print("success")
 
         serial_list = [dev.GetSerialNumber() for dev in device_list]
         if serial is None or serial == "":
-            if len(device_list)==0:
+            if len(device_list) == 0:
                 raise RuntimeError("No cameras found by pylon.")
-            if verbose:
-                print("No serial given... Choosing first of ", serial_list)
+            logger.info("No serial given; choosing first of %s", serial_list)
             serial = serial_list[0]
             device = Basler.sdk.CreateDevice(device_list[0])
         else:
@@ -79,8 +74,7 @@ class Basler(Camera):
                     "Serial " + serial + " not found by pylon. Available: ", serial_list
                 )
 
-        if verbose:
-            print("pylon sn " "{}" " initializing... ".format(serial), end="")
+        logger.debug("pylon sn '%s' initializing...", serial)
         self.cam = pylon.InstantCamera()
         self.cam.Attach(device)
         self.cam.Open()
@@ -112,7 +106,7 @@ class Basler(Camera):
             )
 
         except Exception as e:
-            warnings.warn("Basler default settings failed to apply:\n{}".format(e))
+            logger.warning("Basler default settings failed: %s", e)
 
         # Initialize the superclass attributes.
         super().__init__(
@@ -123,8 +117,7 @@ class Basler(Camera):
             **kwargs
         )
 
-        if verbose:
-            print("success")
+        self.logger.debug("Basler camera initialized.")
 
     def close(self, close_sdk=True):
         """

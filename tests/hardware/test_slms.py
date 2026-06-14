@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from slmsuite.hardware.slms.simulated import SimulatedSLM
+from slmsuite.hardware.slms.segmented import SegmentedSLM
 
 
 class TestSLM:
@@ -294,3 +295,149 @@ class TestSLM:
         with subtests.test("spot radius positive"):
             r = slm.get_spot_radius_kxy()
             assert r > 0
+
+
+class TestSegmented:
+    """Tests for SegmentedSLM and SLM.segment()."""
+
+    def test_segment_grid(self, subtests):
+        """segment() produces the right count, shapes, and refresh assignment."""
+        parent = SimulatedSLM(resolution=(120, 128))  # shape (h=128, w=120)
+        children = parent.segment((2, 3))             # 2 rows, 3 cols → 6 children
+
+        with subtests.test("count"):
+            assert len(children) == 6
+
+        with subtests.test("shape"):
+            # segment_shape = (128//2, 120//3) = (64, 40) → each child shape (h, w)
+            for child in children:
+                assert child.shape == (64, 40)
+
+        with subtests.test("only last child has refresh"):
+            assert all(not c.refresh for c in children[:-1])
+            assert children[-1].refresh is True
+
+        with subtests.test("segments are SegmentedSLM instances"):
+            assert all(isinstance(c, SegmentedSLM) for c in children)
+
+        parent.close()
+
+    def test_segment_write_through(self, subtests):
+        """Writing integer data to a segment is reflected in the correct parent region."""
+        parent = SimulatedSLM(resolution=(128, 128))  # shape (128, 128)
+        children = parent.segment((2, 2))             # 4 quadrants, each (64, 64)
+
+        parent.display[:] = 0  # start with blank slate
+        parent_writes = [0]
+
+        def _count_hw(display):
+            parent_writes[0] += 1
+        parent._set_phase_hw = _count_hw
+
+        # Write a distinct value per segment.
+        for i, child in enumerate(children):
+            val = i + 1
+            child.set_phase(
+                np.full(child.shape, val, dtype=parent.dtype),
+                phase_correct=False,
+            )
+            with subtests.test(f"child {i} display updated"):
+                assert np.all(child.display == val)
+            if i < len(children) - 1:  # only the last child should update the parent immediately
+                with subtests.test(f"parent unchanged after child {i} write"):
+                    assert parent_writes[0] == 0
+            else:
+                with subtests.test("parent updated after last child write"):
+                    assert parent_writes[0] == 1
+
+        # Each quadrant of the parent display must equal the child's display.
+        for i, child in enumerate(children):
+            with subtests.test(f"quadrant {i}"):
+                np.testing.assert_array_equal(
+                    parent.display[child.extent_slice],
+                    child.display,
+                )
+
+        # Quadrants must be disjoint: no two children wrote to the same pixel.
+        covered = np.zeros(parent.shape, dtype=int)
+        for child in children:
+            covered[child.extent_slice] += 1
+        with subtests.test("disjoint coverage"):
+            assert np.all(covered[covered > 0] == 1)
+
+        parent.close()
+
+    def test_segment_boolean_window(self):
+        """Non-rectangular boolean mask: only masked pixels are written to parent."""
+        parent = SimulatedSLM(resolution=(64, 64))
+
+        # Checkerboard-like mask in the upper-left 32×32 region.
+        mask = np.zeros(parent.shape, dtype=bool)
+        mask[:32, :32] = True
+        mask[::2, ::2] = False  # punch holes so it is genuinely non-rectangular
+
+        child = SegmentedSLM(parent, window=mask, name="sparse")
+        assert child.subwindow is not None
+
+        parent.display[:] = 0
+        val = parent.bitresolution // 2
+        child.set_phase(
+            np.full(child.shape, val, dtype=parent.dtype),
+            phase_correct=False,
+        )
+
+        # Pixels inside the subwindow should equal val; others must stay 0.
+        sub = parent.display[child.extent_slice]
+        assert np.all(sub[child.subwindow] == val)
+        assert np.all(sub[~child.subwindow] == 0)
+
+        parent.close()
+
+    def test_segment_index_list_window(self):
+        """Non-rectangular index-list window: only indexed pixels are written to parent."""
+        parent = SimulatedSLM(resolution=(64, 64))
+
+        # Diagonal stripe: y == x, within a 32x32 sub-region.
+        coords = np.arange(32)
+        y_ind = coords + 8   # rows 8..39
+        x_ind = coords + 16  # cols 16..47
+
+        child = SegmentedSLM(parent, window=(y_ind, x_ind), name="diag")
+        assert child.subwindow is not None
+
+        parent.display[:] = 0
+        val = parent.bitresolution // 2
+        child.set_phase(
+            np.full(child.shape, val, dtype=parent.dtype),
+            phase_correct=False,
+        )
+
+        # Each indexed pixel in the parent should equal val.
+        assert np.all(parent.display[y_ind, x_ind] == val)
+        # All other pixels must remain 0.
+        mask = np.zeros(parent.shape, dtype=bool)
+        mask[y_ind, x_ind] = True
+        assert np.all(parent.display[~mask] == 0)
+
+        parent.close()
+
+    def test_segment_out_of_bounds(self):
+        """A window that extends beyond the parent raises ValueError."""
+        parent = SimulatedSLM(resolution=(64, 64))
+        with pytest.raises(ValueError, match="out of bounds"):
+            SegmentedSLM(parent, window=(50, 30, 0, 64), name="oob")
+        parent.close()
+
+    def test_segment_source_inherits(self):
+        """Child source arrays are views into the parent source at the right region."""
+        parent = SimulatedSLM(resolution=(64, 64))
+        parent.set_source_analytic()   # populates source["amplitude"] and source["phase"]
+
+        children = parent.segment((2, 2))
+        for child in children:
+            np.testing.assert_array_equal(
+                child.source["amplitude"],
+                parent.source["amplitude"][child.extent_slice],
+            )
+
+        parent.close()

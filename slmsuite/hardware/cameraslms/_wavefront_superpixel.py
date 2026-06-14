@@ -1,9 +1,9 @@
 import cv2
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import optimize
 from tqdm.auto import tqdm
-import warnings
 
 from slmsuite import __version__
 from slmsuite.holography import analysis
@@ -369,7 +369,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 if test_index is None:
                     raise ValueError(message)
                 else:
-                    warnings.warn(message + " This message will error if running the full calibration.")
+                    self.logger.warning("%s This message will error if running the full calibration.", message)
 
         # Error check interference point proximity to the 0th order.
         dorder = field_point - base_point
@@ -386,7 +386,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 order_distance = order_distance_this
 
         if np.mean(interference_window) > order_distance:
-            warnings.warn(
+            self.logger.warning(
                 "The requested calibration point(s) are close to the expected positions of "
                 "the field diffractive orders. Consider moving calibration regions further away."
             )
@@ -402,7 +402,7 @@ class _WavefrontCalibrationSuperpixel(object):
         )
 
         if np.mean(interference_window)/2 > reflection_distance:
-            warnings.warn(
+            self.logger.warning(
                 "The requested calibration points are close to the expected positions of "
                 "the -1th orders of calibration points. Consider shifting the calibration regions "
                 "relative to the 0th order. Alternatively, use the avoid_mirrors= parameter "
@@ -473,14 +473,14 @@ class _WavefrontCalibrationSuperpixel(object):
             )
 
         def superpixels(
-                schedule=None,
-                reference_phase=None,
-                target_phase=None,
-                reference_blaze=reference_blazes,
-                target_blaze=calibration_blazes,
-                phase_baselines=None,
-                plot=False
-            ):
+            schedule=None,
+            reference_phase=None,
+            target_phase=None,
+            reference_blaze=reference_blazes,
+            target_blaze=calibration_blazes,
+            phase_baselines=None,
+            plot=False
+        ):
             """
             Helper function for making superpixel phase masks.
 
@@ -571,7 +571,7 @@ class _WavefrontCalibrationSuperpixel(object):
             try:
                 popt, _ = optimize.curve_fit(cos, phases, intensities, p0=guess)
             except BaseException:
-                warnings.warn("Curve fitting failed; nulling response from this superpixel.")
+                self.logger.warning("Curve fitting failed; nulling response from this superpixel.")
                 return 0, 0, 0, 0
 
             # Extract phase and amplitude from fit.
@@ -600,7 +600,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 plt.xlabel(r"$\phi$ $[\pi]$")
                 plt.ylabel("Signal")
 
-                plt.show()
+                _slmsuite_plt_show(name="wavefront_calibrate_superpixel_fit_1D")
 
             return best_phase, amp, r2, contrast
 
@@ -740,7 +740,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 for index, title in enumerate(["Image", "Guess", "Fit"]):
                     axs[index].set_title(title)
 
-                plt.show()
+                _slmsuite_plt_show(name="wavefront_calibrate_superpixel_fit_2D")
 
             return final
 
@@ -887,7 +887,7 @@ class _WavefrontCalibrationSuperpixel(object):
                                 fig.canvas.get_width_height()[::-1] + (4,)
                             )[:,:,:3]
                     except:
-                        warnings.warn(
+                        self.logger.warning(
                             "Failed to convert figure to image for wavefront_calibrate movie. "
                             "Returning a blank image instead."
                         )
@@ -900,7 +900,8 @@ class _WavefrontCalibrationSuperpixel(object):
 
                     return image_from_plot
                 else:
-                    plt.show()
+                    title_parsed = title.replace(" ", "_").lower()
+                    _slmsuite_plt_show(name=f"wavefront_calibrate_superpixel_{title_parsed}")
 
         def take_interference_regions(img, integrate=True):
             """Helper function for grabbing the data at the calibration points."""
@@ -1410,9 +1411,9 @@ class _WavefrontCalibrationSuperpixel(object):
                 norm_ave = np.nanmean(norm)
                 norm_min = np.nanmin(norm)
                 if (np.median(pwr_below_r2) - pwr_min) / np.nanstd(pwr) < .5 and pwr_min < norm_min:
-                    warnings.warn(
-                        f"remove_background is enabled and a noise floor was detected; "
-                        f"removing this background ({pwr_min/norm_ave}% of the average normalization)."
+                    self.logger.warning(
+                        "remove_background is enabled and a noise floor was detected; "
+                        "removing this background (%s%% of the average normalization).", pwr_min/norm_ave
                     )
                     back[:] = pwr_min
 
@@ -1736,5 +1737,5 @@ class _WavefrontCalibrationSuperpixel(object):
         plt.xticks([])
         plt.yticks([])
 
-        plt.show()
+        _slmsuite_plt_show(name="wavefront_calibration_superpixel_plot_raw")
 

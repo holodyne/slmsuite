@@ -31,6 +31,10 @@ except ImportError:
     instrument = None
     warnings.warn("instrumental-lib not installed. Install to use Instrumental cameras.")
 
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
+
 
 class Instrumental(Camera):
     """
@@ -48,7 +52,7 @@ class Instrumental(Camera):
 
     ### Initialization and termination ###
 
-    def __init__(self, cam=None, pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, cam=None, pitch_um=None, **kwargs):
         """
         Initialize camera and attributes. Initial profile is ``"single"``.
 
@@ -76,8 +80,6 @@ class Instrumental(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         kwargs
             See :meth:`.Camera.__init__` for permissible options.
 
@@ -96,7 +98,7 @@ class Instrumental(Camera):
                 raise RuntimeError("No instrumental cameras detected.")
             else:
                 if len(instruments) > 1:
-                    warnings.warn(f"Multiple instruments detected; using first of {instruments}")
+                    logger.warning("Multiple instruments detected; using first of %s", instruments)
                 cam = list_instruments()[0]
 
         if isinstance(cam, ParamSet):
@@ -108,7 +110,7 @@ class Instrumental(Camera):
             )
 
         name = kwargs.pop("name", cam.model.decode("utf-8") + "_" + cam.serial.decode("utf-8"))
-        if verbose: print(f"Cam {name} parsing... ", end="")
+        logger.debug("Cam %s parsing...", name)
         self.cam = cam
 
         super().__init__(
@@ -118,7 +120,7 @@ class Instrumental(Camera):
             name=name,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("Instrumental camera initialized.")
 
     def close(self):
         """

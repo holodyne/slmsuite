@@ -16,6 +16,10 @@ except ImportError:
     pymmcore = None
     warnings.warn("pymmcore not installed. Install to use Micro-Manager cameras.")
 
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
+
 class MMCore(Camera):
     """
     Micro-Manager camera.
@@ -31,7 +35,6 @@ class MMCore(Camera):
         config,
         path="C:\\Program Files\\Micro-Manager-2.0",
         pitch_um=None,
-        verbose=True,
         **kwargs
     ):
         """
@@ -51,8 +54,6 @@ class MMCore(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -67,16 +68,12 @@ class MMCore(Camera):
             config_path = os.path.join(path, config_path)
 
         # Load mmcore.
-        if verbose:
-            print("CMMCore initializing... ", end="")
+        logger.debug("CMMCore initializing...")
         self.cam = pymmcore.CMMCore()
         self.cam.setDeviceAdapterSearchPaths([path])
-        if verbose:
-            print("success")
 
         # Load the camera using the config.
-        if verbose:
-            print(f"'{config}' initializing... ", end="")
+        logger.debug("'%s' initializing...", config)
         self.cam.loadSystemConfiguration(os.path.join(config_path, config + ".cfg"))
 
         # Fill in slmsuite variables.
@@ -87,7 +84,7 @@ class MMCore(Camera):
             name=config,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("Micro-Manager camera initialized.")
 
     @staticmethod
     def info(path="C:\\Program Files\\Micro-Manager-2.0"):

@@ -22,7 +22,8 @@ interfaces which support UC480 drivers.
 
 Note
 ~~~~
-Color camera functionality is not currently implemented, and will lead to undefined behavior.
+Color cameras reduce each frame to a single channel selected by the base-class
+:attr:`~slmsuite.hardware.cameras.camera.Camera.color_channel` setting.
 """
 
 import os
@@ -32,6 +33,9 @@ import numpy as np
 import warnings
 
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 DEFAULT_DLL_PATH = (
     "C:\\Program Files\\Thorlabs\\Scientific Imaging\\"
@@ -57,6 +61,11 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
             dll_path += "64_lib"
         else:
             dll_path += "32_lib"
+
+    if not os.path.exists(dll_path) or not os.path.isdir(dll_path):
+        warnings.warn(
+            f"Thorlabs camera DLL path does not exist.\n'{dll_path}'"
+        )
 
     if hasattr(os, "add_dll_directory"):
         try:
@@ -104,7 +113,7 @@ class ThorCam(Camera):
 
     ### Initialization and termination ###
 
-    def __init__(self, serial="", verbose=True, **kwargs):
+    def __init__(self, serial="", **kwargs):
         """
         Initialize camera and attributes. Initial profile is ``"single"``.
 
@@ -127,26 +136,20 @@ class ThorCam(Camera):
             raise ImportError("thorlabs_tsi_sdk not installed. Install to use Thorlabs cameras.")
 
         if ThorCam.sdk is None:
-            if verbose:
-                print("TLCameraSDK initializing... ", end="")
+            logger.debug("TLCameraSDK initializing...")
             try:
                 ThorCam.sdk = TLCameraSDK()
             except:
-                print("failure")
+                logger.error("TLCameraSDK initialization failed.")
                 raise RuntimeError(
                     "TLCameraSDK() open failed. "
                     "Is thorlabs_tsi_sdk installed? "
                     "Are the .dlls in the directory added by _configure_tlcam_dll_path? "
                     "Sometimes adding the .dlls to the working directory can help."
                 )
-            if verbose:
-                print("success")
 
-        if verbose:
-            print("Looking for cameras... ", end="")
+        logger.debug("Looking for cameras...")
         camera_list = ThorCam.sdk.discover_available_cameras()
-        if verbose:
-            print("success")
 
         if serial == "":
             if len(camera_list) == 0:
@@ -157,8 +160,7 @@ class ThorCam(Camera):
                 f"Serial '{serial}' not found by TLCameraSDK. Availible: {camera_list}"
             )
 
-        if verbose:
-            print(f"ThorCam sn '{serial}' initializing... ", end="")
+        logger.debug("ThorCam sn '%s' initializing...", serial)
         self.cam = ThorCam.sdk.open_camera(serial)
 
         self.cam.is_led_on = False
@@ -177,7 +179,7 @@ class ThorCam(Camera):
             name=serial,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("ThorCam initialized.")
 
     def close(self, close_sdk=False):
         """

@@ -320,13 +320,13 @@ class TestCamera:
         slm.set_source_analytic()
 
         fs = FourierSLM(camera, slm)
-        fs.fourier_calibrate(array_pitch=10, verbose=False)
+        fs.fourier_calibrate(array_pitch=10)
 
         defocus_zernike = 1
         slm.source["phase_sim"] = zernike(slm, 4, -defocus_zernike, use_mask=False)
 
         with subtests.test("recovers defocus"):
-            defocus_opt = camera.autofocus(set_z=slm, verbose=False)
+            defocus_opt = camera.autofocus(set_z=slm)
             assert pytest.approx(defocus_opt, rel=0.25) == defocus_zernike
 
         with subtests.test("set_z validation"):

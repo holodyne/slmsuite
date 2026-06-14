@@ -21,6 +21,9 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 from slmsuite.holography.analysis import _make_8bit
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 from slmsuite.holography.toolbox import pad
 
 
@@ -460,4 +463,4 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
         except ImportError:
             warnings.warn("pip install pygifsicle to optimize .gif file size.")
         except Exception as e:
-            warnings.warn(f"pygifsicle optimization failed: {e}")
+            logger.warning("pygifsicle optimization failed: %s", e)

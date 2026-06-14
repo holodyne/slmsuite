@@ -20,8 +20,11 @@ For example, the following code loads a UC480 camera:
 
 Note
 ~~~~
-Color camera functionality is not currently implemented, and will lead to undefined behavior.
+Color cameras reduce each frame to a single channel selected by the base-class
+:attr:`~slmsuite.hardware.cameras.camera.Camera.color_channel` setting, for both
+single-frame and batch/averaging acquisition.
 """
+import numpy as np
 import warnings
 from slmsuite.hardware.cameras.camera import Camera
 
@@ -30,6 +33,10 @@ try:
 except:
     ICamera = None
     warnings.warn("pylablib not installed. Install to use PyLabLib cameras.")
+
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 class PyLabLib(Camera):
     """
@@ -43,7 +50,7 @@ class PyLabLib(Camera):
 
     ### Initialization and termination ###
 
-    def __init__(self, cam=None, pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, cam=None, pitch_um=None, **kwargs):
         """
         Initialize camera and attributes. Initial profile is ``"single"``.
 
@@ -69,8 +76,6 @@ class PyLabLib(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         kwargs
             See :meth:`.Camera.__init__` for permissible options.
 
@@ -103,18 +108,18 @@ class PyLabLib(Camera):
             name = "pylablibcamera"
         name = kwargs.pop("name", name)
 
-        if verbose: print(f"Cam {name} parsing... ", end="")
+        logger.debug("Cam %s parsing...", name)
         height, width = cam.get_data_dimensions()
         self.cam = cam
 
         super().__init__(
             (width, height),
-            bitdepth=8,         # Currently defaults to 8 because pylablib doesn't cache this. Update in the future, maybe.
-            pitch_um=pitch_um,  # Currently unset because pylablib doesn't cache this. Update in the future, maybe.
+            bitdepth=kwargs.pop("bitdepth", 8),     # Currently defaults to 8 because pylablib doesn't cache this for most cameras. Update in the future, maybe.
+            pitch_um=pitch_um,                      # Currently unset because pylablib doesn't cache this. Update in the future, maybe.
             name=name,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("PyLabLib camera initialized.")
 
     def close(self):
         """
@@ -228,4 +233,5 @@ class PyLabLib(Camera):
         if out is not None:
             out[...] = imgs
             return out
-        return imgs
+        else:
+            return np.array(imgs)

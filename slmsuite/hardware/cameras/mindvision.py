@@ -13,6 +13,9 @@ import numpy as np
 import warnings
 
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 
 try:
@@ -29,7 +32,7 @@ class MindVision(Camera):
     # Class variable (same for all instances of MindVision) pointing to a singleton SDK.
     sdk = None
 
-    def __init__(self, serial="", pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, serial="", pitch_um=None, **kwargs):
         """
         Initialize the MindVision camera and attributes.
 
@@ -43,8 +46,6 @@ class MindVision(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -52,12 +53,11 @@ class MindVision(Camera):
             raise ImportError("mvsdk not installed.")
 
         if MindVision.sdk is None:
-            if verbose: print("mvsdk initializing... ", end="")
+            logger.debug("mvsdk initializing...")
             _mvsdk._Init()
-            if verbose: print("success")
 
         # Grab the list of cameras.
-        if verbose: print("Looking for cameras... ", end="")
+        logger.debug("Looking for cameras...")
         camera_list = _mvsdk.CameraEnumerateDevice()
         if not camera_list: raise RuntimeError("No cameras found by mvsdk.")
         serial_list = [cam.GetSn() for cam in camera_list]
@@ -69,19 +69,17 @@ class MindVision(Camera):
                 raise RuntimeError(f"Serial {serial} not found.\nAvailable: {serial_list}")
         else:
             self.cam = camera_list[0]
-            if len(camera_list) > 1 and verbose:
-                print(f"No serial given... Choosing first of {serial_list}...")
-        if verbose:
-            print("success")
+            if len(camera_list) > 1:
+                logger.debug("No serial given; choosing first of %s", serial_list)
         serial = self.cam.GetSn()
 
         # Turn the camera on.
-        if verbose: print(f"Initializing sn '{serial}'... ", end="")
+        logger.debug("Initializing sn '%s'...", serial)
         self.handle = 0
         try:
             self.handle = _mvsdk.CameraInit(self.cam, -1, -1)
         except _mvsdk.CameraException as e:
-            print("CameraInit Failed ({}):\n{}".format(e.error_code, e.message))
+            logger.error("CameraInit failed (%s): %s", e.error_code, e.message)
             raise e
 
         # Fill in parameters from the capability class.
@@ -91,7 +89,7 @@ class MindVision(Camera):
             _mvsdk.CameraSetIspOutFormat(self.handle, _mvsdk.CAMERA_MEDIA_TYPE_MONO8)
         else:
             _mvsdk.CameraSetIspOutFormat(self.handle, _mvsdk.CAMERA_MEDIA_TYPE_BGR8)
-            warnings.warn("Camera is not grayscale. Color cameras may cause issues in slmsuite.")
+            logger.warning("Camera is not grayscale. Color cameras may cause issues in slmsuite.")
         _mvsdk.CameraSetTriggerMode(self.handle, 1)
         _mvsdk.CameraSetAeState(self.handle, 0)
         _mvsdk.CameraSetExposureTime(self.handle, 30 * 1000)
@@ -122,7 +120,7 @@ class MindVision(Camera):
             name=serial,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("MindVision camera initialized.")
 
     def close(self):
         """
