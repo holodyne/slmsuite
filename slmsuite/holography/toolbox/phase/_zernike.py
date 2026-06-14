@@ -609,7 +609,6 @@ def _zernike_sum_from_basis(basis, weights, out=None):
     if N == 1:
         return result.reshape(basis.grid_shape)
     return result.reshape((N,) + basis.grid_shape)
-    return result
 
 
 # Transparent ZernikeBasis cache. Building the (D, h, w) basis images is the

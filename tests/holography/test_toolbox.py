@@ -112,7 +112,7 @@ def test_convert_vector(slm, subtests):
             convert_vector((0, 0), "norm", "knm", **hw), shape_default / 2.0
         )
 
-    zernike_scale = 2 * np.pi * np.reciprocal(np.mean(slm.zernike_scaling))
+    zernike_scale = 2 * np.pi * np.reciprocal(slm.aperture._isotropic_scale())
 
     with subtests.test("norm <-> zernike"):
         np.testing.assert_allclose(

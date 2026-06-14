@@ -788,7 +788,7 @@ class DLPC900:
                 f"{len(devices)} DLPC900 PLM(s) found."
             )
         self._device_info = devices[device_number]
-        print(self._device_info)
+        # Debug info (enable explicitly if needed):
         # print(
         #     f"DLPC900 device {device_number}/{len(devices)}: "
         #     f"path={self._device_info['path'].decode()}"
