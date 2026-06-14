@@ -182,7 +182,7 @@ class FeedbackHologram(Hologram):
         b1 = np.matmul(M1, -toolbox.format_2vectors(np.flip(np.squeeze(self.shape)) / 2))
 
         # Second transformation.
-        affine = self.fourier_affine
+        affine = self.cameraslm.fourier_affine
         M2 = affine.M
         b2 = affine.b
 

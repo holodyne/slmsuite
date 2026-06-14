@@ -490,9 +490,9 @@ class TestCamera:
         # Sensor: width=200, height=100 (non-square to expose axis-swap bugs).
         W, H = 200, 100
         WOI = (20, 80, 10, 60)   # (x0=20, w=80, y0=10, h=60)  unbinned, untransformed
-        BINNING = (2, 4)          # (biny=2, binx=4)
+        BINNING = (2, 4)          # (binx=2, biny=4)
 
-        # WOI = (x0=20, w=80, y0=10, h=60), BINNING = (biny=2, binx=4)
+        # WOI = (x0=20, w=80, y0=10, h=60), BINNING = (binx=2, biny=4)
         # → w_bin=20, h_bin=30
         # The push-orientation matrix maps unt=(0,0) to t (the translation vector).
         # Each row below: (label, cam-kwargs, expected-ijcam-of-WOI-origin)

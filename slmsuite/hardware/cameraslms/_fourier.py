@@ -577,7 +577,7 @@ class _FourierCalibration(object):
         if basis == "kxy":
             return (1 / slm_size[0], 1 / slm_size[1])
         elif basis == "ij":
-            # Use the WOI/binning/orientation-aware affine 
+            # Use the WOI/binning/orientation-aware affine
             # so the de-rotation lives in the same coordinate frame as kxyslm_to_ijcam below.
             M = self.fourier_affine.M
             # Compensate for spot rotation s.t. spot size is along camera axes
@@ -623,7 +623,7 @@ class _FourierCalibration(object):
 
         # Gather f_eff in pix/rad. This is WOI-invariant (WOI only shifts the affine
         # offset, not M) and binning-invariant in metric units (the 1/bin factor in
-        # fourier_affine cancels the *bin factor in cam.pitch_um). 
+        # fourier_affine cancels the *bin factor in cam.pitch_um).
         f_eff = np.sqrt(np.abs(self.fourier_affine.det()))
 
         # Gather other conversions.
