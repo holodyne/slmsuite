@@ -46,7 +46,8 @@ def configure_plotting(
             Save figures to ``save_dir`` (using ``extension`` and
             ``savefig_kwargs``), then close.
         callable
-            Called in place of ``plt.show()``.
+            Called in place of ``plt.show()``, though it must also accept ``name=``
+            which is used to identify the plot.
 
     save_dir : str or path-like, optional
         Output directory for ``"save"`` mode.  Created if absent.  The filename
@@ -66,7 +67,11 @@ def configure_plotting(
     """
     import matplotlib
     if headless:
-        matplotlib.use("Agg")
+        try:
+            import matplotlib.pyplot as plt
+            plt.switch_backend("Agg")
+        except Exception:
+            matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
     global _save_dir, _current_handler
 

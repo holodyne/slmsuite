@@ -24,14 +24,14 @@ class _Common(_Viewable, _Loggable, ABC):
         width, height = format_shape(resolution)
         self.shape = (height, width)
 
-        # Parse datatype variables.
-        self.bitdepth = int(bitdepth)
-        self.dtype = self._get_dtype()
-
         # Remember the name.
         self.name = str(name)
         if len(self.name) == 0:
             self.name = str(self.__class__.__name__)
+
+        # Parse datatype variables.
+        self.bitdepth = int(bitdepth)
+        self.dtype = self._get_dtype()
 
         # Parse spatial dimensions.
         if pitch_um is None:
