@@ -65,6 +65,7 @@ images = [
 jupyter = [
     "jupyter",
     "ipywidgets",
+    "ipyevents",
     "slmsuite[images]",
 ]
 docs = [

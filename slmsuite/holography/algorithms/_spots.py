@@ -536,9 +536,9 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 self._x_grid = cp.array(x_grid.ravel(), copy=True, dtype=np.float32)
                 self._y_grid = cp.array(y_grid.ravel(), copy=True, dtype=np.float32)
 
-                scale = np.float32(self.cameraslm.slm.get_source_zernike_scaling())
-                self._x_grid *= scale
-                self._y_grid *= scale
+                (x_scale, y_scale) = self.cameraslm.slm.zernike_scaling
+                self._x_grid *= np.float32(x_scale)
+                self._y_grid *= np.float32(y_scale)
 
                 self.cuda = True
 
@@ -615,7 +615,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
         # Make the grids if they aren't there. Complex to reduce overhead, ironically.
         if not hasattr(self, "_grid_complex"):
-            (x_scale, y_scale) = tphase.zernike_aperture(self.cameraslm.slm, aperture=None)
+            (x_scale, y_scale) = self.cameraslm.slm.zernike_scaling
             self._grid_complex = (
                 cp.array(self.cameraslm.slm.grid[0] * x_scale, dtype=self.dtype_complex),
                 cp.array(self.cameraslm.slm.grid[1] * y_scale, dtype=self.dtype_complex)

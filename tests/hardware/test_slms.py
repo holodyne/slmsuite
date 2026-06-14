@@ -185,28 +185,93 @@ class TestSLM:
             )
             np.testing.assert_allclose(src["amplitude"], 1.0)
 
-    def test_fit_source_amplitude(self, slm, subtests):
-        """fit_source_amplitude with and without measured amplitude."""
+    def test_fit_aperture(self, slm, subtests):
+        """fit_aperture with and without measured amplitude, and idempotency."""
+        from slmsuite.holography.toolbox import Aperture
+
         with subtests.test("no amplitude -> guesses from grid"):
             slm.source.pop("amplitude", None)
-            slm.source.pop("amplitude_center_pix", None)
-            slm.fit_source_amplitude(force=True)
-            assert "amplitude_center_pix" in slm.source
-            assert "amplitude_radius" in slm.source
+            slm.set_aperture("cropped")
+            ap = slm.fit_aperture()
+            assert isinstance(ap, Aperture)
+            assert slm.source_radius > 0
 
         with subtests.test("with amplitude -> moments method"):
             slm.set_source_analytic()
-            slm.fit_source_amplitude(method="moments", force=True)
-            assert slm.source["amplitude_radius"] > 0
+            slm.fit_aperture(method="moments")
+            assert slm.source_radius > 0
+            assert slm.aperture.center is not None
 
-        with subtests.test("force=False skips recomputation"):
-            old_radius = slm.source["amplitude_radius"]
-            slm.fit_source_amplitude(force=False)
-            assert slm.source["amplitude_radius"] == old_radius
+        with subtests.test("idempotent (no cumulative grid drift)"):
+            slm.fit_aperture()
+            g1 = [g.copy() for g in slm.grid]
+            slm.fit_aperture()
+            g2 = slm.grid
+            assert all(np.allclose(a, b) for a, b in zip(g1, g2))
 
-        with subtests.test("extent_threshold > 1 raises"):
-            with pytest.raises(RuntimeError, match="extent_threshold"):
-                slm.fit_source_amplitude(extent_threshold=1.5, force=True)
+        with subtests.test("bad method raises"):
+            with pytest.raises(ValueError, match="method"):
+                slm.fit_aperture(method="bogus")
+
+    def test_aperture(self, slm, subtests):
+        """set_aperture, masking, and the zernike_sum unification invariant."""
+        from slmsuite.holography.toolbox.phase import zernike_sum
+
+        with subtests.test("default cropped masks nothing"):
+            slm.set_aperture("cropped")
+            assert np.all(slm.aperture_mask)
+
+        with subtests.test("circular radius produces a sub-aperture"):
+            slm.set_aperture(radius=0.3, units="frac")
+            m = slm.aperture_mask
+            assert 0 < m.mean() < 1
+
+        with subtests.test("unification: aperture_mask == Aperture.mask"):
+            from slmsuite.holography.toolbox import Aperture
+            assert np.array_equal(
+                slm.aperture_mask, Aperture.resolve(slm).mask
+            )
+
+        with subtests.test("aperture masks the source amplitude"):
+            slm.source.pop("amplitude", None)
+            assert np.array_equal(slm._get_source_amplitude() > 0, slm.aperture_mask)
+
+        with subtests.test("spec and radius mutually exclusive"):
+            with pytest.raises(ValueError):
+                slm.set_aperture("circular", radius=0.3)
+
+        with subtests.test("source_radius rejects an anisotropic aperture"):
+            # A single radius cannot describe an elliptical aperture; fail loudly
+            # rather than silently averaging the two axis scales.
+            slm.set_aperture((0.01, 0.02))
+            with pytest.raises(ValueError, match="isotropic"):
+                _ = slm.source_radius
+            slm.set_aperture(radius=0.3, units="frac")
+            assert slm.source_radius > 0
+
+        with subtests.test("unification holds for a centered aperture"):
+            # Regression for the resolve double-centering bug: with a non-default
+            # center, slm.grid is already shifted, so a resolved aperture must NOT
+            # re-subtract the center. slm.aperture_mask and Aperture.resolve(slm).mask
+            # must agree (and resolve(slm) returns the SLM's own aperture).
+            from slmsuite.holography.toolbox import Aperture
+            cx, cy = slm.shape[1] / 2 + 120, slm.shape[0] / 2 - 80
+            slm.set_aperture(radius=0.3, units="frac", center=(cx, cy))
+            assert slm.aperture.center is not None
+            assert Aperture.resolve(slm) is slm.aperture
+            assert np.array_equal(
+                np.asarray(slm.aperture_mask),
+                np.asarray(Aperture.resolve(slm).mask),
+            )
+
+        with subtests.test("zernike_sum masks a centered aperture consistently"):
+            # The actual pipeline (not just resolve): with use_mask=np.nan the region
+            # outside the aperture is NaN; it must match the SLM's aperture mask.
+            cx, cy = slm.shape[1] / 2 + 120, slm.shape[0] / 2 - 80
+            slm.set_aperture(radius=0.3, units="frac", center=(cx, cy))
+            result = zernike_sum(slm, [4], [1.0], use_mask=np.nan)
+            outside = np.isnan(np.asarray(result))
+            assert np.array_equal(outside, ~np.asarray(slm.aperture_mask))
 
     def test_source_helpers(self, slm, subtests):
         """_get_source_amplitude/phase fallbacks when source is empty."""
@@ -222,6 +287,23 @@ class TestSLM:
             amp = np.random.rand(*slm.shape)
             slm.source["amplitude"] = amp
             np.testing.assert_array_equal(slm._get_source_amplitude(), amp)
+
+        with subtests.test("non-cropping aperture skips the mask multiply but stays safe"):
+            # The default "cropped" aperture masks nothing, so the source is returned
+            # unchanged -- but as an independent array, so a caller mutating the result
+            # (e.g. Hologram's in-place amplitude normalization) cannot corrupt source.
+            slm.set_aperture("cropped")
+            amp = np.random.rand(*slm.shape)
+            slm.source["amplitude"] = amp.copy()
+            got = slm._get_source_amplitude()
+            assert np.array_equal(got, amp)
+            assert got is not slm.source["amplitude"]
+            got *= 2.0
+            assert np.array_equal(slm.source["amplitude"], amp)   # source untouched
+            # A real aperture still masks.
+            slm.set_aperture(radius=0.3, units="frac")
+            masked = slm._get_source_amplitude()
+            assert np.array_equal(masked > 0, slm.aperture_mask)
 
     def test_info(self, slm):
         """info() for SimulatedSLM returns empty list."""
@@ -282,7 +364,7 @@ class TestSLM:
     def test_psf_and_spot_radius(self, slm, subtests):
         """get_point_spread_function_knm and get_spot_radius_kxy."""
         slm.set_source_analytic()
-        slm.fit_source_amplitude(force=True)
+        slm.fit_aperture()
 
         with subtests.test("PSF shape matches SLM"):
             psf = slm.get_point_spread_function_knm()

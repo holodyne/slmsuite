@@ -19,12 +19,13 @@ except ImportError:
     cp = np
 
 from slmsuite.holography.toolbox import format_2vectors, _process_grid
-from slmsuite._logging import make_logger
-
-logger = make_logger(__name__)
-from slmsuite.holography.toolbox.phase import zernike_sum, laguerre_gaussian
+from slmsuite.holography.toolbox.phase import (
+    zernike_sum, laguerre_gaussian, ZernikeBasis, _zernike_get_basis,
+)
 from slmsuite.misc.math import REAL_TYPES
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
+from slmsuite._logging import make_logger
+logger = make_logger(__name__)
 
 # Take and associated functions.
 
@@ -1097,131 +1098,163 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
 
 # Helpers for phase images.
 
+def _wrapped_gradient(phase_images, xp):
+    r"""
+    Wrap-aware central differences of stacked ``phase_images``.
+
+    Returns ``(dx, dy)``, the raw two-pixel central differences along the last
+    and second-to-last axes, cropped to the interior (shapes ``(..., h, w-2)``
+    and ``(..., h-2, w)``). Each is reduced modulo :math:`2\pi` and centred on
+    zero, which folds out :math:`2\pi` phase wraps: where the true phase change
+    over two pixels stays within :math:`(-\pi, \pi)` the result equals the true
+    (unwrapped) central difference, so it is correct everywhere except across
+    vortices. There is no division by two -- the gradient Zernike basis uses the
+    same raw stencil, so the common factor cancels in the fit. Plain slicing is
+    used (not :func:`numpy.gradient`) to keep this per-iteration call cheap.
+    """
+    dx = phase_images[..., :, 2:] - phase_images[..., :, :-2]
+    dy = phase_images[..., 2:, :] - phase_images[..., :-2, :]
+    dx = xp.mod(dx + np.pi, 2 * np.pi) - np.pi
+    dy = xp.mod(dy + np.pi, 2 * np.pi) - np.pi
+    return dx, dy
+
+
 def image_zernike_fit(
     phase_images,
     grid,
     order=10,
-    iterations=2,
     leastsquares=True,
-    unwrap=True,
-    **kwargs
+    aperture=None,
+    use_mask=True,
+    gradient=True,
 ):
-    """
-    Fits sets of Zernike polynomials to a stack of ``phase_images``, up to a desired ``order``.
-    This is done in two steps:
+    r"""
+    Fits sets of Zernike polynomials to a stack of ``phase_images``.
 
-    -   First, an iterative approach is used to subtract Zernike orders from each image.
-        If the Zernike aperture is not cropped or occluded, the orthogonality of the Zernike
-        basis makes this a good and exact approach apart from sampling error.
-        However, if the polynomials lose orthogonality, then this process produces a
-        good guess at best.
-    -   Thus, the second step is to refine the guess with a least squares optimization.
-        This can be time consuming.
+    When ``gradient=True``, the fit is performed against the *gradient* of the
+    phase rather than the phase itself. The gradient of a :math:`2\pi`-wrapped
+    phase equals the gradient of the true unwrapped phase everywhere except at
+    vortices, so this recovers accurate coefficients from a phase-wrapped image
+    without any expensive and fragile 2D unwrapping. In this case,
+    fitting Zernike coefficients is a linear least-squares problem
+    (at the cost of the omission of the piston term).
+    This runs on the GPU when ``phase_images`` (or ``grid``) are :mod:`cupy` arrays.
+
+    When ``gradient=False``, imperfect unwrapping breaks the assumption of linearity,
+    so large phase wraps can lead to inaccurate fits.
 
     Note
     ~~~~
     The piston term (Zernike ANSI index 0) is omitted from the fit return.
 
-    Note
-    ~~~~
-    In the future, we might also fit to the derivatives.
-
     Parameters
     ----------
-    phase_images : numpy.ndarray (``image_count``, ``height``, ``width``)
-        An image or array of phase_images to fit. A single image is interpreted correctly as
-        ``(1, h, w)`` even if ``(h, w)`` is passed.
-    grid : (array_like, array_like) OR None
+    phase_images : numpy.ndarray OR cupy.ndarray (``image_count``, ``height``, ``width``)
+        An image or array of phase_images to fit. A single image is interpreted
+        correctly as ``(1, h, w)`` even if ``(h, w)`` is passed.
+    grid : (array_like, array_like) OR :class:`~slmsuite.holography.toolbox.phase.ZernikeBasis` OR None
         Components of the meshgrid describing coordinates over the phase_images.
         If ``None``, makes a grid with unit pitch centered on the phase_images.
+
+        Repeated calls against the same grid transparently reuse a cached
+        :class:`~slmsuite.holography.toolbox.phase.ZernikeBasis`, so the basis is
+        built only once. An explicit basis may also be passed, in which case
+        ``order``, ``aperture``, and ``use_mask`` are ignored (they are fixed when
+        the basis is built).
     order : int OR list of int
-        Maximal radial Zernike order for the fitting basis.
-        If a list of int is provided, these are the ANSI indices of the Zernike polynomials to fit.
-    iterations : int
-        Number of times to iterate the subtractive approach.
+        Maximal radial Zernike order for the fitting basis. If a list of int is
+        provided, these are the ANSI indices of the Zernike polynomials to fit.
+        Ignored if ``grid`` is a :class:`ZernikeBasis`.
     leastsquares : bool
-        Whether to do the least squares optimization step.
-    unwrap : bool
-        Whether to unwrap the phase images before fitting.
-    **kwargs
-        Passed to :meth:`~slmsuite.holography.toolbox.phase.zernike_sum()`.
+        If ``True`` (default), solve the exact least-squares fit via the normal
+        equations. If ``False``, return the cheaper per-mode basis projection
+        :math:`\langle\phi, Z_i\rangle / \langle Z_i, Z_i\rangle`, which ignores
+        cross-terms between modes and is exact only when the basis is orthonormal
+        over the sampled aperture.
+    aperture : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
+        The aperture defining the lateral scaling of the Zernike polynomials. Resolved
+        with :meth:`~slmsuite.holography.toolbox.Aperture.resolve`. Ignored if ``grid``
+        is a :class:`ZernikeBasis`.
+    use_mask : bool
+        Whether to mask the region outside the Zernike pupil. Ignored if ``grid``
+        is a :class:`ZernikeBasis`.
+    gradient : bool
+        If ``True``, fit the wrap-aware phase gradient against the gradient
+        Zernike basis instead of fitting the phase directly. This recovers
+        accurate coefficients from a phase-wrapped ``phase_images`` without
+        unwrapping. See the note above.
+
+    Returns
+    -------
+    numpy.ndarray OR cupy.ndarray
+        The fit Zernike coefficients, of shape ``(D, image_count)``, piston omitted.
     """
     # Setup.
     if phase_images.ndim == 2:
         phase_images = phase_images.reshape((1, *phase_images.shape))
     image_count = phase_images.shape[0]
 
-    # Unwrap
-    if unwrap:
-        # Adding temporary phase unwrapping solution for testing
-        try:
-            from skimage.restoration import unwrap_phase
-        except ImportError:
-            raise ImportError("Phase unwrapping requires scikit-image.")
-
-        phase_images = [unwrap_phase(im) for im in phase_images]
-
-    # Generate Zernike terms and norms.
-    if np.isscalar(order):
-        order = int(order + 1)
-        indices_ansi = np.arange((order * (order + 1)) // 2)[1:]    # Omit the piston term
+    # Build (or transparently reuse) the Zernike basis. Passing an explicit
+    # ZernikeBasis still works; otherwise the cache builds/returns one for this grid.
+    if isinstance(grid, ZernikeBasis):
+        basis = grid
     else:
-        indices_ansi = np.array(order, dtype=int)
-    D = len(indices_ansi)
-    phases = zernike_sum(
-        grid,
-        indices_ansi[np.newaxis, :],
-        np.diag(np.ones((D,))),
-        use_mask=True,
-        **kwargs
-    )
-    norm = np.reciprocal(np.nansum(np.square(phases), (1,2), keepdims=False))
+        if np.isscalar(order):
+            order = int(order + 1)
+            indices_ansi = np.arange((order * (order + 1)) // 2)[1:]    # Omit piston.
+        else:
+            indices_ansi = np.array(order, dtype=int)
+            if 0 in indices_ansi:
+                indices_ansi = indices_ansi[indices_ansi != 0]
+                warnings.warn("Piston term (Zernike ANSI index 0) is omitted from the fit.")
+        basis = _zernike_get_basis(grid, indices_ansi, aperture=aperture, use_mask=use_mask)
 
-    # Preallocate the result.
-    vectors_zernike = np.zeros((D, image_count))
-    images_remainders = np.copy(phase_images)     # Copy the data
+    # Work on the basis's array module (GPU when the basis is GPU-resident).
+    xp = _get_module(basis.basis_flat)
+    phase_images = xp.asarray(phase_images)
 
-    # First, make a guess of the result based on iteratively subtracting Zernike terms.
-    for _ in range(int(iterations)):
-        for i in range(D):
-            # Compute the weights of the given Zernike term in the images.
-            overlap = np.nansum(images_remainders * phases[[i]] * norm[i], axis=(1,2))
+    if gradient:
+        # The gradient basis (and its Gram inverse / index maps) is cached on the
+        # ZernikeBasis, which is now obtained transparently above whether or not the
+        # caller passed an explicit basis.
+        # Wrap-aware phase gradient: equals the true unwrapped gradient
+        # everywhere except at vortices, so no phase unwrapping is needed.
+        dx, dy = _wrapped_gradient(phase_images, xp)
+        # Use precomputed integer indexing on the flattened dx/dy to avoid
+        # expensive GPU-CPU synchronizations from boolean masking in CuPy.
+        dx_flat = dx.reshape(image_count, -1)
+        dy_flat = dy.reshape(image_count, -1)
+        stacked = xp.concatenate(
+            [dx_flat[:, basis.grad_idx_x].T, dy_flat[:, basis.grad_idx_y].T], axis=0
+        )                                                               # (2P, image_count)
 
-            # Record this value in the result.
-            vectors_zernike[i, :] += overlap
+        # Project the gradient onto the gradient basis.
+        b = basis.grad_basis_flat @ stacked                             # (D, image_count)
 
-            # Subtract the power from the images.
-            images_remainders -= overlap * phases[[i]]
+        if leastsquares:
+            # Exact least-squares fit: solve via the precomputed inverse of the Gram matrix.
+            # Avoids xp.linalg.solve (cuSOLVER) kernel launch overhead on GPU.
+            vectors_zernike = basis.grad_gram_inv @ b
+        else:
+            # Cheaper per-mode projection (the gradient basis is not orthonormal).
+            vectors_zernike = b / basis.grad_norm[:, np.newaxis]
 
-    # Second, if desired, hone the guess via leastsquares.
-    # This is especially important for a basis that is no longer orthonormal
-    # due to incomplete data or a cropped aperture.
+        return vectors_zernike
+
+    # Mask the phase images to the pupil and flatten to match the basis.
+    phase_flat = (phase_images * basis.mask).reshape(image_count, -1)   # (image_count, h*w)
+
+    # Project the images onto the basis: b[d, n] = <phase_n, Z_d>.
+    b = basis.basis_flat @ phase_flat.T                                 # (D, image_count)
+
     if leastsquares:
-        # Make grid.
-        grid = _process_grid(grid)
-        grid_ravel = (np.ravel(grid[0]), np.ravel(grid[1]))
+        # Least-squares fit: solve via the precomputed inverse of the Gram matrix.
+        # Avoids xp.linalg.solve (cuSOLVER) kernel launch overhead on GPU.
+        vectors_zernike = basis.gram_inv @ b
+    else:
+        # Cheaper per-mode projection (exact iff the basis is orthonormal).
+        vectors_zernike = b / basis.norm[:, np.newaxis]
 
-        for j in range(image_count):
-            # Lambda to build the function from test parameters.
-            def zsum(grid, *p):
-                p = np.reshape(p, (D, 1))
-
-                return zernike_sum(
-                    grid,
-                    indices_ansi[np.newaxis, :],
-                    p,
-                    use_mask=True,
-                    **kwargs
-                )
-
-            # Try the fit.
-            try:
-                popt, _ = curve_fit(zsum, grid_ravel, phase_images[j].ravel(), ftol=1e-5, p0=vectors_zernike[:, j])
-                vectors_zernike[:, j] = popt
-            except RuntimeError:    # The fit failed if scipy says so.
-                pass
-
-    # Return the fit with the piston term omitted.
     return vectors_zernike
 
 

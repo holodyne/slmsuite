@@ -544,51 +544,89 @@ def test_image_fit(subtests, benchmark, caplog):
 
 def test_image_zernike_fit(subtests):
     """Test image_zernike_fit() Zernike polynomial fitting."""
-    x_small = np.linspace(-1, 1, 32)
-    y_small = np.linspace(-1, 1, 32)
-    X_small, Y_small = np.meshgrid(x_small, y_small)
+    x_small = np.linspace(-1, 1, 64)
+    X_small, Y_small = np.meshgrid(x_small, x_small)
     grid_small = (X_small, Y_small)
 
-    with subtests.test("3D input tilt phase"):
-        phase_image = 0.5 * X_small + 0.3 * Y_small
-        phase_image = phase_image[np.newaxis, :, :]
+    with subtests.test("exact least-squares recovers a known combination"):
+        indices = [1, 2, 3, 4, 5]
+        weights = np.array([0.3, -0.4, 0.2, 0.5, -0.1])
+        phase_image = analysis.zernike_sum(grid_small, indices, weights)
+        coeffs = analysis.image_zernike_fit(phase_image, grid_small, order=indices)
+        assert coeffs.shape == (len(indices), 1)
+        assert np.allclose(coeffs[:, 0], weights, atol=1e-6)
 
-        try:
-            zernike_coeffs = analysis.image_zernike_fit(
-                phase_image, grid_small, order=3,
-                iterations=1, leastsquares=False,
-            )
-            expected_coeffs = (3 + 1) * (3 + 2) // 2 - 1
-            assert zernike_coeffs.shape == (expected_coeffs, 1)
-            assert np.any(np.abs(zernike_coeffs[:, 0]) > 0.01)
-        except Exception as e:
-            pytest.skip(f"Zernike fit raised {type(e).__name__}: {e}")
+    with subtests.test("scalar order omits piston"):
+        phase_2d = 0.5 * X_small + 0.3 * Y_small
+        coeffs = analysis.image_zernike_fit(phase_2d, grid_small, order=3)
+        expected = (3 + 1) * (3 + 2) // 2 - 1
+        assert coeffs.shape == (expected, 1)
 
-    with subtests.test("2D input"):
-        phase_2d = 0.2 * X_small
-        try:
-            zernike_coeffs_2d = analysis.image_zernike_fit(
-                phase_2d, grid_small, order=2,
-                iterations=1, leastsquares=False,
-            )
-            expected_coeffs_2d = (2 + 1) * (2 + 2) // 2 - 1
-            assert zernike_coeffs_2d.shape == (expected_coeffs_2d, 1)
-        except Exception:
-            pass
+    with subtests.test("leastsquares=False does a per-mode projection"):
+        phase_2d = 0.5 * X_small + 0.3 * Y_small
+        coeffs = analysis.image_zernike_fit(
+            phase_2d, grid_small, order=3, leastsquares=False
+        )
+        expected = (3 + 1) * (3 + 2) // 2 - 1
+        assert coeffs.shape == (expected, 1)
+        assert np.any(np.abs(coeffs[:, 0]) > 0.01)
 
-    with subtests.test("leastsquares=True refines fit"):
-        phase_tilt = 0.5 * X_small + 0.3 * Y_small
-        phase_tilt = phase_tilt[np.newaxis, :, :]
+    with subtests.test("accepts a prebuilt ZernikeBasis without rebuilding"):
+        indices = [1, 2, 4]
+        weights = np.array([0.2, -0.3, 0.4])
+        basis = analysis.ZernikeBasis(grid_small, indices)
+        phase_image = analysis.zernike_sum(basis, None, weights)
+        coeffs = analysis.image_zernike_fit(phase_image, basis)
+        assert coeffs.shape == (len(indices), 1)
+        assert np.allclose(coeffs[:, 0], weights, atol=1e-6)
 
-        try:
-            coeffs_ls = analysis.image_zernike_fit(
-                phase_tilt, grid_small, order=3,
-                iterations=2, leastsquares=True,
-            )
-            expected = (3 + 1) * (3 + 2) // 2 - 1
-            assert coeffs_ls.shape == (expected, 1)
-        except Exception as e:
-            print(f"leastsquares fit error (may be expected): {e}")
+    with subtests.test("fits a stack of images at once"):
+        indices = [1, 2, 4]
+        basis = analysis.ZernikeBasis(grid_small, indices)
+        weights_stack = np.array([[0.1, 0.2], [-0.3, 0.4], [0.5, -0.1]])
+        phase_stack = analysis.zernike_sum(basis, None, weights_stack)
+        coeffs = analysis.image_zernike_fit(phase_stack, basis)
+        assert coeffs.shape == (len(indices), 2)
+        assert np.allclose(coeffs, weights_stack, atol=1e-6)
+
+    with subtests.test("gradient mode recovers weights from an unwrapped phase"):
+        indices = [2, 1, 4, 3, 5]
+        weights = np.array([1.5, -1.0, 3.0, 0.4, -0.6])
+        basis = analysis.ZernikeBasis(grid_small, indices)
+        phase_image = analysis.zernike_sum(basis, None, weights)
+        coeffs = analysis.image_zernike_fit(phase_image, basis, gradient=True)
+        assert coeffs.shape == (len(indices), 1)
+        assert np.allclose(coeffs[:, 0], weights, atol=1e-2)
+
+    with subtests.test("gradient mode recovers weights through phase wraps"):
+        indices = [2, 1, 4, 3, 5]
+        weights = np.array([1.5, -1.0, 3.0, 0.4, -0.6])
+        basis = analysis.ZernikeBasis(grid_small, indices)
+        phase_image = analysis.zernike_sum(basis, None, weights)
+        wrapped = np.mod(phase_image, 2 * np.pi)
+        # The synthesized phase must actually wrap for this test to mean anything.
+        assert np.ptp(phase_image[basis.mask.astype(bool)]) > 2 * np.pi
+
+        grad_coeffs = analysis.image_zernike_fit(wrapped, basis, gradient=True)
+        plain_coeffs = analysis.image_zernike_fit(wrapped, basis)
+
+        grad_err = np.max(np.abs(grad_coeffs[:, 0] - weights))
+        plain_err = np.max(np.abs(plain_coeffs[:, 0] - weights))
+        # The gradient fit sees through the wraps; the plain fit is corrupted.
+        assert grad_err < 1e-2
+        assert plain_err > 10 * grad_err
+
+    with subtests.test("gradient mode works on a raw grid (basis built transparently)"):
+        indices = [2, 1, 4, 3, 5]
+        weights = np.array([1.5, -1.0, 3.0, 0.4, -0.6])
+        # No explicit ZernikeBasis: the grid + order drive a transparently-cached basis.
+        phase_image = analysis.zernike_sum(grid_small, indices, weights)
+        wrapped = np.angle(np.exp(1j * phase_image))
+        grad_coeffs = analysis.image_zernike_fit(
+            wrapped, grid_small, order=indices, gradient=True
+        )
+        assert grad_coeffs.shape == (len(indices), 1)
+        assert np.allclose(grad_coeffs[:, 0], weights, atol=1e-2)
 
 
 def test_take(subtests, benchmark, caplog):
