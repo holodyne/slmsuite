@@ -634,7 +634,7 @@ class Cheetah640(Camera):
             )
 
     def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`."""
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
         # Xenics WoiSX/WoiEX/WoiSY/WoiEY are physical (unbinned) sensor pixel coordinates.
         # Binning is not supported on the Cheetah640; _binning is always (1, 1).
         x, w, y, h = [int(v) for v in woi]
@@ -666,7 +666,7 @@ class Cheetah640(Camera):
             print("Warning! Error(s) in _set_woi_hw:", errs)
 
     def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`."""
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
         # Returns physical (unbinned) sensor pixel coordinates converted from start/end to (x, w, y, h).
         woi_props = [b"WoiSX(0)", b"WoiEX(0)", b"WoiSY(0)", b"WoiEY(0)"]
         vals = []

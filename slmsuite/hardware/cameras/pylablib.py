@@ -163,7 +163,7 @@ class PyLabLib(Camera):
         return (x_p, x_p + w_p, y_p, y_p + h_p, binx, biny)
 
     def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`."""
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
         # pylablib ROI coordinates are physical (unbinned) sensor pixels, exclusive end.
         # https://pylablib.readthedocs.io/en/stable/_modules/pylablib/devices/Thorlabs/TLCamera.html
         hstart, hend, vstart, vend, binx, biny = self._get_roi(woi=woi, binning=None)
@@ -181,7 +181,7 @@ class PyLabLib(Camera):
             )
 
     def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`."""
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
         # pylablib get_roi() returns (hstart, hend, vstart, vend[, hbin, vbin]) in physical pixels.
         binx, biny = self._binning
         roi = self.cam.get_roi()

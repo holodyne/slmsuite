@@ -218,6 +218,58 @@ class TestFourierSLM:
             )
             assert np.all(np.asarray(size) > 0)
 
+        with subtests.test("ij basis consistent under WOI/binning/orientation"):
+            # The "ij" spot size must live entirely in the user-facing (WOI/binning/
+            # orientation-applied) frame, i.e. use fourier_affine, not the raw
+            # calibration M. The de-rotation then reduces algebraically to
+            #   size_ij == sqrt(|det(fourier_affine.M)|) * (1/Wx, 1/Wy)
+            # for any WOI/binning/orientation. An anisotropic slm_size + non-trivial
+            # orientation exposes the old raw-M bug (the components come out swapped).
+            from slmsuite.holography.analysis import get_orientation_transformation
+
+            cam = fourierslm_calibrated.cam
+            Wx, Wy = 1.0, 2.0  # anisotropic so a rotation/flip is observable
+
+            try:
+                for rot, binning, woi in [
+                    ("0", 1, None),
+                    ("90", 1, None),
+                    ("180", 2, None),
+                    ("0", 2, (50, 200, 60, 180)),
+                ]:
+                    cam.transform = get_orientation_transformation(rot)
+                    cam.set_binning(binning)
+                    cam.set_woi(woi)
+
+                    size = fourierslm_calibrated.get_farfield_spot_size(
+                        slm_size=(Wx, Wy), basis="ij",
+                    )
+                    expected = np.sqrt(
+                        np.abs(fourierslm_calibrated.fourier_affine.det())
+                    ) * np.array([1 / Wx, 1 / Wy])
+                    assert np.allclose(size, expected), (
+                        f"rot={rot} binning={binning} woi={woi}: "
+                        f"{size} != {expected}"
+                    )
+            finally:
+                # Restore the default (identity) camera state for other subtests.
+                cam.transform = get_orientation_transformation("0")
+                cam.set_binning(1)
+                cam.set_woi(None)
+
+        with subtests.test("ij basis invariant to pure WOI offset"):
+            # WOI only shifts the affine offset b, never M, so the spot size is unchanged.
+            cam = fourierslm_calibrated.cam
+            base = fourierslm_calibrated.get_farfield_spot_size(slm_size=1.0, basis="ij")
+            try:
+                cam.set_woi((40, 300, 50, 320))
+                shifted = fourierslm_calibrated.get_farfield_spot_size(
+                    slm_size=1.0, basis="ij",
+                )
+                assert np.allclose(base, shifted)
+            finally:
+                cam.set_woi(None)
+
         with subtests.test("bad basis raises"):
             with pytest.raises(ValueError):
                 fourierslm_calibrated.get_farfield_spot_size(

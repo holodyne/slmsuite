@@ -29,9 +29,10 @@ class Camera(_Common, ABC):
     name : str
         Camera identifier.
     shape : (int, int)
-        Stores ``(height, width)`` of the camera's image in pixels,
-        the same ordering convention as :attr:`numpy.ndarray.shape`.
-        Note that this shape is a property which accounts for WOI and binning.
+        ``(height, width)`` of the image returned by :meth:`.get_image()`, in the same
+        order as :attr:`numpy.ndarray.shape`. Read-only property derived from the current
+        WOI, binning, and orientation transform (a 90/270 rotation swaps the two), so
+        ``get_image().shape == shape`` always holds.
     bitdepth : int
         Depth of a camera pixel well in bits.
     bitresolution : int
@@ -60,12 +61,22 @@ class Camera(_Common, ABC):
     binning : (int, int)
         Binning of the camera in the transformed orientation. Defaults to (1, 1) for no binning.
     woi : (int, int, int, int)
-        WOI (window of interest) in ``(x, width, y, height)`` form.
+        WOI (window of interest) in ``(x, width, y, height)`` form, in the
+        **transformed, unbinned** frame (the orientation the user sees, at full sensor
+        resolution). Stored unbinned because the WOI marks a physical sensor region
+        independent of :attr:`binning`; this keeps it binning-invariant so
+        ``set_woi(get_woi())`` round-trips and the Fourier calibration stays valid. The
+        binned output size is reported by :attr:`shape` instead.
 
         Warning
         ~~~~~~~
         This feature is less fleshed out than most. There may be issues
         (e.g. :meth:`.get_image()` with the ``averaging`` or ``hdr`` flags).
+    origin : (int, int)
+        Read-only ``(x, y)`` of the image's upper-left corner (the WOI offset), in the
+        same frame as :attr:`woi`. ``(0, 0)`` for a full-sensor WOI.
+    center : (float, float)
+        Read-only ``(x, y)`` center of the returned image, ``(shape[1]/2, shape[0]/2)``.
     transform : callable
         Orientation transform (:class:`~slmsuite.holography.analysis.OrientationTransform`)
         of flips and 90 degree rotations, applied to raw camera frames before they are
@@ -168,7 +179,8 @@ class Camera(_Common, ABC):
         self._woi = (0, width, 0, height)
         self._shape = (height, width)
 
-        # Detect hardware WOI / binning support.
+        # Detect hardware WOI / binning support (prefer hardware if 
+        # defined in camera class, fall back to software).
         self._software_woi = type(self)._set_woi_hw is Camera._set_woi_hw
         self._software_binning = type(self)._set_binning_hw is Camera._set_binning_hw
 
@@ -320,15 +332,30 @@ class Camera(_Common, ABC):
 
     @property
     def origin(self):
+        """
+        Returns the ``(x, y)`` coordinate of the upper-left corner of the image in pixels,
+        i.e. the WOI offset in transformed, unbinned coordinates. Equals ``(0, 0)`` when
+        the WOI covers the full sensor. Together with :attr:`center`, this lives in the same
+        coordinate frame as the :attr:`woi` property.
+        """
         woi = self.woi
         return (woi[0], woi[2])
+
+    @property
+    def center(self):
+        """
+        Returns the ``(x, y)`` coordinate of the center of the image in pixels,
+        following the ``(shape[1] / 2, shape[0] / 2)`` convention used throughout
+        the package (e.g. the default Fourier-calibration offset). Accounts for the
+        current WOI, binning, and orientation transform via :attr:`shape`.
+        """
+        shape = self.shape
+        return (shape[1] / 2, shape[0] / 2)
 
     @property
     def _woi_untransformed_binned(self):
         """
         Returns the WOI ``(x, w, y, h)`` in raw binned camera coordinates.
-
-        This is probably what the hardware interface will accept.
         """
         return (
             self._woi[0] // self._binning[0],    # x / binx
@@ -400,12 +427,19 @@ class Camera(_Common, ABC):
             transformed_shape = self.transform.transform_shape(self._shape)
             woi_unt = self.transform.inverse_woi(woi, transformed_shape)
 
-            # Clip to sensor bounds. Warn the user about this?
+            # Clip to sensor bounds.
             x0 = max(0, int(woi_unt[0]))
             y0 = max(0, int(woi_unt[2]))
             x1 = min(self._shape[1], x0 + int(woi_unt[1]))
             y1 = min(self._shape[0], y0 + int(woi_unt[3]))
-            woi_unt = (x0, x1 - x0, y0, y1 - y0)
+            clipped = (x0, x1 - x0, y0, y1 - y0)
+
+            if clipped != tuple(int(v) for v in woi_unt):
+                warnings.warn(
+                    f"Requested WOI {woi} extends beyond the sensor and was clipped."
+                )
+
+            woi_unt = clipped
 
         # Store untransformed, unbinned WOI.
         self._woi = woi_unt

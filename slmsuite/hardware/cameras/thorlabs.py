@@ -261,7 +261,7 @@ class ThorCam(Camera):
         self.cam.exposure_time_us = int(exposure_s * 1e6)
 
     def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`."""
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
         # ThorCam expects physical (unbinned) sensor pixel coordinates.
         # tl_camera_set_roi / ROI object use physical pixels.
         # Ref: https://pylablib.readthedocs.io/en/stable/_modules/pylablib/devices/Thorlabs/TLCamera.html
@@ -281,7 +281,7 @@ class ThorCam(Camera):
         self.setup(profile)
 
     def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`."""
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
         # ThorCam ROI is in physical pixels; divide by binning to return binned coords.
         binx, biny = self._binning
         roi = self.cam.roi

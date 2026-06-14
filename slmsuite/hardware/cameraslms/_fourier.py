@@ -1,17 +1,13 @@
-import matplotlib.pyplot as plt
-import numpy as np
-import warnings
+﻿import warnings
+
 import cv2
+import numpy as np
 
-from slmsuite.holography import analysis
-from slmsuite.holography import toolbox
-from slmsuite.holography.algorithms import SpotHologram, Hologram
-from slmsuite.holography.toolbox import format_2vectors, format_vectors, format_shape
+from slmsuite.holography import analysis, toolbox
+from slmsuite.holography.algorithms import Hologram, SpotHologram
 from slmsuite.holography.analysis import Affine
-from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
-
-from slmsuite.hardware.cameras.simulated import SimulatedCamera
-
+from slmsuite.holography.toolbox import format_2vectors, format_shape, format_vectors
+from slmsuite.misc.math import REAL_TYPES
 
 
 class _FourierCalibration(object):
@@ -169,6 +165,7 @@ class _FourierCalibration(object):
         ])
 
         kxyslm_to_ijcam = Affine(M, b, a)
+        # kxyslm -> ijcam -> ijraw
         kxyslm_to_ijraw = self.cam._get_ijcam_to_ijraw() @ kxyslm_to_ijcam
         self.calibrations["fourier"] = kxyslm_to_ijraw.to_dict()
         self.calibrations["fourier"].update(self._get_calibration_metadata())
@@ -301,7 +298,7 @@ class _FourierCalibration(object):
         """
         Builds analytic ``M`` and ``b`` from a known focal length, suitable for passing to
         :meth:`fourier_calibrate_analytic`.
-        Delegates to :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera._build_affine`,
+        Delegates to :meth:`~slmsuite.holography.toolbox.build_affine`,
         defaulting ``offset`` to the camera center.
 
         Parameters
@@ -324,7 +321,7 @@ class _FourierCalibration(object):
         """
         if offset is None:
             offset = np.flip(self.cam.shape) / 2
-        return SimulatedCamera._build_affine(
+        return toolbox.build_affine(
             f_eff,
             units=units,
             theta=theta,
@@ -483,7 +480,7 @@ class _FourierCalibration(object):
         Raises :exc:`RuntimeError` if no Fourier calibration exists.
         Warns if the wavefront calibration is newer than the Fourier calibration.
         """
-        if not "fourier" in self.calibrations:
+        if "fourier" not in self.calibrations:
             raise RuntimeError("Fourier calibration must exist to be used.")
 
         try:
@@ -580,7 +577,9 @@ class _FourierCalibration(object):
         if basis == "kxy":
             return (1 / slm_size[0], 1 / slm_size[1])
         elif basis == "ij":
-            M = self.calibrations["fourier"]["M"]
+            # Use the WOI/binning/orientation-aware affine 
+            # so the de-rotation lives in the same coordinate frame as kxyslm_to_ijcam below.
+            M = self.fourier_affine.M
             # Compensate for spot rotation s.t. spot size is along camera axes
             size_kxy = np.linalg.inv(M / np.sqrt(np.abs(np.linalg.det(M)))) @ np.array(
                 (1 / slm_size[0], 1 / slm_size[1])
@@ -619,10 +618,12 @@ class _FourierCalibration(object):
         f_eff : float
             Effective focal length.
         """
-        if not "fourier" in self.calibrations:
+        if "fourier" not in self.calibrations:
             raise RuntimeError("Fourier calibration must exist to be used.")
 
-        # Gather f_eff in pix/rad. TODO: fix due to WOI/binned coordinates.
+        # Gather f_eff in pix/rad. This is WOI-invariant (WOI only shifts the affine
+        # offset, not M) and binning-invariant in metric units (the 1/bin factor in
+        # fourier_affine cancels the *bin factor in cam.pitch_um). 
         f_eff = np.sqrt(np.abs(self.fourier_affine.det()))
 
         # Gather other conversions.

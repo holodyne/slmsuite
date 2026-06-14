@@ -515,7 +515,7 @@ class FLIR(Camera):
         self.cam.ExposureTime.SetValue(exposure_us)
 
     def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`."""
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
         # FLIR ROI coordinates (OffsetX/Width/Height) are in binned pixels when binning is active.
         # https://softwareservices.flir.com/BFS-U3-89S6/latest/Model/public/ImageFormatControl.html
         x, w, y, h = [int(v) for v in woi]
@@ -564,7 +564,7 @@ class FLIR(Camera):
                     raise RuntimeError(f"Failed to restart acquisition after WOI change: {ex}")
 
     def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`."""
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
         return (
             int(self.cam.OffsetX.GetValue()),
             int(self.cam.Width.GetValue()),
@@ -573,7 +573,7 @@ class FLIR(Camera):
         )
 
     def _set_binning_hw(self, binning):
-        """See :meth:`.Camera._set_binning_hw`."""
+        """See :meth:`.Camera._set_binning_hw`. **(Untested)**"""
         binx, biny = int(binning[0]), int(binning[1])
         acquisition_active = False
         try:

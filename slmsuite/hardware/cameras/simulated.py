@@ -17,7 +17,6 @@ import matplotlib.pyplot as plt
 from slmsuite.hardware.cameras.camera import Camera
 from slmsuite.holography.algorithms import Hologram
 from slmsuite.holography import toolbox
-from slmsuite.misc.math import REAL_TYPES
 
 
 class SimulatedCamera(Camera):
@@ -260,7 +259,7 @@ class SimulatedCamera(Camera):
         if offset is None:
             offset = np.flip(self.shape) / 2
 
-        return SimulatedCamera._build_affine(
+        return toolbox.build_affine(
             f_eff,
             units=units,
             theta=theta,
@@ -269,63 +268,6 @@ class SimulatedCamera(Camera):
             cam_pitch_um=self.pitch_um,
             wav_um=self._slm.wav_um,
         )
-
-    @staticmethod
-    def _build_affine(
-            f_eff,
-            units="ij",
-            theta=0,
-            shear_angle=0,
-            offset=(0,0),
-            cam_pitch_um=None,
-            wav_um=None,
-        ):
-        """
-        See documentation in :meth:`build_affine()` and
-        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.build_fourier_calibration()`.
-        This helper function is shared between those functions.
-        """
-        # Parse scalars.
-        if isinstance(f_eff, REAL_TYPES):
-            f_eff = [f_eff, f_eff]
-        if isinstance(cam_pitch_um, REAL_TYPES):
-            cam_pitch_um = [cam_pitch_um, cam_pitch_um]
-        else:
-            cam_pitch_um = np.ravel(cam_pitch_um)
-        if isinstance(shear_angle, REAL_TYPES):
-            shear_angle = [shear_angle, shear_angle]
-        if offset is None:
-            offset = (0,0)
-
-        f_eff = np.squeeze(f_eff).astype(float)
-        shear_angle = np.squeeze(shear_angle)
-
-        # Convert.
-        if units == "ij":
-            pass
-        elif units == "norm":
-            if wav_um is None:
-                raise ValueError(f"wav_um is required for unit '{units}'")
-            if cam_pitch_um is None or cam_pitch_um[0] is None:
-                raise ValueError(f"cam_pitch_um is required for unit '{units}'")
-
-            f_eff *= wav_um / np.squeeze(cam_pitch_um)
-        elif units in toolbox.LENGTH_FACTORS.keys():
-            if cam_pitch_um is None or cam_pitch_um[0] is None:
-                raise ValueError(f"cam_pitch_um is required for unit '{units}'")
-
-            f_eff *= toolbox.LENGTH_FACTORS[units] / np.squeeze(cam_pitch_um)
-        else:
-            raise ValueError(f"Unit '{units}' not recognized as a length.")
-
-        mag = np.array([[f_eff[0], 0], [0, f_eff[1]]])
-        shear = np.array([[1, np.tan(shear_angle[0])], [np.tan(shear_angle[1]), 1]])
-        rot = np.array([[np.cos(-theta), np.sin(-theta)], [-np.sin(-theta), np.cos(-theta)]])
-
-        M = mag @ shear @ rot
-        b = toolbox.format_2vectors(offset)
-
-        return M, b
 
     @staticmethod
     def info(verbose=True):

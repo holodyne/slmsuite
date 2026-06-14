@@ -228,7 +228,7 @@ class ImagingSource(Camera):
         ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyAbsoluteValue, 1, self.cam, tis.T("Exposure"), tis.T("Value"), ctypes.c_float(exposure_s))
 
     def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`."""
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
         # ImagingSource: width/height in the video format string are output (binned) pixels.
         # Partial scan X/Y offsets are in physical (unbinned) sensor pixels.
         # Ref: https://www.theimagingsource.com/en-us/documentation/icpython/properties.html
@@ -244,7 +244,7 @@ class ImagingSource(Camera):
         ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyValue, 1, self.cam, tis.T("Partial scan"), tis.T("Y Offset"), y_phys)
 
     def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`."""
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
         # width/height from IC_GetImageDescription are output (binned) pixels.
         # X/Y offsets from IC_GetPropertyValue are physical pixels; divide by binning.
         binx, biny = self._binning
@@ -260,7 +260,7 @@ class ImagingSource(Camera):
         return (int(x_offset.value) // binx, int(width.value), int(y_offset.value) // biny, int(height.value))
 
     def _set_binning_hw(self, binning):
-        """See :meth:`.Camera._set_binning_hw`."""
+        """See :meth:`.Camera._set_binning_hw`. **(Untested)**"""
         biny, binx = int(binning[0]), int(binning[1])
         if biny != binx:
             raise NotImplementedError("ImagingSource requires symmetric binning.")
