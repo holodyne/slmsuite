@@ -12,6 +12,9 @@ import numpy as np
 
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.hardware._pyglet import _Window, _WindowManager, _WindowThread, get_pyglet_display
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 try:
     import pyglet
@@ -129,7 +132,6 @@ class ScreenMirrored(SLM):
         bitdepth=8,
         wav_um=1,
         pitch_um=(8,8),
-        verbose=True,
         slm_shape=None,
         **kwargs
     ):
@@ -168,8 +170,6 @@ class ScreenMirrored(SLM):
             Wavelength of operation in microns. Defaults to 1 μm.
         pitch_um : (float, float)
             Pixel pitch in microns. Defaults to 8 micron square pixels.
-        verbose : bool
-            Whether or not to print extra information.
         slm_shape : tuple of int or None
             SLM resolution as ``(width, height)``, for when the SLM's
             active area differs from the display resolution (e.g. PLM).
@@ -187,16 +187,12 @@ class ScreenMirrored(SLM):
         if pyglet is None:
             raise ImportError("pyglet not installed. Install to use ScreenMirrored SLMs.")
 
-        if verbose:
-            print("Initializing pyglet... ", end="")
+        logger.debug("Initializing pyglet...")
 
         # Display/screen enumeration is read-only and thread-safe in pyglet 2.x.
         display = get_pyglet_display()
         screens = display.get_screens()
-        if verbose:
-            print("success")
-            print("Searching for window with display_number={}... "
-                    .format(display_number), end="")
+        logger.debug("Searching for window with display_number=%s...", display_number)
 
         if len(screens) <= display_number:
             raise ValueError("Could not find display_number={}; only {} displays"
@@ -209,12 +205,10 @@ class ScreenMirrored(SLM):
                 "ScreenMirrored window already created on display_number={}"
                 .format(display_number))
 
-        if verbose and screen_info[display_number][2]:
-            print("warning: this is the main display... ", end="")
+        if screen_info[display_number][2]:
+            logger.warning("display_number=%s is the main display.", display_number)
 
-        if verbose:
-            print("success")
-            print("Creating window... ", end="")
+        logger.debug("Creating window...")
 
         screen = screens[display_number]
         # Store as (height, width) for consistency with shape convention.
@@ -242,18 +236,16 @@ class ScreenMirrored(SLM):
             self._window_thread = wm.create_window(None, screen, self.name)
             self.window = self._window_thread.window
         except Exception as e:
-            if verbose:
-                print("Window creation failed")
+            self.logger.error("Window creation failed.")
             raise
 
-        if verbose:
-            print("Window creation successful")
+        self.logger.debug("Window creation successful.")
 
         # Warn the user if wav_um > wav_design_um
         if self.phase_scaling > 1:
-            print(
-                "Warning: Wavelength {} μm is inaccessible to this SLM with "
-                "design wavelength {} μm".format(self.wav_um, self.wav_design_um)
+            self.logger.warning(
+                "Wavelength %s μm is inaccessible to this SLM with design wavelength %s μm",
+                self.wav_um, self.wav_design_um,
             )
 
         # Variable to keep track of the last thread future.

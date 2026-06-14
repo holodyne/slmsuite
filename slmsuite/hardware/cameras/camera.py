@@ -1,21 +1,22 @@
 """
 Abstract camera functionality.
 """
+import logging
 import time
-import asyncio
-import warnings
-import numpy as np
+from abc import ABC, abstractmethod
+
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
+import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.optimize import curve_fit
-from abc import ABC, abstractmethod
 
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
-from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.misc.math import REAL_TYPES
 
 
 class Camera(_Common, ABC):
@@ -100,7 +101,7 @@ class Camera(_Common, ABC):
         resolution,
         bitdepth=8,
         pitch_um=None,
-        name="camera",
+        name="",
         exposure_bounds_s=None,
         averaging=None,
         capture_attempts=5,
@@ -200,7 +201,8 @@ class Camera(_Common, ABC):
         self._flush_iterations = 2  # Hidden variable: how many frames to capture for a flush.
 
         # Initialize the common hardware attributes.
-        super().__init__(
+        _Common.__init__(
+            self,
             resolution=resolution,
             bitdepth=bitdepth,
             name=name,
@@ -264,9 +266,9 @@ class Camera(_Common, ABC):
         if self.exposure_bounds_s is not None:
             exposure_s_ = np.clip(exposure_s, *self.exposure_bounds_s)
             if exposure_s_ != exposure_s:
-                warnings.warn(
-                    f"Requested exposure {exposure_s} s is out of bounds "
-                    f"{self.exposure_bounds_s} s. Clipping to {exposure_s_} s."
+                self.logger.warning(
+                    "Requested exposure %s s is out of bounds %s s. Clipping to %s s.",
+                    exposure_s, self.exposure_bounds_s, exposure_s_,
                 )
                 exposure_s = exposure_s_
         self._set_exposure_hw(exposure_s)
@@ -404,14 +406,14 @@ class Camera(_Common, ABC):
                 img =  self._get_image_hw(*args, **kwargs)
 
                 if failures > 0:
-                    warnings.warn(f"'{self.name}' _get_image_hw() failed {failures} times before succeeding.")
+                    self.logger.warning("_get_image_hw() failed %s times before succeeding.", failures)
 
                 return img
             except Exception as e:
                 failures += 1
                 err = e
 
-        warnings.warn(f"'{self.name}' _get_image_hw() failed {failures} times before quitting.")
+        self.logger.warning("_get_image_hw() failed %s times before quitting.", failures)
 
         raise err
 
@@ -424,14 +426,14 @@ class Camera(_Common, ABC):
                 imgs = self._get_images_hw(*args, **kwargs)
 
                 if failures > 0:
-                    warnings.warn(f"'{self.name}' _get_images_hw() failed {failures} times before succeeding.")
+                    self.logger.warning("_get_images_hw() failed %s times before succeeding.", failures)
 
                 return imgs
             except Exception as e:
                 failures += 1
                 err = e
 
-        warnings.warn(f"'{self.name}' _get_images_hw() failed {failures} times before quitting.")
+        self.logger.warning("_get_images_hw() failed %s times before quitting.", failures)
 
         raise err
 
@@ -772,7 +774,7 @@ class Camera(_Common, ABC):
                 exposure_power=exposure_times,
             )
             if np.max(img) >= self.bitresolution:
-                warnings.warn("HDR image is overexposed.")
+                self.logger.warning("HDR image is overexposed.")
             # Store the result locally.
             self.last_image = img
             return img
@@ -967,7 +969,7 @@ class Camera(_Common, ABC):
         ax : matplotlib.pyplot.axis OR None
             Axis to plot upon.
         cbar : bool
-            Also plot a colorbar.
+            Also plot a colorbar. Does not work if ``ax`` is passed.
 
         Returns
         -------
@@ -981,22 +983,24 @@ class Camera(_Common, ABC):
             image = self.last_image
         image = np.array(image, copy=(False if np.__version__[0] == '1' else None))
 
-        if len(plt.get_fignums()) > 0:
-            fig = plt.gcf()
+        should_show = False
+        if ax is None:
+            if len(plt.get_fignums()) > 0:
+                fig = plt.gcf()
+            else:
+                fig = plt.figure(figsize=(20,8))
+                should_show = True
         else:
-            fig = plt.figure(figsize=(20,8))
-
-        if ax is not None:
+            fig = None
             plt.sca(ax)
 
         im = plt.imshow(image)
         ax = plt.gca()
 
-        if cbar:
+        if cbar and fig is not None:
             cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
             fig.colorbar(im, cax=cax, orientation="vertical")
 
-        # ax.invert_yaxis()
         ax.set_title(title)
 
         if limits is not None and limits != 1:
@@ -1021,6 +1025,9 @@ class Camera(_Common, ABC):
 
         plt.sca(ax)
 
+
+        if should_show:
+            _slmsuite_plt_show(name="camera_plot")
         return ax
 
     # Other helper methods.
@@ -1067,7 +1074,8 @@ class Camera(_Common, ABC):
         timeout_s : float
             Stop attempting adjusting exposure after ``timeout_s`` seconds.
         verbose : bool
-            Whether to print exposure updates.
+            If ``True``, progress is logged at ``INFO``; otherwise at ``DEBUG``.
+            Visibility is ultimately governed by :func:`slmsuite.configure_logging`.
 
         Returns
         -------
@@ -1146,11 +1154,11 @@ class Camera(_Common, ABC):
             status = metric(img[sliced])
             err = np.abs(status - set_val) / self.bitresolution
 
-            if verbose:
-                print(
-                    f"Autoexpose: exposure = {exp:<.2e} s, "
-                    f"status = {status}/{self.bitresolution-(self.averaging if self.averaging is not None else 1)}, ",
-                )
+            self.logger.log(
+                logging.INFO if verbose else logging.DEBUG,
+                "Autoexpose: exposure = %.2e s, status = %s/%s",
+                exp, status, self.bitresolution - (self.averaging if self.averaging is not None else 1),
+            )
 
         # The loop targets 50% of resolution.
         # Now set the final exposure if different (TODO, improve).
@@ -1181,7 +1189,7 @@ class Camera(_Common, ABC):
             axs[1].set_xticks([])
             axs[1].set_yticks([])
 
-            plt.show()
+            _slmsuite_plt_show(name="autofocus_metric")
 
         return fom
 
@@ -1218,7 +1226,8 @@ class Camera(_Common, ABC):
         plot : bool
             Whether to provide illustrative plots.
         verbose : bool
-            Whether to print progress updates during the sweep.
+            If ``True``, progress is logged at ``INFO``; otherwise at ``DEBUG`` (default).
+            Visibility is ultimately governed by :func:`slmsuite.configure_logging`.
 
         Returns
         -------
@@ -1270,8 +1279,7 @@ class Camera(_Common, ABC):
 
         for i, z in enumerate(z_list):
             try:
-                if verbose:
-                    print(f"Moving to z = {z:<.2f}...          ", end="\r")
+                self.logger.debug("Moving to z = %.2f...", z)
                 set_z(z)
 
                 # Take image and evaluate metric.
@@ -1316,14 +1324,12 @@ class Camera(_Common, ABC):
             z_opt = popt[0]
             c_opt = popt[1] + popt[2]
         except BaseException:
-            if verbose:
-                print("Autofocus fit failed, using maximum fom as optimum...")
+            self.logger.warning("Autofocus fit failed, using maximum fom as optimum.")
             z_opt = z_list[I_max_count]
             c_opt = counts[I_max_count]
 
         # Goto the optimal position
-        if verbose:
-            print("Moving to optimized value, z = " + str(z_opt))
+        self.logger.log(logging.INFO if verbose else logging.DEBUG, "Moving to optimized value, z = %s", z_opt)
         set_z(z_opt)
 
         # Show result if desired
@@ -1342,7 +1348,7 @@ class Camera(_Common, ABC):
             if lfit is not None:
                 plt.plot(z_list, lfit, label="Fit")
             plt.legend()
-            plt.show()
+            _slmsuite_plt_show(name="autofocus")
 
         return z_opt
 

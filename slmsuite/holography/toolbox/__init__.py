@@ -7,9 +7,13 @@ from scipy.spatial import distance
 from scipy.spatial import Voronoi, voronoi_plot_2d
 import cv2
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import warnings
 
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 
 # Unit definitions.
@@ -255,8 +259,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units in CAMERA_UNITS or to_units in CAMERA_UNITS:
         if cameraslm is None or not "fourier" in cameraslm.calibrations:
-            warnings.warn(
-                f"CameraSLM must be passed as slm for conversion '{from_units}' to '{to_units}'"
+            logger.warning(
+                "CameraSLM must be passed as slm for conversion '%s' to '%s'", from_units, to_units
             )
             return np.full_like(vector_parsed, np.nan)
 
@@ -265,9 +269,9 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         if cam_pitch_um is None:
             # Don't error if ij.
             if from_units in CAMERA_UNITS[1:] or to_units in CAMERA_UNITS[1:]:
-                warnings.warn(
-                    f"Camera must have filled attribute pitch_um "
-                    "for conversion '{from_units}' to '{to_units}'"
+                logger.warning(
+                    "Camera must have filled attribute pitch_um "
+                    "for conversion '%s' to '%s'", from_units, to_units
                 )
                 return np.full_like(vector_parsed, np.nan)
         else:
@@ -276,7 +280,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     # Generate conversion factors for various units.
     if from_units == "freq" or to_units == "freq":
         if slm is None:
-            warnings.warn("slm is required for unit 'freq'")
+            logger.warning("slm is required for unit 'freq'")
             pitch_um = np.nan
             wav_um = np.nan
         else:
@@ -285,7 +289,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units == "lpmm" or to_units == "lpmm":
         if slm is None:
-            warnings.warn("slm is required for units 'lpmm'")
+            logger.warning("slm is required for units 'lpmm'")
             wav_um = np.nan
         else:
             wav_um = slm.wav_um
@@ -298,7 +302,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
         if shape is None:
             if slm is None:
-                warnings.warn("shape or slm is required for unit 'knm'")
+                logger.warning("shape or slm is required for unit 'knm'")
                 shape = (np.nan, np.nan)
             else:
                 shape = np.array(slm.shape, dtype=float)
@@ -696,7 +700,7 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
         plt.ylim(1.05 * sy, -0.05 * sy)
         plt.gca().set_aspect("equal")
         plt.title("Voronoi Cells")
-        plt.show()
+        _slmsuite_plt_show(name="voronoi_windows")
 
     # Gather data from scipy Voronoi and return as a list of boolean windows.
     N = np.shape(vectors)[1]
@@ -1360,7 +1364,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
             plt.ylim(1.05 * sy, -0.05 * sy)
             plt.gca().set_aspect("equal")
             plt.title("Voronoi Cells")
-            plt.show()
+            _slmsuite_plt_show(name="lloyds_algorithm")
 
         for i in range(result.shape[1]):
             # Don't move points that don't make sense.

@@ -10,6 +10,7 @@ try:
 except ImportError:
     cp = np
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import warnings
 from PIL import Image
@@ -139,7 +140,7 @@ class SLM(_Common, ABC):
         self,
         resolution,
         bitdepth=8,
-        name="SLM",
+        name="",
         wav_um=1,
         wav_design_um=None,
         pitch_um=(8,8),
@@ -171,7 +172,8 @@ class SLM(_Common, ABC):
             See :attr:`settle_time_s`.
         """
         # Initialize the common hardware attributes.
-        super().__init__(
+        _Common.__init__(
+            self,
             resolution=resolution,
             bitdepth=bitdepth,
             name=name,
@@ -190,16 +192,11 @@ class SLM(_Common, ABC):
         else:
             self.wav_design_um = float(wav_design_um)
 
-        self.pitch = self.pitch_um / self.wav_um
-
         # Make normalized coordinate grids.
         height, width = self.shape
         xpix = (width  - 1) * np.linspace(-0.5, 0.5, width)
         ypix = (height - 1) * np.linspace(-0.5, 0.5, height)
         self.grid = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
-
-        # Multiplier for when the target wavelengths differ from the design wavelength.
-        self.phase_scaling = self.wav_um / self.wav_design_um
 
         # Source profile dictionary
         self.source = {}
@@ -304,7 +301,7 @@ class SLM(_Common, ABC):
         ax : matplotlib.pyplot.axis OR None
             Axis to plot upon.
         cbar : bool
-            Also plot a colorbar.
+            Also plot a colorbar. Does not work if ``ax`` is passed.
 
         Returns
         -------
@@ -316,25 +313,27 @@ class SLM(_Common, ABC):
         phase = np.array(phase, copy=(False if np.__version__[0] == '1' else None))
         phase = np.mod(phase, 2*np.pi) / np.pi
 
-        if len(plt.get_fignums()) > 0:
-            fig = plt.gcf()
+        should_show = False
+        if ax is None:
+            if len(plt.get_fignums()) > 0:
+                fig = plt.gcf()
+            else:
+                fig = plt.figure(figsize=(20,8))
+                should_show = True
         else:
-            fig = plt.figure(figsize=(20,8))
-
-        if ax is not None:
+            fig = None
             plt.sca(ax)
 
         im = plt.imshow(phase, clim=[0, 2], cmap="twilight", interpolation="none")
         ax = plt.gca()
 
-        if cbar:
+        if cbar and fig is not None:
             cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
             fig.colorbar(im, cax=cax, orientation="vertical")
             ticks = [0,1,2]
             cax.set_yticks([0,1,2])
             cax.set_yticklabels([f"${t}\\pi$" for t in ticks])
 
-        # ax.invert_yaxis()
         ax.set_title(title)
 
         if limits is not None and limits != 1:
@@ -359,7 +358,18 @@ class SLM(_Common, ABC):
 
         plt.sca(ax)
 
+        if should_show:
+            _slmsuite_plt_show(name="slm_plot")
+
         return ax
+
+    @property
+    def pitch(self):
+        return self.pitch_um / self.wav_um
+
+    @property
+    def phase_scaling(self):
+        return self.wav_um / self.wav_design_um
 
     # Writing methods
 
@@ -869,7 +879,7 @@ class SLM(_Common, ABC):
         self.phase = data["phase"]
 
         if not np.all(np.isclose(data["display"], self._format_phase_hw(data["phase"]))):
-            warnings.warn("Integer data in 'display' does not match 'phase' for this SLM.")
+            self.logger.warning("Integer data in 'display' does not match 'phase' for this SLM.")
 
         # Optional delay.
         if settle:
@@ -1392,7 +1402,7 @@ class SLM(_Common, ABC):
 
         # Finalize the plot and return the axes.
         plt.tight_layout()
-        plt.show()
+        _slmsuite_plt_show(name="plot_source")
 
         return axs
 

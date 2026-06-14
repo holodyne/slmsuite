@@ -5,11 +5,12 @@ Datastructures, methods, and calibrations for an SLM monitored by a camera.
 import os
 import copy
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 import warnings
 
 from slmsuite import __version__
-from slmsuite.hardware._pickle import _Picklable
+from slmsuite._logging import _Loggable
 from slmsuite.holography.analysis.files import load_h5, save_h5, generate_path, latest_path
 
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
@@ -21,7 +22,7 @@ from slmsuite.hardware.cameraslms._pixel import _PixelCalibration
 from slmsuite.hardware.cameraslms._settle import _SettleCalibration
 from slmsuite.hardware.cameraslms._wavefront import _WavefrontCalibration
 
-class CameraSLM(_Picklable):
+class CameraSLM(_Loggable):
     """
     Base class for an SLM with camera feedback.
 
@@ -101,6 +102,10 @@ class CameraSLM(_Picklable):
 
         self.calibrations = {}
 
+        # Initialize logger.
+        _Loggable.__init__(self)
+        self.log_state()
+
     def plot(
         self,
         phase=None,
@@ -145,19 +150,29 @@ class CameraSLM(_Picklable):
         if image is None and phase is not None and np.shape(phase) == self.slm.shape:
             self.slm.set_phase(phase, **kwargs)
 
-        if len(plt.get_fignums()) > 0:
-            fig = plt.gcf()
-        else:
-            fig = plt.figure(figsize=(20,8))
 
+        should_show = False
         if axs is None:
+            if len(plt.get_fignums()) > 0:
+                fig = plt.gcf()
+            else:
+                fig = plt.figure(figsize=(20,8))
+                should_show = True
             axs = (fig.add_subplot(1, 2, 1), fig.add_subplot(1, 2, 2))
+        else:
+            fig = None
+            if len(axs) != 2:
+                raise ValueError(f"Expected axs to be a tuple of two axes. Found length {len(axs)} tuple.")
 
         self.slm.plot(phase=phase, limits=slm_limits, title="", ax=axs[0], cbar=cbar)
         self.cam.plot(image=image, limits=cam_limits, title="", ax=axs[1], cbar=cbar)
 
-        fig.suptitle(title)
+        if fig is not None:
+            fig.suptitle(title)
         plt.tight_layout()
+
+        if should_show:
+            _slmsuite_plt_show(name="fourierslm_plot")
 
         return axs
 
@@ -348,7 +363,7 @@ class FourierSLM(
 
     ### Automatic Calibration ###
 
-    def _calibrate(self, verbose=True):
+    def _calibrate(self):
         """
         **(Not Implemented)**
         Attempts to autonomously calibrate the system.
@@ -362,19 +377,19 @@ class FourierSLM(
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_superpixel()`.
         """
         def calibration_detected(calibration_type):
-            print(calibration_type.replace("_", " ").capitalize() + " calibration...")
+            self.logger.info("%s calibration...", calibration_type.replace("_", " ").capitalize())
             if calibration_type in self.calibrations:
-                if verbose: print(f"Found calibration from {self.calibrations[calibration_type]['timestamp']}.")
+                self.logger.info("Found calibration from %s.", self.calibrations[calibration_type]["timestamp"])
                 return True
             else:
                 try:
                     self.load_calibration(calibration_type)
-                    if verbose: print(f"Loaded calibration from {self.calibrations[calibration_type]['timestamp']}.")
+                    self.logger.info("Loaded calibration from %s.", self.calibrations[calibration_type]["timestamp"])
                     return True
                 except FileNotFoundError:
                     return False
                 except Exception as e:
-                    warnings.warn(f"Unable to load '{calibration_type}' calibration: {e}")
+                    self.logger.warning("Unable to load '%s' calibration: %s", calibration_type, e)
                     return False
 
         # Fourier
@@ -390,7 +405,7 @@ class FourierSLM(
         if not calibration_detected("wavefront_superpixel"):
             self.wavefront_calibrate_superpixel()
 
-        print("Fourier calibration (final)...")
+        self.logger.info("Fourier calibration (final)...")
         self.fourier_calibrate()
 
     ### Calibration Helpers ###
@@ -510,9 +525,9 @@ class FourierSLM(
         cal_ver = "an unknown version" if not "__version__" in cal else cal["__version__"]
 
         if cal_ver != __version__:
-            warnings.warn(
-                f"You are using slmsuite {__version__}, but the calibration "
-                f"in '{file_path}' was created in {cal_ver}."
+            self.logger.warning(
+                "You are using slmsuite %s, but the calibration in '%s' was created in %s.",
+                __version__, file_path, cal_ver,
             )
 
         return file_path

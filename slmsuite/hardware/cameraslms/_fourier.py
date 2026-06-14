@@ -1,6 +1,5 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import warnings
 import cv2
 
 from slmsuite.holography import analysis
@@ -97,7 +96,7 @@ class _FourierCalibration(object):
                 array_shape=array_shape, array_pitch=array_pitch, array_center=array_center, **kwargs
             )
         except Exception as e:
-            warnings.warn(
+            self.logger.warning(
                 "fourier_calibrate failed during array holography. Try the following:\n"
                 "- Reducing the array_pitch or array_shape,\n"
                 "- Checking SLM parameters."
@@ -144,7 +143,7 @@ class _FourierCalibration(object):
         try:
             orientation = analysis.blob_array_detect(img, array_shape, plot=plot)
         except Exception as e:
-            warnings.warn("fourier_calibrate failed during array detection and fitting.")
+            self.logger.warning("fourier_calibrate failed during array detection and fitting.")
             raise e
 
         a = format_2vectors(array_center)
@@ -204,7 +203,7 @@ class _FourierCalibration(object):
         """
         # Check that the pitch is an integer.
         if not np.all(np.isclose(array_pitch, np.rint(array_pitch))):
-            warnings.warn("array_pitch is non-integer")
+            self.logger.warning("array_pitch is non-integer")
 
         # Make the spot array
         shape = SpotHologram.get_padded_shape(self, padding_order=1, square_padding=True)
@@ -233,9 +232,9 @@ class _FourierCalibration(object):
                 "method", "maxiter", "verbose", "callback", "feedback",
                 "stat_groups", "name", "fixed_phase", "raw_stats", "blur_ij",
             ]:
-                warnings.warn(
-                    f"Unexpected argument '{key}' passed to fourier_grid_project(). "
-                    "This may be ignored."
+                self.logger.warning(
+                    "Unexpected argument '%s' passed to fourier_grid_project(). "
+                    "This may be ignored.", key
                 )
 
         # Optimize and project the hologram
@@ -462,12 +461,11 @@ class _FourierCalibration(object):
                     self.calibrations["wavefront_superpixel"]["__timestamp__"] >
                     self.calibrations["fourier"]["__timestamp__"]
                 ):
-                    warnings.warn(
-                        f"The wavefront calibration is newer "
-                        f"({self.calibrations['wavefront_superpixel']['__time__']}) "
-                        f"than the Fourier calibration "
-                        f"({self.calibrations['fourier']['__time__']}). "
-                        "The Fourier calibration may be stale."
+                    self.logger.warning(
+                        "The wavefront calibration is newer (%s) than the Fourier "
+                        "calibration (%s). The Fourier calibration may be stale.",
+                        self.calibrations["wavefront_superpixel"]["__time__"],
+                        self.calibrations["fourier"]["__time__"],
                     )
         except:
             pass
@@ -562,7 +560,7 @@ class _FourierCalibration(object):
 
         # Gather other conversions.
         if units != "ij" and self.cam.pitch_um is None:
-            warnings.warn(f"cam.pitch_um must be set to use units '{units}'")
+            self.logger.warning("cam.pitch_um must be set to use units '%s'", units)
             return np.nan
 
         # Convert.

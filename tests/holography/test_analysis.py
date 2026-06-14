@@ -2,6 +2,7 @@
 Unit tests for slmsuite.holography.analysis module.
 """
 import warnings
+import logging
 
 import pytest
 import numpy as np
@@ -386,7 +387,7 @@ def test_image_relative_strehl(subtests):
         assert strehl > 0.5
 
 
-def test_image_fit(subtests, benchmark):
+def test_image_fit(subtests, benchmark, caplog):
     """Test image_fit() Gaussian fitting."""
     x = np.linspace(-10, 10, 50)
     y = np.linspace(-10, 10, 50)
@@ -434,9 +435,11 @@ def test_image_fit(subtests, benchmark):
             return a * xy[0] + b * xy[1]
 
         img = np.random.rand(1, 20, 20)
-        with pytest.warns(UserWarning, match="not implemented"):
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
             result = analysis.image_fit(img, grid=grid[:20, :20] if False else None,
                                         function=custom_fn, guess=None)
+        assert any("not implemented" in r.getMessage() for r in caplog.records)
 
         assert result.shape[0] == 1
 
@@ -588,7 +591,7 @@ def test_image_zernike_fit(subtests):
             print(f"leastsquares fit error (may be expected): {e}")
 
 
-def test_take(subtests, benchmark):
+def test_take(subtests, benchmark, caplog):
     """Test take(), take_tile(), take_plot(), and _take_parse_shape()."""
     with subtests.test("benchmark"):
         rng = np.random.default_rng(42)
@@ -640,9 +643,11 @@ def test_take(subtests, benchmark):
 
     with subtests.test("_take_parse_shape warns on truncation"):
         test_images = np.random.rand(3, 10, 10)
-        with pytest.warns(UserWarning, match="Not enough space"):
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
             img_count3, (M3, N3) = analysis._take_parse_shape(test_images, shape=(1, 2))
-            assert img_count3 == 2
+        assert any("Not enough space" in r.getMessage() for r in caplog.records)
+        assert img_count3 == 2
 
     with subtests.test("take_plot does not crash"):
         import matplotlib.pyplot as plt
