@@ -135,7 +135,7 @@ class _SettleCalibration(object):
             maxfev=10000
         )
         x0, a, b, c = params
-        print(params)
+        self.logger.debug("settle fit params: %s", params)
 
         relax_time = b
         com_time = x0

@@ -71,18 +71,23 @@ The client connects to this hardware:
     cam.get_image()
     cam.plot()
 """
-import numpy as np
-import socket, json, time
-import warnings
-import urllib.parse as urllib
-from datetime import date, datetime, timedelta
-import traceback
-from typing import Any, List, Tuple, Dict
-import zlib
 import base64
+import json
+import socket
+import time
+import traceback
+import urllib.parse as urllib
+import zlib
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Tuple
 
-from slmsuite._pickling import _Picklable
+import numpy as np
+
 from slmsuite import __version__
+from slmsuite._logging import make_logger
+from slmsuite._pickling import _Picklable
+
+logger = make_logger(__name__)
 
 DEFAULT_HOST = 'localhost'
 DEFAULT_PORT = 5025             # Commonly used for instrument control.
@@ -243,14 +248,9 @@ class Server(object):
         else:
             return None
 
-    def listen(self, verbose: bool = True):
+    def listen(self):
         """
         Blocking command to listen for client commands and process them once they are
-        given.
-
-        :param verbose:
-            Whether to print feedback that the server is online alongside a log of
-            client actions.
         """
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -258,43 +258,32 @@ class Server(object):
         sock.bind(("", self.port))
         sock.listen(5)
 
-        i = 0
-
-        if verbose:
-            print(f"Hosting on port {self.port} with hardware {list(self.hardware.keys())}")
+        logger.info("Hosting on port %s with hardware %s", self.port, list(self.hardware.keys()))
 
         try:
             while True:
-                i += 1
                 try:
-                    # Wait for connection with fancy print.
-                    if verbose:
-                        print("Waiting for connection" + ("." * (1 + (i % 3))) + "     ", end="\r")
-
                     # This blocks for self.timeout unless a client connects.
                     connection, client_addr = sock.accept()
 
-                    # Cleanup the print.
-                    if verbose:
-                        print("                              ", end="\r")
-
                     # Check if the client is allowed to connect.
                     if (self.allowlist is not None) and (client_addr[0] not in self.allowlist):
-                        if verbose:
-                            stamp = str(datetime.now())
-                            print(f"{stamp} Rejected connection from {client_addr}, not in allowlist {self.allowlist}.")
+                        logger.warning(
+                            "Rejected connection from %s, not in allowlist %s.",
+                            client_addr, self.allowlist,
+                        )
                         result = False, f"Client {client_addr} not in allowlist."
                     else:
                         # Receive, handle, and reply to message.
                         message = _recv(connection, self.timeout)
-                        result = self._handle(message, client_addr, verbose)
+                        result = self._handle(message, client_addr)
 
                     reply = (urllib.quote_plus(json.dumps(result, cls=_NpEncoder)) + _delim).encode()
-                    print(f"replied with {len(reply)} bytes.")
+                    logger.debug("Replied with %d bytes.", len(reply))
 
                     connection.sendall(reply)
                     connection.close()
-                except IOError as e:
+                except IOError:
                     # This is a timeout error. Just continue.
                     pass
                 except Exception as e:
@@ -302,8 +291,7 @@ class Server(object):
                     raise e
         except KeyboardInterrupt:
             # Standard way to kill the thread.
-            if verbose:
-                print("Closing server! Goodbye!")
+            logger.info("Closing server! Goodbye!")
             try:
                 connection.close()
             except:
@@ -312,8 +300,7 @@ class Server(object):
         except Exception as e:
             # There was an error in the server communication protocol. This kills the thread.
             # Note that hardware errors are handled in _handle and the loop continues.
-            if verbose:
-                print(traceback.format_exc())
+            logger.error("Server communication error:\n%s", traceback.format_exc())
             try:
                 connection.close()
             except:
@@ -325,7 +312,6 @@ class Server(object):
         self,
         message : str,
         client_addr: str = None,
-        verbose: bool = False
     ) -> Tuple[bool, Any]:
         """
         Handle a message from a client.
@@ -338,9 +324,7 @@ class Server(object):
 
             instrument = f"{name}.{command}"
 
-            if verbose:
-                stamp = str(datetime.now())
-                print(f"{stamp} {client_addr} {instrument}")
+            logger.info("%s %s", client_addr, instrument)
 
             # Initial parse of command.
             if command is None:
@@ -349,7 +333,7 @@ class Server(object):
                 return True, self.kind
 
             # Make sure that the hardware exists.
-            if not name in self.hardware:
+            if name not in self.hardware:
                 return False, f"Did not recognize hardware '{name}'. Options: {list(self.hardware.keys())}."
 
             if command in self.allowcommands and hasattr(self.hardware[name], command):
@@ -387,7 +371,7 @@ class _Client(_Picklable):
 
         hardware = self._com(command="ping")
 
-        if not self.name in hardware:
+        if self.name not in hardware:
             raise ValueError(
                 f"Hardware '{self.name}' is not present at {self.host}:{self.port}. Options: {hardware}."
             )
@@ -411,14 +395,15 @@ class _Client(_Picklable):
         self.latency_s = t
         self.server_attributes = pickled
 
-        if not "__version__" in pickled:
-            warnings.warn(
-                f"Server did not provide version information; "
-                f"cannot verify compatibility with client version {__version__}."
+        if "__version__" not in pickled:
+            logger.warning(
+                "Server did not provide version information; "
+                "cannot verify compatibility with client version %s.", __version__
             )
         elif pickled["__version__"] != __version__:
-            warnings.warn(
-                f"Client version {__version__} does not match server version {pickled['__version__']}."
+            logger.warning(
+                "Client version %s does not match server version %s.",
+                __version__, pickled["__version__"],
             )
 
     def _com(

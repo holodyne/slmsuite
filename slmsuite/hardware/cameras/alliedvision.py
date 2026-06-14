@@ -19,6 +19,9 @@ import numpy as np
 import warnings
 
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 try:
     import vmbpy
@@ -31,11 +34,11 @@ except ImportError:
         vimba_system = vimba.Vimba
         vimba_name = "vimba"
 
-        warnings.warn("vmbpy not installed; falling back to vimba")
+        logger.warning("vmbpy not installed; falling back to vimba")
     except ImportError:
         vimba_system = None
         vimba_name = ""
-        warnings.warn("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
+        logger.warning("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
 
 
 class AlliedVision(Camera):
@@ -65,14 +68,14 @@ class AlliedVision(Camera):
 
     sdk = None
 
-    def __init__(self, serial="", pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, serial="", pitch_um=None, **kwargs):
         """
         Initialize camera and attributes.
 
         Caution
         ~~~~~~~
         AlliedVision cameras sometimes have different attribute names depending on the
-        model. This constructor tries to set some default properties, but if they fail, it will print a
+        model. This constructor tries to set some default properties, but if they fail, it will log a
         warning and continue. The user will need to configure the :mod:`vmbpy` handle
         directly in this case, or in the case where the default configuration is not desired.
 
@@ -86,8 +89,6 @@ class AlliedVision(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -95,25 +96,19 @@ class AlliedVision(Camera):
             raise ImportError("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
 
         if AlliedVision.sdk is None:
-            if verbose:
-                print(f"{vimba_name} initializing... ", end="")
+            logger.debug("%s initializing...", vimba_name)
             AlliedVision.sdk = vimba_system.get_instance()
             AlliedVision.sdk.__enter__()
-            if verbose:
-                print("success")
 
-        if verbose:
-            print("Looking for cameras... ", end="")
+        logger.debug("Looking for cameras...")
         camera_list = AlliedVision.sdk.get_all_cameras()
-        if verbose:
-            print("success")
 
         serial_list = [cam.get_serial() for cam in camera_list]
         if serial == "":
             if len(camera_list) == 0:
                 raise RuntimeError(f"No cameras found by {vimba_name}.")
-            if len(camera_list) > 1 and verbose:
-                print(f"No serial given... Choosing first of {serial_list}")
+            if len(camera_list) > 1:
+                logger.debug("No serial given; choosing first of %s", serial_list)
 
             self.cam = camera_list[0]
             serial = self.cam.get_serial()
@@ -125,29 +120,26 @@ class AlliedVision(Camera):
                     f"Serial {serial} not found by {vimba_name}. Available: {serial_list}"
                 )
 
-        if verbose:
-            print(f"{vimba_name} sn '{serial}' initializing... ", end="")
+        logger.debug("%s sn '%s' initializing...", vimba_name, serial)
         self.cam.__enter__()
-        if verbose:
-            print("success")
 
         # Try to set some default properties, with warnings if they fail.
         try:
             self.cam.BinningHorizontal.set(1)
             self.cam.BinningVertical.set(1)
         except:
-            print("Warning: failed to set binning to 1.")
+            logger.warning("Failed to set binning to 1.")
 
         try:
             self.cam.GainAuto.set("Off")
         except:
-            print("Warning: failed to turn autogain off.")
+            logger.warning("Failed to turn autogain off.")
 
         try:
             self.cam.ExposureAuto.set("Off")
             self.cam.ExposureMode.set("Timed")
         except:
-            print("Warning: failed to set exposure mode to timed.")
+            logger.warning("Failed to set exposure mode to timed.")
 
 
         try:
@@ -159,7 +151,7 @@ class AlliedVision(Camera):
             self.cam.TriggerActivation.set("RisingEdge")
             self.cam.TriggerSource.set("Software")
         except:
-            print("Warning: failed to set acquisition and trigger configuration.")
+            logger.warning("Failed to set acquisition and trigger configuration.")
 
         # Cache whether the camera has ExposureTimeAbs or ExposureTime, for use
         # in the get/set exposure methods.

@@ -362,7 +362,7 @@ class FourierSLM(
 
     ### Automatic Calibration ###
 
-    def _calibrate(self, verbose=True):
+    def _calibrate(self):
         """
         **(Not Implemented)**
         Attempts to autonomously calibrate the system.
@@ -376,19 +376,19 @@ class FourierSLM(
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_superpixel()`.
         """
         def calibration_detected(calibration_type):
-            print(calibration_type.replace("_", " ").capitalize() + " calibration...")
+            self.logger.info("%s calibration...", calibration_type.replace("_", " ").capitalize())
             if calibration_type in self.calibrations:
-                if verbose: print(f"Found calibration from {self.calibrations[calibration_type]['timestamp']}.")
+                self.logger.info("Found calibration from %s.", self.calibrations[calibration_type]["timestamp"])
                 return True
             else:
                 try:
                     self.load_calibration(calibration_type)
-                    if verbose: print(f"Loaded calibration from {self.calibrations[calibration_type]['timestamp']}.")
+                    self.logger.info("Loaded calibration from %s.", self.calibrations[calibration_type]["timestamp"])
                     return True
                 except FileNotFoundError:
                     return False
                 except Exception as e:
-                    warnings.warn(f"Unable to load '{calibration_type}' calibration: {e}")
+                    self.logger.warning("Unable to load '%s' calibration: %s", calibration_type, e)
                     return False
 
         # Fourier
@@ -404,7 +404,7 @@ class FourierSLM(
         if not calibration_detected("wavefront_superpixel"):
             self.wavefront_calibrate_superpixel()
 
-        print("Fourier calibration (final)...")
+        self.logger.info("Fourier calibration (final)...")
         self.fourier_calibrate()
 
     ### Calibration Helpers ###
@@ -524,9 +524,9 @@ class FourierSLM(
         cal_ver = "an unknown version" if not "__version__" in cal else cal["__version__"]
 
         if cal_ver != __version__:
-            warnings.warn(
-                f"You are using slmsuite {__version__}, but the calibration "
-                f"in '{file_path}' was created in {cal_ver}."
+            self.logger.warning(
+                "You are using slmsuite %s, but the calibration in '%s' was created in %s.",
+                __version__, file_path, cal_ver,
             )
 
         return file_path

@@ -17,6 +17,9 @@ from typing import Tuple, Union, Callable
 
 from slmsuite.misc.math import REAL_TYPES
 from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 # Load CUDA code. This is used for cupy.RawKernels in this file and elsewhere.
 
@@ -1041,7 +1044,7 @@ def _zernike_test(grid, indices):
     scale = 1
     if hasattr(grid, "get_source_zernike_scaling"):
         scale = grid.get_source_zernike_scaling()
-        print(scale)
+        logger.debug("source Zernike scaling: %s", scale)
     x_grid = cp.array(x_grid, copy=True, dtype=np.float32)
     y_grid = cp.array(y_grid, copy=True, dtype=np.float32)
 

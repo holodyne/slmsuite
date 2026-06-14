@@ -878,7 +878,7 @@ class SLM(_Common, ABC):
         self.phase = data["phase"]
 
         if not np.all(np.isclose(data["display"], self._format_phase_hw(data["phase"]))):
-            warnings.warn("Integer data in 'display' does not match 'phase' for this SLM.")
+            self.logger.warning("Integer data in 'display' does not match 'phase' for this SLM.")
 
         # Optional delay.
         if settle:
