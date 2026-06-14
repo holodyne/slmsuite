@@ -1200,6 +1200,9 @@ def image_zernike_fit(
             indices_ansi = np.arange((order * (order + 1)) // 2)[1:]    # Omit piston.
         else:
             indices_ansi = np.array(order, dtype=int)
+            if 0 in indices_ansi:
+                indices_ansi = indices_ansi[indices_ansi != 0]
+                warnings.warn("Piston term (Zernike ANSI index 0) is omitted from the fit.")
         basis = _zernike_get_basis(grid, indices_ansi, aperture=aperture, use_mask=use_mask)
 
     # Work on the basis's array module (GPU when the basis is GPU-resident).
