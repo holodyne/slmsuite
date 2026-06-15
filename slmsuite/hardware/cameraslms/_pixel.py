@@ -336,7 +336,7 @@ class _PixelCalibration(object):
                                 size=integration_size,
                                 return_mask=True,
                             )
-                            self.cam.auto_expose(
+                            self.cam.autoexpose(
                                 set_fraction=autoexpose,
                                 window=mask,
                                 verbose=True,

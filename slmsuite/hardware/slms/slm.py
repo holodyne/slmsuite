@@ -2,28 +2,29 @@
 Abstract functionality for SLMs.
 """
 
-import time
 import os
+import time
+
 import numpy as np
+
 try:
     import cupy as cp
 except ImportError:
     cp = np
+import inspect
+import warnings
+from abc import ABC, abstractmethod
+
 import matplotlib.pyplot as plt
 from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-import warnings
 from PIL import Image
-import inspect
-from abc import ABC, abstractmethod
 
 from slmsuite import __version__
 from slmsuite.hardware._common import _Common
-from slmsuite.holography import toolbox
+from slmsuite.holography import analysis, toolbox
 from slmsuite.misc import fitfunctions
-from slmsuite.misc.math import REAL_TYPES
-from slmsuite.holography import analysis
-from slmsuite.misc.files import generate_path, latest_path, save_h5, load_h5
+from slmsuite.misc.files import generate_path, latest_path, load_h5, save_h5
 
 
 def _xp(array):
@@ -81,8 +82,12 @@ class SLM(_Common, ABC):
     grid : (numpy.ndarray<float> (height, width), numpy.ndarray<float> (height, width))
         :math:`x` and :math:`y` coordinates of the SLM's pixels in wavelengths
         (see :attr:`wav_um`, :attr:`pitch_um`)
-        measured from the center of the SLM.
-        Of size :attr:`shape`. Produced by :func:`numpy.meshgrid`.
+        measured from the center of the :attr:`aperture`.
+        Of size :attr:`shape`. A read-only property derived from the
+        immutable geometric grid and the :attr:`aperture` center.
+    aperture : :class:`~slmsuite.holography.toolbox.Aperture`
+        Aperture applied to the SLM's nearfield. Set with :meth:`set_aperture`
+        or fitted to a measured amplitude with :meth:`fit_aperture`.
     source : dict
         Stores data describing measured, simulated, or estimated properties of the source,
         such as amplitude and phase.
@@ -102,9 +107,6 @@ class SLM(_Common, ABC):
         store the true source properties (defined by the user) used to simulate the SLM's
         far-field.
 
-        When :meth:`.fit_source_amplitude()` is called,
-        additional keys (e.g. ``"amplitude_center_pix"``, ``"amplitude_radius"``,
-        ``"amplitude_extent"``, ``"amplitude_extent_radius"``) are populated.
     phase : numpy.ndarray
         Last displayed data in units of phase (radians). If wavefront calibration
         (`phase_correct=True`) is used, this includes the calibration data.
@@ -128,6 +130,7 @@ class SLM(_Common, ABC):
         "wav_um",
         "wav_design_um",
         "phase_scaling",
+        "aperture",
     ]
     _pickle_data = [
         "source",
@@ -192,11 +195,19 @@ class SLM(_Common, ABC):
         else:
             self.wav_design_um = float(wav_design_um)
 
-        # Make normalized coordinate grids.
+        # Make normalized coordinate grids. ``_grid_base`` is the immutable geometric
+        # grid (centered on the SLM); the public ``grid`` property derives the
+        # aperture-centered working frame from it (see the ``grid`` property).
         height, width = self.shape
         xpix = (width  - 1) * np.linspace(-0.5, 0.5, width)
         ypix = (height - 1) * np.linspace(-0.5, 0.5, height)
-        self.grid = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
+        self._grid_base = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
+        self._grid = None            # cache for the aperture-centered working grid
+        self._grid_center = None     # aperture center the cache was built for
+
+        # Aperture defaults to "cropped" (circumscribes the whole grid, so it
+        # masks nothing until the user sets a real aperture). See set_aperture().
+        self.aperture = toolbox.Aperture(self._grid_base, "cropped")
 
         # Source profile dictionary
         self.source = {}
@@ -213,6 +224,55 @@ class SLM(_Common, ABC):
         # Default settle and phase_correct behavior for set_phase.
         self.phase_correct = True
         self.settle = False
+
+    # Aperture-derived properties
+    @property
+    def grid(self):
+        r"""
+        :math:`(x, y)` coordinate meshgrids of the SLM's pixels in normalized units
+        (wavelengths), measured from the **aperture center**. This is the working
+        coordinate frame that analytic phase functions (lenses, gratings, Zernike, ...)
+        are generated in.
+        """
+        center = None if self.aperture.center is None else tuple(self.aperture.center)
+        if self._grid is None or self._grid_center != center:
+            if center is None:
+                self._grid = self._grid_base
+            else:
+                self._grid = [
+                    self._grid_base[0] - center[0],
+                    self._grid_base[1] - center[1],
+                ]
+            self._grid_center = center
+        return self._grid
+
+    @property
+    def aperture_mask(self):
+        """
+        Boolean mask (of :attr:`shape`) of the pixels inside :attr:`aperture`.
+        """
+        return self.aperture.mask
+
+    @property
+    def zernike_scaling(self):
+        """
+        The ``(x_scale, y_scale)`` lateral scaling mapping :attr:`grid` onto the Zernike
+        unit disk, from :attr:`aperture`. Used by
+        :meth:`~slmsuite.holography.toolbox.phase.zernike_sum`. This is the SLM-level name
+        for the general :attr:`~slmsuite.holography.toolbox.Aperture.scale`.
+        """
+        return self.aperture.scale
+
+    @property
+    def source_radius(self):
+        r"""
+        The source radius in normalized units, for structured beams such as
+        :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian`. Derived from the
+        :attr:`aperture` scaling as :math:`1 / (2\,s)`, where :math:`s` is the (isotropic)
+        lateral scale. Raises :class:`ValueError` for an anisotropic (elliptical) aperture,
+        which a single radius cannot describe.
+        """
+        return float(1.0 / (2.0 * self.aperture._isotropic_scale()))
 
     @abstractmethod
     def close(self):
@@ -286,7 +346,25 @@ class SLM(_Common, ABC):
 
         return self.source["phase"]
 
-    def plot(self, phase=None, limits=None, title="Phase", ax=None, cbar=True):
+    def _plot_aperture(self, ax):
+        """
+        Overlay the outline of the current :attr:`aperture` on a pixel-coordinate axis.
+        Drawn only if the aperture actually crops the SLM (the default ``"cropped"``
+        aperture, whose mask is all-True, draws nothing).
+        """
+        if not self.aperture.crops:
+            return
+        mask = np.asarray(self.aperture_mask)
+        if not np.all(mask):
+            ax.contour(
+                mask.astype(float),
+                levels=[0.5],
+                colors="r",
+                linewidths=1,
+                linestyles="--",
+            )
+
+    def plot(self, phase=None, limits=None, title="Phase", ax=None, cbar=True, aperture=True):
         """
         Plots the provided phase.
 
@@ -302,6 +380,9 @@ class SLM(_Common, ABC):
             Axis to plot upon.
         cbar : bool
             Also plot a colorbar. Does not work if ``ax`` is passed.
+        aperture : bool
+            If ``True`` (default), overlay the outline of the current :attr:`aperture`
+            (when it crops the SLM).
 
         Returns
         -------
@@ -355,6 +436,9 @@ class SLM(_Common, ABC):
         if phase.shape == self.shape:
             ax.set_xlabel("SLM $n$ [pix]")
             ax.set_ylabel("SLM $m$ [pix]")
+
+            if aperture:
+                self._plot_aperture(ax)
 
         plt.sca(ax)
 
@@ -752,7 +836,7 @@ class SLM(_Common, ABC):
             if phase_correct is None:
                 phase_correct = self.phase_correct
             if phase_correct and ("phase" in self.source):
-                self.phase += xp.asarray(self.source["phase"])
+                self.phase += xp.asarray(self._get_source_phase())
 
             # Pass the data to self.display.
             # Turn the floats in phase space to integer data for the SLM.
@@ -1057,258 +1141,185 @@ class SLM(_Common, ABC):
 
         return self.source
 
-    def fit_source_amplitude(self, method="moments", extent_threshold=.1, force=True):
+    def _center_pix_to_norm(self, center_pix):
+        """Convert a ``(x, y)`` pixel coordinate to the grid's normalized units."""
+        center_pix = np.array(center_pix, dtype=float).ravel()
+        return self.pitch * (center_pix - (np.flip(self.shape) - 1) / 2.0)
+
+    def _length_to_norm(self, length, units):
+        """Convert a scalar ``length`` in ``units`` to the grid's normalized units."""
+        if units == "norm":
+            factor = 1.0
+        elif units == "frac":
+            # Fraction of the half-extent (the smaller of the two half-dimensions).
+            factor = float(np.min([
+                np.nanmax(self._grid_base[0]), np.nanmax(self._grid_base[1])
+            ]))
+        elif units in toolbox.LENGTH_FACTORS:
+            factor = toolbox.LENGTH_FACTORS[units] / self.wav_um
+        else:
+            raise RuntimeError("Did not recognize units '{}'".format(units))
+        return length * factor
+
+    def set_aperture(self, spec=None, *, radius=None, center=None, units="norm"):
+        r"""
+        Sets the SLM's :attr:`aperture` which defines the working
+        coordinate frame (:attr:`grid` centering), the Zernike lateral scaling
+        (:attr:`zernike_scaling`), the in-use mask (:attr:`aperture_mask`), and the
+        effective (masked) source amplitude and phase.
+
+        Setting an aperture **always** applies it to the source amplitude and phase: the
+        region outside the aperture is masked off everywhere the source is used (e.g.
+        holography, :meth:`set_phase`'s wavefront correction). The default aperture
+        (``"cropped"``) circumscribes the whole grid and so masks nothing.
+
+        Parameters
+        ----------
+        spec : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
+            The aperture shape/scaling, as accepted by
+            :class:`~slmsuite.holography.toolbox.Aperture`
+            (``"circular"`` / ``"elliptical"`` / ``"cropped"`` / ``float`` /
+            ``(float, float)`` / an :class:`~slmsuite.holography.toolbox.Aperture`).
+            Mutually exclusive with ``radius``. If both ``spec`` and ``radius`` are
+            ``None``, the current aperture's spec is kept.
+        radius : float OR None
+            Shorthand for a circular aperture of the given source (:math:`1/e`) radius,
+            interpreted in ``units``. The aperture/pupil itself extends to twice this
+            radius (the lateral scaling is :math:`1 / (2\,r)`), matching
+            :attr:`source_radius`.
+        center : (float, float) OR None
+            The ``(x, y)`` pixel the aperture is centered on. ``None`` (the default)
+            centers the aperture on the geometric center of the SLM.
+        units : str
+            Units for ``radius``: ``"norm"`` (normalized to wavelengths, the default),
+            ``"frac"`` (fraction of the half-extent of the SLM), or a physical length
+            (``"um"``, ``"mm"``, ...).
+
+        Returns
+        -------
+        :class:`~slmsuite.holography.toolbox.Aperture`
+            The new :attr:`aperture`.
         """
-        Extracts various :attr:`source` parameters from the source for use in
-        analytic functions. This is done by analyzing the :attr:`source` ``["amplitude"]``
-        distribution with ``"moments"`` or least squares ``"fit"``.
-        These parameters include the following keys:
+        if radius is not None:
+            if spec is not None:
+                raise ValueError("Provide either spec or radius, not both.")
+            spec = 1.0 / (2.0 * self._length_to_norm(radius, units))
+        if spec is None:
+            spec = self.aperture.spec
 
-        -   ``"amplitude_center_pix"`` : (float, float)
+        center_norm = None if center is None else self._center_pix_to_norm(center)
 
-            Pixel corresponding to the center of the source.
-            The grid is also changed to be centered on this pixel.
+        self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
+        self._grid = None
+        return self.aperture
 
-        -   ``"amplitude_radius"`` : float
+    def fit_aperture(self, method="moments", recenter=True):
+        r"""
+        Fits the SLM's :attr:`aperture` to the measured source amplitude distribution in
+        :attr:`source` ``["amplitude"]`` (analyzed via ``"moments"`` or least-squares
+        ``"fit"``). This sets a circular aperture whose source amplitude radius (:math:`1/e`)
+        matches the radial standard deviation of the amplitude, and (if ``recenter``)
+        whose center matches the amplitude centroid.
 
-            The radial standard deviation of the amplitude distribution in normalized units.
-            For a Gaussian source, this is the :math:`1/e` amplitude radius
-            (:math:`1/e^2` power radius).
-            This is scalar and averages the :math:`x` and :math:`y` distributions.
-            This is used to set the source radius for
-            :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian()`
-            and similar.
-
-        -   ``"amplitude_extent"`` : (float, float)
-
-            The box radii of the smallest rectangle which covers all amplitude
-            larger than ``extent_threshold``, where the maximum of the distribution is
-            normalized to one.
-
-        -   ``"amplitude_extent_radius"`` : float
-
-            Smallest scalar radius about the center of the source that covers all amplitude
-            larger than ``extent_threshold``, where the maximum of the distribution is
-            normalized to one.
-            This is used to determine the scaling for
-            :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture()`:
-            Too small of a scaling is not good because amplitude would
-            overlap outside where Zernike is defined, with divergent phase for higher
-            order Zernike polynomials.
-            Too large of a scaling is not good because one needs to use high order
-            Zernike to attain sufficient spatial resolution at the center of the distribution.
-
-        Important
-        ~~~~~~~~~
-        If :attr:`source` ``["amplitude"]`` is not set, then the parameters are guessed
-        as fractions of the grid:
-
-        -   ``"amplitude_center_pix"``
-            Unchanged from current center.
-
-        -   ``"amplitude_radius"``
-            Guessed as 1/4 of the smallest extent.
-
-        -   ``"amplitude_extent"``
-            Guessed as the rectangle that circumscribes the SLM field.
-
-        -   ``"amplitude_extent_radius"``
-            Guessed as the radius that circumscribes the SLM field.
-
-        Important
-        ~~~~~~~~~
-        The ``grid`` is recentered upon the detected center of the source.
-        This ``grid`` is used to generate phase functions like
-        :meth:`~slmsuite.holography.toolbox.phase.lens()` or
-        :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian()`.
-        Such generation works best when centered upon the source; a
-        :meth:`~slmsuite.holography.toolbox.phase.lens()` focuses coaxially and a
-        :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian()` appears symmetric.
+        If no source amplitude has been measured, the aperture is set to a circular
+        aperture of source radius equal to a quarter of the smallest SLM extent.
 
         Parameters
         ----------
         method : str {"fit", "moments"}
-            Whether to use moment calculations ``"moments"``
-            or a least squares ``"fit"`` to determine
-            ``"amplitude_center_pix"`` and ``"amplitude_radius"``.
-            ``"moments"`` is faster but ``"fit"`` is more accurate.
-        extent_threshold : float
-            Fraction of the maximal amplitude to use as
-            the full extent of the amplitude distribution.
-        force : bool
-            If ``False``, does not calculate if these quantities already exist.
-            ``True`` forces recomputation.
-        """
-        # If we have already done a fit, and we don't want to force a new one, then return.
-        if "amplitude_center_pix" in self.source and not force:
-            return
-
-        center_grid = np.array(
-            [np.argmin(np.abs(self.grid[0][0,:])), np.argmin(np.abs(self.grid[1][:,0]))]
-        )
-
-        if not "amplitude" in self.source:
-            # If there is no measured source amplitude, then make guesses based off of the grid.
-            self.source["amplitude_center_pix"] = center_grid
-            self.source["amplitude_radius"] = .25 * np.min((
-                self.shape[1] * self.pitch[0],
-                self.shape[0] * self.pitch[1]
-            ))
-            self.source["amplitude_extent"] = np.array(
-                [np.max(np.abs(self.grid[0])), np.max(np.abs(self.grid[1]))]
-            )
-            self.source["amplitude_extent_radius"] = np.sqrt(np.amax(
-                np.square(self.grid[0]) + np.square(self.grid[1])
-            ))
-        else:
-            # Otherwise, use the measured amplitude distribution.
-            amp = np.abs(self.source["amplitude"])
-
-            # Parse extent_threshold
-            if extent_threshold > 1:
-                raise RuntimeError("extent_threshold cannot exceed 1 (100%). Use a small value.")
-
-            if method == "fit":
-                result = analysis.image_fit(amp, plot=False)
-                std = np.array([result[0,5], result[0,6]])
-
-                center = np.array([result[0,1], result[0,2]])
-            elif method == "moments":
-                # Do moments in power-space, not amplitude.
-                center = analysis.image_positions(np.square(amp))
-                std = np.sqrt(2 * analysis.image_variances(np.square(amp), centers=center)[:2])
-
-                center = np.squeeze(center)
-
-            center += np.flip(self.shape)/2
-
-            self.source["amplitude_center_pix"] = center
-            self.source["amplitude_radius"] = np.mean(self.pitch * np.squeeze(std))
-
-            # Handle centering.
-            dcenter = center_grid - center
-
-            self.grid[0] += dcenter[0] * self.pitch[0]
-            self.grid[1] += dcenter[1] * self.pitch[1]
-
-            center_grid = np.array(
-                [np.argmin(np.abs(self.grid[0][0,:])), np.argmin(np.abs(self.grid[1][:,0]))]
-            )
-
-            extent_mask = amp > (extent_threshold * np.amax(amp))
-
-            self.source["amplitude_extent"] = np.array([
-                np.max(np.abs(self.grid[0][extent_mask])),
-                np.max(np.abs(self.grid[1][extent_mask]))
-            ])
-            self.source["amplitude_extent_radius"] = np.sqrt(np.amax(
-                np.square(self.grid[0][extent_mask]) + np.square(self.grid[1][extent_mask])
-            ))
-
-    def set_source_aperture(
-        self,
-        amplitude_center_pix=None,
-        amplitude_radius=None,
-        amplitude_extent=None,
-        amplitude_extent_radius=None,
-    ):
-        """
-        Sets source aperture parameters measured by :meth:`fit_source_amplitude()` and
-        takes appropriate follow-on actions like shifting the grid.
-
-        Parameters
-        ----------
-        amplitude_center_pix : (float, float) OR None
-            Pixel corresponding to the center of the source.
-            If provided, the grid is recentered on this pixel.
-        amplitude_radius : float OR None
-            The radial standard deviation of the amplitude distribution in normalized units.
-            For a Gaussian source, this is the :math:`1/e` amplitude radius
-            (:math:`1/e^2` power radius).
-        amplitude_extent : (float, float) OR None
-            The box radii of the smallest rectangle which covers the desired amplitude extent
-            in normalized units.
-        amplitude_extent_radius : float OR None
-            Scalar radius about the center that covers the desired amplitude extent
-            in normalized units.
+            Whether to use moment calculations (``"moments"``, faster) or a least-squares
+            ``"fit"`` (more accurate) to determine the center and radius.
+        recenter : bool
+            If ``True``, recenter the aperture on the measured amplitude centroid. If
+            ``False``, keep the current aperture center.
 
         Returns
         -------
-        dict
-            :attr:`~slmsuite.hardware.slms.slm.SLM.source`.
+        :class:`~slmsuite.holography.toolbox.Aperture`
+            The fitted :attr:`aperture`.
         """
-        # Handle center repositioning with grid shift
-        if amplitude_center_pix is not None:
-            amplitude_center_pix = np.array(amplitude_center_pix)
+        if "amplitude" not in self.source:
+            # No measured amplitude: guess a circular aperture from the grid extent.
+            radius_norm = .25 * np.min((
+                self.shape[1] * self.pitch[0],
+                self.shape[0] * self.pitch[1],
+            ))
+            spec = 1.0 / (2.0 * radius_norm)
+            center_norm = self.aperture.center if not recenter else None
+            self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
+            self._grid = None
+            return self.aperture
 
-            # Get current center
-            current_center = np.array(
-                [np.argmin(np.abs(self.grid[0][0,:])), np.argmin(np.abs(self.grid[1][:,0]))]
-            )
+        amp = np.abs(self.source["amplitude"])
 
-            # Calculate shift and update grid
-            dcenter = current_center - amplitude_center_pix
-            self.grid[0] += dcenter[0] * self.pitch[0]
-            self.grid[1] += dcenter[1] * self.pitch[1]
+        if method == "fit":
+            result = analysis.image_fit(amp, plot=False)
+            std = np.array([result[0, 5], result[0, 6]])
+            center = np.array([result[0, 1], result[0, 2]])
+        elif method == "moments":
+            # Do moments in power-space, not amplitude.
+            center = analysis.image_positions(np.square(amp))
+            std = np.sqrt(2 * analysis.image_variances(np.square(amp), centers=center)[:2])
+            center = np.squeeze(center)
+        else:
+            raise ValueError(f"method '{method}' not recognized; use 'moments' or 'fit'.")
 
-            # Store the new center
-            self.source["amplitude_center_pix"] = amplitude_center_pix
+        # image_positions returns coordinates relative to the image center.
+        center_pix = np.squeeze(center) + np.flip(self.shape) / 2.0
 
-        # Set the other parameters directly
-        if amplitude_radius is not None:
-            self.source["amplitude_radius"] = float(amplitude_radius)
+        radius_norm = np.mean(self.pitch * np.squeeze(std))
+        spec = 1.0 / (2.0 * radius_norm)
 
-        if amplitude_extent is not None:
-            self.source["amplitude_extent"] = np.array(amplitude_extent)
+        center_norm = self.aperture.center
+        if recenter:
+            center_norm = self._center_pix_to_norm(center_pix)
 
-        if amplitude_extent_radius is not None:
-            self.source["amplitude_extent_radius"] = float(amplitude_extent_radius)
+        self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
+        self._grid = None
+        return self.aperture
 
-        return self.source
-
-    def get_source_radius(self):
-        """
-        Extracts the source radius in normalized units for functions like
-        :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian()`
-        from the scalars computed in
-        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`.
-        """
-        self.fit_source_amplitude(force=False)
-        return self.source["amplitude_radius"]
-
-    def get_source_zernike_scaling(self):
-        """
-        Extracts the scaling for
-        :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture()`
-        from the scalars computed in
-        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`.
-        """
-        self.fit_source_amplitude(force=False)
-        return np.reciprocal(2 * self.source["amplitude_radius"])
-
-    def get_source_center(self):
-        """
-        Extracts the source amplitude center pixel computed by
-        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`.
-        """
-        self.fit_source_amplitude(force=False)
-        return self.source["amplitude_center_pix"]
+    def fit_source_amplitude(self, method="moments", extent_threshold=.1, force=True):
+        warnings.warn(
+            "fit_source_amplitude is deprecated in favor of fit_aperture and "
+            "will be removed in a future release."
+        )
+        self.fit_aperture(method=method, recenter=True)
 
     def _get_source_amplitude(self):
-        """Deals with the case of an unmeasured source amplitude."""
-        if "amplitude" in self.source:
-            return self.source["amplitude"]
+        """
+        The effective source amplitude: the measured amplitude (or unity if unmeasured)
+        masked by the :attr:`aperture`.
+        """
+        if self.source.get("amplitude") is not None:
+            amp = self.source["amplitude"]
+            if not self.aperture.crops:
+                # No cropping: skip the all-True mask multiply. Copy so callers may
+                # mutate the result without corrupting self.source["amplitude"].
+                return amp.copy()
         else:
-            return np.ones(self.shape)
+            amp = np.ones(self.shape)
+            if not self.aperture.crops:
+                return amp          # Already a fresh, independent array.
+        return amp * _xp(amp).asarray(self.aperture_mask)
 
     def _get_source_phase(self):
-        """Deals with the case of an unmeasured source phase."""
-        if "phase" in self.source:
-            return self.source["phase"]
+        """
+        The effective source phase: the measured phase (or zero if unmeasured) masked by
+        the :attr:`aperture`.
+        """
+        if self.source.get("phase") is not None:
+            phase = self.source["phase"]
+            if not self.aperture.crops:
+                # No cropping: skip the all-True mask multiply. Copy so callers may
+                # mutate the result without corrupting self.source["phase"].
+                return phase.copy()
         else:
-            return np.zeros(self.shape)
+            phase = np.zeros(self.shape)
+            if not self.aperture.crops:
+                return phase        # Already a fresh, independent array.
+        return phase * _xp(phase).asarray(self.aperture_mask)
 
-    def plot_source(self, source=None, sim=False, power=False):
+    def plot_source(self, source=None, sim=False, power=False, aperture=True):
         """
         Plots measured or simulated amplitude and phase distribution
         of the SLM illumination. Also plots the rsquared goodness of fit value if available.
@@ -1322,6 +1333,9 @@ class SLM(_Common, ABC):
             source distribution if ``False``.
         power : bool
             If ``True``, plot the power (amplitude squared) instead of the amplitude.
+        aperture : bool
+            If ``True`` (default), overlay the outline of the current :attr:`aperture`
+            (when it crops the SLM) on the phase and amplitude panels.
 
         Returns
         --------
@@ -1364,6 +1378,8 @@ class SLM(_Common, ABC):
             interpolation="none",
         )
         r2_contour(axs[0])
+        if aperture:
+            self._plot_aperture(axs[0])
         axs[0].set_title("Simulated Source Phase" if sim else "Source Phase")
         axs[0].set_xlabel("SLM $x$ [pix]")
         axs[0].set_ylabel("SLM $y$ [pix]")
@@ -1383,6 +1399,8 @@ class SLM(_Common, ABC):
             im = axs[1].imshow(source["amplitude_sim" if sim else "amplitude"], clim=(0, 1))
             axs[1].set_title("Simulated Source Amplitude" if sim else "Source Amplitude")
         r2_contour(axs[1])
+        if aperture:
+            self._plot_aperture(axs[1])
         axs[1].set_xlabel("SLM $x$ [pix]")
         axs[1].set_ylabel("SLM $y$ [pix]")
         divider = make_axes_locatable(axs[1])
@@ -1445,9 +1463,7 @@ class SLM(_Common, ABC):
         float
             Radius of the farfield spot.
         """
-        self.fit_source_amplitude(force=False)
-
-        rad_norm = self.source["amplitude_radius"]
+        rad_norm = self.source_radius
         rad_pix = rad_norm / np.mean(self.pitch)
         rad_freq = np.reciprocal(rad_pix)
 

@@ -4,7 +4,7 @@ Unit tests for slmsuite.holography.toolbox.phase module.
 import pytest
 import numpy as np
 
-from slmsuite.holography.toolbox import phase
+from slmsuite.holography.toolbox import phase, Aperture
 from slmsuite.holography.toolbox.phase import (
     _parse_focal_length,
     _zernike_indices_parse,
@@ -320,10 +320,12 @@ def test_phase_functions_general(simple_grid, subtests):
             assert result.shape == expected_shape, f"{func.__name__} changed shape"
 
 
-def test_zernike_aperture(normalized_grid, subtests):
-    """Test zernike_aperture() scaling helper."""
+def test_aperture(normalized_grid, subtests):
+    """Test the Aperture class (scaling, resolve, mask)."""
+    from slmsuite.holography.toolbox import Aperture
+
     with subtests.test("circular aperture is isotropic"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture="circular")
+        x_scale, y_scale = Aperture(normalized_grid, "circular").scale
         assert x_scale == pytest.approx(y_scale)
         # Scale times max coordinate should give 1
         assert x_scale * np.nanmax(normalized_grid[0]) == pytest.approx(1, rel=1e-6)
@@ -331,15 +333,14 @@ def test_zernike_aperture(normalized_grid, subtests):
     with subtests.test("elliptical aperture may be anisotropic"):
         x = np.linspace(-200, 200, 128)
         y = np.linspace(-500, 500, 128)
-        X, Y = np.meshgrid(x, y)
-        rect_grid = (X, Y)
-        x_scale, y_scale = phase.zernike_aperture(rect_grid, aperture="elliptical")
+        rect_grid = np.meshgrid(x, y)
+        x_scale, y_scale = Aperture(rect_grid, "elliptical").scale
         # Each axis maps independently
         assert x_scale == pytest.approx(1 / 200, rel=1e-6)
         assert y_scale == pytest.approx(1 / 500, rel=1e-6)
 
     with subtests.test("cropped aperture circumscribes rectangle"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture="cropped")
+        x_scale, y_scale = Aperture(normalized_grid, "cropped").scale
         assert x_scale == pytest.approx(y_scale)
         # For a square grid the corner distance is sqrt(2)*max
         max_coord = np.nanmax(normalized_grid[0])
@@ -347,56 +348,124 @@ def test_zernike_aperture(normalized_grid, subtests):
         assert x_scale == pytest.approx(expected, rel=1e-6)
 
     with subtests.test("scalar aperture"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture=0.005)
+        x_scale, y_scale = Aperture(normalized_grid, 0.005).scale
         assert x_scale == pytest.approx(0.005)
         assert y_scale == pytest.approx(0.005)
 
     with subtests.test("tuple aperture"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture=(0.01, 0.02))
+        x_scale, y_scale = Aperture(normalized_grid, (0.01, 0.02)).scale
         assert x_scale == pytest.approx(0.01)
         assert y_scale == pytest.approx(0.02)
 
     with subtests.test("invalid string raises ValueError"):
         with pytest.raises(ValueError):
-            phase.zernike_aperture(normalized_grid, aperture="invalid")
+            Aperture(normalized_grid, "invalid").scale
 
-    with subtests.test("None aperture defaults to cropped for grids"):
-        x_scale, y_scale = phase.zernike_aperture(normalized_grid, aperture=None)
-        x_s2, y_s2 = phase.zernike_aperture(normalized_grid, aperture="cropped")
-        assert x_scale == pytest.approx(x_s2)
-        assert y_scale == pytest.approx(y_s2)
+    with subtests.test("None resolves to cropped for raw grids"):
+        resolved = Aperture.resolve(normalized_grid, None).scale
+        cropped = Aperture(normalized_grid, "cropped").scale
+        assert resolved == pytest.approx(cropped)
 
-    with subtests.test("SLM-like object with get_source_zernike_scaling"):
+    with subtests.test("resolve returns a passed Aperture unchanged if grid matches"):
+        ap = Aperture(normalized_grid, "circular")
+        assert Aperture.resolve(normalized_grid, ap) is ap
+
+    with subtests.test("resolve re-binds a passed Aperture if grid does not match"):
+        ap = Aperture(normalized_grid, "circular")
+        other_grid = (normalized_grid[0] * 2, normalized_grid[1] * 2)
+        ap_other = Aperture.resolve(other_grid, ap)
+        assert ap_other is not ap
+        assert ap_other._grid is other_grid
+        assert ap_other.spec == ap.spec
+        assert ap_other.center == ap.center
+
+    with subtests.test("SLM-like object's aperture is the source of truth"):
         class FakeSLM:
             def __init__(self, grid):
                 self.x_grid, self.y_grid = grid
-            def get_source_zernike_scaling(self):
-                return (0.01, 0.02)
+                self.aperture = Aperture(grid, (0.01, 0.02))
         fake = FakeSLM(normalized_grid)
-        fake.x_grid = normalized_grid[0]
-        fake.y_grid = normalized_grid[1]
-        x_scale, y_scale = phase.zernike_aperture(fake, aperture=None)
+        x_scale, y_scale = Aperture.resolve(fake, None).scale
         assert x_scale == 0.01
         assert y_scale == 0.02
 
-    with subtests.test("CameraSLM-like object delegates to slm"):
+    with subtests.test("CameraSLM-like object delegates to slm.aperture"):
         class FakeCameraSLM:
             def __init__(self, grid):
                 self.x_grid, self.y_grid = grid
                 self.slm = type('FakeSLM', (), {
-                    'get_source_zernike_scaling': lambda self_: (0.03, 0.04),
+                    'aperture': Aperture(grid, (0.03, 0.04)),
                     'x_grid': grid[0],
                     'y_grid': grid[1],
                 })()
                 self.cam = True
         fake = FakeCameraSLM(normalized_grid)
-        x_scale, y_scale = phase.zernike_aperture(fake, aperture=None)
+        x_scale, y_scale = Aperture.resolve(fake, None).scale
         assert x_scale == 0.03
         assert y_scale == 0.04
 
-    with subtests.test("unrecognized type raises ValueError"):
+    with subtests.test("unrecognized spec raises ValueError"):
         with pytest.raises(ValueError, match="not recognized"):
-            phase.zernike_aperture(normalized_grid, aperture=object())
+            Aperture(normalized_grid, object()).scale
+
+    with subtests.test("mask matches resolved mask"):
+        m = Aperture(normalized_grid, "circular").mask
+        m2 = Aperture.resolve(normalized_grid, "circular").mask
+        assert np.array_equal(m, m2)
+
+    with subtests.test("invalid spec raises eagerly at construction"):
+        # The error must fire in __init__, before any .scale/.mask access.
+        with pytest.raises(ValueError):
+            Aperture(normalized_grid, "invalid")
+        with pytest.raises(ValueError, match="not recognized"):
+            Aperture(normalized_grid, object())
+
+    with subtests.test("crops flag is False only for the non-cropping default"):
+        assert not Aperture(normalized_grid, "cropped").crops
+        assert Aperture(normalized_grid, "circular").crops
+        assert Aperture(normalized_grid, 0.005).crops
+
+    with subtests.test("is_isotropic / _isotropic_scale honor or reject anisotropy"):
+        circ = Aperture(normalized_grid, "circular")
+        assert circ.is_isotropic
+        assert circ._isotropic_scale() == pytest.approx(circ.scale[0])
+        ell = Aperture(normalized_grid, (0.01, 0.02))
+        assert not ell.is_isotropic
+        with pytest.raises(ValueError, match="isotropic"):
+            ell._isotropic_scale()
+
+    with subtests.test("mask applies center (Aperture bound to unshifted grid)"):
+        from slmsuite.holography.toolbox import _process_grid
+        (xg, yg) = _process_grid(normalized_grid)
+        # A clearly nonzero, interior center offset.
+        c = (0.25 * np.nanmax(xg), -0.25 * np.nanmax(yg))
+        ap = Aperture(normalized_grid, "circular", center=c)
+        (sx, sy) = ap.scale
+        expected = ((xg - c[0]) * sx) ** 2 + ((yg - c[1]) * sy) ** 2 <= 1
+        assert np.array_equal(np.asarray(ap.mask), expected)
+        # The centered mask differs from the uncentered one (guards against a
+        # regression that silently drops the center subtraction).
+        ap0 = Aperture(normalized_grid, "circular")
+        assert not np.array_equal(np.asarray(ap.mask), np.asarray(ap0.mask))
+
+    with subtests.test("mask is consistent with transform"):
+        ap = Aperture(normalized_grid, "circular",
+                      center=(0.1 * np.nanmax(normalized_grid[0]), 0.0))
+        (u, v) = ap.transform()
+        assert np.array_equal(np.asarray(ap.mask), np.asarray(u**2 + v**2 <= 1))
+
+    with subtests.test("resolve takes only the spec for an explicit aperture on an SLM"):
+        # On an SLM, centering is owned by slm.grid, so a passed aperture's center must
+        # be dropped (else it would double-subtract against the already-centered grid).
+        class FakeSLM:
+            def __init__(self, grid):
+                self.x_grid, self.y_grid = grid
+                self.aperture = Aperture(grid, "circular", center=(1.0, 2.0))
+        fake = FakeSLM(normalized_grid)
+        passed = Aperture(normalized_grid, (0.01, 0.02), center=(3.0, 4.0))
+        resolved = Aperture.resolve(fake, passed)
+        assert resolved.spec == passed.spec
+        assert resolved.center is None
 
 
 def test_zernike_get_string(subtests):
@@ -529,21 +598,11 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
         coeffs = rng.normal(0, 0.1, 10)
         benchmark(phase.zernike_sum, normalized_grid, indices=list(range(len(coeffs))), weights=coeffs)
 
-    with subtests.test("use_mask='return' gives boolean mask"):
-        mask = phase.zernike_sum(
-            normalized_grid, indices=[0], weights=[1], use_mask="return"
-        )
-        assert mask.dtype == bool
-        assert mask.shape == normalized_grid[0].shape
-
     with subtests.test("use_mask=True zeros outside aperture"):
         result = phase.zernike_sum(
             normalized_grid, indices=[4], weights=[1], use_mask=True, aperture="circular"
         )
-        mask = phase.zernike_sum(
-            normalized_grid, indices=[0], weights=[1],
-            use_mask="return", aperture="circular"
-        )
+        mask = Aperture.resolve(normalized_grid, "circular").mask
         # Outside the mask should be zero
         assert np.allclose(result[~mask], 0)
 
@@ -629,6 +688,114 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
             use_mask=False, derivative=(1, 1)
         )
         assert np.std(result) < 1e-8
+
+
+def test_zernike_basis(normalized_grid, subtests):
+    """Test the ZernikeBasis cache and the zernike_sum/image_zernike_fit paths consuming it."""
+    from slmsuite.holography.toolbox.phase import ZernikeBasis
+    from slmsuite.holography.analysis import image_zernike_fit
+
+    indices = [2, 1, 4, 3, 5, 6, 7, 8]
+    D = len(indices)
+    basis = ZernikeBasis(normalized_grid, indices)
+
+    with subtests.test("basis shapes"):
+        assert basis.basis.shape == (D, *normalized_grid[0].shape)
+        assert basis.basis_flat.shape == (D, normalized_grid[0].size)
+        assert basis.mask.shape == normalized_grid[0].shape
+        assert len(basis) == D
+        assert basis.gram.shape == (D, D)
+        assert basis.norm.shape == (D,)
+
+    rng = np.random.default_rng(0)
+    weights = rng.normal(0, 0.3, D)
+
+    with subtests.test("zernike_sum(basis) matches zernike_sum(grid)"):
+        from_basis = phase.zernike_sum(basis, None, weights)
+        from_grid = phase.zernike_sum(normalized_grid, indices, weights)
+        assert np.allclose(from_basis, from_grid, atol=1e-9)
+
+    with subtests.test("image_zernike_fit recovers synthesized weights"):
+        synthesized = phase.zernike_sum(basis, None, weights)
+        coeffs = image_zernike_fit(synthesized, basis, leastsquares=True)
+        assert coeffs.shape == (D, 1)
+        assert np.allclose(coeffs[:, 0], weights, atol=1e-6)
+
+    with subtests.test("stacked weights synthesize a stack"):
+        weights_stack = rng.normal(0, 0.3, (D, 3))
+        stacked = phase.zernike_sum(basis, None, weights_stack)
+        assert stacked.shape == (3, *normalized_grid[0].shape)
+
+    with subtests.test("sub-basis selects modes positionally"):
+        sub = basis[2:]
+        assert len(sub) == D - 2
+        np.testing.assert_array_equal(sub.indices, np.array(indices[2:]))
+        sub_synth = phase.zernike_sum(sub, None, weights[2:])
+        ref = phase.zernike_sum(normalized_grid, indices[2:], weights[2:])
+        assert np.allclose(sub_synth, ref, atol=1e-9)
+
+    with subtests.test("derivative with ZernikeBasis raises"):
+        with pytest.raises(ValueError, match="derivative"):
+            phase.zernike_sum(basis, None, weights, derivative=(1, 0))
+
+
+def test_zernike_basis_transparent_cache(normalized_grid, subtests):
+    """The ZernikeBasis cache that backs zernike_sum / image_zernike_fit transparently."""
+    from slmsuite.holography.toolbox.phase import clear_zernike_basis_cache
+    from slmsuite.holography.toolbox.phase import _zernike as Z
+    from slmsuite.holography.analysis import image_zernike_fit
+
+    indices = [2, 1, 4, 3, 5, 6]
+    rng = np.random.default_rng(1)
+    weights = rng.normal(0, 0.3, len(indices))
+
+    with subtests.test("repeated zernike_sum builds the basis once and reuses it"):
+        clear_zernike_basis_cache()
+        first = phase.zernike_sum(normalized_grid, indices, weights)
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 1
+        cached = next(iter(Z._ZERNIKE_BASIS_CACHE.values()))
+        second = phase.zernike_sum(normalized_grid, indices, weights)
+        # Same cached object, identical result.
+        assert next(iter(Z._ZERNIKE_BASIS_CACHE.values())) is cached
+        assert np.allclose(first, second, atol=1e-12)
+
+    with subtests.test("transparent path matches the direct (uncached) computation"):
+        clear_zernike_basis_cache()
+        auto = phase.zernike_sum(normalized_grid, indices, weights)
+        direct = Z._zernike_sum_direct(
+            normalized_grid, indices, weights, None, True, (0, 0), None
+        )
+        assert np.allclose(auto, direct, atol=1e-9)
+
+    with subtests.test("image_zernike_fit on a raw grid recovers synthesized weights"):
+        clear_zernike_basis_cache()
+        synth = phase.zernike_sum(normalized_grid, indices, weights)
+        coeffs = image_zernike_fit(synth, normalized_grid, order=indices, leastsquares=True)
+        assert np.allclose(coeffs[:, 0], weights, atol=1e-6)
+
+    with subtests.test("gradient fit works on a raw grid (no explicit basis)"):
+        clear_zernike_basis_cache()
+        synth = phase.zernike_sum(normalized_grid, indices, weights)
+        wrapped = np.angle(np.exp(1j * synth))
+        grad = image_zernike_fit(wrapped, normalized_grid, order=indices, gradient=True)
+        assert np.allclose(grad[:, 0], weights, atol=1e-3)
+
+    with subtests.test("distinct grids and apertures key to distinct entries"):
+        clear_zernike_basis_cache()
+        grid_b = (normalized_grid[0].copy(), normalized_grid[1].copy())
+        phase.zernike_sum(normalized_grid, indices, weights)
+        phase.zernike_sum(grid_b, indices, weights)              # different grid id
+        phase.zernike_sum(normalized_grid, indices, weights, aperture="circular")
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 3
+
+    with subtests.test("derivative and clear bypass / empty the cache"):
+        clear_zernike_basis_cache()
+        phase.zernike_sum(normalized_grid, indices, weights, derivative=(1, 0))
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 0     # derivative keeps the direct path
+        phase.zernike_sum(normalized_grid, indices, weights)
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 1
+        clear_zernike_basis_cache()
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 0
 
 
 def test_polynomial(simple_grid, subtests):
@@ -1245,12 +1412,11 @@ def test_determine_source_radius(simple_grid, subtests):
         assert w == pytest.approx(np.min([np.amax(simple_grid[0]),
                                            np.amax(simple_grid[1])]) / 4)
 
-    with subtests.test("SLM-like with get_source_radius"):
+    with subtests.test("SLM-like with source_radius"):
         class FakeSLM:
             x_grid = simple_grid[0]
             y_grid = simple_grid[1]
-            def get_source_radius(self):
-                return 42.0
+            source_radius = 42.0
         assert _determine_source_radius(FakeSLM(), w=None) == 42.0
 
     with subtests.test("CameraSLM-like delegates to slm"):
@@ -1258,7 +1424,7 @@ def test_determine_source_radius(simple_grid, subtests):
             x_grid = simple_grid[0]
             y_grid = simple_grid[1]
             slm = type('FakeSLM', (), {
-                'get_source_radius': lambda self: 99.0,
+                'source_radius': 99.0,
                 'x_grid': simple_grid[0],
                 'y_grid': simple_grid[1],
             })()
@@ -1345,3 +1511,45 @@ def test_zernike_sum_gpu(benchmark, has_cupy):
 
     result = benchmark(run)
     assert grid[0].shape == (256, 256)
+
+
+@pytest.mark.gpu
+def test_zernike_basis_gpu(has_cupy):
+    """ZernikeBasis on the GPU: cupy-resident basis, and numpy/cupy parity."""
+    import cupy as cp
+    from slmsuite.holography.toolbox.phase import ZernikeBasis
+    from slmsuite.holography.analysis import image_zernike_fit
+
+    indices = [2, 1, 4, 3, 5, 6]
+    D = len(indices)
+    x = np.linspace(-1, 1, 128)
+    grid_np = np.meshgrid(x, x)
+    grid_cp = (cp.asarray(grid_np[0]), cp.asarray(grid_np[1]))
+
+    basis_np = ZernikeBasis(grid_np, indices)
+    basis_cp = ZernikeBasis(grid_cp, indices)
+    assert isinstance(basis_cp.basis_flat, cp.ndarray)
+    assert isinstance(basis_cp.mask, cp.ndarray)
+
+    rng = np.random.default_rng(1)
+    weights = rng.normal(0, 0.3, D)
+
+    # Synthesis parity between numpy and cupy.
+    synth_np = phase.zernike_sum(basis_np, None, weights)
+    synth_cp = phase.zernike_sum(basis_cp, None, weights)
+    assert isinstance(synth_cp, cp.ndarray)
+    assert np.allclose(synth_np, cp.asnumpy(synth_cp), atol=1e-6)
+
+    # Exact least-squares fit recovers the weights on the GPU.
+    coeffs_cp = image_zernike_fit(synth_cp, basis_cp, leastsquares=True)
+    assert isinstance(coeffs_cp, cp.ndarray)
+    assert np.allclose(cp.asnumpy(coeffs_cp)[:, 0], weights, atol=1e-5)
+
+    # Gradient-mode fit: numpy/cupy parity, and recovery through phase wraps.
+    wrapped_np = np.mod(synth_np, 2 * np.pi)
+    wrapped_cp = cp.asarray(wrapped_np)
+    grad_np = image_zernike_fit(wrapped_np, basis_np, gradient=True)
+    grad_cp = image_zernike_fit(wrapped_cp, basis_cp, gradient=True)
+    assert isinstance(grad_cp, cp.ndarray)
+    assert np.allclose(cp.asnumpy(grad_cp), grad_np, atol=1e-5)
+    assert np.allclose(cp.asnumpy(grad_cp)[:, 0], weights, atol=1e-2)

@@ -3,19 +3,24 @@ Zernike polynomials and related functions.
 """
 import os
 import warnings
-import time
+import weakref
+from collections import OrderedDict
+from functools import cached_property
+
 import numpy as np
+
 try:
-    import cupy as cp   # type: ignore
+    import cupy as cp  # type: ignore
 except ImportError:
     cp = np
-from scipy import special
 from math import factorial
+
 import matplotlib.pyplot as plt
-from slmsuite._plotting import _slmsuite_plt_show
+from scipy import special
 from typing import Tuple, Union, Callable
 
-
+from slmsuite.holography.toolbox import Aperture, _process_grid
+from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.misc.math import REAL_TYPES
 from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
 from slmsuite._logging import make_logger
@@ -218,106 +223,6 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
     return result
 
 
-def zernike_aperture(grid, aperture=None):
-    """
-    Helper function to find the appropriate scaling for between the normalized units in
-    the grid and the Zernike aperture (the unit disk).
-
-    Tip
-    ~~~
-    Passing an :class:`~slmsuite.hardware.slms.slm.SLM` for ``grid`` makes this easy.
-    The function :meth:`~slmsuite.hardware.slms.slm.SLM.get_source_zernike_scaling()`
-    determines the optimal scaling of the aperture.
-
-    Important
-    ~~~~~~~~~
-    Zernike polynomials are canonically defined on a circular aperture. However, we may
-    want to use these polynomials on other apertures (e.g. a rectangular SLM).
-    Cropping this aperture breaks the orthogonality and normalization of the set, but
-    this is fine for many applications. While it is possible to orthonormalize the
-    cropped set, we do not do so in :mod:`slmsuite`, as this is not critical for target
-    applications such as aberration correction.
-
-    Caution
-    ~~~~~~~
-    Anisotropic Zernike scaling can lead to unexpected behavior.
-    For instance, the :math:`Z_4 = Z_2^0 = 1 - 2x^2 - 2y^2` Zernike term is commonly
-    used for focusing, but with anisotropic scaling, this becomes an elliptical lens
-    on the SLM which may not behave as expected.
-
-    Parameters
-    ----------
-    aperture : {"circular", "elliptical", "cropped"} OR (float, float) OR float OR None
-        How to scale the polynomials relative to the grid shape. This is relative
-        to the :math:`r = 1` edge of a standard Zernike pupil.
-
-        - ``None``
-          If a :class:`~slmsuite.hardware.slms.slm.SLM` is passed for ``grid``, then
-          uses :meth:`~slmsuite.hardware.slms.slm.SLM.get_source_zernike_scaling()` to
-          determine the scaling most appropriate for the SLM.
-          Otherwise, defaults to ``"cropped"``.
-          See also :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`
-          and especially the `extent_threshold` keyword which determines the scaling used by
-          :meth:`~slmsuite.hardware.slms.slm.SLM.get_source_zernike_scaling()`
-
-        - ``"circular"``
-          The circle is scaled isotropically until the pupil edge touches one set
-          of opposite grid edges. This is the default aperture.
-
-        - ``"elliptical"``
-          The circle is scaled anisotropically until each pupil edge touches a grid
-          edge. Generally produces an ellipse.
-
-        - ``"cropped"``
-          The circle is scaled isotropically until the rectangle of the grid is
-          circumscribed by the circle.
-
-        - ``float OR (float, float)``
-          Custom scaling. These values are multiplied to the ``x_grid`` and ``y_grid``
-          directly, respectively. The edge of the Zernike pupil corresponds to where
-          ``(s_x * x_grid)**2 + (s_y * y_grid)**2 = 1``. If a scalar is given, assumes
-          isotropic scaling.
-
-    Returns
-    -------
-    (float, float)
-    """
-    # Parse grid.
-    (x_grid, y_grid) = _process_grid(grid)
-
-    # Parse aperture.
-    if aperture is None:
-        # Check if cameraslm.
-        if hasattr(grid, "slm") and hasattr(grid, "cam"):
-            grid = grid.slm
-
-        # Check if slm.
-        if hasattr(grid, "get_source_zernike_scaling"):
-            aperture = grid.get_source_zernike_scaling()
-        else:
-            aperture = "cropped"
-
-    if isinstance(aperture, str):
-        if aperture == "elliptical":
-            x_scale = 1 / np.nanmax(x_grid)
-            y_scale = 1 / np.nanmax(y_grid)
-        elif aperture == "circular":
-            x_scale = y_scale = 1 / np.amin([np.nanmax(x_grid), np.nanmax(y_grid)])
-        elif aperture == "cropped":
-            x_scale = y_scale = 1 / np.sqrt(np.nanmax(np.square(x_grid) + np.square(y_grid)))
-        else:
-            raise ValueError(f"Aperture '{aperture}' is not implemented.")
-    elif np.isscalar(aperture):
-        x_scale = y_scale = aperture
-    elif isinstance(aperture, (list, tuple, np.ndarray)) and len(aperture) == 2:
-        x_scale = aperture[0]
-        y_scale = aperture[1]
-    else:
-        raise ValueError("Aperture type {} not recognized.".format(type(aperture)))
-
-    return (x_scale, y_scale)
-
-
 def zernike(grid, index, weight=1, **kwargs):
     r"""
     Returns a single real
@@ -499,6 +404,394 @@ def _zernike_indices_parse(indices=None, D=None, smaller_okay=False):
     return indices
 
 
+def _zernike_xp(array):
+    """Return the array module (``cupy`` or ``numpy``) backing ``array``."""
+    if cp is not np and isinstance(array, cp.ndarray):
+        return cp
+    return np
+
+
+class ZernikeBasis:
+    r"""
+    A precomputed, reusable basis of Zernike polynomial images.
+
+    Building Zernike images is the expensive part of :meth:`zernike_sum` and
+    :meth:`~slmsuite.holography.analysis.image_zernike_fit`: the polynomial
+    coefficients must be gathered and evaluated across the grid. When the same
+    grid and basis are used many times -- as in iterative wavefront retrieval --
+    this work should be done **once**. A :class:`ZernikeBasis` does exactly that,
+    holding the flattened basis images (and, lazily, their Gram matrix) on the
+    array module (:mod:`numpy` or :mod:`cupy`) of the grid it was built from.
+
+    The resulting object is a pure cache: it carries no fitting or synthesis
+    logic. Pass it to :meth:`zernike_sum` to synthesize a weighted sum, or to
+    :meth:`~slmsuite.holography.analysis.image_zernike_fit` to fit coefficients.
+
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        Meshgrids of normalized coordinates, in the same form accepted by
+        :meth:`zernike_sum`. If the grid arrays are :mod:`cupy` arrays, the basis
+        is built and stored on the GPU.
+    indices : array_like of int OR None
+        ANSI indices of the Zernike polynomials in the basis, of shape ``(D,)``.
+        Parsed with :meth:`_zernike_indices_parse`.
+    aperture : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
+        The aperture defining the lateral scaling of the Zernike polynomials. Resolved
+        with :meth:`~slmsuite.holography.toolbox.Aperture.resolve`.
+    use_mask : bool
+        Whether to zero the region outside the standard Zernike pupil. Defaults
+        to ``True`` so that overlap integrals reduce to plain matrix products.
+
+    Attributes
+    ----------
+    indices : numpy.ndarray
+        ANSI indices of the basis modes, of shape ``(D,)``.
+    aperture : object
+        The ``aperture`` argument, retained for reference.
+    grid_shape : tuple of int
+        The ``(h, w)`` shape of the grid.
+    basis : numpy.ndarray OR cupy.ndarray
+        The basis images, of shape ``(D, h, w)``.
+    basis_flat : numpy.ndarray OR cupy.ndarray
+        The basis images flattened to ``(D, h*w)``.
+    mask : numpy.ndarray OR cupy.ndarray
+        Boolean ``(h, w)`` mask of the standard Zernike pupil.
+    """
+
+    def __init__(self, grid, indices, aperture=None, use_mask=True):
+        indices = np.ravel(_zernike_indices_parse(indices))
+        (x_grid, _) = _process_grid(grid)
+
+        # Resolve the aperture object
+        aperture = Aperture.resolve(grid, aperture)
+
+        # One single-mode Zernike image per basis index, stacked as (D, h, w).
+        # Build directly (not via zernike_sum) so basis construction does not
+        # re-enter the cache and recurse.
+        basis = _zernike_sum_direct(
+            grid,
+            indices[np.newaxis, :],
+            np.eye(len(indices)),
+            aperture,
+            bool(use_mask),
+            (0, 0),
+            None,
+        )
+        self._set_core(indices, aperture, tuple(x_grid.shape), basis, aperture.mask)
+
+    def _set_core(self, indices, aperture, grid_shape, basis, mask):
+        """Assign the core (eagerly-held) attributes; lazy quantities recompute on access."""
+        self.indices = np.atleast_1d(indices)
+        # Restore the stack axis if a single mode was selected (e.g. basis[i]).
+        self.basis = basis if basis.ndim == 3 else basis[np.newaxis, :, :]
+        self.basis_flat = self.basis.reshape(len(self.indices), -1)
+        self.aperture = aperture
+        self.grid_shape = grid_shape
+        self.mask = mask
+        self._xp = _zernike_xp(self.basis)
+
+    @cached_property
+    def gram(self):
+        """Gram matrix ``basis_flat @ basis_flat.T``, shape ``(D, D)``."""
+        return self.basis_flat @ self.basis_flat.T
+
+    @cached_property
+    def norm(self):
+        """Per-mode self-overlap ``<Z_i, Z_i>``, shape ``(D,)``."""
+        return self._xp.einsum("dp,dp->d", self.basis_flat, self.basis_flat)
+
+    @cached_property
+    def gram_inv(self):
+        """Inverse of the Gram matrix."""
+        return self._xp.linalg.inv(self.gram)
+
+    @cached_property
+    def grad_mask(self):
+        """
+        Boolean ``(h, w)`` mask of pupil pixels whose four nearest neighbours are
+        also inside the pupil. This is the pupil :attr:`mask` eroded by one pixel:
+        the boundary ring is dropped because a central-difference gradient there
+        would mix in-pupil values with the zeroed exterior.
+        """
+        m = self.mask.astype(bool)
+        e = self._xp.zeros_like(m)
+        # Interior pixel kept iff it and all four neighbours are in-pupil.
+        e[1:-1, 1:-1] = (
+            m[1:-1, 1:-1]
+            & m[2:, 1:-1] & m[:-2, 1:-1]
+            & m[1:-1, 2:] & m[1:-1, :-2]
+        )
+        return e
+
+    @cached_property
+    def grad_basis_flat(self):
+        """
+        Gradient basis, of shape ``(D, 2P)``, where ``P`` is the number of
+        :attr:`grad_mask` pixels. Each row is the raw two-pixel central-difference
+        gradient of a basis image -- the same stencil applied to the data in
+        :meth:`~slmsuite.holography.analysis.image_zernike_fit`'s gradient mode --
+        with the ``x`` and ``y`` components concatenated.
+        """
+        m = self.grad_mask
+        # Raw central differences; grad_mask only selects interior pixels,
+        # so m[:, 1:-1] and m[1:-1, :] enumerate the same P pixels in order.
+        bx = self.basis[..., :, 2:] - self.basis[..., :, :-2]   # (D, h, w-2)
+        by = self.basis[..., 2:, :] - self.basis[..., :-2, :]   # (D, h-2, w)
+        gx = bx[:, m[:, 1:-1]]                                  # (D, P)
+        gy = by[:, m[1:-1, :]]                                  # (D, P)
+        return self._xp.concatenate([gx, gy], axis=1)
+
+    @cached_property
+    def grad_gram(self):
+        """Gradient Gram matrix ``grad_basis_flat @ grad_basis_flat.T``, shape ``(D, D)``."""
+        return self.grad_basis_flat @ self.grad_basis_flat.T
+
+    @cached_property
+    def grad_norm(self):
+        """Per-mode gradient self-overlap, shape ``(D,)``."""
+        return self._xp.einsum("dp,dp->d", self.grad_basis_flat, self.grad_basis_flat)
+
+    @cached_property
+    def grad_gram_inv(self):
+        """Inverse of the gradient Gram matrix."""
+        return self._xp.linalg.inv(self.grad_gram)
+
+    @cached_property
+    def grad_idx_x(self):
+        """Flat integer indices for the eroded pupil dx mask."""
+        return self._xp.where(self.grad_mask[:, 1:-1].ravel())[0]
+
+    @cached_property
+    def grad_idx_y(self):
+        """Flat integer indices for the eroded pupil dy mask."""
+        return self._xp.where(self.grad_mask[1:-1, :].ravel())[0]
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, key):
+        """Make the basis sliceable."""
+        sub = object.__new__(ZernikeBasis)
+        # Fresh __dict__: the cached_property lazy quantities recompute on demand.
+        sub._set_core(
+            self.indices[key], self.aperture, self.grid_shape, self.basis[key], self.mask
+        )
+        return sub
+
+
+def _zernike_sum_from_basis(basis, weights, out=None):
+    """Synthesize a weighted sum of polynomials from a precomputed :class:`ZernikeBasis`."""
+    xp = basis._xp
+    weights = xp.asarray(weights)
+    D = len(basis)
+
+    if weights.ndim == 0:
+        weights = weights.reshape(1)
+    if weights.ndim == 1:
+        if len(weights) != D:
+            raise ValueError("Expected weights to have a common dimension with the basis.")
+        weights = weights.reshape(D, 1)
+    elif weights.ndim == 2:
+        if weights.shape[0] != D:
+            raise ValueError("Expected weights to have a common dimension with the basis.")
+    else:
+        raise ValueError("Expected weights to be 1D or 2D.")
+
+    N = weights.shape[1]
+
+    # (N, D) @ (D, h*w) -> (N, h*w).
+    result = weights.T @ basis.basis_flat
+
+    if out is not None:
+        # Mirror zernike_sum's direct-path out contract: normalize the (possibly
+        # flattened) out buffer to (N, h, w), write into it, and return 2D for a
+        # single sum, else the (N, h, w) stack. Callers reuse a flattened buffer
+        # across calls (e.g. CompressedSpotHologram's batched kernel), so the
+        # reshape-back-to-stack must happen here as _parse_out did before.
+        out = out.reshape((N,) + basis.grid_shape)
+        out[...] = result.reshape((N,) + basis.grid_shape)
+        return out.reshape(basis.grid_shape) if N == 1 else out
+
+    if N == 1:
+        return result.reshape(basis.grid_shape)
+    return result.reshape((N,) + basis.grid_shape)
+
+
+# Transparent ZernikeBasis cache. Building the (D, h, w) basis images is the
+# expensive part of zernike_sum / image_zernike_fit; we memoize the basis so that
+# repeated calls with the same grid + indices + aperture reuse it (each subsequent
+# synthesis/fit is then a single matrix product). This mirrors the module-level
+# _zernike_cache of polynomial coefficients (Aperture.mask is itself a plain
+# cached_property on the immutable Aperture, rebuilt whenever the Aperture is replaced).
+_ZERNIKE_BASIS_CACHE = OrderedDict()     # key -> ZernikeBasis
+_ZERNIKE_BASIS_CACHE_MAX = 32            # soft LRU cap; backstop to weakref eviction
+
+
+def clear_zernike_basis_cache():
+    """Empty the transparent :class:`ZernikeBasis` cache used by :meth:`zernike_sum`
+    and :meth:`~slmsuite.holography.analysis.image_zernike_fit`. Useful after a large
+    one-off synthesis, or to free GPU memory held by cached bases."""
+    _ZERNIKE_BASIS_CACHE.clear()
+
+
+def _aperture_key(aperture):
+    """Hashable key for an :class:`~slmsuite.holography.toolbox.Aperture`."""
+    spec = aperture.spec
+    if isinstance(spec, np.ndarray):
+        spec = ("arr", tuple(spec.ravel().tolist()))
+    elif isinstance(spec, (list, tuple)):
+        spec = ("seq", tuple(spec))
+    center = aperture.center
+    center = None if center is None else tuple(np.ravel(center).tolist())
+    return (spec, center)
+
+
+def _zernike_get_basis(grid, indices, aperture=None, use_mask=True):
+    """
+    Return a (cached) :class:`ZernikeBasis` for ``grid``, ``indices``, ``aperture``,
+    and ``use_mask``, building and caching it on a miss. The cache is keyed on the
+    identity of the grid array (plus its shape), so distinct grids -- e.g. two SLMs --
+    map to separate entries and coexist. Entries are evicted when their grid array is
+    garbage-collected (weakref callback) and capped at ``_ZERNIKE_BASIS_CACHE_MAX``.
+    """
+    (x_grid, _) = _process_grid(grid)
+    indices = np.ravel(_zernike_indices_parse(indices))
+    aperture = Aperture.resolve(grid, aperture)
+
+    key = (
+        id(x_grid),
+        tuple(x_grid.shape),
+        tuple(int(i) for i in indices),
+        _aperture_key(aperture),
+        bool(use_mask),
+    )
+
+    basis = _ZERNIKE_BASIS_CACHE.get(key)
+    if basis is not None:
+        _ZERNIKE_BASIS_CACHE.move_to_end(key)
+        return basis
+
+    basis = ZernikeBasis(grid, indices, aperture=aperture, use_mask=use_mask)
+    _ZERNIKE_BASIS_CACHE[key] = basis
+
+    # Drop the entry when the grid array dies; guards against id() reuse after GC.
+    # The weakref must be kept alive for its callback to fire, so stash it on the
+    # cached basis -- its lifetime is then exactly that of the cache entry.
+    try:
+        basis._grid_ref = weakref.ref(
+            x_grid, lambda _ref, k=key: _ZERNIKE_BASIS_CACHE.pop(k, None)
+        )
+    except TypeError:
+        pass    # Array type does not support weakref; rely on the LRU cap below.
+
+    # Trim oldest entries beyond the cap.
+    while len(_ZERNIKE_BASIS_CACHE) > _ZERNIKE_BASIS_CACHE_MAX:
+        _ZERNIKE_BASIS_CACHE.popitem(last=False)
+
+    return basis
+
+
+def _zernike_parse_weights_indices(indices, weights):
+    """
+    Parse ``weights`` to shape ``(D, N)`` and resolve ``indices`` to a concrete
+    ``(D,)`` array, the common form consumed by both the cached and direct paths.
+    """
+    weights = np.squeeze(weights)
+    if weights.ndim <= 1:
+        if weights.ndim == 0:
+            weights = np.array([weights])
+
+        if indices is None:
+            D = None
+        else:
+            indices = np.squeeze(indices)
+            if indices.ndim == 0:
+                indices = np.array([indices])
+
+            D = len(indices)
+
+        if D is None or len(weights) == D:
+            weights = np.reshape(weights, (-1, 1))
+        else:
+            raise ValueError("Expected weights to have a common dimension with indices.")
+    elif weights.ndim == 2:
+        pass
+    else:
+        raise ValueError("Expected weights to be 1D or 2D.")
+
+    (D, N) = weights.shape
+    indices = _zernike_indices_parse(indices, D)
+    return indices, weights, D, N
+
+
+def _zernike_sum_direct(grid, indices, weights, aperture, use_mask, derivative, out):
+    """
+    Direct (uncached) Zernike summation: gather the combined monomial (cantor)
+    coefficients and evaluate them on the grid in one pass. This is the path used
+    when the cache cannot represent the request (``np.nan`` masking, a derivative)
+    and the path used to build basis images themselves (so basis construction does
+    not re-enter -- and recurse through -- the cache).
+    """
+    (x_grid, y_grid) = _process_grid(grid)
+    aperture = Aperture.resolve(grid, aperture)
+    (x_scale, y_scale) = aperture.scale
+    xp = _zernike_xp(x_grid)
+
+    indices, weights, _, N = _zernike_parse_weights_indices(indices, weights)
+
+    # Parse out.
+    out = _parse_out(x_grid, out, stack=N)
+
+    # At the end, we're going to set the values outside the aperture to zero.
+    # Make a mask for this if it's necessary.
+    if use_mask is False:
+        mask = None
+    else:
+        mask = aperture.mask
+        mask_value = 0
+        if np.isnan(use_mask):
+            use_mask = True
+            mask_value = np.nan
+        use_mask = use_mask and bool(xp.any(mask == 0))
+
+    # Make the new grids.
+    if use_mask:
+        x_grid_scaled = x_grid[mask] * x_scale
+        y_grid_scaled = y_grid[mask] * y_scale
+    else:
+        # Special case to avoid copying grids in the case of no scaling.
+        if x_scale == 1:    x_grid_scaled = x_grid
+        else:               x_grid_scaled = x_grid * x_scale
+        if y_scale == 1:    y_grid_scaled = y_grid
+        else:               y_grid_scaled = y_grid * y_scale
+
+    # Gather the Zernike information.
+    cantor_terms, cantor_weights = _zernike_get_cantor(indices, weights, derivative)
+
+    # The masked case only computes on a fraction of the full space.
+    if use_mask:
+        out.fill(mask_value)
+        out[:, mask] = polynomial(
+            grid=(x_grid_scaled, y_grid_scaled),
+            weights=cantor_weights,
+            terms=cantor_terms,
+            out=out[:, mask]
+        )
+    else:
+        out = polynomial(
+            grid=(x_grid_scaled, y_grid_scaled),
+            weights=cantor_weights,
+            terms=cantor_terms,
+            out=out
+        )
+
+    if N == 1:
+        return out.reshape(x_grid.shape)
+    else:
+        return out
+
+
 def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative=(0,0), out=None):
     r"""
     Returns a summation of
@@ -555,11 +848,16 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
 
     Parameters
     ----------
-    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`ZernikeBasis`
         Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
         corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
         These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
         such a class can be passed instead of the grids directly.
+
+        A precomputed :class:`ZernikeBasis` may also be passed. In this case the
+        sum is evaluated as a single matrix product against the cached basis
+        images, and ``indices``, ``aperture``, ``use_mask``, and ``derivative``
+        are ignored (they are fixed when the basis is built).
     indices : array_like of int OR None
         Which Zernike polynomials to sum, defined by ANSI indices. Of shape ``(D,)``.
 
@@ -584,22 +882,27 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     weights : array_like of float
         The weight for each given index. Of shape ``(D,)``.
         If a stack of Zernike sums is desired, then use shape ``(D, N)``.
-    aperture : {"circular", "elliptical", "cropped"} OR (float, float) OR float OR None
-        Determines how the Zernike polynomials are laterally scaled.
-        Parsed with :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture()`.
+    aperture : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
+        The aperture defining how the Zernike polynomials are laterally scaled and
+        cropped. Pass a first-class :class:`~slmsuite.holography.toolbox.Aperture`
+        (e.g. ``Aperture("circular")``), or a legacy shorthand spec
+        (``"circular"`` / ``"elliptical"`` / ``"cropped"`` / ``float`` /
+        ``(float, float)``) which is wrapped by
+        :meth:`~slmsuite.holography.toolbox.Aperture.resolve`. If ``None`` and ``grid``
+        is an :class:`~slmsuite.hardware.slms.slm.SLM`, the SLM's
+        :attr:`~slmsuite.hardware.slms.slm.SLM.aperture` is used.
 
         Important
         ~~~~~~~~~
         Read the documentation and tips in
-        :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture()`
+        :class:`~slmsuite.holography.toolbox.Aperture`
         to avoid subtle issues with lateral scaling.
 
-    use_mask : bool OR "return" OR np.nan
+    use_mask : bool OR np.nan
         If ``True``, sets the area where standard Zernike polynomials are undefined to zero.
         If ``False``, the polynomial is not cropped. This should be used carefully, as
         polynomials outside the unit circle quickly explode with
         :math:`r^O` for terms of order :math:`O`.
-        If ``"return"``, returns the 2D mask ``x_grid**2 + y_grid**2 <= 1``.
         If ``np.nan``, the clipped area is set to ``np.nan`` instead of zero;
         this is used for plotting transparency in this undefined region.
     derivative : (int, int)
@@ -613,95 +916,32 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     Returns
     -------
     numpy.ndarray
-        The phase for this function. Optionally returns the 2D Zernike mask.
+        The phase for this function.
     """
-    # Parse passed simple values.
-    (x_grid, y_grid) = _process_grid(grid)
-    (x_scale, y_scale) = zernike_aperture(grid, aperture)
     if len(derivative) != 2:
         raise ValueError("Expected derivative to be a (int, int)")
 
-    # Parse weights.
-    weights = np.squeeze(weights)
-    if weights.ndim <= 1:
-        if weights.ndim == 0:
-            weights = np.array([weights])
+    # Fast path: synthesize directly from a precomputed ZernikeBasis. The basis
+    # images are already evaluated, so the sum is a single matrix product. The
+    # indices, aperture, and masking are baked into the basis and thus ignored.
+    if isinstance(grid, ZernikeBasis):
+        if any(derivative):
+            raise ValueError(
+                "derivative is not supported when grid is a ZernikeBasis; "
+                "build the basis from a coordinate grid instead."
+            )
+        return _zernike_sum_from_basis(grid, weights, out)
 
-        if indices is None:
-            D = None
-        else:
-            indices = np.squeeze(indices)
-            if indices.ndim == 0:
-                indices = np.array([indices])
+    # Transparent fast path: reuse (or build and cache) a ZernikeBasis and evaluate
+    # the sum as a single matrix product. Only valid when a flat masked/unmasked
+    # basis can represent the request; np.nan masking and derivatives take the
+    # direct path instead.
+    if not any(derivative) and (use_mask is True or use_mask is False):
+        indices, weights, _, _ = _zernike_parse_weights_indices(indices, weights)
+        basis = _zernike_get_basis(grid, indices, aperture, use_mask)
+        return _zernike_sum_from_basis(basis, weights, out)
 
-            D = len(indices)
-
-        if D is None or len(weights) == D:
-            weights = np.reshape(weights, (-1, 1))
-        else:
-            raise ValueError("Expected weights to have a common dimension with indices.")
-    elif weights.ndim == 2:
-        pass
-    else:
-        raise ValueError("Expected weights to be 1D or 2D.")
-
-    (D, N) = weights.shape
-
-    # Parse indices.
-    indices = _zernike_indices_parse(indices, D)
-
-    # Parse out.
-    out = _parse_out(x_grid, out, stack=N)
-
-    # At the end, we're going to set the values outside the aperture to zero.
-    # Make a mask for this if it's necessary.
-    if use_mask is False:
-        mask = None
-    else:
-        mask = np.square(x_grid * x_scale) + np.square(y_grid * y_scale) <= 1
-        if use_mask == "return":
-            return mask
-        mask_value = 0
-        if np.isnan(use_mask):
-            use_mask = True
-            mask_value = np.nan
-        use_mask = use_mask and np.any(mask == 0)
-
-    # Make the new grids.
-    if use_mask:
-        x_grid_scaled = x_grid[mask] * x_scale
-        y_grid_scaled = y_grid[mask] * y_scale
-    else:
-        # Special case to avoid copying grids in the case of no scaling.
-        if x_scale == 1:    x_grid_scaled = x_grid
-        else:               x_grid_scaled = x_grid * x_scale
-        if y_scale == 1:    y_grid_scaled = y_grid
-        else:               y_grid_scaled = y_grid * y_scale
-
-    # Gather the Zernike information.
-    cantor_terms, cantor_weights = _zernike_get_cantor(indices, weights, derivative)
-
-    # The masked case only computes on a fraction of the full space.
-    if use_mask:
-        out.fill(mask_value)
-        out[:, mask] = polynomial(
-            grid=(x_grid_scaled, y_grid_scaled),
-            weights=cantor_weights,
-            terms=cantor_terms,
-            out=out[:, mask]
-        )
-    else:
-        out = polynomial(
-            grid=(x_grid_scaled, y_grid_scaled),
-            weights=cantor_weights,
-            terms=cantor_terms,
-            out=out
-        )
-
-    if N == 1:
-        return out.reshape(x_grid.shape)
-    else:
-        return out
+    return _zernike_sum_direct(grid, indices, weights, aperture, use_mask, derivative, out)
 
 
 def zernike_pyramid_plot(
@@ -868,8 +1108,8 @@ def _zernike_overlap(
 
 def _zernike_cache_plot():
     plt.imshow(np.log2(_zernike_cache_vectorized))
-    plt.ylabel("Zernike Index (ANSI)");
-    plt.xlabel("Monomial Index (Cantor)");
+    plt.ylabel("Zernike Index (ANSI)")
+    plt.xlabel("Monomial Index (Cantor)")
     _slmsuite_plt_show(name="zernike_cache_plot")
 
 
@@ -902,7 +1142,7 @@ def _zernike_coefficients(index):
     index = int(index)
 
     # Generate coefficients only if we have not already generated.
-    if not index in _zernike_cache:
+    if index not in _zernike_cache:
         zernike_this = {}
 
         (n, l) = zernike_convert_index(index, to_index="radial")[0]
@@ -1034,6 +1274,10 @@ except:
     _zernike_test_kernel = None
 
 
+# NOTE: the populate_basis CUDA kernel below is not yet wired into zernike_sum.
+# It would only accelerate one-time basis construction (ZernikeBasis.__init__),
+# not repeated synthesis/fitting, which is already a plain matrix product. Kept
+# here for a possible future basis-build fast path.
 def _zernike_test(grid, indices):
     _zernike_test_kernel = cp.RawKernel(_load_cuda(), 'zernike_test')
     _zernike_test_kernel.compile()
@@ -1042,10 +1286,8 @@ def _zernike_test(grid, indices):
 
     # Parse grid.
     (x_grid, y_grid) = _process_grid(grid)
-    scale = 1
-    if hasattr(grid, "get_source_zernike_scaling"):
-        scale = grid.get_source_zernike_scaling()
-        logger.debug("source Zernike scaling: %s", scale)
+    scale = Aperture.resolve(grid)._isotropic_scale()
+    logger.debug("source Zernike scaling: %s", scale)
     x_grid = cp.array(x_grid, copy=True, dtype=np.float32)
     y_grid = cp.array(y_grid, copy=True, dtype=np.float32)
 

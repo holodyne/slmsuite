@@ -128,6 +128,8 @@ class PLM(ScreenMirrored):
         pixel_mode=None,
         usb_vendor_id=None,
         usb_product_id=None,
+        usb_device_number=0,
+        dlpc = None,
         gpu=None,
         **kwargs
     ):
@@ -142,6 +144,8 @@ class PLM(ScreenMirrored):
         display_number : int
             Monitor number for display.
             Use :func:`ScreenMirrored.info()` to list available displays and their numbers.
+            If ``None`` and ``configure_usb=True``, the display will appear after the USB
+            is configured.
         configure_usb : bool, optional
             If ``True``, automatically configure the DLPC900 EVM via USB before
             initializing the display. Requires ``hidapi``
@@ -157,6 +161,9 @@ class PLM(ScreenMirrored):
             Override USB vendor ID for DLPC900.
         usb_product_id : int or None, optional
             Override USB product ID for DLPC900.
+        usb_device_number : int, optional
+            Index of the DLPC900 device to open when multiple units are connected.
+            Defaults to ``0``. Only used when ``configure_usb=True``.
         gpu : bool or None, optional
             Whether to use GPU acceleration via :mod:`cupy`.
             When ``gpu=True`` (or ``None`` with :mod:`cupy` installed), all
@@ -169,7 +176,7 @@ class PLM(ScreenMirrored):
         **kwargs
             Additional arguments for :class:`ScreenMirrored`.
         """
-        self.dlpc900 = None
+        self.dlpc900 = dlpc
         self.display_number = display_number
 
         # Load model configuration from YAML database
@@ -197,9 +204,13 @@ class PLM(ScreenMirrored):
 
         # USB pre-config: set up PLM as display
         if configure_usb:
-            self.dlpc900 = DLPC900(vendor_id=usb_vendor_id,
-                                   product_id=usb_product_id)
-            self._usb_pre_configure(video_input, pixel_mode, display_number)
+            # Configure USB.
+            self.dlpc900 = DLPC900(
+                vendor_id=usb_vendor_id,
+                product_id=usb_product_id,
+                device_number=usb_device_number
+            )
+            PLM._usb_pre_configure(self.dlpc900, video_input, pixel_mode, display_number)
 
         # Compute bitdepth from number of displacement ratios
         n_phases = len(self.model_config["displacement_ratios"])
@@ -218,7 +229,14 @@ class PLM(ScreenMirrored):
 
         # Calculate display shape after electrode mapping
         elec_shape = self._electrode_layout_raw.shape
-        self.display_shape = (model_shape[0] * elec_shape[0], model_shape[1] * elec_shape[1])
+        display_shape = (model_shape[0] * elec_shape[0], model_shape[1] * elec_shape[1])
+
+        if display_shape != self.display_shape:
+            raise ValueError(
+                f"Calculated display shape {display_shape} does not match "
+                f"ScreenMirrored display shape {self.display_shape}. "
+                f"Check model configuration for consistency."
+            )
 
         # Update window shape and recreate buffers for electrode-mapped output.
         # Must run on the window thread to satisfy OpenGL context thread affinity.
@@ -231,7 +249,7 @@ class PLM(ScreenMirrored):
 
         # USB post-config: wait for source lock and switch to video-pattern mode.
         if configure_usb:
-            self._usb_post_configure(video_input, pixel_mode)
+            PLM._usb_post_configure(self.dlpc900, video_input, pixel_mode)
 
         # Pre-compute quantization LUT
         self._init_quantize_lut()
@@ -277,7 +295,61 @@ class PLM(ScreenMirrored):
 
         return model_db[model_name]
 
-    def _usb_pre_configure(self, video_input, pixel_mode, display_number):
+    @staticmethod
+    def configure_usb(
+        vendor_id=None,
+        product_id=None,
+        device_number=0,
+        video_input=None,
+        pixel_mode=None,
+        display_number=None,
+    ):
+        """
+        Convenience method to configure USB in one step.
+
+        Creates a temporary DLPC900 instance to run the pre- and post-configuration
+        steps, then closes the USB connection. Useful for users who want to use the
+        TI GUI software after running this setup once.
+
+        Parameters
+        ----------
+        vendor_id : int or None
+            USB vendor ID for DLPC900. Defaults to 0x0451 (Texas Instruments).
+        product_id : int or None
+            USB product ID for DLPC900. Defaults to 0xC900 (DLPC900 EVM).
+        device_number : int
+            Index of the DLPC900 device to open when multiple units are connected.
+        video_input : str
+            Video input source: "displayport" or "hdmi".
+        pixel_mode : str or None
+            Pixel clock mode: "single" (30 Hz) or "dual" (60 Hz).
+            If None, defaults to "dual" for DisplayPort or "single" for HDMI.
+        display_number : int OR None
+            Monitor number for display. If ``None``, does not wait for display detection during pre-configure step.
+        """
+        dlpc = DLPC900(
+            vendor_id=vendor_id,
+            product_id=product_id,
+            device_number=device_number,
+        )
+
+        PLM._usb_pre_configure(
+            dlpc=dlpc,
+            video_input=video_input,
+            pixel_mode=pixel_mode,
+            display_number=display_number,
+        )
+
+        PLM._usb_post_configure(
+            dlpc=dlpc,
+            video_input=video_input,
+            pixel_mode=pixel_mode,
+        )
+
+        return dlpc
+
+    @staticmethod
+    def _usb_pre_configure(dlpc, video_input, pixel_mode, display_number):
         """
         USB setup steps that must happen before the pyglet window is created.
 
@@ -290,6 +362,10 @@ class PLM(ScreenMirrored):
         dlpc = self.dlpc900
 
         logger.debug("DLPC900 connected: firmware %s", dlpc.get_firmware_version())
+
+        # Resolve video_input default
+        if video_input is None:
+            video_input = "displayport"
 
         # Resolve pixel mode default
         if pixel_mode is None:
@@ -308,10 +384,11 @@ class PLM(ScreenMirrored):
         dlpc.set_display_mode("video")
 
         # Wait for the target display to become available
-        DLPC900._poll_until(
-            lambda: display_number in [s[0] for s in ScreenMirrored.info(verbose=False)],
-            error_msg=f"Display {display_number} not detected.",
-        )
+        if display_number is not None:
+            DLPC900._poll_until(
+                lambda: display_number in [s[0] for s in ScreenMirrored.info(verbose=False)],
+                error_msg=f"Display {display_number} not detected.",
+            )
 
         logger.debug("DLPC900 pre-configured (video mode, display detected)")
 
@@ -323,8 +400,6 @@ class PLM(ScreenMirrored):
         to video-pattern mode, configures the pattern LUT, and starts the
         pattern sequence.
         """
-        dlpc = self.dlpc900
-
         # Resolve pixel mode default
         if pixel_mode is None:
             pixel_mode = "dual" if video_input == "displayport" else "single"
@@ -353,9 +428,9 @@ class PLM(ScreenMirrored):
         dlpc.define_pattern(
             index=0,
             bitdepth=1,
-            color=7, #white
+            color=1, #shouldn't matter
             clear_after_exposure=False,
-            wait_for_trigger=False,
+            wait_for_trigger=True,
             dark_time_us=0,
             trigger_out2=True,
             image_index=0,
@@ -379,9 +454,9 @@ class PLM(ScreenMirrored):
 
         logger.debug("DLPC900 configured successfully - pattern sequence running")
 
-    def close(self):
+    def close(self, close_usb=True):
         """Close the PLM, stopping the pattern sequence and releasing USB."""
-        if self.dlpc900 is not None:
+        if close_usb and self.dlpc900 is not None:
             try:
                 self.dlpc900.stop_pattern()
                 self.dlpc900.standby()
@@ -639,6 +714,7 @@ class PLM(ScreenMirrored):
         return list(model_db.keys())
 
 
+
 class DLPC900:
     """
     USB HID interface for the DLPC900 evaluation module.
@@ -655,7 +731,7 @@ class DLPC900:
     DLPU018J section references.
     """
 
-    def __init__(self, vendor_id=None, product_id=None):
+    def __init__(self, vendor_id=None, product_id=None, device_number=0):
         """
         Initialize the DLPC900 USB interface.
 
@@ -665,6 +741,9 @@ class DLPC900:
             USB vendor ID. Defaults to ``0x0451`` (Texas Instruments).
         product_id : int or None
             USB product ID. Defaults to ``0xC900`` (DLPC900 EVM).
+        device_number : int, optional
+            Index of the device to open when multiple units are connected.
+            Defaults to ``0``.
 
         Raises
         ------
@@ -682,13 +761,38 @@ class DLPC900:
         vid = vendor_id if vendor_id is not None else DLPC900_VENDOR_ID
         pid = product_id if product_id is not None else DLPC900_PRODUCT_ID
 
+        devices = [d for d in _hid.enumerate(vid, pid)]
+
+        if not devices:
+            raise RuntimeError(
+                f"No DLPC900 USB device found (VID=0x{vid:04X}, PID=0x{pid:04X}). "
+                "Check that the EVM is powered on and connected via USB."
+            )
+        # Each PLM exposes two HID interfaces; pick the one with product_string "DLPC900".
+        devices = [d for d in devices if d.get("product_string") == "DLPC900"]
+        if not devices:
+            raise RuntimeError(
+                f"No DLPC900 HID interface found (VID=0x{vid:04X}, PID=0x{pid:04X}). "
+                "Enumerated devices did not report product_string 'DLPC900'."
+            )
+        if device_number >= len(devices):
+            raise RuntimeError(
+                f"device_number={device_number} out of range; "
+                f"{len(devices)} DLPC900 PLM(s) found."
+            )
+        self._device_info = devices[device_number]
+        # Debug info (enable explicitly if needed):
+        # print(
+        #     f"DLPC900 device {device_number}/{len(devices)}: "
+        #     f"path={self._device_info['path'].decode()}"
+        # )
         self._dev = _hid.device()
         try:
-            self._dev.open(vid, pid)
+            self._dev.open_path(self._device_info["path"])
         except OSError as e:
             raise RuntimeError(
-                f"DLPC900 USB device not found (VID=0x{vid:04X}, PID=0x{pid:04X}). "
-                "Check that the EVM is powered on and connected via USB."
+                f"Failed to open DLPC900 device {device_number} "
+                f"(VID=0x{vid:04X}, PID=0x{pid:04X})."
             ) from e
 
         self._seq = 0
@@ -985,18 +1089,18 @@ class DLPC900:
             | (int(wait_for_trigger) & 0x01) << 7
         )
 
-        self._send(
-            'w', DLPC900Command.PAT_LUT_DEFINE,
+        payload = (
             list(index.to_bytes(2, 'little'))
             + list(DLPC900_EXPOSURE_US.to_bytes(3, 'little'))
             + [options]
             + list(dark_time_us.to_bytes(3, 'little'))
             + [
-                int(trigger_out2) & 0x01,
+                int(not trigger_out2) & 0x01,
                 image_index & 0xFF,
-                (image_index >> 8) & 0x07 | (bit_position & 0x1F) << 3
+                (image_index >> 8) & 0x07 | (bit_position & 0x1F) << 3,
             ]
         )
+        self._send('w', DLPC900Command.PAT_LUT_DEFINE, payload)
 
     def set_it6535_power(self, mode):
         """

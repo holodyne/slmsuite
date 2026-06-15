@@ -39,7 +39,7 @@ class TestPicklable:
         with subtests.test("attributes=False keeps only _pickle"):
             result = self.obj.pickle(attributes=False, metadata=False)
 
-            assert result["__class__"] == "TestPicklableClass"
+            assert result["__class__"] == "_TestPicklableClass"
             assert result["basic_attr"] == 42
             assert result["name"] == "test_object"
             assert "heavy_attr" not in result
@@ -48,7 +48,7 @@ class TestPicklable:
         with subtests.test("attributes=True includes _pickle_data"):
             result = self.obj.pickle(attributes=True, metadata=False)
 
-            assert result["__class__"] == "TestPicklableClass"
+            assert result["__class__"] == "_TestPicklableClass"
             assert result["basic_attr"] == 42
             assert result["name"] == "test_object"
             assert result["heavy_attr"] == [1, 2, 3, 4, 5]
@@ -57,14 +57,14 @@ class TestPicklable:
         with subtests.test("custom attribute list"):
             result = self.obj.pickle(attributes=["basic_attr"], metadata=False)
 
-            assert result["__class__"] == "TestPicklableClass"
+            assert result["__class__"] == "_TestPicklableClass"
             assert result["basic_attr"] == 42
             assert "name" not in result
             assert "heavy_attr" not in result
 
-        with subtests.test("__str__ used as __class__"):
+        with subtests.test("__class__ is the real class name"):
             result = self.obj.pickle(attributes=False, metadata=False)
-            assert result["__class__"] == "TestPicklableClass"
+            assert result["__class__"] == "_TestPicklableClass"
 
     def test_pickle_metadata(self, subtests):
         """Test pickle metadata and version info."""
@@ -104,7 +104,7 @@ class TestPicklable:
             result = self.obj.pickle(attributes=["nested_obj"], metadata=False)
 
             nested = result["nested_obj"]
-            assert nested["__class__"] == "NestedPicklable"
+            assert nested["__class__"] == "_Nested"
             assert nested["nested_value"] == "nested"
 
         with subtests.test("empty _pickle lists yield only __class__"):

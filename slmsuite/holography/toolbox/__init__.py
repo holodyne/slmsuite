@@ -11,6 +11,7 @@ from slmsuite._plotting import _slmsuite_plt_show
 import warnings
 
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.holography.toolbox._aperture import Aperture as Aperture
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
@@ -135,11 +136,10 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
         These functions are defined within the unit disk, and canonically have amplitude
         of :math:`\pm 1` at the edges.
-        The size of the disk when scaled onto the SLM is pulled from radial fits
-        derived from the amplitude distribution of the SLM.
-        See :meth:`~slmsuite.hardware.slms.slm.SLM.get_source_zernike_scaling()` and
-        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`, especially
-        the ``extent_threshold`` keyword which determines the size of the disk.
+        The size of the disk when scaled onto the SLM is pulled from the SLM's
+        :attr:`~slmsuite.hardware.slms.slm.SLM.aperture` (see
+        :attr:`~slmsuite.hardware.slms.slm.SLM.zernike_scaling` and
+        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_aperture()`).
         Requires a :class:`~slmsuite.hardware.slms.slm.SLM` or
         :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``.
 
@@ -319,7 +319,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         if slm is None:
             zernike_scale = np.nan
         else:
-            zernike_scale = 2 * np.pi * np.reciprocal(slm.get_source_zernike_scaling())
+            zernike_scale = 2 * np.pi * np.reciprocal(slm.aperture._isotropic_scale())
 
     # XY
 

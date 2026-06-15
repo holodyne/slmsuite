@@ -35,6 +35,13 @@ class _Viewable(object):
         execution.
         ``Live`` mode is ignored for SLMs.
 
+        The viewer also supports zooming into a region of interest: scroll the mouse
+        wheel to zoom in/out toward the cursor, click-drag to pan, and double-click
+        (or press the ``Reset View`` button) to restore the full image. Clicking
+        prints the source-image pixel coordinate under the cursor. These mouse
+        interactions require the optional :mod:`ipyevents` package
+        (``pip install ipyevents``); without it the viewer still functions normally.
+
         This limitation is imposed by the
         Python Global Interpreter Lock (GIL) which restricts operation to a single thread,
         especially operation connecting to a diverse set of camera and SLM hardware.
@@ -151,6 +158,14 @@ class _ViewerObject(object):
         }
 
         self.task = None
+        self._drag = None
+        self._dragged = False
+        self._events = None
+
+        # Region of interest (crop) in source-image pixels: [x0, y0, x1, y1].
+        H, W = self.parent.shape[0], self.parent.shape[1]
+        self.state["roi"] = [0.0, 0.0, float(W), float(H)]
+
         self.widgets = {}
         if widgets: self.init_widgets()
         self.init_image()
@@ -163,22 +178,36 @@ class _ViewerObject(object):
         if self.prev_img is None:
             return  # Nothing to render.
 
-        # Downscaling can happen before intensive operations.
-        if self.state["scale"] < 1:
+        # Crop to the current region of interest (ROI).
+        H, W = self.prev_img.shape[0], self.prev_img.shape[1]
+        x0, y0, x1, y1 = np.rint(self.state["roi"]).astype(int)
+        x0, x1 = np.clip([x0, x1], 0, W)
+        y0, y1 = np.clip([y0, y1], 0, H)
+        if x1 - x0 < 1: x1 = min(W, x0 + 1)
+        if y1 - y0 < 1: y1 = min(H, y0 + 1)
+        src = self.prev_img[y0:y1, x0:x1]
+
+        # Downsample only if the crop has more pixels than the display box can
+        # show; otherwise show the exact, full-resolution source pixels. The raw
+        # crop is a plain integer slice, so it stays stable under panning (no
+        # interpolation), unlike a resampled version.
+        Bw = max(1, int(round(W * self.state["scale"])))
+        Bh = max(1, int(round(H * self.state["scale"])))
+        ch, cw = src.shape[0], src.shape[1]
+        f = min(1.0, Bw / cw, Bh / ch)
+        if f < 1.0:
             img = zoom(
-                self.prev_img,
-                [self.state["scale"], self.state["scale"]] + ([1] if len(self.prev_img.shape) == 3 else []),
+                src,
+                [f, f] + ([1] if len(src.shape) == 3 else []),
                 order=1
             )
         else:
-            img = np.copy(self.prev_img)
+            img = np.copy(src)
 
         if is_cam and self.state["centroid_crosshair"]:
             img_median_subtract = image_remove_field([img], deviations=None)
             cx, cy = np.rint(
-                (
-                    np.squeeze(image_centroids(img_median_subtract)) + np.flip(img.shape) / 2
-                ) * (self.state["scale"] if self.state["scale"] > 1 else 1)
+                np.squeeze(image_centroids(img_median_subtract)) + np.flip(img.shape) / 2
             ).astype(int)
 
         # Scale intensity of image
@@ -199,10 +228,6 @@ class _ViewerObject(object):
             normalize=False,
             border=self.state["border"]
         )
-
-        # Upscaling can happen after intensive operations.
-        if self.state["scale"] > 1:
-            rgb = zoom(rgb, (1, self.state["scale"], self.state["scale"], 1), order=0)
 
         # Add crosshair at the median-subtracted centroid (center of mass) position.
         if is_cam and self.state["centroid_crosshair"]:
@@ -233,6 +258,7 @@ class _ViewerObject(object):
         for key in self.state_keys:
             self.state[key] = self.widgets[key].value
 
+        self._resize_display()
         self.render()
 
     def live(self, event=None):
@@ -259,11 +285,129 @@ class _ViewerObject(object):
             self.parent.get_image()     # SLMs are not allowed to have gotten here.
             await asyncio.sleep(0.01)
 
-    def on_click(self, event):
-        coord = np.array([event["x"], event["y"]])
-        with self.widgets["output"]:
-            self.widgets["output"].clear_output(wait=True)
-            print(np.round(coord / self.state["scale"]).astype(int))
+    def _event_to_source(self, event):
+        """Map an ipyevents DOM mouse event to ``(sx, sy)`` source-image pixels."""
+        x0, y0, x1, y1 = self.state["roi"]
+        fx = event["relativeX"] / event["boundingRectWidth"]
+        fy = event["relativeY"] / event["boundingRectHeight"]
+        return x0 + fx * (x1 - x0), y0 + fy * (y1 - y0)
+
+    def _zoom(self, event):
+        """Scroll-wheel zoom: rescale the ROI about the cursor position."""
+        delta = event.get("deltaY", 0)
+        if not delta:
+            return
+
+        H, W = self.prev_img.shape[0], self.prev_img.shape[1]
+        x0, y0, x1, y1 = self.state["roi"]
+        w, h = x1 - x0, y1 - y0
+        fx = event["relativeX"] / event["boundingRectWidth"]
+        fy = event["relativeY"] / event["boundingRectHeight"]
+        sx, sy = x0 + fx * w, y0 + fy * h
+
+        # Wheel up (deltaY < 0) zooms in; wheel down zooms out. The factor is
+        # clamped so the ROI stays within [8 px, full image] while preserving
+        # the full-image aspect ratio (same factor for both axes).
+        factor = 0.8 if delta < 0 else 1.25
+        factor = min(factor, W / w, H / h)
+        factor = max(factor, 8.0 / w, 8.0 / h)
+        # Keep the ROI dimensions integral so the integer-sliced crop is exactly
+        # the same size at every pan position (no ±1px breathing).
+        w = float(np.clip(round(w * factor), 8, W))
+        h = float(np.clip(round(w * H / W), 8, H))
+
+        x0 = float(np.clip(sx - fx * w, 0, W - w))
+        y0 = float(np.clip(sy - fy * h, 0, H - h))
+        self.state["roi"] = [x0, y0, x0 + w, y0 + h]
+        self.render()
+
+    def _pan(self, event):
+        """Click-drag pan: translate the ROI to keep the grabbed pixel under the cursor."""
+        x0d, y0d, x1d, y1d = self._drag["roi"]
+        gx, gy = self._drag["pointer"]
+        w, h = x1d - x0d, y1d - y0d
+
+        H, W = self.prev_img.shape[0], self.prev_img.shape[1]
+        fx = event["relativeX"] / event["boundingRectWidth"]
+        fy = event["relativeY"] / event["boundingRectHeight"]
+        x0 = float(np.clip(gx - fx * w, 0, W - w))
+        y0 = float(np.clip(gy - fy * h, 0, H - h))
+
+        roi = [x0, y0, x0 + w, y0 + h]
+        if roi != self.state["roi"]:
+            self._dragged = True
+            self.state["roi"] = roi
+            self.render()
+
+    def _reset_roi(self, event=None):
+        """Reset the ROI to show the full image."""
+        H, W = self.prev_img.shape[0], self.prev_img.shape[1]
+        self.state["roi"] = [0.0, 0.0, float(W), float(H)]
+        self._drag = None
+        self.render()
+
+    def _on_dom_event(self, event):
+        """Dispatch ipyevents DOM events for scroll-zoom, drag-pan, and coordinate readout."""
+        try:
+            etype = event.get("type")
+            if etype == "wheel":
+                self._zoom(event)
+            elif etype == "mousedown":
+                sx, sy = self._event_to_source(event)
+                self._drag = {"pointer": (sx, sy), "roi": list(self.state["roi"])}
+                self._dragged = False
+            elif etype == "mousemove":
+                if self._drag is not None:
+                    self._pan(event)
+            elif etype in ("mouseup", "mouseleave"):
+                self._drag = None
+            elif etype == "dblclick":
+                self._reset_roi()
+            elif etype == "click" and not self._dragged:
+                sx, sy = self._event_to_source(event)
+                coord = np.round([sx, sy]).astype(int)
+                if "output" in self.widgets:
+                    with self.widgets["output"]:
+                        self.widgets["output"].clear_output(wait=True)
+                        print(coord)
+        except Exception as e:
+            if "output" in self.widgets:
+                with self.widgets["output"]:
+                    print(str(e))
+
+    def _resize_display(self):
+        """Fix the display box size so ROI zoom changes content, not widget size."""
+        from ipywidgets import Layout
+        H, W = self.parent.shape[0], self.parent.shape[1]
+        s = self.state["scale"]
+        self.image.layout = Layout(
+            width=f"{int(W * s)}px",
+            height=f"{int(H * s)}px",
+        )
+
+    def _attach_events(self):
+        """Attach ipyevents mouse handlers to the image widget, if available."""
+        try:
+            from ipyevents import Event
+        except ImportError:
+            if "output" in self.widgets:
+                with self.widgets["output"]:
+                    print(
+                        "Install 'ipyevents' (pip install ipyevents) to enable "
+                        "scroll-wheel zoom and click-drag pan in the viewer."
+                    )
+            return
+
+        self._events = Event(
+            source=self.image,
+            watched_events=[
+                "wheel", "mousedown", "mousemove", "mouseup",
+                "mouseleave", "click", "dblclick",
+            ],
+            prevent_default_action=True,
+            wait=10,
+        )
+        self._events.on_dom_event(self._on_dom_event)
 
     def autorange(self, event):
         if self.prev_img is not None:
@@ -274,7 +418,7 @@ class _ViewerObject(object):
 
     def init_image(self):
         from ipywidgets import Image
-        from IPython.display import display
+        from IPython.display import display, HTML
 
         self.prev_img = np.zeros(self.parent.shape, dtype=self.parent.dtype)
 
@@ -282,7 +426,19 @@ class _ViewerObject(object):
             value=self.prev_img,
             format="png"
         )
-        self.image.on_click = self.on_click
+        # Render the image with nearest-neighbor upscaling so that, when zoomed in,
+        # individual source pixels appear as crisp blocks rather than a blurred,
+        # smoothly-interpolated patch.
+        self.image.add_class("slmsuite-viewer-pixelated")
+        display(HTML(
+            "<style>.slmsuite-viewer-pixelated {"
+            " image-rendering: -moz-crisp-edges;"
+            " image-rendering: crisp-edges;"
+            " image-rendering: pixelated;"
+            " }</style>"
+        ))
+        self._resize_display()
+        self._attach_events()
         display(self.image)
 
     def init_widgets(self):
@@ -315,6 +471,11 @@ class _ViewerObject(object):
                 tooltip="Scale the image by powers of two.",
                 layout=(Layout(width="30%") if self.parent.is_slm else item_layout),
                 continuous_update=False,
+            ),
+            "reset" : Button(
+                description="Reset View",
+                tooltip="Reset zoom and pan to show the full image.",
+                layout=item_layout,
             ),
             "output": Output()
         }
@@ -370,6 +531,8 @@ class _ViewerObject(object):
         for k, w in self.widgets.items():
             if k == "autorange":
                 w.on_click(self.autorange)
+            elif k == "reset":
+                w.on_click(self._reset_roi)
             elif k == "live":
                 w.observe(self.live, "value")
             else:
@@ -384,6 +547,7 @@ class _ViewerObject(object):
                     self.widgets["name"],
                     self.widgets["cmap"],
                     self.widgets["scale"],
+                    self.widgets["reset"],
                 ]),
                 self.widgets["output"],
             ])
@@ -425,6 +589,7 @@ class _ViewerObject(object):
                         self.widgets["live"],
                         self.widgets["scale"],
                         self.widgets["autorange"],
+                        self.widgets["reset"],
                     ],
                     layout=box_layout2,
                 )
@@ -441,6 +606,8 @@ class _ViewerObject(object):
 
         for w in self.widgets.values():
             w.close()
+        if self._events is not None:
+            self._events.close()
         self.image.close()
 
         del self

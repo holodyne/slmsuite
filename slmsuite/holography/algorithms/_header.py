@@ -31,6 +31,16 @@ except ImportError:
         "cupy is not installed; using numpy. Install cupy for faster GPU-based holography."
     )
 
+# Warm up cupy's cuBLAS handle *before* PyTorch is imported to avoid
+# CUBLAS_STATUS_INVALID_VALUE errors..
+if cp is not np:
+    try:
+        _w = cp.zeros((2, 2), dtype=cp.float32)
+        _w @ _w
+        cp.cuda.runtime.deviceSynchronize()
+    except Exception:
+        pass
+
 try:
     import torch
 except:
