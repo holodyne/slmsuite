@@ -319,6 +319,7 @@ class Camera(_Common, ABC):
         else:
             self._binning = binning
 
+        if self.binning != binning:
             self.logger.warning("Attempted to set binning to %s, but realized %s.", target_binning, self.binning)
         else:
             self.logger.debug("Set WOI to %s.", self.woi)
