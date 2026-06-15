@@ -93,6 +93,32 @@ class TestFourierSLM:
                 )
 
     @pytest.mark.slow
+    def test_fourier_calibrate_noise_and_transfer(self, slm, subtests):
+        """Fourier-calibrate across a range of transfer functions and camera noise.
+
+        A noisy camera background previously ballooned the DFT's 0th order and
+        crushed the array's periodic peaks below detection, breaking calibration.
+        Each case is validated end-to-end: a spot blazed to the calibrated kxy
+        must land on its requested camera pixel.
+        """
+        noise = {
+            "dark": lambda img: np.random.normal(0.005 * img, 0.002 * img),
+            "read": lambda img: np.random.poisson(0.03 * img),
+        }
+        for theta, nz in [(0.0, None), (0.0, noise), (0.2, noise), (-0.3, noise)]:
+            with subtests.test(theta=theta, noisy=nz is not None):
+                cam = SimulatedCamera(slm, resolution=(512, 512), pitch_um=(5.5, 5.5), noise=nz)
+                cam.set_affine(f_eff=170000.0, units="norm", theta=theta)
+                fs = FourierSLM(cam, slm, mag=1.0)
+                fs.cam.set_exposure(0.1)
+                fs.fourier_calibrate(array_pitch=30, array_shape=10, plot=False)
+                assert abs(np.linalg.det(fs.calibrations["fourier"]["M"])) > 1e6
+                for ij in ([200, 310], [300, 200]):
+                    fs.slm.set_phase(blaze(fs.slm, vector=fs.ijcam_to_kxyslm(ij)))
+                    peak = np.flip(np.unravel_index(np.argmax(fs.cam.get_image()), fs.cam.shape))
+                    assert np.linalg.norm(peak - np.array(ij)) < 0.1 * max(fs.cam.shape)
+
+    @pytest.mark.slow
     def test_fourier_calibrate_large_array(self, fourierslm, fourierslm_calibrated, subtests):
         """Test fourier_calibrate with a larger grid for better statistics."""
 

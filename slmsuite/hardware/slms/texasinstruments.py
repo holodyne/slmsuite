@@ -741,7 +741,7 @@ class DLPC900:
                 # print(" ".join(f"{b:02X}" for b in ret))
                 return ret
             except Exception:
-                logger.error("Read command failed; ensure PLM GUI is closed.")
+                logger.warning("Read command failed; ensure PLM GUI is closed.")
 
         # A bit of time for stability
         time.sleep(0.1)

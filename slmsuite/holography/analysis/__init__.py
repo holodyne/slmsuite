@@ -311,7 +311,7 @@ def _take_parse_shape(images, shape=None):
         (M, N) = shape
 
     if M*N < img_count:
-        logger.warning("Not enough space to fit all images. Truncating the image count.")
+        logger.warning("Not enough space to fit all images. Try truncating the image count.")
         img_count = M*N
 
     return img_count, (M, N)
@@ -1771,6 +1771,10 @@ def blob_array_detect(
     if len(np.shape(img)) != 2:
         raise RuntimeError(f"Cannot interpret image with shape {np.shape(img)}")
 
+    # Parse size.
+    if np.isscalar(size):
+        size = (int(size), int(size))
+
     img_8bit = _make_8bit(img)
 
     if np.amax(img_8bit) == 0:
@@ -1786,10 +1790,16 @@ def blob_array_detect(
     # Otherwise, find a guess orientation.
     else:
         # 1) FFT to find array pitch and orientation.
-        # Take the largest dimension rounded down to nearest power of 2.
+        # 1.1) Subtract the background field before the FFT.
+        # A noisy camera background can dominate the FFT's 0th order.
+        img_centered = image_remove_field([img], deviations=None)[0]
+
+        # 1.2) Take the largest dimension rounded down to nearest power of 2.
         # FUTURE: clean this up to behave like other parts of the package.
         fft_size = int(2 ** (np.floor(np.log2(np.max(np.shape(img)))) + dft_padding))
-        dft = np.abs(np.fft.fftshift(np.fft.fft2(img, s=[fft_size, fft_size])))
+
+        # 1.3) Actually FFT.
+        dft = np.abs(np.fft.fftshift(np.fft.fft2(img_centered, s=[fft_size, fft_size])))
 
         # 2) Detect and plot FFT peaks
         # 2.1) Prepare some helper variables, mainly for filtering out the 0th order.
@@ -2146,7 +2156,7 @@ def blob_array_detect(
         try:
             res = cv2.matchTemplate(img_8bit, mask, cv2.TM_CCOEFF)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        except:
+        except Exception:
             max_val = 0
             max_loc = [0, 0]
 

@@ -693,7 +693,6 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                     self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
                 except Exception as err:    # Fallback to cupy upon error.
                     self.logger.warning("Falling back to cupy: %s", err)
-                    raise err
                     self.cuda = False
             else:
                 self.logger.warning(
@@ -838,7 +837,6 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 self._farfield2nearfield_cuda()
             except Exception as err:    # Fallback to cupy upon error.
                 self.logger.warning("Falling back to cupy: %s", err)
-                raise err
                 self.cuda = False
 
         if not self.cuda:

@@ -274,7 +274,7 @@ class Santec(SLM):
             try:
                 Santec._parse_status(slm_funcs.SLM_Ctrl_Close(self.slm_number))
             except Exception as close_error:
-                logger.error(
+                logger.warning(
                     "Could not close attempt to open Santec slm_number=%s: %s",
                     slm_number, close_error,
                 )

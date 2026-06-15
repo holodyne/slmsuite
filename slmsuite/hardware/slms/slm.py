@@ -832,6 +832,8 @@ class SLM(_Common, ABC):
             }
         )
 
+        self.logger.info("Saved phase to '%s'.", file_path)
+
         return file_path
 
     def load_phase(self, file_path=None, settle=False):
@@ -877,6 +879,8 @@ class SLM(_Common, ABC):
         self._set_phase_hw(data["display"])
         self.display = data["display"]
         self.phase = data["phase"]
+
+        self.logger.info("Loaded phase from '%s'.", file_path)
 
         if not np.all(np.isclose(data["display"], self._format_phase_hw(data["phase"]))):
             self.logger.warning("Integer data in 'display' does not match 'phase' for this SLM.")

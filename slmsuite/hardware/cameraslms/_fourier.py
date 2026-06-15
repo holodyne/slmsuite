@@ -97,7 +97,7 @@ class _FourierCalibration(object):
                 array_shape=array_shape, array_pitch=array_pitch, array_center=array_center, **kwargs
             )
         except Exception as e:
-            self.logger.warning(
+            self.logger.error(
                 "fourier_calibrate failed during array holography. Try the following:\n"
                 "- Reducing the array_pitch or array_shape,\n"
                 "- Checking SLM parameters."
@@ -144,7 +144,7 @@ class _FourierCalibration(object):
         try:
             orientation = analysis.blob_array_detect(img, array_shape, plot=plot)
         except Exception as e:
-            self.logger.warning("fourier_calibrate failed during array detection and fitting.")
+            self.logger.error("fourier_calibrate failed during array detection and fitting.")
             raise e
 
         a = format_2vectors(array_center)

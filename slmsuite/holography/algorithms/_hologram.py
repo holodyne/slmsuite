@@ -1377,6 +1377,7 @@ class Hologram(_HologramStats, _Loggable):
             iterations = tqdm(iterations, desc=name)
 
         # 3) Switch between optimization methods (currently only GS- or WGS-type is supported).
+        self.logger.debug("Optimizing with '%s' for %d iteration(s).", method, maxiter)
         if "GS" in method:
             self.optimize_gs(iterations, callback)
         elif "CG" in method:

@@ -27,7 +27,7 @@ from slmsuite.holography.analysis.files import _gray2rgb
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
-from slmsuite.misc.math import REAL_TYPES
+from slmsuite.misc.math import REAL_TYPES, INTEGER_TYPES
 
 
 class Camera(_Common, ABC):
@@ -300,6 +300,7 @@ class Camera(_Common, ABC):
         if isinstance(binning, INTEGER_TYPES):
             binning = (binning, binning)
 
+        target_binning = binning
         binning = self.transform.transform_shape(binning)
 
         # Break if no change.
@@ -317,6 +318,10 @@ class Camera(_Common, ABC):
             self._binning = self._get_binning_hw()
         else:
             self._binning = binning
+
+            self.logger.warning("Attempted to set binning to %s, but realized %s.", target_binning, self.binning)
+        else:
+            self.logger.debug("Set WOI to %s.", self.woi)
 
         # Try and retain the same WOI in unbinned camera coordinates.
         if update_woi:
@@ -453,6 +458,7 @@ class Camera(_Common, ABC):
 
         if woi is None:
             # Full sensor in untransformed, unbinned coordinates.
+            woi = (0, self.shape[1], 0, self.shape[0])
             woi_unt = (0, self._shape[1], 0, self._shape[0])
         else:
             # Get the WOI in raw camera coordinates.
@@ -490,9 +496,16 @@ class Camera(_Common, ABC):
             )
         # else: handled by _crop_to_woi()
 
+        new_woi = self.woi
+
         # Erase last_image if the shape or WOI changed, since the old image would no longer be valid.
-        if self.shape != old_shape or self.woi != old_woi:
+        if self.shape != old_shape or new_woi != old_woi:
             self.last_image = None
+
+        if new_woi != woi:
+            self.logger.warning("Attempted to set WOI to %s, but realized %s.", woi, new_woi)
+        else:
+            self.logger.debug("Set WOI to %s.", new_woi)
 
         return self.woi
 
@@ -621,6 +634,10 @@ class Camera(_Common, ABC):
         self._set_exposure_hw(exposure_s)
 
         self._exposure_s = self.get_exposure()
+        if not np.isclose(self._exposure_s, exposure_s):
+            self.logger.warning("Attempted to set exposure to %s seconds, but realized %s seconds.", exposure_s, self._exposure_s)
+        else:
+            self.logger.debug("Set exposure to %s s.", self._exposure_s)
         return self._exposure_s
 
     @abstractmethod
@@ -949,7 +966,7 @@ class Camera(_Common, ABC):
                 failures += 1
                 err = e
 
-        self.logger.warning("_get_image_hw() failed %s times before quitting.", failures)
+        self.logger.error("_get_image_hw() failed %s times before quitting.", failures)
 
         raise err
 
@@ -990,7 +1007,7 @@ class Camera(_Common, ABC):
                 failures += 1
                 err = e
 
-        self.logger.warning("_get_images_hw() failed %s times before quitting.", failures)
+        self.logger.error("_get_images_hw() failed %s times before quitting.", failures)
 
         raise err
 
@@ -1804,8 +1821,8 @@ class Camera(_Common, ABC):
                 img = self.get_image()
                 imlist.append(np.copy(img))
                 counts[i] = metric(img)
-            except:
-                pass
+            except Exception as e:
+                self.logger.debug("Autofocus capture at z = %.2f failed: %s", z, e)
 
         # Handle the case where everything failed.
         if np.all(np.isnan(counts)):

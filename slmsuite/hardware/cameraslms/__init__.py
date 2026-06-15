@@ -465,6 +465,8 @@ class FourierSLM(
         file_path = generate_path(path, name, extension="h5")
         save_h5(file_path, self.calibrations[calibration_type])
 
+        self.logger.info("Saved '%s' calibration to '%s'.", calibration_type, file_path)
+
         return file_path
 
     def read_calibration(self, calibration_type, file_path=None):
@@ -522,6 +524,7 @@ class FourierSLM(
                 )
 
         self.calibrations[calibration_type] = cal = load_h5(file_path)
+        self.logger.info("Loaded '%s' calibration from '%s'.", calibration_type, file_path)
         cal_ver = "an unknown version" if not "__version__" in cal else cal["__version__"]
 
         if cal_ver != __version__:
