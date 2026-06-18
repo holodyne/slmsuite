@@ -444,7 +444,7 @@ def lens(grid, f=(np.inf, np.inf)):
     # Optimize phase construction based on context (for speed, to avoid square, etc).
     if np.isfinite(f[0]) and np.isfinite(f[1]):
         return (np.pi / f[0]) * np.square(x_grid) + (np.pi / f[1]) * np.square(y_grid)
-    elif np.isfinite(f[0]) and np.isfinite(f[1]):
+    elif np.isfinite(f[0]):
         return (np.pi / f[0]) * np.square(x_grid)
     elif np.isfinite(f[1]):
         return (np.pi / f[1]) * np.square(y_grid)
