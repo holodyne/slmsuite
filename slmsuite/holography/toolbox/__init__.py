@@ -30,7 +30,9 @@ LENGTH_FACTORS = {
 LENGTH_LABELS = {k : k for k in LENGTH_FACTORS.keys()}
 LENGTH_LABELS["um"] = r"$\mu$m"
 
-CAMERA_UNITS = ["ij"]
+# Camera pixel units need only a Camera affine (no pixel pitch).
+CAMERA_PIXEL_UNITS = ["ij", "ijraw"]
+CAMERA_UNITS = list(CAMERA_PIXEL_UNITS)
 
 BLAZE_LABELS = {
     "rad":  (r"$\theta_x$ [rad]", r"$\theta_y$ [rad]"),
@@ -45,7 +47,8 @@ BLAZE_LABELS = {
         r"$x = Z_2 = Z_1^1$ [Zernike rad]",
         r"$y = Z_1 = Z_1^{-1}$ [Zernike rad]"
     ),
-    "ij":   (r"Camera $i$ [pix]", r"Camera $j$ [pix]"),
+    "ij":    (r"Camera $i$ [pix]", r"Camera $j$ [pix]"),
+    "ijraw": (r"Sensor $i$ [raw pix]", r"Sensor $j$ [raw pix]"),
 }
 for prefix, name in zip(["", "mag_"], ["Camera", "Experiment"]):
     for k in LENGTH_FACTORS.keys():
@@ -146,9 +149,20 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     -  ``"ij"``
         Camera pixel units, relative to the origin of the camera (potentially with WOI or binning applied).
         When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
-        Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``.
+        Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
+        unless converting only between camera units (see ``"ijraw"``), in which case a
+        :class:`~slmsuite.hardware.cameras.camera.Camera` suffices.
         See :meth:`~slmsuite.hardware.cameraslms.FourierSLM.kxyslm_to_ijcam`
         and :meth:`~slmsuite.hardware.cameraslms.FourierSLM.ijcam_to_kxyslm`.
+
+    -  ``"ijraw"``
+        Raw camera sensor pixel units: the **unbinned, un-WOI'd, untransformed** coordinate
+        system of the transformed physical sensor, as opposed to ``"ij"`` which lives in the WOI- and
+        binning-applied frame of the returned image.
+        Requires a :class:`~slmsuite.hardware.cameras.camera.Camera`
+        (or :class:`~slmsuite.hardware.cameraslms.FourierSLM`) to be passed to ``hardware``.
+        The mapping to ``"ij"`` is the camera's
+        :meth:`~slmsuite.hardware.cameras.camera.Camera._get_ijraw_to_ijcam` affine.
 
     -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
         Camera position in metric length units, relative to the origin of the camera (potentially with WOI applied).
@@ -179,6 +193,10 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     -  ``"ij"``
         True cartesian distance relative to the **camera plane** in pixels.
 
+    -  ``"ijraw"``
+        True cartesian distance relative to the **camera plane** in raw (unbinned) sensor
+        pixels. This differs from ``"ij"`` by the isotropic binning scale.
+
     -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
         True cartesian distance relative to the **camera plane** in metric units.
 
@@ -203,6 +221,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     camera and require calibration data stored in a
     :class:`~slmsuite.hardware.cameraslms.FourierSLM`,
     so this must be passed to ``hardware``.
+    The exception is conversions **only between camera units** (e.g. ``"ij"``,
+    ``"ijraw"``, ``"um"``), which require no Fourier calibration; a bare
+    :class:`~slmsuite.hardware.cameras.camera.Camera` may be passed to ``hardware`` in this
+    case. The ``"mag_..."`` units still require a
+    :class:`~slmsuite.hardware.cameraslms.FourierSLM` (for its ``mag``).
 
     Parameters
     ----------
@@ -213,11 +236,13 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     from_units, to_units : str
         Units which we are converting between. See the listed units above for options.
         Defaults to ``"norm"``.
-    hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
+    hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameras.camera.Camera` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Relevant hardware to pull calibration data from in the case of
         ``"freq"``, ``"knm"``, ``"lpmm"``, or ``"zernike"``.
         If :class:`~slmsuite.hardware.cameraslms.FourierSLM`, the unit ``"ij"`` and other
         length units can be processed too.
+        If a bare :class:`~slmsuite.hardware.cameras.camera.Camera`, conversions only
+        between camera units (e.g. ``"ij"`` and ``"ijraw"``) are supported.
     shape : (int, int) OR None
         Shape of the computational SLM space. Needed for ``"knm"``.
         Defaults to ``slm.shape`` if ``hardware`` is not ``None``.
@@ -251,26 +276,53 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     else:
         vector_z = None
 
-    # Determine whether a CameraSLM was passed (to enable "ij" units and related).
-    if hasattr(hardware, "slm") and hasattr(hardware, "cam"):
-        cameraslm = hardware
-        slm = hardware.slm
-    else:
-        cameraslm = None
-        slm = hardware
+    # Determine which hardware was passed (to enable "ij" units and related). A CameraSLM
+    # exposes both an SLM and a Camera; a bare Camera exposes the raw<->cam affine; a bare
+    # SLM is confirmed via set_phase. Duck typing avoids a circular import of the hardware.
+    if hasattr(hardware, "slm") and hasattr(hardware, "cam"):       # CameraSLM
+        cameraslm, slm, cam = hardware, hardware.slm, hardware.cam
+    elif hasattr(hardware, "_get_ijcam_to_ijraw"):                 # bare Camera
+        cameraslm, slm, cam = None, None, hardware
+    elif hasattr(hardware, "set_phase"):                           # bare SLM
+        cameraslm, slm, cam = None, hardware, None
+    else:                                                          # None / unknown
+        cameraslm, slm, cam = None, None, None
+
+    # When both units are camera units, the kxy round-trip is skipped and only a Camera
+    # (affine + pitch) is needed; otherwise a Fourier-calibrated CameraSLM is required.
+    camera_only = from_units in CAMERA_UNITS and to_units in CAMERA_UNITS
 
     if from_units in CAMERA_UNITS or to_units in CAMERA_UNITS:
-        if cameraslm is None or not "fourier" in cameraslm.calibrations:
+        if cam is None:
             logger.warning(
-                "CameraSLM must be passed as slm for conversion '%s' to '%s'", from_units, to_units
+                "A Camera or CameraSLM must be passed as hardware "
+                "for conversion '%s' to '%s'", from_units, to_units
             )
             return np.full_like(vector_parsed, np.nan)
 
-        cam_pitch_um = cameraslm.cam.pitch_um
+        if not camera_only and (cameraslm is None or not "fourier" in cameraslm.calibrations):
+            logger.warning(
+                "A Fourier-calibrated CameraSLM must be passed as hardware "
+                "for conversion '%s' to '%s'", from_units, to_units
+            )
+            return np.full_like(vector_parsed, np.nan)
+
+        # "mag_..." units require the CameraSLM magnification.
+        if ("mag_" in from_units or "mag_" in to_units) and cameraslm is None:
+            logger.warning(
+                "A CameraSLM must be passed as hardware for 'mag_...' "
+                "conversion '%s' to '%s'", from_units, to_units
+            )
+            return np.full_like(vector_parsed, np.nan)
+
+        cam_pitch_um = cam.pitch_um
 
         if cam_pitch_um is None:
-            # Don't error if ij.
-            if from_units in CAMERA_UNITS[1:] or to_units in CAMERA_UNITS[1:]:
+            # Only length (non-pixel) camera units need the pixel pitch.
+            if (
+                (from_units in CAMERA_UNITS and from_units not in CAMERA_PIXEL_UNITS) or
+                (to_units in CAMERA_UNITS and to_units not in CAMERA_PIXEL_UNITS)
+            ):
                 logger.warning(
                     "Camera must have filled attribute pitch_um "
                     "for conversion '%s' to '%s'", from_units, to_units
@@ -321,9 +373,14 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         else:
             zernike_scale = 2 * np.pi * np.reciprocal(slm.aperture._isotropic_scale())
 
+    if "ijraw" in (from_units, to_units):
+        # Camera affine and isotropic raw/binned pixel-size ratio for "ijraw".
+        ijcam_to_ijraw = cam._get_ijcam_to_ijraw()
+        ijraw_z_scale = np.sqrt(np.abs(ijcam_to_ijraw.det()))
+
     # XY
 
-    # Convert the xy input to normalized "kxy" units.
+    # Convert the xy input to its domain intermediate ("kxy" or "ijcam" pixels).
     if from_units == "norm" or from_units == "kxy" or from_units == "rad":
         rad = vector_xy
     elif from_units == "mrad":
@@ -339,13 +396,21 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     elif from_units == "zernike":
         rad = vector_xy / zernike_scale
     elif from_units == "ij":
-        rad = cameraslm.ijcam_to_kxyslm(vector_xy)
+        ij = vector_xy
+    elif from_units == "ijraw":
+        ij = ijcam_to_ijraw.inv @ vector_xy
     elif from_units in CAMERA_UNITS:
         unit = from_units.split("_")[-1]
-        if "mag_" in from_units: vector_xy *= cameraslm.mag
-        rad = cameraslm.ijcam_to_kxyslm(vector_xy * LENGTH_FACTORS[unit] / cam_pitch_um)
+        if "mag_" in from_units: vector_xy = vector_xy * cameraslm.mag
+        ij = vector_xy * LENGTH_FACTORS[unit] / cam_pitch_um
 
-    # Convert from normalized "kxy" units to the desired xy output units.
+    # Bridge the "ijcam" pixel and "kxy" domains, only when crossing between them.
+    if from_units in CAMERA_UNITS and to_units not in CAMERA_UNITS:
+        rad = cameraslm.ijcam_to_kxyslm(ij)
+    elif to_units in CAMERA_UNITS and from_units not in CAMERA_UNITS:
+        ij = cameraslm.kxyslm_to_ijcam(rad)
+
+    # Convert the domain intermediate to the desired xy output units.
     if to_units == "norm" or to_units == "kxy" or to_units == "rad":
         vector_xy = rad
     elif to_units == "mrad":
@@ -361,38 +426,46 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     elif to_units == "zernike":
         vector_xy = rad * zernike_scale
     elif to_units == "ij":
-        vector_xy = cameraslm.kxyslm_to_ijcam(rad)
+        vector_xy = ij
+    elif to_units == "ijraw":
+        vector_xy = ijcam_to_ijraw @ ij
     elif to_units in CAMERA_UNITS:
         unit = to_units.split("_")[-1]
-        vector_xy = cameraslm.kxyslm_to_ijcam(rad) * cam_pitch_um / LENGTH_FACTORS[unit]
-        if "mag_" in to_units: vector_xy /= cameraslm.mag
+        vector_xy = ij * cam_pitch_um / LENGTH_FACTORS[unit]
+        if "mag_" in to_units: vector_xy = vector_xy / cameraslm.mag
 
     # Z
 
     if vector_z is not None:
-        # Convert the z input to normalized "focal power" units.
-        if from_units in CAMERA_UNITS:
-            if from_units != "ij":
-                unit = from_units.split("_")[-1]
-                vector_z *= LENGTH_FACTORS[unit] / np.mean(cam_pitch_um)
-                if "mag_" in from_units: vector_z /= cameraslm.mag
-
-            focal_power = cameraslm._ijcam_to_kxyslm_depth(vector_z)
-
+        # Convert the z input to its domain intermediate ("focal power" or "ijcam" depth).
+        if from_units == "ij":
+            z_ij = vector_z
+        elif from_units == "ijraw":
+            z_ij = vector_z / ijraw_z_scale
+        elif from_units in CAMERA_UNITS:
+            unit = from_units.split("_")[-1]
+            z_ij = vector_z * LENGTH_FACTORS[unit] / np.mean(cam_pitch_um)
+            if "mag_" in from_units: z_ij = z_ij / cameraslm.mag
         elif from_units == "zernike":
             focal_power = vector_z * ((8 * np.pi) / (zernike_scale * zernike_scale))
         else:
             focal_power = vector_z
 
-        # Convert the normalized "focal power" units to the desired z output units.
-        if to_units in CAMERA_UNITS:
-            vector_z = cameraslm._kxyslm_to_ijcam_depth(focal_power)
+        # Bridge the "ijcam" depth and "focal power" domains, only when crossing between them.
+        if from_units in CAMERA_UNITS and to_units not in CAMERA_UNITS:
+            focal_power = cameraslm._ijcam_to_kxyslm_depth(z_ij)
+        elif to_units in CAMERA_UNITS and from_units not in CAMERA_UNITS:
+            z_ij = cameraslm._kxyslm_to_ijcam_depth(focal_power)
 
-            if to_units != "ij":
-                unit = to_units.split("_")[-1]
-                vector_z *= np.mean(cam_pitch_um) / LENGTH_FACTORS[unit]
-                if "mag_" in to_units: vector_z *= cameraslm.mag
-
+        # Convert the domain intermediate to the desired z output units.
+        if to_units == "ij":
+            vector_z = z_ij
+        elif to_units == "ijraw":
+            vector_z = z_ij * ijraw_z_scale
+        elif to_units in CAMERA_UNITS:
+            unit = to_units.split("_")[-1]
+            vector_z = z_ij * np.mean(cam_pitch_um) / LENGTH_FACTORS[unit]
+            if "mag_" in to_units: vector_z = vector_z * cameraslm.mag
         elif to_units == "zernike":
             vector_z = focal_power * ((zernike_scale * zernike_scale) / (8 * np.pi))
         else:
@@ -588,7 +661,7 @@ def window_extent(window, padding_frac=0, padding_pix=0):
     # For each axis...
     for a in [0, 1]:
         if len(window) == 4:  # Handle the (x, w, y, h) case
-            b = 2*(1-a)
+            b = 2*a
             limit = np.array([window[b], window[b] + window[b + 1]])
         elif len(window) == 2:  # Handle two list case: window = (y_ind, x_ind)
             limit = np.array([np.amin(window[1 - a]), np.amax(window[1 - a]) + 1])

@@ -206,6 +206,44 @@ def test_convert_vector(slm, subtests, caplog):
         np.testing.assert_allclose(result, np.array([[0.1], [-0.2]]))
 
 
+def test_convert_vector_ijraw(camera, fourierslm_calibrated, subtests, caplog):
+    """The 'ijraw' raw-sensor unit and bare-Camera (camera-only) conversions."""
+    vec = np.array([[5.0], [7.0]])
+    camera.set_binning(2)
+    camera.set_woi((10, 100, 20, 80))
+
+    with subtests.test("ij <-> ijraw round-trips with a bare Camera"):
+        raw = convert_vector(vec, "ij", "ijraw", hardware=camera)
+        back = convert_vector(raw, "ijraw", "ij", hardware=camera)
+        np.testing.assert_allclose(vec, back)
+        # ijraw matches the camera's stored ijcam -> ijraw affine.
+        np.testing.assert_allclose(raw, camera._get_ijcam_to_ijraw() @ vec)
+
+    with subtests.test("3D ij <-> ijraw round-trips (z scales by binning)"):
+        vec_3d = np.array([[5.0], [7.0], [0.5]])
+        raw_3d = convert_vector(vec_3d, "ij", "ijraw", hardware=camera)
+        scale = np.sqrt(np.abs(camera._get_ijcam_to_ijraw().det()))
+        np.testing.assert_allclose(raw_3d[2, 0], vec_3d[2, 0] * scale)
+        np.testing.assert_allclose(
+            convert_vector(raw_3d, "ijraw", "ij", hardware=camera), vec_3d
+        )
+
+    with subtests.test("ijraw works through the blaze path of a FourierSLM"):
+        v = np.array([[0.01], [-0.02]])
+        ij = convert_vector(v, "norm", "ij", hardware=fourierslm_calibrated)
+        ijraw = convert_vector(v, "norm", "ijraw", hardware=fourierslm_calibrated)
+        np.testing.assert_allclose(
+            ijraw, fourierslm_calibrated.cam._get_ijcam_to_ijraw() @ ij
+        )
+
+    with subtests.test("bare Camera rejects conversion to a blaze unit"):
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
+            result = convert_vector(vec, "ijraw", "norm", hardware=camera)
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+        assert np.all(np.isnan(result))
+
+
 def test_imprint(slm, subtests, benchmark):
     """Comprehensive tests for imprint."""
     H, W = 40, 60
@@ -965,6 +1003,11 @@ def test_window_extent(subtests):
         # Bounding box must contain all True pixels
         assert x <= 2 and x + w >= 7
         assert y <= 1 and y + h >= 6
+
+    with subtests.test("(x, w, y, h) tuple round-trips"):
+        # window_extent both accepts and returns (x, w, y, h), so a tuple input
+        # must come back unchanged (regression test for x/y swap).
+        assert window_extent((3, 4, 2, 5)) == (3, 4, 2, 5)
 
 
 def test_convert_radius(slm, subtests):
