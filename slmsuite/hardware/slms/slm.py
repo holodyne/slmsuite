@@ -337,9 +337,9 @@ class SLM(_Common, ABC):
                 )
             )
 
-        if np.any(file_shape_error > 1):
+        if np.any(file_shape_error > 0):
             self.source["phase"] = toolbox.unpad(phase_correction, self.shape)
-        elif np.any(file_shape_error < 1):
+        elif np.any(file_shape_error < 0):
             self.source["phase"] = toolbox.pad(phase_correction, self.shape)
         else:
             self.source["phase"] = phase_correction
@@ -1264,8 +1264,10 @@ class SLM(_Common, ABC):
         else:
             raise ValueError(f"method '{method}' not recognized; use 'moments' or 'fit'.")
 
-        # image_positions returns coordinates relative to the image center.
-        center_pix = np.squeeze(center) + np.flip(self.shape) / 2.0
+        # image_positions returns coordinates relative to the image center, which
+        # analysis.image_moment defines as (N - 1) / 2 (matching the SLM grid and
+        # _center_pix_to_norm). Use the same convention to recover absolute pixels.
+        center_pix = np.squeeze(center) + (np.flip(self.shape) - 1) / 2.0
 
         radius_norm = np.mean(self.pitch * np.squeeze(std))
         spec = 1.0 / (2.0 * radius_norm)

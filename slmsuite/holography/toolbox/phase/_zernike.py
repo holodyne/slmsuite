@@ -209,8 +209,8 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
         result = np.vstack((n, l)).T
     elif to_index == "noll":
         result = (n * (n + 1)) // 2 + np.abs(l)
-        result += np.logical_and(l >= 0, np.mod(n, 4) <= 1)
-        result += np.logical_and(l <= 0, np.mod(n, 4) > 1)
+        result += np.logical_and(l >= 0, np.mod(n, 4) > 1)
+        result += np.logical_and(l <= 0, np.mod(n, 4) <= 1)
     elif to_index == "wyant" or to_index == "fringe":
         result = (
             np.square(1 + (n + np.abs(l)) / 2).astype(int)

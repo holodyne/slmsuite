@@ -517,8 +517,8 @@ def _sinc2d_centered_jacobian(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     """
     scx = np.sinc((1 / R) * xy[0])
     scy = np.sinc((1 / R) * xy[1])
-    cx = np.cos((1 / R) * xy[0])
-    cy = np.cos((1 / R) * xy[1])
+    cx = np.cos(np.pi * (1 / R) * xy[0])
+    cy = np.cos(np.pi * (1 / R) * xy[1])
     sinc_term = np.square(scx * scy)
     cos_term = 0.5 * (1 + np.cos(kx * xy[0] + ky * xy[1] - b))
     dcos_term = -0.5 * np.sin(kx * xy[0] + ky * xy[1] - b)

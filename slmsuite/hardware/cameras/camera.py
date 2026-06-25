@@ -198,6 +198,7 @@ class Camera(_Common, ABC):
 
         # Create image transformation. Now shape properties can be used.
         self.transform = analysis.get_orientation_transformation(rot, fliplr, flipud)
+
         # Set woi, binning, and shape variables
         # These are stored in **untransformed** raw camera coordinates.
         self._binning = (1, 1)

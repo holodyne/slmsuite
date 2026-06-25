@@ -173,10 +173,16 @@ class _PixelCalibration(object):
             directions = "xy"
         directions_ = directions
         directions = []
-        if "x" in directions_ or "X" in directions_ or 0 in directions_:
-            directions.append(0)
-        if "y" in directions_ or "Y" in directions_ or 1 in directions_:
-            directions.append(1)
+        if isinstance(directions_, str):
+            if "x" in directions_ or "X" in directions_:
+                directions.append(0)
+            if "y" in directions_ or "Y" in directions_:
+                directions.append(1)
+        else:
+            if 0 in directions_:
+                directions.append(0)
+            if 1 in directions_:
+                directions.append(1)
         D = len(directions)
 
         # Error check window size vs periods.
@@ -293,9 +299,11 @@ class _PixelCalibration(object):
                     for l in range(N):
                         # If we're testing, then only execute the test indices.
                         # (Ignore everything else.)
-                        if test_index is not None and index in test_index:
+                        if test_index is not None and index not in test_index:
                             index += 1
                             continue
+
+                        current_index = index
 
                         # (1a) Make the pattern that we are going to project.
                         if window is None:
@@ -381,7 +389,7 @@ class _PixelCalibration(object):
                         if test_index is not None:
                             results.append(data[i,j,k,l,:].copy())
 
-                            if index == test_index[-1]:
+                            if current_index == test_index[-1]:
                                 if autoexpose:
                                     exposure = np.min(autoexposure_results)
                                     self.cam.set_exposure(exposure)

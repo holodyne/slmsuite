@@ -157,8 +157,11 @@ def _recv(sock, timeout):
     while time.time() - t < timeout:
         data = sock.recv(recv_buffer).decode()
 
+        if data == "":
+            break  # Peer closed the connection; fall through to timeout return.
+
         buffer += data
-        if data[-1] == _delim:
+        if buffer.endswith(_delim):
             msg = json.loads(urllib.unquote_plus(buffer[0:-len(_delim)]))
 
             msg = _recurse_decompress(msg)

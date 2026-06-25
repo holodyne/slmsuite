@@ -132,7 +132,7 @@ class ScreenMirrored(SLM):
         bitdepth=8,
         wav_um=1,
         pitch_um=(8,8),
-        slm_shape=None,
+        slm_resolution=None,
         **kwargs
     ):
         """
@@ -170,11 +170,11 @@ class ScreenMirrored(SLM):
             Wavelength of operation in microns. Defaults to 1 μm.
         pitch_um : (float, float)
             Pixel pitch in microns. Defaults to 8 micron square pixels.
-        slm_shape : tuple of int or None
+        slm_resolution : tuple of int or None
             SLM resolution as ``(width, height)``, for when the SLM's
             active area differs from the display resolution (e.g. PLM).
             Defaults to ``None``, which uses the display's native resolution.
-            
+
             Caution
             ~~~~~~~
             This should normally be left as ``None`` unless the SLM has a
@@ -214,13 +214,13 @@ class ScreenMirrored(SLM):
         # Store as (height, width) for consistency with shape convention.
         self.display_shape = (screen.height, screen.width)
 
-        # Use custom slm_shape if provided, else use display resolution.
-        # slm_shape is (width, height) per SLM.__init__ convention.
-        if slm_shape is None:
-            slm_shape = self.display_shape
+        # Use custom slm_resolution if provided, else use display resolution.
+        # slm_resolution is (width, height) per SLM.__init__ convention.
+        if slm_resolution is None:
+            slm_resolution = (screen.width, screen.height)
 
         super().__init__(
-            slm_shape,
+            resolution=slm_resolution,
             bitdepth=bitdepth,
             wav_um=wav_um,
             pitch_um=pitch_um,
@@ -277,7 +277,7 @@ class ScreenMirrored(SLM):
         # Submit render to the window's dedicated thread.
         if execute:
             self._window_thread_future = self._window_thread.submit(
-                self._render, 
+                self._render,
                 self.window,
                 display
             )

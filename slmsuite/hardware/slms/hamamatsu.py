@@ -179,7 +179,7 @@ class Hamamatsu(SLM):
         array = display.astype(c_uint8)  # TODO: check if this is necessary
 
         write_fmemarray = Lcoslib.Write_FMemArray
-        write_fmemarray.argtyes = [c_uint8, c_uint8*array_size, c_int32, c_uint32, c_uint32, c_uint32]
+        write_fmemarray.argtypes = [c_uint8, c_uint8*array_size, c_int32, c_uint32, c_uint32, c_uint32]
 
         # TODO: do python ints need to be converted explicitly to c_uint32?
         v = write_fmemarray(
@@ -218,7 +218,7 @@ class Hamamatsu(SLM):
         array_size = int(self.shape[0] * self.shape[1])
 
         get_display = Lcoslib.Get_Display
-        get_display.argtyes = [c_uint8, c_int32, c_uint32, c_uint32, c_uint8*array_size]
+        get_display.argtypes = [c_uint8, c_int32, c_uint32, c_uint32, c_uint8*array_size]
         v = get_display(
             self.board_id,
             array_size,
@@ -248,7 +248,7 @@ class Hamamatsu(SLM):
             - ``1`` : USB/Trigger mode
         """
         mode_select = Lcoslib.Mode_Select
-        mode_select.argtyes = [c_uint8, c_uint32]
+        mode_select.argtypes = [c_uint8, c_uint32]
         v = mode_select(board_id, mode)
 
         if v != 1:
@@ -273,7 +273,7 @@ class Hamamatsu(SLM):
             - ``1`` : USB/Trigger mode
         """
         mode_check = Lcoslib.Mode_Check
-        mode_check.argtyes = [c_uint8]
+        mode_check.argtypes = [c_uint8]
         mode = c_uint32(0)
         v = mode_check(board_id, byref(mode))
 
@@ -288,7 +288,7 @@ class Hamamatsu(SLM):
         Allows to restart the controller board.
         """
         reboot = Lcoslib.Reboot
-        reboot.argtyes = [c_uint8]
+        reboot.argtypes = [c_uint8]
         reboot(board_id)
 
     @staticmethod
@@ -307,7 +307,7 @@ class Hamamatsu(SLM):
             ID of the connected devices.
         """
         open_dev = Lcoslib.Open_Dev
-        open_dev.argtyes = [c_uint8*bID_size, c_int32]
+        open_dev.argtypes = [c_uint8*bID_size, c_int32]
         open_dev.restype = c_int
         array =c_uint8*bID_size
         ID_list = array(0)
@@ -321,7 +321,7 @@ class Hamamatsu(SLM):
         Interrupts the communication with the target devices.
         """
         close_dev = Lcoslib.Close_Dev
-        close_dev.argtyes = [c_uint8*bID_size, c_int32]
+        close_dev.argtypes = [c_uint8*bID_size, c_int32]
         close_dev.restype = c_int
 
         v = close_dev(byref(bID_list), bID_size)
@@ -335,7 +335,7 @@ class Hamamatsu(SLM):
         Reads the LCOS-SLM head serial number with the desired ID.
         """
         check_serial = Lcoslib.Check_HeadSerial
-        check_serial.argtyes = [c_uint8, c_char*11, c_int32]
+        check_serial.argtypes = [c_uint8, c_char*11, c_int32]
         hs = c_char*11
         head_serial = hs(0)
         v = check_serial(board_id, byref(head_serial), 11)
@@ -350,7 +350,7 @@ class Hamamatsu(SLM):
         Changes the displayed pattern to the one in the specified slot number, from the frame memory.
         """
         change_slot = Lcoslib.Change_DispSlot
-        change_slot.argtyes = [c_uint8, c_uint32]
+        change_slot.argtypes = [c_uint8, c_uint32]
         v = change_slot(self.board_id, slot_number)
 
         if v != 1:
@@ -368,7 +368,7 @@ class Hamamatsu(SLM):
         check_temp = Lcoslib.Check_Temp
         head_temperature = c_double(0)
         controller_temperature = c_double(0)
-        check_temp.argtyes = [c_uint8,c_double,c_double]
+        check_temp.argtypes = [c_uint8,c_double,c_double]
 
         v = check_temp(self.board_id, byref(head_temperature), byref(controller_temperature))
 
@@ -389,7 +389,7 @@ class Hamamatsu(SLM):
         check_led = Lcoslib.Check_LED
         ls = c_uint32 * 10
         led_status = ls(0)
-        check_led.argtyes = [c_uint8, c_uint32*10]
+        check_led.argtypes = [c_uint8, c_uint32*10]
         v = check_led(self.board_id, byref(led_status))
 
         if v != 1:

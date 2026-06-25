@@ -113,7 +113,7 @@ class _SettleCalibration(object):
             The settle time and communication time measured.
         """
         times = self.calibrations["settle"]["times"]
-        results = self.calibrations["settle"]["data"]
+        results = np.ravel(self.calibrations["settle"]["data"])
 
         # Function to interpolate
         def exponential_jump(x, x0, a, b, c):

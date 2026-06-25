@@ -191,7 +191,6 @@ class NearfieldSLM(CameraSLM):
     def __init__(self, *args, **kwargs):
         """See :meth:`CameraSLM.__init__`."""
         super().__init__(*args, **kwargs)
-        self.mag = mag
 
 
 # Make full class including all calibrations (separated into different files for readability).

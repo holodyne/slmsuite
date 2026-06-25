@@ -135,7 +135,7 @@ class Holoeye(SLM):
             If the error code is not HEDSERR_NoError.
         """
         if error != heds_types.HEDSERR_NoError:
-            raise RuntimeError(HEDS.SDK.ErrorString(self.slm_lib.errorCode()))
+            raise RuntimeError(HEDS.SDK.ErrorString(error))
 
     @staticmethod
     def info(verbose=True):

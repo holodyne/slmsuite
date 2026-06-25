@@ -300,6 +300,10 @@ class MultiplaneHologram(Hologram):
         stds = []
         for h in self.holograms:
             center, std = h._get_target_moments_knm_norm()
+            # A single-spot plane has zero variance (std == 0), which would give a
+            # 0/0 in the analytic variance integral below. Force a floor of one
+            # pixel of width; std is in normalized-knm units, so one pixel == 1/shape.
+            std = np.maximum(std, 1.0 / np.flip(np.asarray(h.shape, dtype=float)))
             centers.append(center)
             stds.append(std)
 
@@ -370,8 +374,10 @@ class MultiplaneHologram(Hologram):
 
         return loss
 
-    def _nearfield2farfield(self):
+    def _nearfield2farfield(self, phase_torch=None):
         """Have all the holograms populate their own farfield variables."""
+        # phase_torch is accepted for base-class compatibility; meta CG routes through
+        # _cg_loss -> child _cg_loss, so it is always None here.
         if self._batched:
             self._nearfield2farfield_batched()
             return
@@ -379,7 +385,7 @@ class MultiplaneHologram(Hologram):
             h._nearfield2farfield()
             h.iter = self.iter
 
-    def _farfield2nearfield(self):
+    def _farfield2nearfield(self, extract=True):
         """Sum all the complex nearfields together for the meta nearfield."""
         if self._batched:
             self._farfield2nearfield_batched()
@@ -403,7 +409,8 @@ class MultiplaneHologram(Hologram):
             h.iter = self.iter
 
         # Get meta self phase.
-        self._nearfield_extract()
+        if extract:
+            self._nearfield_extract()
 
     def _nearfield2farfield_batched(self):
         """Batched FFT2 across child planes. See `_can_batch` for preconditions."""

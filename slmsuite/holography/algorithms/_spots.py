@@ -132,7 +132,7 @@ class _AbstractSpotHologram(FeedbackHologram):
                     self.spot_zernike[self.zernike_basis_cartesian, :] = spot_zernike_xy
             elif basis == "ij":
                 # Modify camera targets. Don't modify any k-vectors.
-                self.spot_ij = self.spot_ij + shift_vectors
+                self.spot_ij[[0, 1]] = self.spot_ij[[0, 1]] + shift_vectors
             else:
                 raise Exception("Unrecognized basis '{}'.".format(basis))
 
@@ -465,7 +465,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             if psf_ij > dist_ij:
                 logger.warning(
                     "The expected camera spot point-spread-function is too large. "
-                    "Clipping to a smaller "
+                    "Clipping to a smaller integration width."
                 )
             self.spot_integration_width_ij = np.clip(2 * psf_ij, 3, dist_ij)
             self.spot_integration_width_ij =  int(2 * np.floor(self.spot_integration_width_ij / 2) + 1)

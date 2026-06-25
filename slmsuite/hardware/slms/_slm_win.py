@@ -255,10 +255,10 @@ SLM_Ctrl_ReadTM.restype = SLM_STATUS
 SLM_Ctrl_ReadTM.argtypes = [DWORD, LPDWORD]
 SLM_Ctrl_ReadTM.__doc__ = """SLM_Ctrl_ReadTM(DWORD SLMNumber, DWORD *onoff)"""
 
-SLM_Ctrl_ReadTM = _libraries[_libname].SLM_Ctrl_ReadTM
-SLM_Ctrl_ReadTM.restype = SLM_STATUS
-SLM_Ctrl_ReadTM.argtypes = [DWORD, DWORD]
-SLM_Ctrl_ReadTM.__doc__ = """SLM_Ctrl_WriteTC(DWORD SLMNumber, DWORD order)"""
+SLM_Ctrl_WriteTC = _libraries[_libname].SLM_Ctrl_WriteTC
+SLM_Ctrl_WriteTC.restype = SLM_STATUS
+SLM_Ctrl_WriteTC.argtypes = [DWORD, DWORD]
+SLM_Ctrl_WriteTC.__doc__ = """SLM_Ctrl_WriteTC(DWORD SLMNumber, DWORD order)"""
 
 SLM_Ctrl_ReadTC = _libraries[_libname].SLM_Ctrl_ReadTC
 SLM_Ctrl_ReadTC.restype = SLM_STATUS
