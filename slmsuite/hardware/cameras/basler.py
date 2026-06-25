@@ -111,7 +111,7 @@ class Basler(Camera):
         # Initialize the superclass attributes.
         super().__init__(
             (self.cam.SensorWidth(), self.cam.SensorHeight()), #pixels
-            bitdepth=self.cam.PixelSize.GetIntValue(), #bits
+            bitdepth=self.get_adc_bitdepth(), #bits
             pitch_um=pitch_um,
             name=serial,
             **kwargs

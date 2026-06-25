@@ -67,6 +67,9 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
             f"Thorlabs camera DLL path does not exist.\n'{dll_path}'"
         )
 
+    # Win11 seems to break if path is not set as well as add_dll_directory.
+    os.environ["PATH"] = dll_path + os.pathsep + os.environ["PATH"]
+
     if hasattr(os, "add_dll_directory"):
         try:
             os.add_dll_directory(dll_path)
@@ -76,8 +79,6 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
                     f"thorlabs_tsi_sdk DLLs not found at default path. "
                     "Resolve to use Thorlabs cameras.\nDefault path: '{DEFAULT_DLL_PATH}'"
                 )
-    else:
-        os.environ["PATH"] = dll_path + os.pathsep + os.environ["PATH"]
 
 _configure_tlcam_dll_path()
 
@@ -168,9 +169,6 @@ class ThorCam(Camera):
         # Initialize profile variable, then set to the proper value.
         self.profile = None
         self.setup("single")
-
-        # Initialize binning to 1.
-        self.set_binning()
 
         super().__init__(
             resolution=(self.cam.image_width_pixels, self.cam.image_height_pixels),

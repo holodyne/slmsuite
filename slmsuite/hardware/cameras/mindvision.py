@@ -238,9 +238,9 @@ class MindVision(Camera):
     def _set_binning_hw(self, binning):
         """See :meth:`.Camera._set_binning_hw`. **(Untested)**"""
         # MindVision binning via uBinSumMode: bit 0 = 2x2, bit 1 = 3x3, bit 2 = 4x4.
-        biny, binx = int(binning[0]), int(binning[1])
+        binx, biny = int(binning[0]), int(binning[1])
         if biny != binx:
-            raise ValueError(f"MindVision requires symmetric binning. Received (biny={biny}, binx={binx}).")
+            raise ValueError(f"MindVision requires symmetric binning. Received (binx={binx}, biny={biny}).")
         resolution = _mvsdk.CameraGetImageResolution(self.handle)
         resolution.iIndex = 0xFF
         if biny <= 1:

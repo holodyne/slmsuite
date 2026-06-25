@@ -196,6 +196,8 @@ class Camera(_Common, ABC):
         """
         width, height = format_shape(resolution)
 
+        # Create image transformation. Now shape properties can be used.
+        self.transform = analysis.get_orientation_transformation(rot, fliplr, flipud)
         # Set woi, binning, and shape variables
         # These are stored in **untransformed** raw camera coordinates.
         self._binning = (1, 1)
@@ -206,9 +208,6 @@ class Camera(_Common, ABC):
         # defined in camera class, fall back to software).
         self._software_woi = type(self)._set_woi_hw is Camera._set_woi_hw
         self._software_binning = type(self)._set_binning_hw is Camera._set_binning_hw
-
-        # Create image transformation. Now shape properties can be used.
-        self.transform = analysis.get_orientation_transformation(rot, fliplr, flipud)
 
         # Parse capture_attempts.
         self.capture_attempts = int(capture_attempts)
@@ -224,9 +223,12 @@ class Camera(_Common, ABC):
             if exposure_bounds_s is not None else
             None
         )
-
         self._exposure_s = 1     # Default to 1s for Simulated cameras.
-        self._exposure_s = self.get_exposure()
+
+        # Update other camera attributes from hardware.
+        self.get_exposure()
+        self.get_binning()
+        self.get_woi()
 
         # Color handling. Set before _get_dtype() since the tolerant capture used to probe
         # the dtype reduces color frames to grayscale via self.color_channel.
@@ -459,8 +461,12 @@ class Camera(_Common, ABC):
 
         if woi is None:
             # Full sensor in untransformed, unbinned coordinates.
-            woi = (0, self.shape[1], 0, self.shape[0])
             woi_unt = (0, self._shape[1], 0, self._shape[0])
+            # Full WOI in transformed, unbinned coordinates (the frame of self.woi)
+            # for the realized-WOI comparison below. self.shape is binned, so using
+            # it here spuriously trips the warning whenever binning != 1.
+            transformed_shape = self.transform.transform_shape(self._shape)
+            woi = (0, transformed_shape[1], 0, transformed_shape[0])
         else:
             # Get the WOI in raw camera coordinates.
             transformed_shape = self.transform.transform_shape(self._shape)
@@ -1812,13 +1818,14 @@ class Camera(_Common, ABC):
         imlist = []
         counts = np.full(z_list.shape, np.nan)
 
+        self.flush()
+
         for i, z in enumerate(z_list):
             try:
                 self.logger.debug("Moving to z = %.2f...", z)
                 set_z(z)
 
                 # Take image and evaluate metric.
-                self.flush()
                 img = self.get_image()
                 imlist.append(np.copy(img))
                 counts[i] = metric(img)

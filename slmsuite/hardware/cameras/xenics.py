@@ -837,7 +837,7 @@ class Cheetah640(Camera):
             self.xeneth.XC_GetPropertyValueL(self.cam, b"ReadoutFlipX", byref(flip_x))
         )
         errs.append(
-            self.xeneth.XC_GetPropertyValueL(self.cam, b"ReadoutFlipX", byref(flip_x))
+            self.xeneth.XC_GetPropertyValueL(self.cam, b"ReadoutFlipY", byref(flip_y))
         )
         self.logger.info(
             "Readout orientation set to (flip_x,flip_y) = (%s,%s)",
@@ -1344,7 +1344,7 @@ class Cheetah640(Camera):
 
         # Update the timeout time (in ms) if different than API default
         # Note: To be renovated to only set timeout if different than current camera value...
-        if block:
+        if block and timeout_s is not None:
             self.set_timeout_api(int(1000 * timeout_s))
 
         # Set flag based on input options
@@ -1392,7 +1392,7 @@ class Cheetah640(Camera):
         err = self.xeneth.XC_StartCapture(self.cam)
         if err != I_OK:
             self.logger.warning("Could not start capturing, errorCode: %d", err)
-        while not self.isCapturing():
+        while not self.is_capturing():
             self.logger.debug("Waiting for capture start...")
             time.sleep(0.1)
 

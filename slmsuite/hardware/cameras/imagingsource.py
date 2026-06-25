@@ -292,11 +292,15 @@ class ImagingSource(Camera):
         buffer_size = 3 * H * W
         # Starts the image acquisition
         ImagingSource.safe_call(ImagingSource.sdk.IC_StartLive, 0, self.cam, 0)
-        # Snap image
-        err = ImagingSource.safe_call(ImagingSource.sdk.IC_SnapImage, 0, self.cam, 1000*timeout_s)
-        # If there is an error, then snap image again
-        while err <= 0:
-            err = ImagingSource.safe_call(ImagingSource.sdk.IC_SnapImage, 0, self.cam, 1000*timeout_s)
+        # Snap image. IC_SnapImage expects an integer millisecond timeout.
+        timeout_ms = int(1000 * timeout_s)
+        err = ImagingSource.safe_call(ImagingSource.sdk.IC_SnapImage, 0, self.cam, timeout_ms)
+        # If there is an error, then snap image again (bounded so a persistently
+        # failing camera cannot loop forever).
+        attempts = 1
+        while err <= 0 and attempts < self.capture_attempts:
+            err = ImagingSource.safe_call(ImagingSource.sdk.IC_SnapImage, 0, self.cam, timeout_ms)
+            attempts += 1
         # Get image
         ptr = ImagingSource.safe_call(ImagingSource.sdk.IC_GetImagePtr, 0, self.cam)
         img_ptr = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_ubyte * buffer_size))

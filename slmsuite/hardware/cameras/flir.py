@@ -547,7 +547,7 @@ class FLIR(Camera):
                 self.cam.OffsetX.SetValue(x)
             if self.cam.OffsetY.GetAccessMode() == PySpin.RW:
                 self.cam.OffsetY.SetValue(y)
-            self._configure_frame_rate(verbose=False)
+            self._configure_frame_rate()
         except PySpin.SpinnakerException as ex:
             raise RuntimeError(f"Failed to set WOI: {ex}")
         finally:
