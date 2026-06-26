@@ -87,7 +87,7 @@ class Santec(SLM):
     # keyed by _BACKEND; populated lazily by _load_lib()
     _lib: dict = {}
 
-    # single canonical error bit definitions (replaces duplicates in _slm_win and santec_usb)
+    # single canonical error bit definitions
     _DRIVEBOARD_ERROR: dict[int, str] = {
         0x01: "Startup error 1 (Drive board)",
         0x02: "Startup error 2 (Drive board)",
