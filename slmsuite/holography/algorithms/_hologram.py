@@ -590,7 +590,7 @@ class Hologram(_HologramStats):
                 if "random_phase" in self.flags:
                     random_phase = self.flags["random_phase"]
                 else:
-                    random_phase = 1
+                    random_phase = False
 
             self.phase.fill(0)
 
