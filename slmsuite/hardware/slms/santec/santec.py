@@ -199,8 +199,9 @@ class Santec(SLM):
 
     def __init__(
         self,
-        device_id: int | str = 1,
+        ftdi_serial: str | None = None,
         backend: str = "usb",
+        slm_number: int = 1,
         display_number: int = 2,
         resolution: tuple[int, int] = (1920, 1200),
         bitdepth: int = 10,
@@ -214,15 +215,20 @@ class Santec(SLM):
 
         Arguments
         ---------
-        device_id : int or str
-            For ``backend="dll"``, the integer USB control port number (default 1).
-            For ``backend="usb"``, the FTDI chip serial number string.
-            Use :meth:`info` to discover connected devices.
+        ftdi_serial : str or None
+            FTDI chip serial number for ``backend="usb"``. Use :meth:`info` to
+            list connected devices; this is the string it returns (e.g.
+            ``"000000000001"``). Not to be confused with the SLM firmware serial
+            returned by :meth:`get_firmware_serial`. Ignored for ``backend="dll"``.
         backend : str
             ``"dll"`` for the Windows DLL backend (DVI mode) or ``"usb"`` for the
             cross-platform USB backend (memory mode). Default ``"usb"``.
+        slm_number : int
+            USB control port number for ``backend="dll"``; ignored for USB.
+            Default 1.
         display_number : int
-            Windows display number for the DLL backend; ignored for USB.
+            Windows display number for ``backend="dll"``; ignored for USB.
+            Default 2.
         resolution : (int, int)
             ``(width, height)`` in pixels for the USB backend; ignored for DLL
             (auto-detected from ``SLM_Disp_Info2``). Default ``(1920, 1200)``
@@ -257,23 +263,30 @@ class Santec(SLM):
                 "Unknown backend {!r}. Choose 'dll' or 'usb'.".format(backend)
             )
 
+        if self.backend == _BACKEND.USB and ftdi_serial is None:
+            raise ValueError(
+                "ftdi_serial is required for backend='usb'. "
+                "Use Santec.info() to list connected devices."
+            )
+
         Santec._load_lib(self.backend)
 
         wav_design_um: float = kwargs.pop("wav_design_um", None)
         if wav_design_um is None:
             wav_design_um = wav_um
 
+        _id_label = ftdi_serial if self.backend == _BACKEND.USB else slm_number
         if verbose:
             print(
-                "Santec ({}) device_id={} initializing... ".format(backend, device_id),
+                "Santec ({}) {} initializing... ".format(backend, _id_label),
                 end="",
             )
 
         if self.backend == _BACKEND.DLL:
             _sf = Santec._lib[_BACKEND.DLL]
-            self._driver = _SantecDLLDriver(int(device_id), display_number, _sf)
+            self._driver = _SantecDLLDriver(slm_number, display_number, _sf)
         else:
-            self._driver = _SantecUSBDriver(str(device_id), resolution)
+            self._driver = _SantecUSBDriver(ftdi_serial, resolution)
 
         self._driver.open()
 
@@ -416,7 +429,7 @@ class Santec(SLM):
             except Exception as close_error:
                 print(
                     "Could not close Santec {} after init failure: {}".format(
-                        device_id, close_error
+                        _id_label, close_error
                     )
                 )
             raise init_error
