@@ -80,9 +80,9 @@ class Santec(SLM):
     """
 
     backend: _BACKEND
-    driveboard_id: str
-    optionboard_id: str
-    product_code_id: str  # DLL backend only
+    driveboard_id: str = ""
+    optionboard_id: str = ""
+    product_code_id: str = ""  # DLL backend only
 
     # keyed by _BACKEND; populated lazily by _load_lib()
     _lib: dict = {}
