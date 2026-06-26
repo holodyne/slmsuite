@@ -4,279 +4,404 @@ Tested with Santec LCoS SLM-200, SLM-210, and SLM-300.
 
 Note
 ~~~~
-:class:`.Santec` requires dynamically linked libraries from Santec to be present in the
-runtime directory:
+The ``"dll"`` backend requires dynamically linked libraries from Santec in the
+runtime directory: ``SLMFunc.dll`` and ``FTD3XX.dll`` (Windows only).
 
-- SLMFunc.dll
-- FTD3XX.dll
+The ``"usb"`` backend requires ``PyD3XX`` (cross-platform)::
 
-These files should be copied in before use.
+    pip install PyD3XX
 
 Note
 ~~~~
-Santec provides base wavefront correction accounting for the curvature of the SLM surface.
-Consider loading these files via :meth:`.SLM.load_vendor_phase_correction()`
+Santec provides base wavefront correction files accounting for SLM surface
+curvature. Load these via :meth:`.load_vendor_phase_correction`.
 """
-import os
-import ctypes
-import numpy as np
-import cv2
+import importlib
+import time
 import warnings
+from enum import IntEnum
+
+import numpy as np
 
 from ..slm import SLM
+from ._dll_driver import _SantecDLLDriver
+from ._usb_driver import _SantecUSBDriver
 
-try:  # Load Santec's header file.
-    from . import _slm_win as slm_funcs
-except BaseException:
-    slm_funcs = None
+try:
+    import cv2 as _cv2
+except ImportError:
+    _cv2 = None
+
+_PACKAGE = __package__
+
+
+class _BACKEND(IntEnum):
+    """Backend selection for Santec SLMs."""
+
+    NULL = 0
+    DLL = 1
+    USB = 2
 
 
 class Santec(SLM):
     """
-    Interfaces with Santec SLMs.
+    Interfaces with Santec SLMs via DLL or USB backend.
+
+    The two backends are complementary, not interchangeable:
+
+    =========  =====  ======
+    Backend    DVI    Memory
+    =========  =====  ======
+    ``"dll"``  yes    no
+    ``"usb"``  no     yes
+    =========  =====  ======
+
+    The ``"dll"`` backend requires ``SLMFunc.dll`` and ``FTD3XX.dll`` in the
+    runtime directory (Windows only). The ``"usb"`` backend requires
+    ``PyD3XX`` (cross-platform, install with ``pip install PyD3XX``).
+
+    The ``"usb"`` backend operates in USB/Memory mode (``VI=0``). Phase patterns
+    are double-buffered across slots 1 and 2 so the active slot is never written
+    while being displayed.
+
+    The public multi-slot API (``upload_slot``, ``display_slot``, slot cycling,
+    trigger-driven slot advance) is reserved for a future superclass release.
+    Private wiring already conforms to the announced
+    ``_set_phase_hw(display, index=None)`` hook.
 
     Attributes
     ----------
-    slm_number : int
-        USB port number assigned by Santec SDK.
-    display_number : int
-        Display number assigned by Santec SDK.
-    optionboard_id : str
-        ID of the option board
+    backend : _BACKEND
+        Active backend enum value.
     driveboard_id : str
-        ID of the drive board
-    product_code_id : str
-        Product code of the device
+        Drive board serial number string.
+    optionboard_id : str
+        Option board serial number string.
     """
 
+    # keyed by _BACKEND; populated lazily by _load_lib()
+    _lib: dict = {}
+
+    # single canonical error bit definitions (replaces duplicates in _slm_win and santec_usb)
+    _DRIVEBOARD_ERROR: dict[int, str] = {
+        0x01: "Startup error 1 (Drive board)",
+        0x02: "Startup error 2 (Drive board)",
+        0x04: "Video signal error (No signal)",
+        0x08: "Drive board temperature error (70 deg C or higher)",
+    }
+    _OPTIONBOARD_ERROR: dict[int, str] = {
+        0x01: "Startup error 1 (Option board)",
+        0x02: "Startup error 2 (Option board)",
+        0x04: "Voltage level error (DC 5.0V)",
+        0x08: "Option board temperature error (70 deg C or higher)",
+    }
+
+    @staticmethod
+    def _load_lib(backend: str | _BACKEND, dll_path: str | None = None) -> _BACKEND:
+        """
+        Lazily load and cache the library for a backend.
+
+        Idempotent: safe to call multiple times; returns immediately if already
+        loaded.
+
+        Args:
+            backend: ``"dll"`` or ``"usb"`` (case-insensitive), or a _BACKEND value.
+            dll_path: Reserved for future use; currently unused.
+
+        Returns:
+            The resolved _BACKEND enum value.
+
+        Raises:
+            ImportError: If the required library (SLMFunc.dll or PyD3XX) is unavailable.
+            RuntimeError: If backend is unrecognized.
+        """
+        if isinstance(backend, str):
+            try:
+                be = _BACKEND[backend.upper()]
+            except KeyError:
+                raise RuntimeError(
+                    "Unknown backend {!r}. Choose 'dll' or 'usb'.".format(backend)
+                )
+        else:
+            be = _BACKEND(backend)
+        if be in Santec._lib:
+            return be
+        if be == _BACKEND.DLL:
+            try:
+                slm_win = importlib.import_module("._slm_win", package=_PACKAGE)
+                Santec._lib[_BACKEND.DLL] = slm_win
+            except Exception as exc:
+                raise ImportError(
+                    "Santec DLL backend unavailable. Copy SLMFunc.dll and FTD3XX.dll "
+                    "to the runtime directory.\nOriginal error: {}".format(exc)
+                ) from exc
+            return _BACKEND.DLL
+        if be == _BACKEND.USB:
+            try:
+                import PyD3XX
+                Santec._lib[_BACKEND.USB] = PyD3XX
+            except (ImportError, OSError) as exc:
+                raise ImportError(
+                    "Santec USB backend unavailable. Install PyD3XX: "
+                    "pip install PyD3XX\nOriginal error: {}".format(exc)
+                ) from exc
+            return _BACKEND.USB
+        raise RuntimeError("Unknown backend {!r}. Choose 'dll' or 'usb'.".format(be))
+
+    @staticmethod
+    def info(backend: str = "usb", verbose: bool = True) -> list:
+        """
+        Discover connected Santec SLMs.
+
+        Args:
+            backend: ``"dll"`` lists Windows display numbers and names;
+                ``"usb"`` lists FTDI serial number strings.
+            verbose: Whether to print discovered devices.
+
+        Returns:
+            DLL: list of ``(display_number, display_name)`` tuples.
+            USB: list of FTDI serial number strings.
+
+        Raises:
+            ImportError: If the backend library is unavailable.
+        """
+        Santec._load_lib(backend)
+        be = _BACKEND[backend.upper()]
+        if be == _BACKEND.DLL:
+            import ctypes
+            _sf = Santec._lib[_BACKEND.DLL]
+            display_list = []
+            if verbose:
+                print("Displays detected by Santec")
+                print("display_number, display_name:")
+            for display_number in range(1, 9):
+                width = ctypes.c_ushort(0)
+                height = ctypes.c_ushort(0)
+                display_name = ctypes.create_string_buffer(128)
+                status = _sf.SLM_Disp_Info2(display_number, width, height, display_name)
+                if status not in (0, -1):
+                    pass
+                name = display_name.value.decode("mbcs")
+                if len(name) > 0:
+                    if verbose:
+                        print("{},  {}".format(display_number, name))
+                    display_list.append((display_number, name))
+            return display_list
+        if be == _BACKEND.USB:
+            from ._santec_ftdi import SantecFTDI
+            serials = SantecFTDI.list_devices()
+            if verbose:
+                print("Santec USB devices detected:")
+                for s in serials:
+                    print("  {}".format(s))
+            return serials
+        raise RuntimeError("Unknown backend {!r}.".format(backend))
+
     def __init__(
-            self,
-            slm_number=1,
-            display_number=2,
-            bitdepth=10,
-            wav_um=1,
-            pitch_um=(8,8),
-            verbose=True,
-            **kwargs
-        ):
+        self,
+        device_id: int | str = 1,
+        backend: str = "usb",
+        display_number: int = 2,
+        resolution: tuple[int, int] = (1920, 1200),
+        bitdepth: int = 10,
+        wav_um: float = 1,
+        pitch_um: tuple[float, float] = (8, 8),
+        verbose: bool = True,
+        **kwargs,
+    ) -> None:
         r"""
-        Initializes an instance of a Santec SLM.
+        Open a Santec SLM and initialize the phase calibration table.
 
         Arguments
         ---------
-        slm_number
-            See :attr:`slm_number`.
-        display_number
-            See :attr:`display_number`.
+        device_id : int or str
+            For ``backend="dll"``, the integer USB control port number (default 1).
+            For ``backend="usb"``, the FTDI chip serial number string.
+            Use :meth:`info` to discover connected devices.
+        backend : str
+            ``"dll"`` for the Windows DLL backend (DVI mode) or ``"usb"`` for the
+            cross-platform USB backend (memory mode). Default ``"usb"``.
+        display_number : int
+            Windows display number for the DLL backend; ignored for USB.
+        resolution : (int, int)
+            ``(width, height)`` in pixels for the USB backend; ignored for DLL
+            (auto-detected from ``SLM_Disp_Info2``). Default ``(1920, 1200)``
+            for SLM-200, SLM-210, and SLM-300.
         bitdepth : int
-            Depth of SLM pixel well in bits. Defaults to 10.
+            SLM pixel well depth in bits. Default 10.
         wav_um : float
-            Wavelength of operation in microns. Defaults to 1 μm.
+            Wavelength of operation in microns. Default 1 um.
         pitch_um : (float, float)
-            Pixel pitch in microns. Defaults to 8 micron square pixels.
+            Pixel pitch in microns. Default ``(8, 8)``.
         verbose : bool
-            Whether to print extra information.
+            Whether to print initialization progress.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
 
         Note
         ----
-        Santec SLMs can reconfigure their phase table: the correspondence between
-        grayscale values and applied voltages. This is configured based upon the wavelength
-        supplied to :attr:`.SLM.wav_design_um`. This allows :attr:`.SLM.phase_scaling`
-        to be one if desired, and make use of optimized routines (see :meth`.set_phase()`).
-        However, sometimes setting the phase table runs into issues, where the maximum value
-        doesn't correspond to exactly :math:`2\pi` at the target wavelength. This is noted
-        in the initialization, and the user should update :attr:`.SLM.wav_design_um` or otherwise
-        to avoid undesired behavior.
-        :attr:`wav_design_um` defaults to :attr:`wav_um` if it is not given.
+        The phase table is reconfigured based on ``wav_design_um`` (defaults to
+        ``wav_um``). This process takes roughly 40 seconds when a wavelength change
+        is needed. If the resulting maximum phase deviates from 2pi by more than 2%,
+        ``wav_design_um`` is corrected automatically and a warning is printed.
 
         Caution
         ~~~~~~~
-        :class:`.Santec` defaults to 8 micron square pixel size :attr:`.SLM.pitch_um`
-        and 10-bit :attr:`.SLM.bitdepth`.
-        This is valid for SLM-200, SLM-210, and SLM-300,
-        but may not be valid for future Santec models.
+        Defaults to 8 um square pixels and 10-bit depth. Valid for SLM-200,
+        SLM-210, and SLM-300; may differ for future models.
         """
-        if slm_funcs is None:
+        try:
+            self.backend = _BACKEND[backend.upper()]
+        except KeyError:
             raise RuntimeError(
-                "Santec DLLs not installed. Install these to use Santec SLMs."
-                "  Dynamically linked libraries from Santec (usually provided via USB) "
-                "must be present in the runtime directory:\n"
-                "  - SLMFunc.dll\n  - FTD3XX.dll\n"
-                "  Check that these files are present and are error-free."
+                "Unknown backend {!r}. Choose 'dll' or 'usb'.".format(backend)
             )
 
-        # Default max phase. Maybe this should be opened to the user in the future.
-        # Otherwise, wav_um and wav_design_um have the same functionality.
-        max_phase = 2 * np.pi
+        Santec._load_lib(self.backend)
 
-        self.slm_number = int(slm_number)
-        self.display_number = int(display_number)
-
-        # By default, target wavelength is the design wavelength
-        wav_design_um = kwargs.pop("wav_design_um", None)
+        wav_design_um: float = kwargs.pop("wav_design_um", None)
         if wav_design_um is None:
             wav_design_um = wav_um
 
         if verbose:
-            print("Santec slm_number={} initializing... ".format(self.slm_number), end="")
-        Santec._parse_status(slm_funcs.SLM_Ctrl_Open(self.slm_number))
+            print(
+                "Santec ({}) device_id={} initializing... ".format(backend, device_id),
+                end="",
+            )
+
+        if self.backend == _BACKEND.DLL:
+            _sf = Santec._lib[_BACKEND.DLL]
+            self._driver = _SantecDLLDriver(int(device_id), display_number, _sf)
+        else:
+            self._driver = _SantecUSBDriver(str(device_id), resolution)
+
+        self._driver.open()
 
         try:
-            # Wait for the SLM to no longer be busy.
-            while True:
-                status = slm_funcs.SLM_Ctrl_ReadSU(self.slm_number)
-
-                if status == 0:
-                    break  # SLM_OK (proceed)
-                elif status == 2:
-                    continue  # SLM_BS (busy)
-                else:
-                    Santec._parse_status(status)
-
-            # Check to see if the device or option boards have an error.
             self.get_error(raise_error=True)
 
-            # Right now, only DVI mode is supported.
-            Santec._parse_status(slm_funcs.SLM_Ctrl_WriteVI(self.slm_number, 1))  # 0:Memory 1:DVI
+            if self.backend == _BACKEND.USB:
+                self._driver.prime()
+
             if verbose:
                 print("success")
 
-            # Update wavelength if needed
-            wav_current_nm = ctypes.c_uint32(0)
-            phase_current = ctypes.c_ulong(0)
-            Santec._parse_status(
-                slm_funcs.SLM_Ctrl_ReadWL(self.slm_number, wav_current_nm, phase_current)
-            )
+            # --- wavelength calibration (shared between backends) ---
+            current_nm, current_phase_pi = self._driver.get_wavelength()
+            wav_desired_nm = int(wav_design_um * 1e3)
 
-            wav_desired_nm = int(1e3 * wav_design_um)
-            phase_desired = int(np.floor(max_phase * 100 / np.pi))
-
-            # Update the phase table if necessary. This sometimes fails for unknown
-            # reasons, so we do multiple attempts. Reasons for failure might include overheating
-            # while the energy-intensive process of updating the table is underway.
             attempt = 1
-            while wav_current_nm.value != wav_desired_nm and attempt < 5:
+            while current_nm != wav_desired_nm and attempt <= 5:
                 if verbose:
-                    if attempt > 1:
-                        print("(attempt {})".format(attempt))
+                    if attempt == 1:
+                        print(
+                            "Current phase table: wav={} nm, maxphase={:.2f}pi".format(
+                                current_nm, current_phase_pi
+                            )
+                        )
+                        print(
+                            "Desired phase table: wav={} nm, maxphase=2.00pi".format(
+                                wav_desired_nm
+                            )
+                        )
                     else:
-                        print(
-                            "Current phase table: wav = {0} nm, maxphase = {1:.2f}pi".format(
-                                wav_current_nm.value, phase_current.value / 100.0
-                            )
-                        )
-                        print(
-                            "Desired phase table: wav = {0} nm, maxphase = {1:.2f}pi".format(
-                                wav_desired_nm, phase_desired / 100.0
-                            )
-                        )
+                        print("(attempt {})".format(attempt))
                     print("     ...Updating phase table (this may take 40 seconds)...")
 
-                # Set wavelength (nm) and maximum phase (100 * [float pi])
-                Santec._parse_status(
-                    slm_funcs.SLM_Ctrl_WriteWL(
-                        self.slm_number, ctypes.c_uint32(wav_desired_nm), phase_desired
-                    )
-                )
+                self._driver.set_wavelength(wav_desired_nm, 2.0)
+                self._driver.save_wavelength()
 
-                # Save wavelength
-                Santec._parse_status(slm_funcs.SLM_Ctrl_WriteAW(self.slm_number))
-
-                # Verify wavelength
-                Santec._parse_status(
-                    slm_funcs.SLM_Ctrl_ReadWL(self.slm_number, wav_current_nm, phase_current)
-                )
-                if verbose:
-                    print(
-                        "Updated phase table: wav = {0} nm, maxphase = {1:.2f}pi".format(
-                            wav_current_nm.value, phase_current.value / 100.0
+                if self.backend == _BACKEND.USB:
+                    # FPGA may not respond to ReadWL for up to 300 s after calibration
+                    _wl_read_ok = False
+                    for _retry in range(30):
+                        try:
+                            current_nm, current_phase_pi = self._driver.get_wavelength()
+                            _wl_read_ok = True
+                            break
+                        except RuntimeError:
+                            time.sleep(10)
+                    if not _wl_read_ok:
+                        current_nm = wav_desired_nm
+                        current_phase_pi = 2.0
+                        warnings.warn(
+                            "Wavelength set to {} nm but ReadWL unavailable (FPGA settling "
+                            "after calibration). Restart Santec to obtain exact phase "
+                            "deviation and correct wav_design_um.".format(wav_desired_nm)
                         )
-                    )
+                else:
+                    current_nm, current_phase_pi = self._driver.get_wavelength()
+                    if verbose:
+                        print(
+                            "Updated phase table: wav={} nm, maxphase={:.2f}pi".format(
+                                current_nm, current_phase_pi
+                            )
+                        )
+
+                # stop retrying if firmware rejected the first calibration attempt
+                if attempt == 1 and current_nm != wav_desired_nm:
+                    break
 
                 attempt += 1
 
-            # Raise an error if we failed.
-            if wav_current_nm.value != wav_desired_nm or abs(phase_current.value - 200) > 100:
-                raise RuntimeError("Failed to update Santec phase table.")
+            if current_nm != wav_desired_nm or abs(current_phase_pi - 2.0) > 1.0:
+                raise RuntimeError(
+                    "Failed to update Santec phase table to {} nm "
+                    "(current: {} nm, {:.2f}pi). "
+                    "Check that wav_design_um matches the SLM's supported wavelength "
+                    "range.".format(wav_desired_nm, current_nm, current_phase_pi)
+                )
 
-            # Note phase table issues if they are present
-            if verbose and abs(phase_current.value - 200) > 4:
-                wav_design_fixed_um = wav_design_um * (phase_current.value / 200.0)
+            if verbose and abs(current_phase_pi - 2.0) > 0.04:
+                wav_design_fixed_um = wav_design_um * (current_phase_pi / 2.0)
                 print(
-                    "  Warning: the Santec phase table maximum deviates significantly (>2%) from 2pi ({0:.2f}pi).".format(
-                        phase_current.value / 100.0
+                    "  Warning: phase table maximum deviates >2% from 2pi ({:.2f}pi).".format(
+                        current_phase_pi
                     )
                 )
                 print(
-                    "    This is likely due to internal checks avoiding 'abnormal' phase table results."
-                )
-                print(
-                    "    To compensate for this, wav_design_um is noted to equal {} instead of the desired {}.".format(
+                    "    wav_design_um adjusted to {:.4f} um (was {:.4f} um).".format(
                         wav_design_fixed_um, wav_design_um
                     )
                 )
                 if wav_um / wav_design_fixed_um != 1:
                     print(
-                        "    This results in phase_scaling={0:.4f} != 1, which has negative speed implications (see .set_phase()).".format(
-                            wav_um / wav_design_fixed_um
-                        )
+                        "    phase_scaling={:.4f} != 1; speed implications apply "
+                        "(see set_phase()).".format(wav_um / wav_design_fixed_um)
                     )
-                print(
-                    "    If this behavior is undesired, play with wav_design_um to find a better regime."
-                )
                 wav_design_um = wav_design_fixed_um
 
-            # Check for the SLM parameters and save them
-            width = ctypes.c_ushort(0)
-            height = ctypes.c_ushort(0)
-            display_name = ctypes.create_string_buffer(128)
+            # --- backend-specific post-calibration setup ---
+            if self.backend == _BACKEND.DLL:
+                if verbose:
+                    print(
+                        "Looking for display_number={}... ".format(display_number), end=""
+                    )
+                width, height = self._driver.get_display_dims()
+                if verbose:
+                    print("success")
+                self.product_code_id = self._driver.product_code_id
+                self._driver.get_board_serials()
+                if verbose:
+                    print(
+                        "Opening display {}... ".format(
+                            self._driver.get_firmware_serial()
+                        ),
+                        end="",
+                    )
+                self._driver.open_display()
+                if verbose:
+                    print("success")
+            else:
+                width, height = resolution
 
-            if verbose:
-                print("Looking for display_number={}... ".format(self.display_number), end="")
-            Santec._parse_status(
-                slm_funcs.SLM_Disp_Info2(self.display_number, width, height, display_name)
-            )
-
-            # For instance, "LCOS-SLM,SOC,8001,2018021001"
-            # Format is "UserFriendlyName,ManufacterName,ProductCodeID,SerialNumberID"
-            name = display_name.value.decode("mbcs")
-            if verbose:
-                print("success")
-
-            names = name.split(",")
-
-            # If the target display_number is not found, then print some debug:
-            if names[0] != "LCOS-SLM":
-                # Don't parse status around this one...
-                raise ValueError(
-                    "SLM not found at display_number={}. "
-                    "Use .info() to find the correct display!".format(self.display_number)
-                )
-
-            # Populate some info
-            driveboard_id = ctypes.create_string_buffer(16)
-            optionboard_id = ctypes.create_string_buffer(16)
-            Santec._parse_status(
-                slm_funcs.SLM_Ctrl_ReadSDO(self.slm_number, driveboard_id, optionboard_id)
-            )
-
-            self.driveboard_id = driveboard_id.value.decode("mbcs")
-            self.optionboard_id = optionboard_id.value.decode("mbcs")
-            self.product_code_id = names[2]
-
-            # Open SLM
-            if verbose:
-                print("Opening {}... ".format(name), end="")
-            Santec._parse_status(slm_funcs.SLM_Disp_Open(self.display_number))
-            if verbose:
-                print("success")
+            self.driveboard_id = self._driver.get_board_serial()
+            self.optionboard_id = self._driver.get_option_board_serial()
 
             super().__init__(
-                (int(width.value), int(height.value)),
+                (width, height),
                 bitdepth=bitdepth,
-                name=kwargs.pop("name", names[-1]), # SerialNumberID
+                name=kwargs.pop("name", self._driver.get_firmware_serial()),
                 wav_um=wav_um,
                 wav_design_um=wav_design_um,
                 pitch_um=pitch_um,
@@ -284,353 +409,222 @@ class Santec(SLM):
             )
 
             self.set_phase(None)
+
         except Exception as init_error:
             try:
-                Santec._parse_status(slm_funcs.SLM_Ctrl_Close(self.slm_number))
+                self._driver.close()
             except Exception as close_error:
                 print(
-                    "Could not close attempt to open Santec slm_number={}: {}".format(
-                        slm_number, str(close_error)
+                    "Could not close Santec {} after init failure: {}".format(
+                        device_id, close_error
                     )
                 )
-
             raise init_error
 
-    @staticmethod
-    def info(verbose=True):
-        """
-        Discovers the names of all the displays.
-        Checks all 8 possible supported by Santec's SDK.
-
-        Parameters
-        ----------
-        verbose : bool
-            Whether to print the discovered information.
-
-        Returns
-        --------
-        list of (int, str) tuples
-            The number and name of each potential display.
-        """
-        if slm_funcs is None:
-            raise RuntimeError(
-                "Santec DLLs not installed. Install these to use Santec SLMs."
-                "  Dynamically linked libraries from Santec (usually provided via USB) "
-                "must be present in the runtime directory:\n"
-                "  - SLMFunc.dll\n  - FTD3XX.dll\n"
-                "  Check that these files are present and are error-free."
-            )
-
-        # Check for the SLM parameters and save them
-        display_list = []
-
-        if verbose:
-            print("Displays detected by Santec")
-            print("display_number, display_name:")
-
-        for display_number in range(1, 9):
-            width = ctypes.c_ushort(0)
-            height = ctypes.c_ushort(0)
-            display_name = ctypes.create_string_buffer(128)
-
-            status = slm_funcs.SLM_Disp_Info2(display_number, width, height, display_name)
-
-            if not (status == 0 or status == -1):
-                Santec._parse_status(status)
-
-            name = display_name.value.decode("mbcs")
-            if len(name) > 0:
-                if verbose:
-                    print("{},  {}".format(display_number, name))
-
-                display_list.append((display_number, name))
-
-        return display_list
-
-    def load_vendor_phase_correction(self, file_path, smooth=False, overwrite=True):
-        """
-        Load phase correction provided by Santec from file,
-        setting ``"phase"`` in :attr:`~slmsuite.hardware.slms.slm.SLM.source`.
-
-        Parameters
-        ----------
-        file_path : str
-            File path for the vendor-provided phase correction.
-        smooth : bool
-            Whether to apply a Gaussian blur to smooth the data.
-        overwrite : bool
-            Whether to overwrite the previous phase in
-            :attr:`~slmsuite.hardware.slms.slm.SLM.source`.
-
-        Note
-        ~~~~
-        This correction is only fully valid at the wavelength at which it was collected.
-
-        Returns
-        ----------
-        numpy.ndarray
-            :attr:`~slmsuite.hardware.slms.slm.SLM.source` ``["phase"]``,
-            the Santec-provided phase correction.
-        """
-        try:
-            # Load from .csv, skipping the first row and column
-            # (corresponding to X and Y coordinates).
-            map = np.loadtxt(file_path, skiprows=1, dtype=int, delimiter=",")[:, 1:]
-            phase = (-2 * np.pi / self.bitresolution) * map.astype(float)
-
-            # Smooth the map
-            if smooth:
-                real = np.cos(phase)
-                imag = np.sin(phase)
-                size_blur = 15  # The user should have access to this eventually
-
-                real = cv2.GaussianBlur(real, (size_blur, size_blur), 0)
-                imag = cv2.GaussianBlur(imag, (size_blur, size_blur), 0)
-
-                # Recombine the components
-                phase = np.arctan2(imag, real) + np.pi
-
-            if overwrite:
-                self.source["phase"] = phase
-
-            return phase
-        except BaseException as e:
-            warnings.warn("Error while loading phase correction.\n{}".format(e))
-            return self.source["phase"]
-
-    def close(self):
+    def close(self) -> None:
         """See :meth:`.SLM.close`."""
-        slm_funcs.SLM_Disp_Close(self.display_number)
-        slm_funcs.SLM_Ctrl_Close(self.slm_number)
+        self._driver.close()
 
-    def _set_phase_hw(self, display):
+    def _set_phase_hw(
+        self, display: np.ndarray | int, index: int | None = None
+    ) -> None:
         """
-        Hardware-specific implementation for Santec SLM devices.
+        Hardware-specific phase write.
 
-        See :meth:`SLM._set_phase_hw` for the base class documentation.
+        See :meth:`.SLM._set_phase_hw` for the base class documentation.
 
         Parameters
         ----------
-        display
-            Integer data to display on the SLM. See :meth:`.SLM._set_phase_hw`.
+        display : numpy.ndarray or int
+            - ``ndarray, index=None``: write to back buffer and swap (default path).
+            - ``ndarray, index=i``: write to zero-indexed slot ``i`` without
+              switching the display; USB backend only.
+            - ``int``: switch the displayed slot to zero-indexed slot ``display``;
+              USB backend only.
+        index : int or None
+            Slot override for ndarray writes. ``None`` uses the double-buffer path.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``display`` is an int or ``index`` is not ``None`` on the DLL
+            backend (DVI mode has no slot concept).
         """
-        matrix = display.astype(slm_funcs.USHORT)
-        n_h, n_w = self.shape
+        self._driver.write_frame(display, index)
 
-        # Write to SLM
-        c = matrix.ctypes.data_as(ctypes.POINTER((slm_funcs.USHORT * n_h) * n_w)).contents
-        Santec._parse_status(
-            slm_funcs.SLM_Disp_Data(self.display_number, n_w, n_h, 0, c), raise_error=False
-        )
-
-    ### Additional Santec-specific functionality
-
-    def get_temperature(self):
+    def get_temperature(self) -> tuple[float, float]:
         """
-        Read the drive board and option board temperatures.
+        Read drive and option board temperatures.
 
         Returns
         -------
         (float, float)
-            Temperature in Celsius of the drive and option board
+            ``(drive_temp_C, option_temp_C)``.
         """
-        # Note that the Santec documentation suggests using signed
-        # integers, but the header requests unsigned integers.
-        drive_temp = ctypes.c_uint32(0)
-        option_temp = ctypes.c_uint32(0)
+        return self._driver.get_temperature()
 
-        Santec._parse_status(slm_funcs.SLM_Ctrl_ReadT(self.slm_number, drive_temp, option_temp))
-
-        return (drive_temp.value / 10.0, option_temp.value / 10.0)
-
-    def get_error(self, raise_error=True, return_codes=False):
+    def get_error(self, raise_error: bool = True, return_codes: bool = False):
         """
-        Read the drive board and option board errors.
+        Read drive and option board error flags.
 
         Parameters
         ----------
         raise_error : bool
-            Whether to raise an error (if True) or a warning (if False) if error(s) are detected.
+            Raise ``RuntimeError`` if any errors are present.
         return_codes : bool
-            Whether to return an error string or integer error codes
-            (in ``(drive_error, option_error)`` form).
+            Return raw ``(drive_bits, option_bits)`` instead of a list of strings.
 
         Returns
         -------
-        list of str OR (int, int)
-            List of errors.
+        list of str or (int, int)
+            Error message strings, or raw integer error codes when
+            ``return_codes=True``.
         """
-        drive_error = ctypes.c_uint32(0)
-        option_error = ctypes.c_uint32(0)
-
-        Santec._parse_status(
-            slm_funcs.SLM_Ctrl_ReadEDO(self.slm_number, drive_error, option_error),
-            raise_error=raise_error,
-        )
-
-        # Check the resulting bitstrings for errors (0 ==> all good).
+        drive_bits, option_bits = self._driver.get_errors()
         errors = []
-
-        for drive_error_bit in slm_funcs.SLM_DRIVEBOARD_ERROR.keys():
-            if drive_error.value & drive_error_bit:
-                errors.append(slm_funcs.SLM_DRIVEBOARD_ERROR[drive_error_bit])
-
-        for option_error_bit in slm_funcs.SLM_OPTIONBOARD_ERROR.keys():
-            if option_error.value & option_error_bit:
-                errors.append(slm_funcs.SLM_OPTIONBOARD_ERROR[option_error_bit])
-
-        if raise_error and len(errors) > 0:
-            error = "Santec error: " + ", ".join(["'" + err + "'" for err in errors])
+        for bit, msg in Santec._DRIVEBOARD_ERROR.items():
+            if drive_bits & bit:
+                errors.append(msg)
+        for bit, msg in Santec._OPTIONBOARD_ERROR.items():
+            if option_bits & bit:
+                errors.append(msg)
+        if errors:
+            error_str = "Santec error: " + ", ".join("'" + e + "'" for e in errors)
             if raise_error:
-                raise RuntimeError(error)
-            else:
-                warnings.warn(error)
-
+                raise RuntimeError(error_str)
+            warnings.warn(error_str)
         if return_codes:
-            return (drive_error.value, option_error.value)
-        else:
-            return errors
+            return (drive_bits, option_bits)
+        return errors
 
-    def get_status(self, raise_error=True):
+    def get_status(self, raise_error: bool = True) -> tuple[int, str, str]:
         """
-        Gets ``SLM_STATUS`` return from a Santec SLM and parses the result.
+        Read and parse current device status.
 
         Parameters
         ----------
         raise_error : bool
-            Whether to raise an error (if True) or a warning (if False) when status is
-            not ``SLM_OK``.
+            Raise ``RuntimeError`` when status is not OK.
 
         Returns
         -------
         (int, str, str)
-            Status in ``(num, name, note)`` form.
+            Status in ``(code, name, note)`` form.
         """
-        return Santec._parse_status(slm_funcs.SLM_Ctrl_ReadSU(self.slm_number), raise_error)
-
-    @staticmethod
-    def _parse_status(status, raise_error=True):
-        """
-        Parses the meaning of a ``SLM_STATUS`` return from a Santec SLM.
-
-        Parameters
-        ----------
-        status : int
-            ``SLM_STATUS`` return.
-        raise_error : bool
-            Whether to raise an error (if True) or a warning (if False) when status is not ``SLM_OK``.
-
-        Returns
-        -------
-        (int, str, str)
-            Status in ``(name, note)`` form.
-        """
-        # Parse status
-        status = int(status)
-
-        if not status in slm_funcs.SLM_STATUS_DICT.keys():
-            raise ValueError("SLM status '{}' not recognized.".format(status))
-
-        # Recover the meaning of status
-        (name, note) = slm_funcs.SLM_STATUS_DICT[status]
-
-        status_str = "Santec error {}; '{}'".format(name, note)
-
-        if status != 0:
+        code, name, note = self._driver.get_status()
+        if code != 0:
+            msg = "Santec status {}; '{}'".format(name, note)
             if raise_error:
-                raise RuntimeError(status_str)
-            else:
-                warnings.warn(status_str)
+                raise RuntimeError(msg)
+            warnings.warn(msg)
+        return (code, name, note)
 
-        return (status, name, note)
-
-    def load_csv(self, filename):
+    def load_vendor_phase_correction(
+        self,
+        file_path: str,
+        smooth: bool = False,
+        overwrite: bool = True,
+    ) -> np.ndarray:
         """
-        Write the phase image contained in a .csv file to the SLM.
-        This image should have the size of the SLM.
+        Load phase correction provided by Santec from a CSV file.
+
+        Sets ``"phase"`` in :attr:`~slmsuite.hardware.slms.slm.SLM.source`.
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the Santec-provided CSV correction file.
+        smooth : bool
+            Apply Gaussian blur to smooth the correction map. Requires ``cv2``;
+            skipped with a warning if unavailable.
+        overwrite : bool
+            Overwrite the existing ``source["phase"]``.
+
+        Note
+        ~~~~
+        This correction is only fully valid at the wavelength at which it was
+        collected.
+
+        Returns
+        -------
+        numpy.ndarray
+            Phase correction array in radians.
+        """
+        try:
+            phase_map = np.loadtxt(file_path, skiprows=1, dtype=int, delimiter=",")[:, 1:]
+            phase = (-2 * np.pi / self.bitresolution) * phase_map.astype(float)
+            if smooth:
+                if _cv2 is None:
+                    warnings.warn(
+                        "cv2 not installed; skipping smoothing. "
+                        "Install opencv-python to enable smooth=True."
+                    )
+                else:
+                    size_blur = 15
+                    real = _cv2.GaussianBlur(np.cos(phase), (size_blur, size_blur), 0)
+                    imag = _cv2.GaussianBlur(np.sin(phase), (size_blur, size_blur), 0)
+                    phase = np.arctan2(imag, real) + np.pi
+            if overwrite:
+                self.source["phase"] = phase
+            return phase
+        except Exception as e:
+            warnings.warn("Error while loading phase correction.\n{}".format(e))
+            return self.source["phase"]
+
+    def set_input_trigger(self, on: bool = False) -> None:
+        """
+        Enable or disable the external trigger input.
+
+        Parameters
+        ----------
+        on : bool
+            ``True`` to enable.
+
+        Raises
+        ------
+        NotImplementedError
+            If not using the USB backend.
+        """
+        if self.backend != _BACKEND.USB:
+            raise NotImplementedError(
+                "Input trigger control is not implemented for the DLL backend."
+            )
+        self._driver._ftdi.set_trigger_input(bool(on))
+
+    def set_output_trigger(self, on: bool = False) -> None:
+        """
+        Enable or disable the trigger output signal.
+
+        Parameters
+        ----------
+        on : bool
+            ``True`` to enable.
+
+        Raises
+        ------
+        NotImplementedError
+            If not using the USB backend.
+        """
+        if self.backend != _BACKEND.USB:
+            raise NotImplementedError(
+                "Output trigger control is not implemented for the DLL backend."
+            )
+        self._driver._ftdi.set_trigger_output(bool(on))
+
+    def load_csv(self, filename: str) -> None:
+        """
+        Write the phase image contained in a CSV file to the SLM.
 
         Parameters
         ----------
         filename : str
-            Path to the .csv file.
+            Path to the CSV file.
+
+        Raises
+        ------
+        NotImplementedError
+            If not using the DLL backend.
         """
-        Santec._parse_status(slm_funcs.SLM_Disp_ReadCSV(self.display_number, 0, filename))
-
-    ### Low priority trigger and memory features.
-    ### Feel free to finish, or poke regarding implementation.
-
-    # def software_trigger(self):
-    #     slm_funcs.SLM_Ctrl_WriteTS(self.slm_number)
-
-    # def set_intput_trigger(self, enabled=True):
-    #     slm_funcs.SLM_Ctrl_WriteTI(self.slm_number, int(enabled))
-
-    # def set_intput_trigger_direction(self, ascending=True):
-    #     slm_funcs.SLM_Ctrl_WriteTC(self.slm_number, int(ascending))
-
-    # def set_output_trigger(self, enabled=True):
-    #     slm_funcs.SLM_Ctrl_WriteTM(self.slm_number, int(enabled))
-
-    # def set_memory_framerate(self, framerate_hz):
-    #     # Not sure if it's actually Hz
-    #     assert framerate_hz >= 0
-    #     assert framerate_hz <= 120
-    #     slm_funcs.SLM_Ctrl_WriteMW(self.slm_number, int(framerate_hz))
-
-    # def get_memory_framerate(self):
-    #     framerate_hz = slm_funcs.DWORD(0)
-
-    #     slm_funcs.SLM_Ctrl_ReadMW(self.slm_number, framerate_hz)
-
-    #     return int(framerate_hz.value)
-
-    # def start_memory_continuous(self, ascending=True):
-    #     slm_funcs.SLM_Ctrl_WriteDR(self.slm_number, int(ascending))
-
-    # def stop_memory_continuous(self):
-    #     slm_funcs.SLM_Ctrl_WriteDB(self.slm_number)
-
-    # def set_memory_table(self, mapping):
-    #     assert len(mapping) == 128
-
-    #     for entry, map in zip(range(1, 129), mapping):
-    #         Santec._parse_status(
-    #             slm_funcs.SLM_Ctrl_WriteMT(self.slm_number, entry, int(map))
-    #         )
-
-    # def get_memory_table(self):
-    #     table = []
-
-    #     ptr = slm_funcs.DWORD(0)
-
-    #     for entry in range(1, 129):
-    #         Santec._parse_status(
-    #             slm_funcs.SLM_Ctrl_ReadMS(self.slm_number, entry, ptr)
-    #         )
-    #         table.append(int(ptr.value))
-
-    #     return table
-
-    # def set_memory_table_position(self, position):
-    #     slm_funcs.SLM_Ctrl_WriteMP(self.slm_number, int(position))
-
-    # def get_memory_table_position(self, position):
-    #     # Function does not exist?
-    #     slm_funcs.SLM_Ctrl_ReadMP(self.slm_number, int(position))
-
-    # def set_memory_table_range(self, start, end):
-    #     # end is one above the true end, according to docs.
-    #     slm_funcs.SLM_Ctrl_WriteMR(self.slm_number, int(start), int(end))
-
-    # def get_memory_table_range(self):
-    #     start = slm_funcs.DWORD(0)
-    #     end = slm_funcs.DWORD(0)
-
-    #     slm_funcs.SLM_Ctrl_ReadMR(self.slm_number, start, end)
-
-    #     return (start.value, end.value)
-
-    # def set_phase_memory(self, phase):
-    #     # Needs to be combined with set_phase(), probably.
-    #     slm_funcs.SLM_Ctrl_WriteMI()
-    #     raise NotImplementedError()
+        if self.backend != _BACKEND.DLL:
+            raise NotImplementedError("load_csv() requires the DLL backend.")
+        self._driver.load_csv(filename)

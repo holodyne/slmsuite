@@ -1,6 +1,5 @@
-"""Santec LCOS SLM drivers (DLL-based and cross-platform USB)."""
+"""Santec LCOS SLM driver (unified DLL and USB backends)."""
 
 from .santec import Santec
-from .santec_usb import SantecUSB
 
-__all__ = ["Santec", "SantecUSB"]
+__all__ = ["Santec"]

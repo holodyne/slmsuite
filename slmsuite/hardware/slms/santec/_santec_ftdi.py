@@ -40,13 +40,8 @@ import numpy.typing as npt
 
 try:
     import PyD3XX as _PyD3XX
-except (ImportError, OSError) as _e:
+except (ImportError, OSError):
     _PyD3XX = None
-    warnings.warn(
-        "PyD3XX not available; SantecFTDI cannot be used.\n"
-        "Install it with:  pip install PyD3XX\n"
-        "Original error: {}".format(_e)
-    )
 
 # --- packet framing constants ---
 
