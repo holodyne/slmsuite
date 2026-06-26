@@ -40,7 +40,7 @@ import numpy.typing as npt
 
 try:
     import PyD3XX as _PyD3XX
-except (ImportError, OSError):
+except ImportError, OSError:
     _PyD3XX = None
 
 # --- packet framing constants ---

@@ -1,4 +1,5 @@
 """USB backend adapter for Santec SLMs (wraps SantecFTDI)."""
+
 import numpy as np
 
 from ._santec_ftdi import SantecFTDI

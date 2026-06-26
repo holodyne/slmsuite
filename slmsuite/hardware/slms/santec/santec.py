@@ -16,6 +16,7 @@ Note
 Santec provides base wavefront correction files accounting for SLM surface
 curvature. Load these via :meth:`.load_vendor_phase_correction`.
 """
+
 import importlib
 import time
 import warnings
@@ -124,9 +125,7 @@ class Santec(SLM):
             try:
                 be = _BACKEND[backend.upper()]
             except KeyError:
-                raise RuntimeError(
-                    "Unknown backend {!r}. Choose 'dll' or 'usb'.".format(backend)
-                )
+                raise RuntimeError("Unknown backend {!r}. Choose 'dll' or 'usb'.".format(backend))
         else:
             be = _BACKEND(backend)
         if be in Santec._lib:
@@ -144,6 +143,7 @@ class Santec(SLM):
         if be == _BACKEND.USB:
             try:
                 import PyD3XX
+
                 Santec._lib[_BACKEND.USB] = PyD3XX
             except (ImportError, OSError) as exc:
                 raise ImportError(
@@ -174,6 +174,7 @@ class Santec(SLM):
         be = _BACKEND[backend.upper()]
         if be == _BACKEND.DLL:
             import ctypes
+
             _sf = Santec._lib[_BACKEND.DLL]
             display_list = []
             if verbose:
@@ -194,6 +195,7 @@ class Santec(SLM):
             return display_list
         if be == _BACKEND.USB:
             from ._santec_ftdi import SantecFTDI
+
             serials = SantecFTDI.list_devices()
             if verbose:
                 print("Santec USB devices detected:")
@@ -264,14 +266,11 @@ class Santec(SLM):
         try:
             self.backend = _BACKEND[backend.upper()]
         except KeyError:
-            raise RuntimeError(
-                "Unknown backend {!r}. Choose 'dll' or 'usb'.".format(backend)
-            )
+            raise RuntimeError("Unknown backend {!r}. Choose 'dll' or 'usb'.".format(backend))
 
         if self.backend == _BACKEND.USB and ftdi_serial is None:
             raise ValueError(
-                "ftdi_serial is required for backend='usb'. "
-                "Use Santec.info() to list connected devices."
+                "ftdi_serial is required for backend='usb'. " "Use Santec.info() to list connected devices."
             )
 
         Santec._load_lib(self.backend)
@@ -312,16 +311,8 @@ class Santec(SLM):
             while current_nm != wav_desired_nm and attempt <= 5:
                 if verbose:
                     if attempt == 1:
-                        print(
-                            "Current phase table: wav={} nm, maxphase={:.2f}pi".format(
-                                current_nm, current_phase_pi
-                            )
-                        )
-                        print(
-                            "Desired phase table: wav={} nm, maxphase=2.00pi".format(
-                                wav_desired_nm
-                            )
-                        )
+                        print("Current phase table: wav={} nm, maxphase={:.2f}pi".format(current_nm, current_phase_pi))
+                        print("Desired phase table: wav={} nm, maxphase=2.00pi".format(wav_desired_nm))
                     else:
                         print("(attempt {})".format(attempt))
                     print("     ...Updating phase table (this may take 40 seconds)...")
@@ -350,11 +341,7 @@ class Santec(SLM):
                 else:
                     current_nm, current_phase_pi = self._driver.get_wavelength()
                     if verbose:
-                        print(
-                            "Updated phase table: wav={} nm, maxphase={:.2f}pi".format(
-                                current_nm, current_phase_pi
-                            )
-                        )
+                        print("Updated phase table: wav={} nm, maxphase={:.2f}pi".format(current_nm, current_phase_pi))
 
                 # stop retrying if firmware rejected the first calibration attempt
                 if attempt == 1 and current_nm != wav_desired_nm:
@@ -372,11 +359,7 @@ class Santec(SLM):
 
             if verbose and abs(current_phase_pi - 2.0) > 0.04:
                 wav_design_fixed_um = wav_design_um * (current_phase_pi / 2.0)
-                print(
-                    "  Warning: phase table maximum deviates >2% from 2pi ({:.2f}pi).".format(
-                        current_phase_pi
-                    )
-                )
+                print("  Warning: phase table maximum deviates >2% from 2pi ({:.2f}pi).".format(current_phase_pi))
                 print(
                     "    wav_design_um adjusted to {:.4f} um (was {:.4f} um).".format(
                         wav_design_fixed_um, wav_design_um
@@ -392,9 +375,7 @@ class Santec(SLM):
             # --- backend-specific post-calibration setup ---
             if self.backend == _BACKEND.DLL:
                 if verbose:
-                    print(
-                        "Looking for display_number={}... ".format(display_number), end=""
-                    )
+                    print("Looking for display_number={}... ".format(display_number), end="")
                 width, height = self._driver.get_display_dims()
                 if verbose:
                     print("success")
@@ -402,9 +383,7 @@ class Santec(SLM):
                 self._driver.get_board_serials()
                 if verbose:
                     print(
-                        "Opening display {}... ".format(
-                            self._driver.get_firmware_serial()
-                        ),
+                        "Opening display {}... ".format(self._driver.get_firmware_serial()),
                         end="",
                     )
                 self._driver.open_display()
@@ -432,20 +411,14 @@ class Santec(SLM):
             try:
                 self._driver.close()
             except Exception as close_error:
-                print(
-                    "Could not close Santec {} after init failure: {}".format(
-                        _id_label, close_error
-                    )
-                )
+                print("Could not close Santec {} after init failure: {}".format(_id_label, close_error))
             raise init_error
 
     def close(self) -> None:
         """See :meth:`.SLM.close`."""
         self._driver.close()
 
-    def _set_phase_hw(
-        self, display: np.ndarray | int, index: int | None = None
-    ) -> None:
+    def _set_phase_hw(self, display: np.ndarray | int, index: int | None = None) -> None:
         """
         Hardware-specific phase write.
 
@@ -574,8 +547,7 @@ class Santec(SLM):
             if smooth:
                 if _cv2 is None:
                     warnings.warn(
-                        "cv2 not installed; skipping smoothing. "
-                        "Install opencv-python to enable smooth=True."
+                        "cv2 not installed; skipping smoothing. " "Install opencv-python to enable smooth=True."
                     )
                 else:
                     size_blur = 15
@@ -604,9 +576,7 @@ class Santec(SLM):
             If not using the USB backend.
         """
         if self.backend != _BACKEND.USB:
-            raise NotImplementedError(
-                "Input trigger control is not implemented for the DLL backend."
-            )
+            raise NotImplementedError("Input trigger control is not implemented for the DLL backend.")
         self._driver._ftdi.set_trigger_input(bool(on))
 
     def set_output_trigger(self, on: bool = False) -> None:
@@ -624,9 +594,7 @@ class Santec(SLM):
             If not using the USB backend.
         """
         if self.backend != _BACKEND.USB:
-            raise NotImplementedError(
-                "Output trigger control is not implemented for the DLL backend."
-            )
+            raise NotImplementedError("Output trigger control is not implemented for the DLL backend.")
         self._driver._ftdi.set_trigger_output(bool(on))
 
     def load_csv(self, filename: str) -> None:

@@ -1,4 +1,5 @@
 """DLL backend adapter for Santec SLMs (wraps _slm_win ctypes module)."""
+
 import ctypes
 import warnings
 
@@ -118,9 +119,7 @@ class _SantecDLLDriver:
         if names[0] != "LCOS-SLM":
             raise ValueError(
                 "SLM not found at display_number={}. "
-                "Use Santec.info(backend='dll') to list available displays.".format(
-                    self._display_number
-                )
+                "Use Santec.info(backend='dll') to list available displays.".format(self._display_number)
             )
         self.product_code_id = names[2]
         self._firmware_serial = names[-1]
@@ -135,9 +134,7 @@ class _SantecDLLDriver:
         """
         driveboard_buf = ctypes.create_string_buffer(16)
         optionboard_buf = ctypes.create_string_buffer(16)
-        self._check(
-            self._sf.SLM_Ctrl_ReadSDO(self._slm_number, driveboard_buf, optionboard_buf)
-        )
+        self._check(self._sf.SLM_Ctrl_ReadSDO(self._slm_number, driveboard_buf, optionboard_buf))
         self._driveboard_id = driveboard_buf.value.decode("mbcs")
         self._optionboard_id = optionboard_buf.value.decode("mbcs")
 
@@ -155,19 +152,13 @@ class _SantecDLLDriver:
             NotImplementedError: If frame is an int or index is not None.
         """
         if isinstance(frame, (int, np.integer)):
-            raise NotImplementedError(
-                "Slot switching is not supported for the DLL backend (DVI mode only)."
-            )
+            raise NotImplementedError("Slot switching is not supported for the DLL backend (DVI mode only).")
         if index is not None:
-            raise NotImplementedError(
-                "Slot-addressed writes are not supported for the DLL backend (DVI mode only)."
-            )
+            raise NotImplementedError("Slot-addressed writes are not supported for the DLL backend (DVI mode only).")
         matrix = frame.astype(self._sf.USHORT)
         n_h, n_w = frame.shape
         c = matrix.ctypes.data_as(ctypes.POINTER((self._sf.USHORT * n_h) * n_w)).contents
-        self._check(
-            self._sf.SLM_Disp_Data(self._display_number, n_w, n_h, 0, c), raise_error=False
-        )
+        self._check(self._sf.SLM_Disp_Data(self._display_number, n_w, n_h, 0, c), raise_error=False)
 
     def get_wavelength(self) -> tuple[int, float]:
         """
@@ -200,11 +191,7 @@ class _SantecDLLDriver:
             RuntimeError: On DLL error.
         """
         phase_val = int(round(max_phase_pi * 100))
-        self._check(
-            self._sf.SLM_Ctrl_WriteWL(
-                self._slm_number, ctypes.c_uint32(wav_nm), phase_val
-            )
-        )
+        self._check(self._sf.SLM_Ctrl_WriteWL(self._slm_number, ctypes.c_uint32(wav_nm), phase_val))
 
     def save_wavelength(self) -> None:
         """
@@ -242,9 +229,7 @@ class _SantecDLLDriver:
         """
         drive_error = ctypes.c_uint32(0)
         option_error = ctypes.c_uint32(0)
-        self._check(
-            self._sf.SLM_Ctrl_ReadEDO(self._slm_number, drive_error, option_error)
-        )
+        self._check(self._sf.SLM_Ctrl_ReadEDO(self._slm_number, drive_error, option_error))
         return (int(drive_error.value), int(option_error.value))
 
     def get_status(self) -> tuple[int, str, str]:
