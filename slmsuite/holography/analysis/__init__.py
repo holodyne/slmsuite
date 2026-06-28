@@ -377,7 +377,7 @@ def image_remove_field(images, deviations=1, out=None):
     """
     # Parse images. Convert to float.
     images = np.array(images, copy=(False if np.__version__[0] == '1' else None))
-    if not isinstance(images.dtype, np.floating):
+    if not np.issubdtype(images.dtype, np.floating):
         images = np.array(images, copy=(False if np.__version__[0] == '1' else None), dtype=float)  # Hack to prevent integer underflow.
 
     # Parse out.
@@ -386,12 +386,15 @@ def image_remove_field(images, deviations=1, out=None):
     elif not (out is images):
         np.copyto(out, images)
 
-    # Make sure that we're testing 3D images.
+    # Make sure that we're testing 3D images. out_ is a view of out, so in-place
+    # operations on out_ also update out (which is what we return).
     single_image = len(images.shape) == 2
     if single_image:
         images_ = np.reshape(images, (1, images.shape[0], images.shape[1]))
+        out_ = np.reshape(out, (1, out.shape[0], out.shape[1]))
     else:
         images_ = images
+        out_ = out
     img_count = images_.shape[0]
 
     # Generate the threshold.
@@ -402,15 +405,14 @@ def image_remove_field(images, deviations=1, out=None):
             np.nanmean(images_, axis=(1, 2))
             + deviations * np.nanstd(images_, axis=(1, 2))
         )
-    if not single_image:
-        threshold = np.reshape(threshold, (img_count, 1, 1))
+    threshold = np.reshape(threshold, (img_count, 1, 1))
 
-    out_max = np.amax(out, axis=(1,2), keepdims=True)
+    out_max = np.amax(out_, axis=(1, 2), keepdims=True)
 
     # Remove the field. This needs the float from before. Unsigned integer could underflow.
-    out -= threshold.astype(out.dtype)
-    out[out < 0] = 0
-    out[out > out_max - threshold] = 0
+    out_ -= threshold.astype(out_.dtype)
+    out_[out_ < 0] = 0
+    out_[out_ > out_max - threshold] = 0
 
     return out
 
@@ -533,7 +535,9 @@ def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=Tru
 
     # Handle normalization.
     if normalize:
-        normalization = np_sum(images, axis=(1, 2), keepdims=False).reshape((img_count, 1, 1))
+        normalization = np_sum(
+            images, axis=(1, 2), keepdims=False
+        ).reshape((img_count, 1, 1)).astype(float)
         reciprocal = np.reciprocal(
             normalization, where=normalization != 0, out=np.zeros((img_count,1,1))
         )
@@ -556,28 +560,26 @@ def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=Tru
         # Parse grid.
         if grid is None or np.isscalar(grid) or (np.isscalar(grid[0]) and np.isscalar(grid[1])):
             # Default to the pixel grid.
+            if grid is None:
+                scale_x = scale_y = 1
+            elif np.isscalar(grid):
+                scale_x = scale_y = grid
+            else:
+                scale_x, scale_y = grid[0], grid[1]
+
             if moment[0] != 0:
-                x_grid = np.reshape(np.arange(w_x) - _center(w_x), (1, 1, w_x)) - c_x
+                x_grid = (np.reshape(np.arange(w_x) - _center(w_x), (1, 1, w_x)) - c_x) * scale_x
                 if moment[0] != 1:
                     x_grid = np.power(x_grid, moment[0], out=x_grid)
             else:
                 x_grid = 0
 
             if moment[1] != 0:
-                y_grid = np.reshape(np.arange(w_y) - _center(w_y), (1, w_y, 1)) - c_y
+                y_grid = (np.reshape(np.arange(w_y) - _center(w_y), (1, w_y, 1)) - c_y) * scale_y
                 if moment[1] != 1:
                     y_grid = np.power(y_grid, moment[1], out=y_grid)
             else:
                 y_grid = 0
-
-            # Handle the dx, dy option.
-            if grid is not None:
-                if np.isscalar(grid):
-                    x_grid *= grid
-                    y_grid *= grid
-                else:
-                    x_grid *= grid[0]
-                    y_grid *= grid[1]
         else:
             x_grid, y_grid = grid
 
@@ -859,12 +861,18 @@ def image_ellipticity(variances):
     half_trace = (m20 + m02) / 2
     determinant = m20 * m02 - m11 * m11
 
-    eig_half_difference = np.sqrt(np.square(half_trace) - determinant)
+    eig_half_difference = np.sqrt(np.maximum(np.square(half_trace) - determinant, 0))
 
     eig_plus = half_trace + eig_half_difference
     eig_minus = half_trace - eig_half_difference
 
-    return 1 - (eig_minus / eig_plus)
+    # eig_plus == 0 for an all-zero / uniform image; return nan there instead of dividing.
+    ratio = np.divide(
+        eig_minus, eig_plus,
+        out=np.full_like(eig_plus, np.nan, dtype=float),
+        where=eig_plus != 0,
+    )
+    return 1 - ratio
 
 
 def image_areas(variances):
@@ -921,7 +929,7 @@ def image_ellipticity_angle(variances):
     half_trace = (m20 + m02) / 2
     determinant = m20 * m02 - m11 * m11
 
-    eig_plus = half_trace + np.sqrt(np.square(half_trace) - determinant)
+    eig_plus = half_trace + np.sqrt(np.maximum(np.square(half_trace) - determinant, 0))
 
     # We know that M * v = eig_plus * v. This yields a system of equations:
     #   m20 * x + m11 * y = eig_plus * x
@@ -1049,7 +1057,7 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
         if fit_succeeded:   # Calculate r2.
             ss_res = np.sum(np.square(img - function(grid_ravel_, *popt)))
             ss_tot = np.sum(np.square(img - np.mean(img)))
-            r2 = 1 - (ss_res / ss_tot)
+            r2 = np.nan if ss_tot == 0 else 1 - (ss_res / ss_tot)
         else:               # r2 is nan and the fit parameters are the guess or nan.
             popt = p0 if p0 is not None else np.full(param_count, np.nan)
             r2 = np.nan
@@ -1555,12 +1563,12 @@ def fit_affine(x, y, guess_affine=None, plot=False):
         # This could probably be vectorized more. Also not sure if all corner cases work.
         M_guess = np.array([
             [
-                np.nanmean(np.divide(y_[0,:], x_[0,:], where=x_[0,:] > threshold, out=nan_list.copy())),
-                np.nanmean(np.divide(y_[0,:], x_[1,:], where=x_[1,:] > threshold, out=nan_list.copy()))
+                np.nanmean(np.divide(y_[0,:], x_[0,:], where=np.abs(x_[0,:]) > threshold, out=nan_list.copy())),
+                np.nanmean(np.divide(y_[0,:], x_[1,:], where=np.abs(x_[1,:]) > threshold, out=nan_list.copy()))
             ],
             [
-                np.nanmean(np.divide(y_[1,:], x_[0,:], where=x_[0,:] > threshold, out=nan_list.copy())),
-                np.nanmean(np.divide(y_[1,:], x_[1,:], where=x_[1,:] > threshold, out=nan_list.copy()))
+                np.nanmean(np.divide(y_[1,:], x_[0,:], where=np.abs(x_[0,:]) > threshold, out=nan_list.copy())),
+                np.nanmean(np.divide(y_[1,:], x_[1,:], where=np.abs(x_[1,:]) > threshold, out=nan_list.copy()))
             ]
         ])
 
@@ -2298,7 +2306,7 @@ def blob_array_detect(
         regions = take(
             img, guess_positions, psf, centered=True, integrate=False, clip=True
         )
-        region_fraction = np.sum(regions) / np.sum(img)
+        region_fraction = np.nansum(regions) / np.nansum(img)
 
         # Get the first order moment rint each of the guess windows.
         shift = image_positions(regions) - (guess_positions - np.rint(guess_positions))

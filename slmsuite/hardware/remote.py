@@ -82,6 +82,10 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+try:
+    import cupy as cp   # type: ignore
+except ImportError:
+    cp = None
 
 from slmsuite import __version__
 from slmsuite._logging import make_logger
@@ -123,6 +127,8 @@ def _recurse_decompress(msg):
 # https://codetinkering.com/numpy-encoder-json/
 class _NpEncoder(json.JSONEncoder):
     def default(self, obj):
+        if cp is not None and isinstance(obj, cp.ndarray):
+            obj = cp.asnumpy(obj)   # GPU arrays (e.g. a GPU SLM's display) -> numpy for serialization.
         if isinstance(obj, np.bool_):
             return bool(obj)
         if isinstance(obj, np.floating): #, np.complexfloating
@@ -152,13 +158,15 @@ def _recv(sock, timeout):
     recv_buffer = 4096 * 64
     buffer = ""
     t = time.time()
+    closed = False
 
     # Pull data into the buffer until we hit timeout or deliminator.
     while time.time() - t < timeout:
         data = sock.recv(recv_buffer).decode()
 
         if data == "":
-            break  # Peer closed the connection; fall through to timeout return.
+            closed = True
+            break  # Peer closed the connection.
 
         buffer += data
         if buffer.endswith(_delim):
@@ -168,8 +176,12 @@ def _recv(sock, timeout):
 
             return msg
 
-    # Failed timeout returns empty.
-    return False, f"Timeout: {len(buffer)} bytes received."
+    # Receive failed. Distinguish a clean disconnect from a timeout so the caller
+    # (and client) sees the real cause. On success a dict is returned above, so the
+    # caller distinguishes failure with isinstance(message, dict).
+    if closed:
+        return False, f"Connection closed by peer after {len(buffer)} bytes received."
+    return False, f"Timeout: only {len(buffer)} bytes received before {timeout}s elapsed."
 
 # Server which hosts slmsuite hardware.
 class Server(object):
@@ -182,6 +194,7 @@ class Server(object):
             hardware: List[object],
             port: int = DEFAULT_PORT,
             timeout: float = SERVER_WAIT_TIMEOUT,
+            recv_timeout: float = DEFAULT_TIMEOUT,
             allowlist: List[str] = None,
         ):
         """
@@ -196,7 +209,13 @@ class Server(object):
             Port number to serve on. Defaults to ``5025``
             (commonly used for instrument control).
         :param timeout:
-            Timeout in seconds for the server to wait for a client.
+            Timeout in seconds for the server to wait (poll) for a client connection.
+            Kept small so the server stays responsive to shutdown.
+        :param recv_timeout:
+            Timeout in seconds to receive a full request once a client has connected.
+            Must be large enough to receive megapixel phase masks / camera images over
+            the network, so this is decoupled from (and larger than) ``timeout``.
+            Defaults to ``DEFAULT_TIMEOUT``.
         :param allowlist:
             List of IP addresses to allow to connect. Defaults to ``None`` (allow all).
             Keep in mind that IP addresses can be spoofed, so this ``allowlist``
@@ -227,6 +246,7 @@ class Server(object):
             raise ValueError(f"Invalid port number: {port}. Use a port between 1024 and 65535.")
         self.port = port
         self.timeout = timeout
+        self.recv_timeout = recv_timeout
 
         # Only allow clients in the allowlist to connect.
         self.allowlist = allowlist
@@ -269,6 +289,7 @@ class Server(object):
 
         try:
             while True:
+                connection = None
                 try:
                     # This blocks for self.timeout unless a client connects.
                     connection, client_addr = sock.accept()
@@ -282,38 +303,37 @@ class Server(object):
                         result = False, f"Client {client_addr} not in allowlist."
                     else:
                         # Receive, handle, and reply to message.
-                        message = _recv(connection, self.timeout)
-                        result = self._handle(message, client_addr)
+                        message = _recv(connection, self.recv_timeout)
+                        if isinstance(message, dict):
+                            result = self._handle(message, client_addr)
+                        else:
+                            # _recv returned its (False, reason) failure sentinel
+                            # (receive timeout or peer disconnect); reply with it
+                            # directly rather than feeding the tuple to _handle.
+                            result = message
 
                     reply = (urllib.quote_plus(json.dumps(result, cls=_NpEncoder)) + _delim).encode()
                     logger.debug("Replied with %d bytes.", len(reply))
 
                     connection.sendall(reply)
-                    connection.close()
-                except IOError:
-                    # This is a timeout error. Just continue.
+                except socket.timeout:
+                    # accept() poll timed out waiting for a client; keep listening.
                     pass
-                except Exception as e:
-                    # Pass to the outer try for all other errors.
-                    raise e
+                except Exception:
+                    # A single client's error (disconnect, bad payload, etc.) must not
+                    # tear down the server loop.
+                    logger.error("Error handling connection:\n%s", traceback.format_exc())
+                finally:
+                    # Always release the per-connection socket.
+                    if connection is not None:
+                        try:
+                            connection.close()
+                        except Exception:
+                            pass
         except KeyboardInterrupt:
             # Standard way to kill the thread.
             logger.info("Closing server! Goodbye!")
-            try:
-                connection.close()
-            except:
-                pass
             sock.close()
-        except Exception as e:
-            # There was an error in the server communication protocol. This kills the thread.
-            # Note that hardware errors are handled in _handle and the loop continues.
-            logger.error("Server communication error:\n%s", traceback.format_exc())
-            try:
-                connection.close()
-            except:
-                pass
-            sock.close()
-            raise e
 
     def _handle(
         self,

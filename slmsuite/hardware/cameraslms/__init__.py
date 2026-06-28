@@ -378,12 +378,12 @@ class FourierSLM(
         def calibration_detected(calibration_type):
             self.logger.info("%s calibration...", calibration_type.replace("_", " ").capitalize())
             if calibration_type in self.calibrations:
-                self.logger.info("Found calibration from %s.", self.calibrations[calibration_type]["timestamp"])
+                self.logger.info("Found calibration from %s.", self.calibrations[calibration_type]["__time__"])
                 return True
             else:
                 try:
                     self.load_calibration(calibration_type)
-                    self.logger.info("Loaded calibration from %s.", self.calibrations[calibration_type]["timestamp"])
+                    self.logger.info("Loaded calibration from %s.", self.calibrations[calibration_type]["__time__"])
                     return True
                 except FileNotFoundError:
                     return False

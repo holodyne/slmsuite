@@ -261,7 +261,7 @@ class ImagingSource(Camera):
 
     def _set_binning_hw(self, binning):
         """See :meth:`.Camera._set_binning_hw`. **(Untested)**"""
-        biny, binx = int(binning[0]), int(binning[1])
+        binx, biny = int(binning[0]), int(binning[1])
         if biny != binx:
             raise NotImplementedError("ImagingSource requires symmetric binning.")
         buf = tis.T(str(biny))

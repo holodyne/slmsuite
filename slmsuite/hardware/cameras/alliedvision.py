@@ -163,9 +163,12 @@ class AlliedVision(Camera):
             self._exposure_time_has_abs = None
 
         # Populate the rest of the class.
+        # PixelSize often reports an enum string like "Bpp8"/"Bpp10"/"Bpp12", so extract
+        # the digits rather than int(...) directly (which would raise for those models).
+        pixel_size = str(self.cam.PixelSize.get())
         super().__init__(
             (self.cam.SensorWidth.get(), self.cam.SensorHeight.get()),
-            bitdepth=int(self.cam.PixelSize.get()),
+            bitdepth=int("".join(char for char in pixel_size if char.isdigit())),
             pitch_um=pitch_um,
             name=serial,
             **kwargs,

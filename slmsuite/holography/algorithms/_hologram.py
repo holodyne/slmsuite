@@ -1533,7 +1533,10 @@ class Hologram(_HologramStats, _Loggable):
         zero_region = cp.abs(self.target) == 0
         if ("zero_factor" in self.flags and self.flags["zero_factor"] != 0):
             Z = int(cp.sum(zero_region))
-            if Z > 0 and not hasattr(self, "zero_weights"):
+            # Reallocate when absent OR when the zero-region size changed (e.g. the target
+            # was swapped between optimize() calls); a stale-sized buffer would broadcast-fail
+            # against farfield[zero_region] in _gs_farfield_routines.
+            if Z > 0 and (not hasattr(self, "zero_weights") or self.zero_weights.shape[0] != Z):
                 self.zero_weights = cp.zeros((Z,), dtype=self.dtype_complex)
 
         signal_region = cp.logical_not(cp.logical_or(noise_region, zero_region))
@@ -1584,7 +1587,13 @@ class Hologram(_HologramStats, _Loggable):
                     if len(stats) == 0:
                         raise ValueError("Must track statistics to fix phase based on efficiency!")
 
-                    eff = stats[groups[-1]]["efficiency"][self.iter]
+                    # Key off the group that is actually driving the optimization
+                    # (the feedback source) rather than an arbitrary dict-ordered group.
+                    feedback = self.flags.get("feedback", None)
+                    group = {"experimental": "experimental_ij"}.get(feedback, feedback)
+                    if group not in stats:
+                        group = groups[-1]
+                    eff = stats[group]["efficiency"][self.iter]
                     if eff > self.flags["fix_phase_efficiency"]:
                         self.flags["fixed_phase"] = True
 
@@ -1863,8 +1872,10 @@ class Hologram(_HologramStats, _Loggable):
         feedback_corrected *= 1 / Hologram._norm(feedback_corrected, xp=xp)
 
         if ("wu" in method or "tanh" in method):    # Additive
+            target_amp = xp.array(target_amp, copy=True, dtype=self.dtype)
+            target_amp *= 1 / Hologram._norm(target_amp, xp=xp)
             feedback_corrected *= -1
-            feedback_corrected += xp.array(target_amp, copy=(False if np.__version__[0] == '1' else None))
+            feedback_corrected += target_amp
         else:                                       # Multiplicative
             xp.divide(feedback_corrected, xp.array(target_amp, copy=(False if np.__version__[0] == '1' else None)), out=feedback_corrected)
 

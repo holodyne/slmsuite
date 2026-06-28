@@ -322,23 +322,22 @@ def _zernike_get_cantor(indices, weights, derivative=(0,0)):
 
         for j in [0, 1]:
             if derivative[j] > 0:
-                power = cantor_pairing[:, [j]].T.astype(int)  # (D, 1)
+                power = cantor_pairing[:, j].astype(int)    # (M',) per-monomial x/y power
 
                 # Apply the power rule.
                 if derivative[j] == 1:
-                    zernike_cantor *= power
+                    zernike_cantor = zernike_cantor * power[np.newaxis, :]
                 elif derivative[j] > 1:
-                    nonzero = power >= derivative[j]
-
-                    zernike_cantor[np.logical_not(nonzero)] = 0
-                    zernike_cantor[nonzero] *= (
-                        special.factorial(power[nonzero]) / special.factorial(power[nonzero] - derivative[j])
+                    keep = power >= derivative[j]
+                    factor = np.zeros_like(power)
+                    factor[keep] = (
+                        special.factorial(power[keep]) / special.factorial(power[keep] - derivative[j])
                     ).astype(int)
+                    zernike_cantor = zernike_cantor * factor[np.newaxis, :]
 
-                # Reduce the power of the term
+                # Reduce the power of the term.
                 cantor_pairing[:, j] -= derivative[j]
                 cantor_pairing[cantor_pairing[:, j] < 0, j] = 0
-                zernike_cantor *= power >= derivative[j]
 
         # Remove terms with all zeros
         nonzero = np.any(zernike_cantor, axis=0)        # Which D are nonzero for given m in M'

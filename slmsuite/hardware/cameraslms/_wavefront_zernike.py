@@ -115,7 +115,10 @@ class _WavefrontCalibrationZernike(object):
             (e.g. Stark effect of an atom) or in cases where the :math:`z` axis should
             be unchanged.
         optimize_position : bool
-            If ``False``, does not optimize the position terms (ansi indices 1 and 2).
+            If ``False``, does not optimize the position (tilt, ansi indices 1 and 2) terms.
+            Note these are corrected via the :meth:`.SpotHologram.refine_offset()` step
+            (gated by this flag), not the per-term Zernike sweep, which always excludes
+            piston and tilt.
         optimize_weights : bool OR int
             If ``True``,  optimizes the WGS weights of the hologram one time
             at the beginning of the calibration. Defaults to 10 iterations.
@@ -358,7 +361,11 @@ class _WavefrontCalibrationZernike(object):
                 images = analysis.take(img, calibration_points_ij, spot_integration_width_ij, clip=True).astype(float)
                 images = analysis.image_remove_field(images)
                 images[np.isnan(images)] = 0
-                images = images.astype(float) / np.sum(images)        # Remove laser noise
+                # Normalize out the per-measurement laser power; guard a dark frame so we
+                # don't divide by zero and poison the metric/fit with nan/inf.
+                total = np.sum(images)
+                if total != 0:
+                    images = images / total
 
                 if metric is None:
                     return self._wavefront_calibrate_zernike_default_metric(images)

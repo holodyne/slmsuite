@@ -412,6 +412,9 @@ class _WavefrontCalibrationSuperpixel(object):
         # Save the current calibration in case we are just testing (test_index != None)
         amplitude = self.slm._get_source_amplitude()
         phase = self.slm._get_source_phase()
+        r2 = self.slm.source.get("r2", None)
+        if r2 is not None:
+            r2 = np.copy(r2)
 
         # If we're starting fresh, remove the old calibration such that this does not
         # muddle things. If we're only testing, the stored data above will be reinstated.
@@ -1123,6 +1126,8 @@ class _WavefrontCalibrationSuperpixel(object):
             # Reset the phase and amplitude of the SLM to the stored data.
             self.slm.source["amplitude"] = amplitude
             self.slm.source["phase"] = phase
+            if r2 is not None:
+                self.slm.source["r2"] = r2
 
             return result
 

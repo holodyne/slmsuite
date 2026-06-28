@@ -253,7 +253,7 @@ class _Window(__Window):
                 # _set_wm_state is defined on pyglet's XlibWindow and sets
                 # _NET_WM_STATE_ABOVE via XChangeProperty + ClientMessage.
                 self._set_wm_state("_NET_WM_STATE_ABOVE")
-            except (AttributeError, Exception):
+            except Exception:
                 try:
                     self.activate()
                 except Exception:
@@ -262,7 +262,7 @@ class _Window(__Window):
             try:
                 # NSFloatingWindowLevel = 3 — above normal windows.
                 self._nswindow.setLevel_(3)
-            except (AttributeError, Exception):
+            except Exception:
                 try:
                     self.activate()
                 except Exception:
@@ -628,6 +628,7 @@ class _WindowThread(object):
         """
         self._command_queue = queue.Queue()
         self._command_event = threading.Event()
+        self._submit_lock = threading.Lock()
         self._window = None
         self._running = False
         self._ready = threading.Event()
@@ -751,7 +752,19 @@ class _WindowThread(object):
             self._command_event.wait(timeout=1.0)
             self._command_event.clear()
 
-        # Cleanup: close the window and deregister from the manager.
+        # Cleanup: stop accepting work and fail any still-queued futures so no waiter
+        # blocks forever.
+        with self._submit_lock:
+            self._running = False
+            while True:
+                try:
+                    _, _, _, future = self._command_queue.get_nowait()
+                except queue.Empty:
+                    break
+                future['error'] = RuntimeError("Window thread exited before the command ran.")
+                future['event'].set()
+
+        # Close the window and deregister from the manager.
         try:
             self._window.close()
         except Exception:
@@ -790,11 +803,15 @@ class _WindowThread(object):
         RuntimeError
             If the window thread is not running.
         """
-        if not self._running:
-            raise RuntimeError("Window thread is not running.")
-
         future = {'event': threading.Event(), 'result': None, 'error': None}
-        self._command_queue.put((func, args, kwargs, future))
+
+        # Guard + enqueue atomically against the loop's stop/drain (see run() cleanup).
+        # Also reject if the window has exited (e.g. user closed it).
+        with self._submit_lock:
+            if not self._running or self._window.has_exit:
+                raise RuntimeError("Window thread is not running.")
+            self._command_queue.put((func, args, kwargs, future))
+
         self._command_event.set()
         return future
 

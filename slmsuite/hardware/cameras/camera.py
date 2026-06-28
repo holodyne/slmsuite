@@ -212,7 +212,7 @@ class Camera(_Common, ABC):
 
         # Parse capture_attempts.
         self.capture_attempts = int(capture_attempts)
-        if capture_attempts <= 0:
+        if self.capture_attempts <= 0:
             raise ValueError("capture_attempts must be positive.")
 
         # Variable for storing the last capture.
@@ -1306,7 +1306,7 @@ class Camera(_Common, ABC):
                 overexposure_threshold=overexposure_threshold,
                 exposure_power=exposure_times,
             )
-            if np.max(img) >= self.bitresolution:
+            if np.nanmax(img) >= self.bitresolution:
                 self.logger.warning("HDR image is overexposed.")
             # Store the result locally.
             self.last_image = img

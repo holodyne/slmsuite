@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 import numpy as np
-from yaml import warnings
+import warnings
 
 from slmsuite.hardware._viewer import _Viewable
 from slmsuite._logging import _Loggable
@@ -129,6 +129,8 @@ class _Common(_Viewable, _Loggable, ABC):
                     dtype_bitdepth -= 1
             elif self.dtype.kind == "f":
                 dtype_bitdepth = np.inf
+            else:
+                dtype_bitdepth = np.inf   # Non-numeric dtype: nothing to compare against.
 
             # Warn the user if something is wrong.
             if dtype_bitdepth < self.bitdepth:

@@ -140,7 +140,7 @@ class PyLabLib(Camera):
         Returns
         -------
         list
-            An empty list.
+            Always raises :exc:`RuntimeError`.
         """
         raise RuntimeError(
             ".info() is not applicable to pylablib cameras, which must be "

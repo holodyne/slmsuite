@@ -199,7 +199,9 @@ class FeedbackHologram(Hologram):
 
         # FUTURE: use cp_gaussian_filter (faster?); was having trouble with cp_gaussian_filter.
         if blur_ij > 0:
-            img = sp_gaussian_filter(img, (blur_ij, blur_ij), output=img, truncate=2)
+            if hasattr(img, "get"):
+                img = img.get()
+            img = sp_gaussian_filter(img, (blur_ij, blur_ij), truncate=2)
 
         cp_img = cp.array(img, dtype=self.dtype)
         cp.abs(cp_img, out=cp_img)

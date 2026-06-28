@@ -204,15 +204,17 @@ def load_h5(file_path, decode_bytes=True):
         for key in group.keys():
             if isinstance(group[key], h5py.Group):
                 data[key] = recurse(group[key])
+            elif group[key].attrs.get("__none__", False):
+                # Placeholder written by save_h5 for a None value.
+                data[key] = None
             else:
                 data_ = group[key][()]
                 if decode_bytes:
                     if isinstance(data_, bytes):
                         data_ = bytes.decode(data_)
-                    elif np.isscalar(data_):
-                        pass
-                    elif isinstance(data_, np.ndarray) and len(data_) > 0 and isinstance(data_[0], bytes):
-                        data_ = np.vectorize(bytes.decode)(data_)
+                    elif isinstance(data_, np.ndarray) and data_.dtype.kind == "S":
+                        # Decode byte-string arrays of any shape (incl. 0-d and empty).
+                        data_ = np.char.decode(data_, "utf-8")
                 data[key] = data_
 
         return data
@@ -241,7 +243,8 @@ def save_h5(file_path, data, mode="w"):
     Supported types:
 
     - Nested dictionaries which are written as h5 group hierarchy,
-    - ``None`` (though this is written as ``False``),
+    - ``None`` (stored as a placeholder dataset tagged with a ``__none__`` attribute so
+      it round-trips back to ``None`` on load),
     - Uniform arrays of numeric or string data.
 
     Example unsupported types:
@@ -266,7 +269,11 @@ def save_h5(file_path, data, mode="w"):
             elif isinstance(data[key], str):
                 group[key] = bytes(data[key], 'utf-8')
             elif data[key] is None:
+                # h5 has no native None; store a placeholder dataset tagged with an
+                # attribute so load_h5 restores None faithfully (round-trips anywhere in
+                # the tree, e.g. a camera's pitch_um=None inside a saved calibration).
                 group[key] = False
+                group[key].attrs["__none__"] = True
             else:
                 try:
                     array = np.array(data[key])
@@ -279,7 +286,7 @@ def save_h5(file_path, data, mode="w"):
                     raise e
 
                 if array.dtype.char == "U":
-                    array = np.vectorize(str.encode)(array)
+                    array = np.char.encode(array, "utf-8")
 
                 group[key] = array
 
@@ -359,7 +366,7 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
         else:
             lut = np.nanmax(images)
     # lut = np.clip(lut, 0, np.max(images))
-    lut = np.array([lut]).astype(images.dtype)[0]
+    lut = int(lut)
 
     # Check for nan.
     nanmask = np.isnan(images)

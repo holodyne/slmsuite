@@ -407,8 +407,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             )
             try:
                 self.spot_ij = toolbox.convert_vector(
-                    spot_vectors,
-                    from_units=basis,
+                    spot_vectors[self.zernike_basis_cartesian, :],  # Crop to the cartesian basis.
+                    from_units="zernike",
                     to_units="ij",
                     hardware=cameraslm
                 )
@@ -933,7 +933,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         if new_target is None:
             self.target = cp.array(self.spot_amp, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
         else:
-            new_target = np.squeeze(new_target.ravel())
+            new_target = np.squeeze(np.ravel(new_target))
             if new_target.shape != (len(self),):
                 raise ValueError(
                     "Target must be of appropriate shape. "
@@ -1203,7 +1203,8 @@ class SpotHologram(_AbstractSpotHologram):
             self.null_radius_knm = null_radius
             self.null_region_knm = null_region
         elif basis == "kxy":  # Normalized units.
-            assert cameraslm is not None, "We need a cameraslm to interpret kxy."
+            if cameraslm is None:
+                raise ValueError("We need a cameraslm to interpret kxy.")
 
             self.spot_kxy = vectors
 
@@ -1222,12 +1223,14 @@ class SpotHologram(_AbstractSpotHologram):
                 shape=shape
             )
         elif basis == "ij":  # Pixel on the camera.
-            assert cameraslm is not None, "We need an cameraslm to interpret ij."
-            assert "fourier" in cameraslm.calibrations, (
-                "We need an cameraslm with "
-                "fourier-calibrated kxyslm_to_ijcam and ijcam_to_kxyslm transforms "
-                "to interpret ij."
-            )
+            if cameraslm is None:
+                raise ValueError("We need a cameraslm to interpret ij.")
+            if "fourier" not in cameraslm.calibrations:
+                raise ValueError(
+                    "We need a cameraslm with "
+                    "fourier-calibrated kxyslm_to_ijcam and ijcam_to_kxyslm transforms "
+                    "to interpret ij."
+                )
 
             self.spot_ij = vectors
             self.spot_kxy = cameraslm.ijcam_to_kxyslm(vectors)
@@ -1454,14 +1457,15 @@ class SpotHologram(_AbstractSpotHologram):
             elif basis == "kxy":
                 array_center = (0, 0)
             elif basis == "ij":
-                assert "cameraslm" in kwargs, "We need an cameraslm to interpret ij."
+                if kwargs.get("cameraslm", None) is None:
+                    raise ValueError("We need a cameraslm to interpret ij.")
                 cameraslm = kwargs["cameraslm"]
-                assert cameraslm is not None, "We need an cameraslm to interpret ij."
-                assert "fourier" in cameraslm.calibrations, (
-                    "We need an cameraslm with "
-                    "fourier-calibrated kxyslm_to_ijcam and ijcam_to_kxyslm transforms "
-                    "to interpret ij."
-                )
+                if "fourier" not in cameraslm.calibrations:
+                    raise ValueError(
+                        "We need a cameraslm with "
+                        "fourier-calibrated kxyslm_to_ijcam and ijcam_to_kxyslm transforms "
+                        "to interpret ij."
+                    )
 
                 array_center = toolbox.convert_vector(
                     (0, 0),
@@ -1517,6 +1521,12 @@ class SpotHologram(_AbstractSpotHologram):
 
         # Erase previous target in-place.
         if self.null_knm is None:
+            if self.null_region_knm is not None:
+                warnings.warn(
+                    "A 'null_region' was provided, but 'null_knm' (null_vectors) is None. "
+                    "The null region and MRAF will be ignored. "
+                    "Pass 'null_vectors' to enable null-region/MRAF optimization."
+                )
             self.target.fill(0)
         else:
             # By default, everywhere is "amplitude free", denoted by nan.

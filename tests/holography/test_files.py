@@ -61,71 +61,59 @@ def test_max_numeric_id(subtests):
 
 
 def test_generate_path(subtests):
-    """Test generate_path for single/multiple paths, directories, and options."""
-    with subtests.test("single file path"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", "txt", "file", 5, 1)
-            assert result == os.path.join(d, "test_00000.txt")
+    """Test generate_path: positional and keyword signatures, increments, dirs, options."""
+    with tempfile.TemporaryDirectory() as d:
+        with subtests.test("single path, positional signature"):
+            assert generate_path(d, "test", "txt", "file", 5, 1) == os.path.join(d, "test_00000.txt")
 
-    with subtests.test("multiple file paths"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", "txt", "file", 5, 3)
-            assert isinstance(result, list)
-            assert len(result) == 3
-            assert result[0] == os.path.join(d, "test_00000.txt")
-            assert result[1] == os.path.join(d, "test_00001.txt")
-            assert result[2] == os.path.join(d, "test_00002.txt")
+        with subtests.test("keyword signature starts at zero"):
+            assert generate_path(d, "data", extension="h5") == os.path.join(d, "data_00000.h5")
 
-    with subtests.test("directory path is created"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", None, "dir", 5, 1)
-            assert result == os.path.join(d, "test_00000")
-            assert os.path.isdir(result)
+        with subtests.test("no extension"):
+            assert generate_path(d, "run", None, "file", 5, 1) == os.path.join(d, "run_00000")
 
-    with subtests.test("increments past existing files"):
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["test_00000.txt", "test_00001.txt"]:
+        with subtests.test("custom digit count"):
+            assert generate_path(d, "dig", "txt", "file", 3, 1) == os.path.join(d, "dig_000.txt")
+
+        with subtests.test("multiple paths, positional path_count"):
+            assert generate_path(d, "multi", "txt", "file", 5, 3) == \
+                [os.path.join(d, f"multi_0000{i}.txt") for i in range(3)]
+
+        with subtests.test("multiple paths, keyword path_count"):
+            result = generate_path(d, "batch", extension="npy", path_count=3)
+            assert [os.path.basename(p) for p in result] == [f"batch_0000{i}.npy" for i in range(3)]
+
+        with subtests.test("increments past existing files"):
+            for name in ["inc_00000.txt", "inc_00001.txt"]:
                 _touch(os.path.join(d, name))
-            result = generate_path(d, "test", "txt", "file", 5, 1)
-            assert result == os.path.join(d, "test_00002.txt")
+            assert generate_path(d, "inc", "txt", "file", 5, 1) == os.path.join(d, "inc_00002.txt")
+
+        with subtests.test("directory kind is created"):
+            result = generate_path(d, "asdir", None, "dir", 5, 1)
+            assert result == os.path.join(d, "asdir_00000") and os.path.isdir(result)
 
     with subtests.test("creates missing parent directories"):
         with tempfile.TemporaryDirectory() as d:
             nested = os.path.join(d, "nested", "deep")
             result = generate_path(nested, "test", "txt", "file", 5, 1)
-            assert os.path.exists(nested)
-            assert result == os.path.join(nested, "test_00000.txt")
-
-    with subtests.test("no extension"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", None, "file", 5, 1)
-            assert result == os.path.join(d, "test_00000")
-
-    with subtests.test("custom digit count"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", "txt", "file", 3, 1)
-            assert result == os.path.join(d, "test_000.txt")
+            assert os.path.exists(nested) and result == os.path.join(nested, "test_00000.txt")
 
 
 def test_latest_path(subtests):
-    """Test latest_path for files and directories."""
-    with subtests.test("no files returns None"):
-        with tempfile.TemporaryDirectory() as d:
+    """Test latest_path: empty case, highest id, name filtering, and directories."""
+    with tempfile.TemporaryDirectory() as d:
+        with subtests.test("no files returns None"):
             assert latest_path(d, "test", "txt", "file", 5) is None
 
-    with subtests.test("returns path with highest id"):
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["test_00001.txt", "test_00003.txt", "test_00002.txt"]:
+        with subtests.test("returns highest id, ignoring non-matching names"):
+            for name in ["test_00001.txt", "test_00003.txt", "test_00002.txt", "other_00099.txt"]:
                 _touch(os.path.join(d, name))
-            result = latest_path(d, "test", "txt", "file", 5)
-            assert result == os.path.join(d, "test_00003.txt")
+            assert latest_path(d, "test", "txt", "file", 5) == os.path.join(d, "test_00003.txt")
 
-    with subtests.test("works with directories"):
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["test_00001", "test_00005", "test_00003"]:
+        with subtests.test("works with directories"):
+            for name in ["dir_00001", "dir_00005", "dir_00003"]:
                 os.makedirs(os.path.join(d, name))
-            result = latest_path(d, "test", None, "dir", 5)
-            assert result == os.path.join(d, "test_00005")
+            assert latest_path(d, "dir", None, "dir", 5) == os.path.join(d, "dir_00005")
 
 
 def _make_tmp_h5():
@@ -154,7 +142,7 @@ def test_save_and_load_h5(subtests):
             assert loaded["float"] == pytest.approx(3.14)
             assert loaded["string"] == "hello"
             np.testing.assert_array_equal(loaded["array"], [1, 2, 3, 4, 5])
-            assert loaded["none_value"] == False  # None becomes False
+            assert loaded["none_value"] is None  # None round-trips back to None
         finally:
             _safe_unlink(path)
 
@@ -264,54 +252,6 @@ def test_save_and_load_h5(subtests):
 
 
 
-# Test files functions TODO
-
-def test_generate_path(subtests):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with subtests.test("first path starts at zero"):
-            p = generate_path(tmpdir, "data", extension="h5")
-            assert os.path.basename(p) == "data_00000.h5"
-
-        with subtests.test("second call increments id"):
-            open(p, "w").close()
-            p2 = generate_path(tmpdir, "data", extension="h5")
-            assert os.path.basename(p2) == "data_00001.h5"
-
-        with subtests.test("no extension"):
-            p3 = generate_path(tmpdir, "run")
-            assert os.path.basename(p3) == "run_00000"
-
-        with subtests.test("creates parent directories"):
-            subdir = os.path.join(tmpdir, "a", "b", "c")
-            generate_path(subdir, "test", extension="txt")
-            assert os.path.isdir(subdir)
-
-        with subtests.test("path_count returns list of sequential paths"):
-            paths = generate_path(tmpdir, "batch", extension="npy", path_count=3)
-            assert len(paths) == 3
-            bases = [os.path.basename(q) for q in paths]
-            assert bases[1] == bases[0].replace("_00000", "_00001")
-            assert bases[2] == bases[0].replace("_00000", "_00002")
-
-
-def test_latest_path(subtests):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with subtests.test("returns None when no files exist"):
-            result = latest_path(tmpdir, "missing", extension="h5")
-            assert result is None
-
-        with subtests.test("returns highest numeric id"):
-            open(os.path.join(tmpdir, "file_00000.h5"), "w").close()
-            open(os.path.join(tmpdir, "file_00002.h5"), "w").close()
-            result = latest_path(tmpdir, "file", extension="h5")
-            assert os.path.basename(result) == "file_00002.h5"
-
-        with subtests.test("ignores files with different names"):
-            open(os.path.join(tmpdir, "other_00099.h5"), "w").close()
-            result = latest_path(tmpdir, "file", extension="h5")
-            assert os.path.basename(result) == "file_00002.h5"
-
-
 def test_save_load_h5(subtests):
     with tempfile.TemporaryDirectory() as tmpdir:
         fpath = os.path.join(tmpdir, "test.h5")
@@ -334,10 +274,10 @@ def test_save_load_h5(subtests):
             data = load_h5(fpath)
             np.testing.assert_array_equal(data["outer"]["inner"], nested["outer"]["inner"])
 
-        with subtests.test("None is written as False"):
+        with subtests.test("None round-trips back to None"):
             save_h5(fpath, {"nothing": None})
             data = load_h5(fpath)
-            assert data["nothing"] == False
+            assert data["nothing"] is None
 
         with subtests.test("integer array dtype preserved"):
             arr = np.array([1, 2, 3], dtype=np.int32)

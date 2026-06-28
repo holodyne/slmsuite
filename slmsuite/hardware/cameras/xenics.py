@@ -358,6 +358,7 @@ class Cheetah640(Camera):
         if virtual:
             logger.debug("Opening connection to virtual camera")
             self.cam = self.xeneth.XC_OpenCamera(b"soft://0", 0, 0)
+            name = "virtual"
         else:
             if device.name.decode():
                 logger.debug("Opening connection to %s", device.name.decode())
@@ -415,7 +416,10 @@ class Cheetah640(Camera):
                 # Load visible setup by default
                 self.setup("free")
         else:
-            logger.error("Initialization failed.")
+            raise RuntimeError(
+                "Xenics camera initialization failed. "
+                "Close the Xeneth GUI or check connections."
+            )
 
     def close(self):
         """See :meth:`.Camera.close`."""

@@ -220,7 +220,7 @@ class PLM(ScreenMirrored):
         # The SLM.shape should represent the input phase dimensions
         super().__init__(
             display_number,
-            slm_shape=model_shape[::-1],  # ScreenMirrored expects (width, height)
+            slm_resolution=model_shape[::-1],  # ScreenMirrored expects (width, height)
             bitdepth=bitdepth,
             pitch_um=pitch_um,
             name=kwargs.pop("name", model_name),
@@ -359,8 +359,6 @@ class PLM(ScreenMirrored):
         """
         from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
 
-        dlpc = self.dlpc900
-
         logger.debug("DLPC900 connected: firmware %s", dlpc.get_firmware_version())
 
         # Resolve video_input default
@@ -392,7 +390,8 @@ class PLM(ScreenMirrored):
 
         logger.debug("DLPC900 pre-configured (video mode, display detected)")
 
-    def _usb_post_configure(self, video_input, pixel_mode):
+    @staticmethod
+    def _usb_post_configure(dlpc, video_input, pixel_mode):
         """
         USB setup steps that happen after the pyglet window is created.
 
@@ -1006,7 +1005,7 @@ class DLPC900:
             valid = [m.name.lower().replace("_", "-") for m in DisplayMode]
             raise ValueError(
                 f"Unknown mode '{mode}'. Valid: {valid}"
-            )
+            ) from None
         self._send('w', DLPC900Command.DISPLAY_MODE, [int(val)])
 
     def get_display_mode(self):
@@ -1022,7 +1021,7 @@ class DLPC900:
         try:
             return DisplayMode(b)
         except ValueError:
-            raise ValueError(f"Unknown display mode byte: {b}")
+            raise ValueError(f"Unknown display mode byte: {b}") from None
 
     def start_pattern(self):
         """Start the pattern display sequence."""

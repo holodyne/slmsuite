@@ -74,7 +74,10 @@ class _WavefrontCalibration(
                     raise ValueError("If an integer, 'calibration_points' must be positive.")
             # If None, then use the built-in generator.
             calibration_points_ = self.wavefront_calibration_points(**kwargs)
-            num_points = min(calibration_points_.shape[1], calibration_points)
+            if calibration_points is None:
+                num_points = calibration_points_.shape[1]
+            else:
+                num_points = min(calibration_points_.shape[1], calibration_points)
             calibration_points = calibration_points_[:, :num_points]
 
         calibration_points = np.rint(format_2vectors(calibration_points)).astype(int)

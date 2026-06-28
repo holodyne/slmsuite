@@ -17,6 +17,7 @@ To choose otherwise, pass the path to the desired SDK.
 """
 import os
 import ctypes
+import ctypes.wintypes
 import warnings
 from enum import IntEnum
 from pathlib import Path
@@ -260,7 +261,7 @@ class Meadowlark(SLM):
         finally:
             # noinspection PyProtectedMember
             if not unloader(Meadowlark._slm_lib[self.sdk_mode]._handle):
-                raise OSError(f"Failed to unload DLL {self.sdk_path}; "
+                raise OSError(f"Failed to unload DLL {Meadowlark._sdk_path[self.sdk_mode]}; "
                               f"error_code: {ctypes.get_last_error()}.")
             del Meadowlark._slm_lib[self.sdk_mode]
 
@@ -863,6 +864,9 @@ class Meadowlark(SLM):
                 except:
                     trace = None
                     break
+
+            if trace is None:    # Header was unparseable; treat as "not recognized".
+                return _SDK_MODE.NULL, "", None
 
             trace = tuple(trace)
 

@@ -219,6 +219,13 @@ class ScreenMirrored(SLM):
         if slm_resolution is None:
             slm_resolution = (screen.width, screen.height)
 
+        # The display buffer is uint8 RGBA; >8-bit data would be silently truncated.
+        if bitdepth > 8:
+            raise NotImplementedError(
+                "ScreenMirrored currently supports 8-bit SLMs or less; "
+                "16-bit (RG color) packing is not yet implemented."
+            )
+
         super().__init__(
             resolution=slm_resolution,
             bitdepth=bitdepth,

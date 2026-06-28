@@ -26,9 +26,10 @@ from slmsuite.hardware.cameras.camera import Camera
 try:
     import instrumental.drivers.cameras as instrumental_cameras
     from instrumental.drivers import ParamSet
-    from instrumental import instrument, list_instruments
+    from instrumental import instrument, list_instruments, u
 except ImportError:
     instrument = None
+    u = None
     warnings.warn("instrumental-lib not installed. Install to use Instrumental cameras.")
 
 from slmsuite._logging import make_logger
@@ -150,11 +151,13 @@ class Instrumental(Camera):
 
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
-        return float(self.cam.exposure._magnitude) / 1000
+        # cam.exposure is a Pint quantity; convert via the unit registry rather than
+        # reading the raw magnitude, whose native unit (us/ms/s) is driver-dependent.
+        return float(self.cam.exposure.to("s").magnitude)
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
-        self.cam.exposure = 1000. * float(exposure_s)
+        self.cam.exposure = float(exposure_s) * u.s
 
     def _get_image_hw(self, timeout_s):
         """

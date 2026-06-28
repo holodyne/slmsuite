@@ -60,14 +60,17 @@ class _HologramStats(object):
             efficiency = xp.nansum(feedback_pwr) / total
             # self._stats_pinned[0]
 
-        # Normalize.
+        # Normalize. Guard against an all-zero feedback/target (e.g. a blank target or a
+        # dark first frame), which would otherwise divide by zero and poison every stat.
         feedback_pwr_sum = xp.sum(feedback_pwr)
-        feedback_pwr *= 1 / feedback_pwr_sum
-        feedback_amp *= 1 / xp.sqrt(feedback_pwr_sum)
+        if feedback_pwr_sum > 0:
+            feedback_pwr *= 1 / feedback_pwr_sum
+            feedback_amp *= 1 / xp.sqrt(feedback_pwr_sum)
 
         target_pwr_sum = xp.nansum(target_pwr)
-        target_pwr *= 1 / target_pwr_sum
-        target_amp *= 1 / xp.sqrt(target_pwr_sum)
+        if target_pwr_sum > 0:
+            target_pwr *= 1 / target_pwr_sum
+            target_amp *= 1 / xp.sqrt(target_pwr_sum)
 
         if total is None:
             # Efficiency overlap integral.
@@ -75,7 +78,7 @@ class _HologramStats(object):
                 xp.multiply(target_amp, feedback_amp)
             )
             efficiency = xp.square(float(efficiency_intermediate))
-            if efficiency_compensation:
+            if efficiency_compensation and efficiency != 0:
                 feedback_pwr *= 1 / efficiency
 
         # Make some helper lists; ignoring power where target is zero.
@@ -87,13 +90,18 @@ class _HologramStats(object):
         ratio_pwr = xp.divide(feedback_pwr_masked, target_pwr_masked)
         pwr_err = target_pwr_masked - feedback_pwr_masked
 
-        # Compute the remaining stats.
-        rmin = float(xp.amin(ratio_pwr))
-        rmax = float(xp.amax(ratio_pwr))
-        uniformity = 1 - (rmax - rmin) / (rmax + rmin)
+        # Compute the remaining stats. An empty mask (all-zero/all-nan target) leaves the
+        # derived stats undefined rather than crashing amin/amax.
+        if ratio_pwr.size == 0:
+            rmin = rmax = uniformity = np.nan
+            pkpk_err = std_err = np.nan
+        else:
+            rmin = float(xp.amin(ratio_pwr))
+            rmax = float(xp.amax(ratio_pwr))
+            uniformity = 1 - (rmax - rmin) / (rmax + rmin) if (rmax + rmin) != 0 else np.nan
 
-        pkpk_err = pwr_err.size * float(xp.amax(pwr_err) - xp.amin(pwr_err))
-        std_err = pwr_err.size * float(xp.std(pwr_err))
+            pkpk_err = pwr_err.size * float(xp.amax(pwr_err) - xp.amin(pwr_err))
+            std_err = pwr_err.size * float(xp.std(pwr_err))
 
         final_stats = {
             "efficiency": float(efficiency),
@@ -103,7 +111,9 @@ class _HologramStats(object):
         }
 
         if raw:
-            ratio_pwr_full = np.full_like(target_pwr, np.nan)
+            # Force a host (numpy) array: np.full_like on a cupy target_pwr would return a
+            # cupy array, leaking a device array into the user-facing/saved stats dict.
+            ratio_pwr_full = np.full(target_pwr.shape, np.nan)
 
             if xp == np:
                 final_stats["raw_pwr"] = np.square(feedback_amp)
