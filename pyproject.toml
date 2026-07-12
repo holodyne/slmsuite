@@ -114,7 +114,7 @@ version = { attr = "slmsuite.__version__" }
 include = ["slmsuite*"]
 
 [tool.setuptools.package-data]
-slmsuite = ["holography/toolbox/cuda.cu"]
+slmsuite = ["holography/toolbox/phase/cuda.cu"]
 
 [tool.uv]
 # pyqt5-qt5 >= 5.15.3 dropped Windows wheels; cap to last working version.
