@@ -1020,6 +1020,117 @@ def test_fit_affine(subtests):
         assert result["b"].shape == (2, 1)
 
 
+def test_image_moment_scaling(subtests):
+    """image_variances / image_moment with scale_x, scale_y != 1.
+
+    ``centers`` are in PIXEL units (image_variances computes them via image_positions
+    without a grid), so a grid scale must act as a clean multiplicative factor on the
+    *central* moments:
+        m20 -> sx**2 * m20,   m02 -> sy**2 * m02,   m11 -> sx*sy * m11.
+    These pin that convention and fail if the center is subtracted in the wrong (scaled
+    vs unscaled) units inside image_moment -- the previously-untested combination of a
+    non-unity grid AND a non-zero center.
+    """
+    rng = np.random.default_rng(0)
+    # Asymmetric, off-center intensity so the centroid != 0, m20 != m02, and m11 != 0.
+    image = np.zeros((1, 32, 40))
+    image[0, 8:16, 20:34] = rng.uniform(0.1, 1.0, size=(8, 14))
+    image[0, 10, 30] = 5.0      # off-axis bright pixels -> genuine shear (m11 != 0)
+    image[0, 22, 12] = 3.0
+
+    base = analysis.image_variances(image, grid=None)   # pixel-unit (3, 1): m20, m02, m11
+    assert not np.allclose(analysis.image_positions(image), 0)   # centroid actually != 0
+    assert abs(base[2, 0]) > 0                                   # genuine shear present
+
+    for sx, sy in [(2.0, 2.0), (0.5, 3.0), (1.3, 0.7), (10.0, 1.0)]:
+        with subtests.test(f"anisotropic grid ({sx}, {sy})"):
+            v = analysis.image_variances(image, grid=(sx, sy))
+            assert v[0] == pytest.approx(sx * sx * base[0], rel=1e-9)
+            assert v[1] == pytest.approx(sy * sy * base[1], rel=1e-9)
+            assert v[2] == pytest.approx(sx * sy * base[2], rel=1e-9)
+
+    with subtests.test("scalar grid equals isotropic pair"):
+        s = 2.5
+        v_scalar = analysis.image_variances(image, grid=s)
+        v_pair = analysis.image_variances(image, grid=(s, s))
+        np.testing.assert_allclose(v_scalar, v_pair, rtol=1e-9)
+        assert v_scalar[0] == pytest.approx(s * s * base[0], rel=1e-9)
+        assert v_scalar[1] == pytest.approx(s * s * base[1], rel=1e-9)
+
+    with subtests.test("image_std scales linearly with the grid"):
+        s = 4.0
+        std_px = analysis.image_std(image, grid=None)
+        std_s = analysis.image_std(image, grid=s)
+        np.testing.assert_allclose(std_s, s * std_px, rtol=1e-9)
+
+    with subtests.test("image_moment direct: scaled second central moment"):
+        # image_moment subtracts grid-unit centers, so pass the centroid computed in the
+        # SAME grid. A central moment under grid s is then scale**2 times the unscaled one.
+        m20_px = analysis.image_moment(
+            image, (2, 0), centers=analysis.image_positions(image), grid=None
+        )
+        m20_s = analysis.image_moment(
+            image, (2, 0), centers=analysis.image_positions(image, grid=3.0), grid=3.0
+        )
+        assert m20_s == pytest.approx(9.0 * m20_px, rel=1e-9)
+        m02_px = analysis.image_moment(
+            image, (0, 2), centers=analysis.image_positions(image), grid=None
+        )
+        m02_s = analysis.image_moment(
+            image, (0, 2),
+            centers=analysis.image_positions(image, grid=(2.0, 5.0)), grid=(2.0, 5.0)
+        )
+        assert m02_s == pytest.approx(25.0 * m02_px, rel=1e-9)
+
+    with subtests.test("axis-aligned ellipticity angle unaffected by isotropic scale"):
+        # A blob taller than it is wide is elongated along y -> major axis at +-pi/2.
+        blob = np.zeros((1, 50, 50))
+        blob[0, 20:31, 23:28] = 1.0
+        ang = analysis.image_ellipticity_angle(analysis.image_variances(blob, grid=(1.0, 1.0)))
+        assert (
+            ang[0] == pytest.approx(np.pi / 2, abs=1e-6)
+            or ang[0] == pytest.approx(-np.pi / 2, abs=1e-6)
+        )
+
+
+def test_image_variances_array_grid(subtests):
+    """image_variances with an array (or 1D-list) coordinate grid must take the moment
+    about the CENTROID, in the grid's own coordinate frame -- not about the grid origin.
+
+    Regression test: the array-grid branch subtracted a center computed in the image-
+    centered pixel frame (image_positions(grid=None)) from a raw 0..w-1 grid, a frame
+    mismatch that made the 'central' moment land on the grid origin (variance ~ mean**2).
+    A grid equal to the pixel indices must reproduce grid=None exactly; a scaled grid must
+    scale the variance by scale**2.
+    """
+    image = np.zeros((1, 32, 40))
+    image[0, 8:16, 20:30] = 1.0
+    image[0, 10, 28] = 5.0      # off-axis bright pixels -> genuine shear (m11 != 0)
+    image[0, 20, 14] = 3.0
+
+    base = analysis.image_variances(image, grid=None)   # pixel-unit (3, 1): m20, m02, m11
+    assert abs(base[2, 0]) > 1e-6                        # ensure the shear test is non-trivial
+
+    with subtests.test("2D array grid of pixel indices == grid=None"):
+        X, Y = np.meshgrid(np.arange(40, dtype=float), np.arange(32, dtype=float))
+        v = analysis.image_variances(image, grid=(X, Y))
+        np.testing.assert_allclose(v, base, rtol=1e-9, atol=1e-9)
+
+    with subtests.test("1D array grid of pixel indices == grid=None"):
+        v = analysis.image_variances(
+            image, grid=(np.arange(40, dtype=float), np.arange(32, dtype=float))
+        )
+        np.testing.assert_allclose(v, base, rtol=1e-9, atol=1e-9)
+
+    with subtests.test("scaled 2D array grid scales variance by scale**2"):
+        sx, sy = 2.0, 3.0
+        X, Y = np.meshgrid(sx * np.arange(40, dtype=float), sy * np.arange(32, dtype=float))
+        v = analysis.image_variances(image, grid=(X, Y))
+        assert v[0] == pytest.approx(sx * sx * base[0], rel=1e-9)
+        assert v[1] == pytest.approx(sy * sy * base[1], rel=1e-9)
+        assert v[2] == pytest.approx(sx * sy * base[2], rel=1e-9)
+
+
 def test_image_vortices(subtests):
     """Test image_vortices(), image_vortices_coordinates(), and image_remove_vortices()."""
     y = np.arange(128)
@@ -1066,6 +1177,18 @@ def test_image_vortices(subtests):
 
         assert removed.shape == phase.shape
         assert np.isfinite(removed).all()
+
+    with subtests.test("removal actually eliminates the vortex"):
+        # Behavioral check: the residual winding must DECREASE. A sign/argument error in
+        # image_remove_vortices adds a vortex instead of cancelling it (same shape, still
+        # finite, both API paths still agree), so only this assertion catches it.
+        phase = np.arctan2(Y - cy, X - cx)
+        n_before = np.count_nonzero(analysis.image_vortices(phase))
+        removed = analysis.image_remove_vortices(phase.copy())
+        n_after = np.count_nonzero(analysis.image_vortices(removed))
+
+        assert n_before > 0
+        assert n_after < n_before
 
     with subtests.test("mask restricts removal region"):
         phase = np.arctan2(Y - cy, X - cx)

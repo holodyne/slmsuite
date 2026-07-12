@@ -155,35 +155,18 @@ class PyLabLib(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         self.cam.set_exposure(float(exposure_s))
 
-    def _get_roi(self, woi=None, binning=None):
-        if woi is None:
-            woi = self._woi
-        if binning is None:
-            binx, biny = self._binning
-        else:
-            binx, biny = binning
-        x, w, y, h = [int(v) for v in woi]
-        x_p, w_p, y_p, h_p = x * binx, w * binx, y * biny, h * biny
-
-        return (x_p, x_p + w_p, y_p, y_p + h_p, binx, biny)
-
     def _set_woi_hw(self, woi):
         """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
         # pylablib ROI coordinates are physical (unbinned) sensor pixels, exclusive end.
         # https://pylablib.readthedocs.io/en/stable/_modules/pylablib/devices/Thorlabs/TLCamera.html
-        hstart, hend, vstart, vend, binx, biny = self._get_roi(woi=woi, binning=None)
+        binx, biny = self._binning
+        x, w, y, h = (int(v) for v in woi)
+        roi = dict(hstart=x * binx, hend=(x + w) * binx, vstart=y * biny, vend=(y + h) * biny)
         try:
-            self.cam.set_roi(
-                hstart=hstart, hend=hend,
-                vstart=vstart, vend=vend,
-                hbin=binx, vbin=biny
-            )
+            self.cam.set_roi(**roi, hbin=binx, vbin=biny)
         except:
-            # Some pylablib cameras don't support setting binning alongside ROI. Try setting ROI without binning.
-            self.cam.set_roi(
-                hstart=hstart, hend=hend,
-                vstart=vstart, vend=vend
-            )
+            # Some pylablib cameras don't support setting binning alongside the ROI.
+            self.cam.set_roi(**roi)
 
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
@@ -198,10 +181,11 @@ class PyLabLib(Camera):
 
     def _set_binning_hw(self, binning):
         """See :meth:`.Camera._set_binning_hw`."""
-        # pylablib set_roi accepts hbin/vbin to set binning alongside ROI.
-        hstart, hend, vstart, vend, binx, biny = self._get_roi(woi=None, binning=binning)
-
-        self.cam.set_roi(hstart=hstart, hend=hend, vstart=vstart, vend=vend, hbin=binx, vbin=biny)
+        # self._woi is already in physical (unbinned) pixels, so send it directly with the
+        # new binning (the base re-applies the WOI afterward).
+        binx, biny = binning
+        x, w, y, h = (int(v) for v in self._woi)
+        self.cam.set_roi(hstart=x, hend=x + w, vstart=y, vend=y + h, hbin=binx, vbin=biny)
 
     def _get_binning_hw(self):
         """See :meth:`.Camera._get_binning_hw`."""

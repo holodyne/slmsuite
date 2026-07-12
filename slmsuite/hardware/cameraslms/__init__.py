@@ -358,6 +358,8 @@ class FourierSLM(
         fs = FourierSLM(cam, slm, mag=data["__meta__"]["mag"])
         fs.name = data["__meta__"]["name"]
 
+        fs.calibrations = data["__meta__"].get("calibrations", {})
+
         return fs
 
     ### Automatic Calibration ###

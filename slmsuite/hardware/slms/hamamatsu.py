@@ -176,6 +176,8 @@ class Hamamatsu(SLM):
             conform with eventual implementation of this feature in other SLMs.
         """
         array_size = int(self.shape[0] * self.shape[1])
+        if hasattr(display, "get"):
+            display = display.get()
         array = display.astype(c_uint8)  # TODO: check if this is necessary
 
         write_fmemarray = Lcoslib.Write_FMemArray

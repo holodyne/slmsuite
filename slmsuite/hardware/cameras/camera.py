@@ -322,7 +322,7 @@ class Camera(_Common, ABC):
         else:
             self._binning = binning
 
-        if self.binning != binning:
+        if self._binning != binning:
             self.logger.warning("Attempted to set binning to %s, but realized %s.", target_binning, self.binning)
         else:
             self.logger.debug("Set WOI to %s.", self.woi)
@@ -898,7 +898,7 @@ class Camera(_Common, ABC):
         out = self._get_out(image_count, out)
 
         for i in range(image_count):
-            out[i, :, :] = self._get_image_hw(timeout_s)
+            out[i, :, :] = self._get_image_hw_tolerant(timeout_s)
 
         return out
 
@@ -1282,14 +1282,17 @@ class Camera(_Common, ABC):
         original_exposure = self.get_exposure()
         # Store frames as float: the analysis immediately casts to float anyway,
         # and this sidesteps any integer overflow from software binning or wide averaging.
-        imgs = np.zeros((exposures, self.shape[0], self.shape[1]), float)
+        imgs = None
         exposure_times = np.zeros((exposures,), dtype=float)
 
         for i in range(exposures):
             # FUTURE: record the get_exposures and use these to do better analysis.
             exposure_times[i] = self.set_exposure(int(exposure_power ** i) * original_exposure)
             self.flush()    # Sometimes, cameras return bad frames after exposure change.
-            imgs[i, :, :] = self.get_image(hdr=False, **kwargs)
+            frame = self.get_image(hdr=False, **kwargs)
+            if imgs is None:
+                imgs = np.zeros((exposures,) + tuple(frame.shape), float)
+            imgs[i, :, :] = frame
 
             # Terminate the loop if our image is entirely overexposed.
             if np.all(imgs[i, :, :] > overexposure_threshold):
@@ -1846,12 +1849,12 @@ class Camera(_Common, ABC):
 
         dz = np.mean(np.diff(z_list))
         popt0 = np.array(
-            [z_list[I_max_count], np.max(counts) - np.min(counts), np.min(counts), (z_list[-1]-z_list[0])]
+            [z_list[I_max_count], np.nanmax(counts) - np.nanmin(counts), np.nanmin(counts), (z_list[-1]-z_list[0])]
         )
         bounds = np.array(
             [
                 [z_list[0], 0, 0, dz],
-                [z_list[-1], (np.max(counts) - np.min(counts))*2, np.max(counts), np.inf]
+                [z_list[-1], (np.nanmax(counts) - np.nanmin(counts))*2, np.nanmax(counts), np.inf]
             ]
         )
 

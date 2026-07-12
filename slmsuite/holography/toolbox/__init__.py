@@ -672,7 +672,7 @@ def window_extent(window, padding_frac=0, padding_pix=0):
             raise ValueError("Unrecognized format for `window`.")
 
         # Add padding if desired.
-        padding_ = int((np.floor(np.diff(limit) * padding_frac) + padding_pix).item())
+        padding_ = int((np.floor(np.diff(limit) * padding_frac / 2) + padding_pix).item())
         limit += np.array([-padding_, padding_])
 
         # Clip the padding to shape (boolean array only — index-list tuples have no .shape).
@@ -1360,11 +1360,11 @@ def smallest_distance(vectors, metric="chebyshev"):
             d = min(d1, d2)
 
             # Leave if we don't need to merge.
-            if (v[M, axis] - v[M+1, axis]) > d:
+            if (v[M - 1, axis] - v[M, axis]) > d:
                 return d
 
-            # Merge around average x0 between two sections.
-            x0 = (v[M, axis] + v[M+1, axis]) / 2
+            # Merge around average x0 across the partition boundary.
+            x0 = (v[M - 1, axis] + v[M, axis]) / 2
             mask = np.abs(v[:, axis] - x0) < d
             subset = v[mask, :]
 
@@ -1611,6 +1611,8 @@ def lloyds_points(grid, n_points, iterations=10, plot=False):
         return result
     else:
         result = np.rint(result).astype(int)
+        result[0] = np.clip(result[0], 0, shape[1] - 1)
+        result[1] = np.clip(result[1], 0, shape[0] - 1)
         return np.vstack((x_grid[result[1], result[0]], y_grid[result[1], result[0]]))
 
 

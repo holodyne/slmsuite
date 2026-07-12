@@ -41,10 +41,10 @@ class _Common(_Viewable, _Loggable, ABC):
         else:
             if isinstance(pitch_um, REAL_TYPES):
                 pitch_um = [pitch_um, pitch_um]
-            self.pitch_um = np.squeeze(pitch_um)
-            if len(self.pitch_um) != 2 or np.any(self.pitch_um <= 0):
+            pitch_um = np.squeeze(pitch_um)
+            if len(pitch_um) != 2 or np.any(pitch_um <= 0):
                 raise ValueError("Expected positive (float, float) for pitch_um")
-            self.pitch_um = np.array([float(self.pitch_um[0]), float(self.pitch_um[1])])
+            self.pitch_um = np.array([float(pitch_um[0]), float(pitch_um[1])])
 
         # Empty handle for the live viewer.
         self.viewer = None

@@ -21,6 +21,12 @@ class _AbstractSpotHologram(FeedbackHologram):
         """Spot holograms do not need to consider vortices."""
         pass
 
+    def _remove_vortices(self, *args, **kwargs):
+        """Spot holograms do not need to consider vortices (private entry point used by
+        MultiplaneHologram). Overrides the base Hologram implementation, which would
+        otherwise run real vortex removal on spot children."""
+        pass
+
     def refine_offset(self, img=None, basis="kxy", force_affine=True, plot=False):
         """
         Hones the positions of the produced spots toward the desired targets to compensate for
@@ -1170,8 +1176,6 @@ class SpotHologram(_AbstractSpotHologram):
         # Parse null_vectors
         if null_vectors is not None:
             null_vectors = toolbox.format_2vectors(null_vectors)
-            if null_vectors.shape[1] != N:
-                raise ValueError("null_vectors must have the same length as the provided spots.")
         else:
             self.null_knm = None
             self.null_radius_knm = None

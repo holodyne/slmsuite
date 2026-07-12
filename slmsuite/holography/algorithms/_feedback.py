@@ -224,13 +224,14 @@ class FeedbackHologram(Hologram):
 
         target = cp.abs(target, out=target)
         norm = Hologram._norm(target)
-        target *= 1 / norm
 
         if norm == 0:
             raise ValueError(
                 "No power in hologram. Maybe target_ij is out of range of knm space? "
                 "Check transformations."
             )
+
+        target *= 1 / norm
 
         return target
 
@@ -261,6 +262,13 @@ class FeedbackHologram(Hologram):
                 if cleanup_images:
                     self.img_ij = None
                     self.img_knm = None
+
+    def _nearfield_extract(self):
+        """Phase was just recomputed from the farfield, so the SLM no longer displays
+        the current phase. Invalidate the projection flag so the next non-forced
+        :meth:`_update_slm` / :meth:`measure` re-projects instead of returning a stale frame."""
+        super()._nearfield_extract()
+        self._updated_slm = False
 
     def measure(self, basis="ij"):
         """
@@ -333,11 +341,12 @@ class FeedbackHologram(Hologram):
         # Set the null region.
         undefined = cp.isnan(self.target)
 
-        if null_region_radius_frac is None:
-            null_region_radius_frac = 1
+        # Start from the user-provided null mask, if any.
+        if null_region is not None:
+            null_region = cp.asarray(null_region, dtype=bool)
 
-        if null_region_radius_frac < 1:
-            # Build up the null region pattern if we have not already done the transform above.
+        # A radius fraction < 1 additionally nulls everything outside a centered circle.
+        if null_region_radius_frac is not None and null_region_radius_frac < 1:
             if null_region is None:
                 null_region = cp.zeros(self.shape, dtype=bool)
 
@@ -348,9 +357,11 @@ class FeedbackHologram(Hologram):
             mask = cp.square(xg) + cp.square(yg) > null_region_radius_frac**2
             null_region[mask] = True
 
-        if null_region_radius_frac >= 1:
+        if null_region is None:
+            # No null region of any kind: every undefined (nan) pixel becomes a hard zero.
             self.target[undefined] = 0
         else:
+            # Honor the null region (passed mask and/or circle) regardless of radius_frac.
             self.target[cp.logical_and(undefined, null_region)] = 0
 
         if reset_weights:

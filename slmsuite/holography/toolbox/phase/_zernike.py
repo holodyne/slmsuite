@@ -1253,6 +1253,11 @@ def _zernike_populate_basis_map(indices):
     if len(other_indices) > 0:
         pxy_m = np.pad(pxy_m, ((0, len(other_indices)), (0,0)))
         pxy_m[len(zernike_indices):, 0] = other_indices     # Other indices go into nx.
+        raise NotImplementedError(
+            "Special (negative) Zernike indices are not supported in the GPU "
+            "CompressedSpotHologram basis map. Use only non-negative Zernike indices "
+            "(the CPU zernike_sum / polynomial path does support special indices)."
+        )
 
     # Populate the results.
     c_md = _zernike_cache_vectorized[zernike_indices, :][:, cantor_indices[msort]].T.astype(np.float32)

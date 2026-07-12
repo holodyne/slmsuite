@@ -214,7 +214,7 @@ class _ViewerObject(object):
         r = np.array(self.state["range"]).astype(img.dtype)
         img = np.clip(img, r[0], r[1])
         img -= r[0]
-        d = r[1] - r[0]
+        d = float(r[1]) - float(r[0])
 
         if is_cam and self.state["log"]:
             # clip to avoid log(0)
@@ -249,8 +249,11 @@ class _ViewerObject(object):
         try:
             self.image.value = self.parse(img)
         except Exception as e:
-            with self.widgets["output"]:
-                print(str(e))
+            if "output" in self.widgets:
+                with self.widgets["output"]:
+                    print(str(e))
+            else:
+                print("slmsuite viewer render error:", str(e))
 
     def update(self, event):
         with self.widgets["output"]:

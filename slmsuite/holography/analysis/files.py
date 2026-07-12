@@ -52,9 +52,10 @@ def _max_numeric_id(path, name, extension=None, kind="file", digit_count=5):
          ``name`` in ``path`` could be found.
     """
     # Search all objects in path for conflicts.
-    conflict_regex = "{}_{}{}{}".format(name, r"\d{", digit_count, r"}")
+    conflict_regex = "^{}_{}{}{}".format(re.escape(name), r"\d{", digit_count, r"}")
     if extension is not None and kind == "file":
-        conflict_regex = "{}.{}".format(conflict_regex, extension)
+        conflict_regex = "{}{}".format(conflict_regex, re.escape("." + extension))
+    conflict_regex = "{}$".format(conflict_regex)
     max_numeric_id = -1
     for name_ in os.listdir(path):
         # Check current object for conflict.

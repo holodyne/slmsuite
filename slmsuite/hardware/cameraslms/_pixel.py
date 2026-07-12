@@ -208,7 +208,7 @@ class _PixelCalibration(object):
 
         # Make the y-pointing field vector, then the x-pointing field vector.
         field_freq = np.zeros((2, 2))
-        field_freq[0, 0] = field_freq[1, 1] = 1 / float(field_period)
+        field_freq[1, 0] = field_freq[0, 1] = 1 / float(field_period)
         field_kxy = toolbox.convert_vector(
             field_freq,
             from_units="freq",

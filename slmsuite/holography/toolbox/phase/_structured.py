@@ -461,6 +461,8 @@ def airy(grid, f=(np.inf, np.inf), w=None):
     canvas = np.zeros_like(x_grid)
 
     fx, fy = f
+    if fx == 0 or fy == 0:
+        raise ValueError("Cannot interpret a focal length of zero.")
 
     if np.isfinite(fx):
         canvas += (x_grid / (fx * w)) ** 3

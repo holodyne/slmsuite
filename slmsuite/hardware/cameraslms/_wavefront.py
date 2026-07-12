@@ -185,6 +185,8 @@ class _WavefrontCalibration(
 
         # Generate the initial grid.
         plane = format_2vectors(self.cam.shape[::-1])
+        if not np.isscalar(pitch):
+            pitch = format_2vectors(pitch)
         grid = np.ceil(plane / pitch - .5)
         spacing = np.floor(plane / (grid + (.5 if avoid_mirrors else 0))).astype(int)
         if avoid_mirrors:

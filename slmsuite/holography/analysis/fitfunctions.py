@@ -254,7 +254,7 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
     x = xy[0] - x0
     y = xy[1] - y0
 
-    wxy = np.sign(wxy) * np.min([np.abs(wxy), wx*wy])
+    wxy = np.sign(wxy) * np.min([np.abs(wxy), np.abs(wx * wy)])
 
     try:
         M = np.linalg.inv([[wx*wx, wxy], [wxy, wy*wy]])

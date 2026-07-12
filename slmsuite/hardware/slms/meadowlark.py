@@ -623,6 +623,9 @@ class Meadowlark(SLM):
         timeout_s : float
             Timeout for SLM trigger.
         """
+        if hasattr(display, "get"):
+            display = display.get()
+
         slm_number = ctypes.c_uint(self.slm_number)
         if self.sdk_mode == _SDK_MODE.HDMI:
             if Meadowlark._slm_lib_trace[_SDK_MODE.HDMI][1] == 2:       # 2 arguments

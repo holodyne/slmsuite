@@ -115,12 +115,13 @@ class RemoteCamera(_Client, Camera):
             command="_get_image_hw",
             kwargs=dict(timeout_s=timeout_s)
         )
-        self.logger.debug("get_image latency: %s s", time.perf_counter()-t)
+        if getattr(self, "logger", None) is not None:
+            self.logger.debug("get_image latency: %s s", time.perf_counter()-t)
         return img
 
     def _get_images_hw(self, image_count, timeout_s, out=None):
         """See :meth:`.Camera._get_images_hw`."""
-        if out is not None:
+        if out is not None and getattr(self, "logger", None) is not None:
             self.logger.warning("Remote camera does not support in-place operations.")
 
         return self._com(

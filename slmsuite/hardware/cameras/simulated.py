@@ -179,8 +179,8 @@ class SimulatedCamera(Camera):
             # Convert kxy -> knm (0,0 at corner): 1/dx -> Npx
             self.knm_cam = cp.array(
                 [
-                    self.shape_padded[0] * self._slm.pitch[0] * self.grid[1] + self.shape_padded[0] / 2,
-                    self.shape_padded[1] * self._slm.pitch[1] * self.grid[0] + self.shape_padded[1] / 2,
+                    self.shape_padded[0] * self._slm.pitch[1] * self.grid[1] + self.shape_padded[0] / 2,
+                    self.shape_padded[1] * self._slm.pitch[0] * self.grid[0] + self.shape_padded[1] / 2,
                 ]
             )
 

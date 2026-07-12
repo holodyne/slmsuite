@@ -164,6 +164,7 @@ class _BufferHandler(logging.Handler):
 # slmsuite logger: capture everything; let handlers filter by level
 _package_logger = logging.getLogger("slmsuite")
 _package_logger.setLevel(logging.DEBUG)
+_package_logger.propagate = False
 _package_logger.addHandler(logging.NullHandler())
 _BUFFER = _BufferHandler()
 _package_logger.addHandler(_BUFFER)

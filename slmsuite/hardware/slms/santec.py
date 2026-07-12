@@ -381,7 +381,7 @@ class Santec(SLM):
             return phase
         except BaseException as e:
             logger.warning("Error while loading phase correction.\n{}".format(e))
-            return self.source["phase"]
+            return self.source.get("phase")
 
     def close(self):
         """See :meth:`.SLM.close`."""
@@ -399,6 +399,9 @@ class Santec(SLM):
         display
             Integer data to display on the SLM. See :meth:`.SLM._set_phase_hw`.
         """
+        if hasattr(display, "get"):
+            display = display.get()
+
         matrix = display.astype(slm_funcs.USHORT)
         n_h, n_w = self.shape
 

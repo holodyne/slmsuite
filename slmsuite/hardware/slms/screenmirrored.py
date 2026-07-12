@@ -280,6 +280,8 @@ class ScreenMirrored(SLM):
         # GPU→CPU transfer happens on main thread (no OpenGL needed).
         if cp is not None and isinstance(display, cp.ndarray):
             display = cp.asnumpy(display)
+        elif not block:
+            display = display.copy()
 
         # Submit render to the window's dedicated thread.
         if execute:

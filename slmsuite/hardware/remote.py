@@ -161,20 +161,29 @@ def _recv(sock, timeout):
     closed = False
 
     # Pull data into the buffer until we hit timeout or deliminator.
-    while time.time() - t < timeout:
-        data = sock.recv(recv_buffer).decode()
+    old_timeout = sock.gettimeout()
+    sock.settimeout(timeout)
+    try:
+        # Pull data into the buffer until we hit timeout or deliminator.
+        while time.time() - t < timeout:
+            try:
+                data = sock.recv(recv_buffer).decode()
+            except socket.timeout:
+                break  # No data within the timeout window.
 
-        if data == "":
-            closed = True
-            break  # Peer closed the connection.
+            if data == "":
+                closed = True
+                break  # Peer closed the connection.
 
-        buffer += data
-        if buffer.endswith(_delim):
-            msg = json.loads(urllib.unquote_plus(buffer[0:-len(_delim)]))
+            buffer += data
+            if buffer.endswith(_delim):
+                msg = json.loads(urllib.unquote_plus(buffer[0:-len(_delim)]))
 
-            msg = _recurse_decompress(msg)
+                msg = _recurse_decompress(msg)
 
-            return msg
+                return msg
+    finally:
+        sock.settimeout(old_timeout)
 
     # Receive failed. Distinguish a clean disconnect from a timeout so the caller
     # (and client) sees the real cause. On success a dict is returned above, so the

@@ -1,6 +1,8 @@
 """
 Unit tests for Camera base class using SimulatedCamera.
 """
+import logging
+
 import pytest
 import numpy as np
 
@@ -643,6 +645,39 @@ class TestCamera:
             assert (x, w, y, h) == (10, 80, 5, 40), f"woi changed unexpectedly: {cam.woi}"
 
         cam.set_woi(None)
+
+    def test_set_binning_asymmetric_rotated(self, slm, caplog):
+        """Asymmetric binning on a 90/270-rotated camera must not log a spurious
+        'Attempted to set binning' warning. The realized-binning check compared the
+        transformed ``self.binning`` against the untransformed local ``binning``, which
+        differ for asymmetric binning whenever the transform swaps axes."""
+        cam = SimulatedCamera(slm, resolution=(200, 100), rot="90")
+        cam.close()
+
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            cam.set_binning((2, 4))
+
+        # The (2, 4) request is in the transformed (user) frame and it succeeds.
+        assert tuple(int(v) for v in cam.binning) == (2, 4), f"binning={cam.binning}"
+        spurious = [
+            r.getMessage() for r in caplog.records
+            if "Attempted to set binning" in r.getMessage()
+        ]
+        assert not spurious, spurious
+
+    def test_get_image_hdr_transform_false_rotated(self, slm):
+        """get_image(hdr=..., transform=False) on a 90-rotated, non-square camera must
+        return an untransformed-shaped frame rather than raising a broadcast error from
+        allocating the HDR stack with the transformed ``self.shape``."""
+        cam = SimulatedCamera(slm, resolution=(200, 100), rot="90")
+        cam.close()
+
+        single = cam.get_image(hdr=False, transform=False)
+        stacked = cam.get_image(hdr=2, transform=False)
+        assert stacked.shape == single.shape, f"{stacked.shape} != {single.shape}"
+
+        # Sanity: the transformed HDR frame still matches the camera's reported shape.
+        assert cam.get_image(hdr=2, transform=True).shape == cam.shape
 
     def test_binning_shape(self, slm, subtests):
         """set_binning() halves camera.shape and updates woi correctly."""

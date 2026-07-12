@@ -142,14 +142,25 @@ class MultiplaneHologram(Hologram):
         self._batched_weights_cp = None
         self._batched_weights_id = None
 
+    @staticmethod
+    def _kernel_signature(pk):
+        """Fingerprint a child's propagation_kernel so the batched-phasor cache is
+        invalidated on both reassignment (``id``) and in-place mutation (content sum)."""
+        if pk is None:
+            return None
+        if np.isscalar(pk):
+            return (id(pk), float(pk))
+        return (id(pk), float(cp.sum(pk)))
+
     def _refresh_batched_kernels(self):
         """Rebuild the stacked phasor if any child's propagation_kernel was
         reassigned since the last call. Detected via id()."""
-        need = False
-        for i, h in enumerate(self.holograms):
-            if id(h.propagation_kernel) != self._batched_kernel_ids[i]:
-                need = True
-                break
+        need = self._batched_kernel_phasor is None
+        if not need:
+            for i, h in enumerate(self.holograms):
+                if self._kernel_signature(h.propagation_kernel) != self._batched_kernel_ids[i]:
+                    need = True
+                    break
         if not need:
             return
 
@@ -167,7 +178,7 @@ class MultiplaneHologram(Hologram):
             else:
                 # Broadcasting handles both scalars and (slm_h, slm_w) arrays.
                 kernels[i] = pk
-            self._batched_kernel_ids[i] = id(pk)
+            self._batched_kernel_ids[i] = self._kernel_signature(pk)
         # Cache exp(1j * kernel). Used in both _nearfield2farfield (forward)
         # and _farfield2nearfield (via cp.conj on the same tensor).
         self._batched_kernel_phasor = cp.exp(1j * kernels.astype(complex_dtype))
@@ -256,7 +267,7 @@ class MultiplaneHologram(Hologram):
                 "Otherwise, we have no reference for the scale of a wavelength."
             )
 
-        f_eff = cameraslm.get_effective_focal_length()
+        f_eff = cameraslm.get_effective_focal_length("ij")
         w0_kxy = cameraslm.slm.get_spot_radius_kxy()
         w0_pix = f_eff * w0_kxy
         w0_um = w0_pix * np.mean(cameraslm.cam.pitch_um)

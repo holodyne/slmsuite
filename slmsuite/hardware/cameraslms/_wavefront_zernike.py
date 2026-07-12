@@ -342,7 +342,10 @@ class _WavefrontCalibrationZernike(object):
             else:
                 hologram.spot_ij = calibration_points_ij
         else:
-            hologram = None
+            raise ValueError(
+                "Zernike wavefront calibration requires at least 2 calibration points; "
+                f"got {calibration_points.shape[1]}. Increase 'calibration_points'."
+            )
 
         max_window_size = smallest_distance(calibration_points_ij)  # Size were windows graze each other.
         max_spot_integration_width_ij = int(2 * np.ceil(np.min((.5*max_window_size, 51)) / 2) + 1)

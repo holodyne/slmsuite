@@ -205,27 +205,25 @@ def take(
             except:
                 result[:, mask] = 0
 
-        if integrate:
+        if len(shape) == 2:
+            crop_shape = (vectors.shape[1], size[1], size[0])
+        elif len(shape) == 3:
+            crop_shape = (shape[0], vectors.shape[1], size[1], size[0])
+
+        if plot:
+            if len(shape) == 2:
+                take_plot(xp.reshape(result, crop_shape), separate_axes=False)
+            elif len(shape) == 3:
+                take_plot(xp.reshape(result, crop_shape)[0], separate_axes=False)
+
+        if integrate:   # Sum over the integration axis.
             if len(shape) == 2:
                 final_shape = (vectors.shape[1],)
             elif len(shape) == 3:
                 final_shape = (shape[0], vectors.shape[1],)
-        else:
-            if len(shape) == 2:
-                final_shape = (vectors.shape[1], size[1], size[0])
-            elif len(shape) == 3:
-                final_shape = (shape[0], vectors.shape[1], size[1], size[0])
-
-        if plot:
-            if len(shape) == 2:
-                take_plot(xp.reshape(result, final_shape), separate_axes=False)
-            elif len(shape) == 3:
-                take_plot(xp.reshape(result, final_shape)[0], separate_axes=False)
-
-        if integrate:   # Sum over the integration axis.
             return xp.sum(result.astype(float), axis=-1).reshape(final_shape)
         else:           # Reshape the integration axis.
-            return xp.reshape(result, final_shape)
+            return xp.reshape(result, crop_shape)
 
 
 def take_plot(images, shape=None, separate_axes=False, cbar=True):
@@ -261,7 +259,7 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
         vmax = np.nanmax(images)
 
         for x in range(img_count):
-            ax = plt.subplot(M, M, x + 1)
+            ax = plt.subplot(M, N, x + 1)
 
             ax.imshow(
                 images[x, :, :],
@@ -568,14 +566,14 @@ def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=Tru
                 scale_x, scale_y = grid[0], grid[1]
 
             if moment[0] != 0:
-                x_grid = (np.reshape(np.arange(w_x) - _center(w_x), (1, 1, w_x)) - c_x) * scale_x
+                x_grid = np.reshape(np.arange(w_x) - _center(w_x), (1, 1, w_x)) * scale_x - c_x
                 if moment[0] != 1:
                     x_grid = np.power(x_grid, moment[0], out=x_grid)
             else:
                 x_grid = 0
 
             if moment[1] != 0:
-                y_grid = (np.reshape(np.arange(w_y) - _center(w_y), (1, w_y, 1)) - c_y) * scale_y
+                y_grid = np.reshape(np.arange(w_y) - _center(w_y), (1, w_y, 1)) * scale_y - c_y
                 if moment[1] != 1:
                     y_grid = np.power(y_grid, moment[1], out=y_grid)
             else:
@@ -793,7 +791,7 @@ def image_variances(images, centers=None, grid=None, normalize=True, nansum=Fals
         images = image_normalize(images, nansum=nansum)
 
     if centers is None:
-        centers = image_positions(images, normalize=False, nansum=nansum)
+        centers = image_positions(images, grid=grid, normalize=False, nansum=nansum)
 
     m20 = image_moment(images, (2, 0), centers=centers, grid=grid, normalize=False, nansum=nansum)
     m02 = image_moment(images, (0, 2), centers=centers, grid=grid, normalize=False, nansum=nansum)
@@ -934,9 +932,10 @@ def image_ellipticity_angle(variances):
     # We know that M * v = eig_plus * v. This yields a system of equations:
     #   m20 * x + m11 * y = eig_plus * x
     #   m11 * x + m02 * y = eig_plus * y
-    # We're trying to solve for angle, which is atan(y/x) from the x-axis. We can solve for y/x:
-    #   m11 * x = (eig_plus - m02) * y        ==>         y/x = m11 / (eig_plus - m02)
-    return np.arctan2(m11, eig_plus - m02, where=m11 != 0, out=np.zeros_like(m11))
+    # We're trying to solve for angle, which is atan(y/x) from the x-axis. The standard
+    # major-axis orientation of the [[m20, m11], [m11, m02]] covariance is
+    #   0.5 * arctan2(2*m11, m20 - m02),
+    return 0.5 * np.arctan2(2 * m11, m20 - m02)
 
 
 def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
@@ -1373,7 +1372,7 @@ def image_remove_vortices(phase_image, mask=None, return_vortices_negative=False
         canvas = phase_image
 
     for x, y, w in zip(coordinates[1], coordinates[0], weights):
-        canvas -= w * xp.arctan2(grid[1] - y, grid[0] - x)
+        canvas -= w * xp.arctan2(grid[0] - x, grid[1] - y)
 
     return canvas
 
@@ -2309,7 +2308,7 @@ def blob_array_detect(
         region_fraction = np.nansum(regions) / np.nansum(img)
 
         # Get the first order moment rint each of the guess windows.
-        shift = image_positions(regions) - (guess_positions - np.rint(guess_positions))
+        shift = image_positions(regions) - (guess_positions - np.floor(guess_positions))
 
         # Remove outliers.
         shift_error = np.sqrt(np.square(shift[0, :]) + np.square(shift[1, :]))

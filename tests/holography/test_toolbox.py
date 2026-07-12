@@ -628,6 +628,68 @@ def test_smallest_distance(subtests):
         )
         assert str_result == pytest.approx(fn_result, rel=1e-10)
 
+    with subtests.test("randomized trials vs pdist ground truth (D&C path)"):
+        # The divide-and-conquer path only triggers for N >= 2*min_div (== 400). Run many
+        # randomized trials across distributions and metrics, comparing EVERY result to
+        # the brute-force pdist ground truth. This is what catches partition/merge
+        # off-by-one errors: those only surface for specific layouts where the globally
+        # closest pair straddles the recursion's split line, so a handful of fixed seeds
+        # is not enough -- many trials are.
+        metrics = ["euclidean", "chebyshev", "cityblock"]
+        for trial in range(200):
+            rng = np.random.default_rng(trial)
+            n = int(rng.integers(400, 800))         # >= 400 -> exercises divide-and-conquer
+            metric = metrics[trial % len(metrics)]
+
+            kind = trial % 4
+            if kind == 0:
+                vecs = rng.uniform(0, 5000, size=(2, n))            # sparse uniform
+            elif kind == 1:
+                vecs = rng.uniform(0, 30, size=(2, n))              # dense -> tiny d, near-ties
+            elif kind == 2:
+                # Several tight clusters; closest pairs land at varied x positions,
+                # frequently straddling the median split.
+                k = int(rng.integers(2, 6))
+                centers = rng.uniform(0, 1000, size=(k, 2))
+                idx = rng.integers(0, k, size=n)
+                vecs = (centers[idx] + rng.normal(0, 0.5, size=(n, 2))).T
+            else:
+                # Points spread along x with small y jitter, so the sort/partition is
+                # well-defined and a closest pair can sit right at the boundary.
+                xs = np.sort(rng.uniform(0, 1000, n))
+                ys = rng.uniform(0, 5, n)
+                vecs = np.vstack((xs, ys))
+
+            expected = distance.pdist(vecs.T, metric=metric).min()
+            result = smallest_distance(vecs, metric=metric)
+            assert result == pytest.approx(expected, rel=1e-9, abs=1e-9), (
+                f"trial {trial}: n={n}, metric={metric}, kind={kind}: "
+                f"got {result}, expected {expected}"
+            )
+
+    with subtests.test("closest pair straddling the partition (D&C)"):
+        # Targeted construction: inject the globally-closest pair near the median x (the
+        # recursion's split line) with all other points well separated, so the merge step
+        # must be centered on the correct boundary to find it. An off-by-one in the merge
+        # boundary returns the (larger) next-closest distance instead.
+        for trial in range(80):
+            rng = np.random.default_rng(5000 + trial)
+            n = 500
+            xs = np.linspace(0, 1000, n) + rng.uniform(-0.1, 0.1, n)
+            ys = np.linspace(0, 1000, n)[rng.permutation(n)]
+            mid = n // 2
+            eps = 1e-4
+            xmid = 0.5 * (xs[mid] + xs[mid + 1])
+            xs[mid], xs[mid + 1] = xmid - eps / 2, xmid + eps / 2
+            ys[mid] = ys[mid + 1] = 500.0
+            vecs = np.vstack((xs, ys))
+
+            expected = distance.pdist(vecs.T, metric="euclidean").min()
+            result = smallest_distance(vecs, metric="euclidean")
+            assert result == pytest.approx(expected, rel=1e-9, abs=1e-12), (
+                f"trial {trial}: got {result}, expected {expected}"
+            )
+
 
 def test_lloyds_algorithm(subtests):
     """Comprehensive tests for lloyds_algorithm."""

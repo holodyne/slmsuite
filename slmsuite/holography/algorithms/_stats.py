@@ -495,7 +495,7 @@ class _HologramStats(object):
         if isinstance(source, str):
             titles = {
                 "amp_ff" : "Farfield Amplitude",
-                "phase_ff" : "Farfield Amplitude",
+                "phase_ff" : "Farfield Phase",
                 "target" : "Target Amplitude",
             }
             if source in titles.keys():

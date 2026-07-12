@@ -142,19 +142,22 @@ def test_binary(simple_grid, normalized_grid, subtests):
         assert np.std(phase_thin) > 0
         assert np.std(phase_thick) > 0
 
-    with subtests.test("zero vector, no shift returns b"):
+    with subtests.test("zero vector, no shift falls in the duty (a) region"):
+        # shift=0, duty=0.5: mod(0)=0 < pi, so the constant grating is in the 'a' region.
         result = phase.binary(simple_grid, vector=(0, 0), a=np.pi, b=0)
-        assert np.allclose(result, 0)
-
-    with subtests.test("zero vector with shift beyond duty returns a"):
-        result = phase.binary(simple_grid, vector=(0, 0), a=np.pi, b=0,
-                              shift=np.pi, duty_cycle=0.25)
         assert np.allclose(result, np.pi)
 
-    with subtests.test("zero vector with small shift returns b"):
+    with subtests.test("zero vector with shift beyond duty returns b"):
+        # shift=pi, duty=0.25: mod(pi)=pi >= 2*pi*0.25 = pi/2, so outside the duty region.
+        result = phase.binary(simple_grid, vector=(0, 0), a=np.pi, b=0,
+                              shift=np.pi, duty_cycle=0.25)
+        assert np.allclose(result, 0)
+
+    with subtests.test("zero vector with small shift within duty returns a"):
+        # shift=0.1, duty=0.5: mod(0.1)=0.1 < pi, so still inside the duty region.
         result = phase.binary(simple_grid, vector=(0, 0), a=np.pi, b=0,
                               shift=0.1, duty_cycle=0.5)
-        assert np.allclose(result, 0)
+        assert np.allclose(result, np.pi)
 
     with subtests.test("x-only vector uses single-axis path"):
         result = phase.binary(simple_grid, vector=(0.1, 0), a=np.pi, b=0)

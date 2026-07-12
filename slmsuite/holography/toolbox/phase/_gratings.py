@@ -203,10 +203,11 @@ def binary(
 
     # Check if we're in an orthogonal case.
     if vector[0] == 0 and vector[1] == 0:
-        phase = b
-        if shift != 0:
-            if np.mod(shift, 2*np.pi) >= (2 * np.pi * duty_cycle):
-                phase = a
+        decision = np.mod(shift, 2 * np.pi)
+        if np.isclose(decision, 2 * np.pi):
+            decision = 0
+        decision -= 2 * np.pi * duty_cycle
+        phase = a if (decision < 0 and not np.isclose(decision, 0)) else b
         return np.full(x_grid.shape, phase, dtype=dtype)
     elif vector[0] != 0 and vector[1] != 0:
         pass    # xor the next case.
