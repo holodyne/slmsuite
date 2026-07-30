@@ -147,7 +147,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``.
 
     -  ``"ij"``
-        Camera pixel units, relative to the origin of the camera (potentially with WOI or binning applied).
+        Camera sensor pixel units, the coordinates of the image array returned by 
+        :meth:`~slmsuite.hardware.cameras.Camera.get_image()` using numpy ``img[y, x]`` convention.
         When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
         unless converting only between camera units (see ``"ijraw"``), in which case a
@@ -156,10 +157,10 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         and :meth:`~slmsuite.hardware.cameraslms.FourierSLM.ijcam_to_kxyslm`.
 
     -  ``"ijraw"``
-        Raw camera sensor pixel units: the **unbinned, un-WOI'd, untransformed** coordinate
-        system of the transformed physical sensor, as opposed to ``"ij"`` which lives in the WOI- and
-        binning-applied frame of the returned image.
-        Requires a :class:`~slmsuite.hardware.cameras.camera.Camera`
+        Raw camera sensor pixel units: the **unbinned, un-WOI'd** coordinate system of the 
+        transformed physical sensor, as opposed to ``"ij"`` which lives in the WOI- and
+        binning-applied frame of the returned image.  Requires a 
+        :class:`~slmsuite.hardware.cameras.camera.Camera`
         (or :class:`~slmsuite.hardware.cameraslms.FourierSLM`) to be passed to ``hardware``.
         The mapping to ``"ij"`` is the camera's
         :meth:`~slmsuite.hardware.cameras.camera.Camera._get_ijraw_to_ijcam` affine.
@@ -191,7 +192,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         zernike focus term necessary to focus at the given depth.
 
     -  ``"ij"``
-        True cartesian distance relative to the **camera plane** in pixels.
+        True cartesian distance relative to the **camera plane** in camera pixels.
+        Cameras with rectangular (anisotropic) pixels average the pixel dimensions.
 
     -  ``"ijraw"``
         True cartesian distance relative to the **camera plane** in raw (unbinned) sensor
