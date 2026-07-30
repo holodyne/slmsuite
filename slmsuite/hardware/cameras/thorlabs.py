@@ -58,17 +58,24 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
         else:
             dll_path += "32_lib"
 
+    if not os.path.isdir(dll_path):
+        if DEFAULT_DLL_PATH == dll_path:
+            warnings.warn(
+                f"thorlabs_tsi_sdk DLLs not found at default path. "
+                f"Resolve to use Thorlabs cameras.\nDefault path: '{DEFAULT_DLL_PATH}'"
+            )
+        return
+
+    # tl_camera_open_sdk() loads the device .dlls (e.g.
+    # thorlabs_tsi_zelux_camera_device.dll) at runtime with a plain LoadLibrary,
+    # which searches PATH but *not* directories registered with
+    # os.add_dll_directory(). Do both, matching Thorlabs' own windows_setup.py;
+    # PATH alone would cover the top-level ctypes load too, but add_dll_directory
+    # keeps that load robust if PATH is later modified.
+    os.environ["PATH"] = dll_path + os.pathsep + os.environ["PATH"]
+
     if hasattr(os, "add_dll_directory"):
-        try:
-            os.add_dll_directory(dll_path)
-        except:
-            if DEFAULT_DLL_PATH == dll_path:
-                warnings.warn(
-                    f"thorlabs_tsi_sdk DLLs not found at default path. "
-                    "Resolve to use Thorlabs cameras.\nDefault path: '{DEFAULT_DLL_PATH}'"
-                )
-    else:
-        os.environ["PATH"] = dll_path + os.pathsep + os.environ["PATH"]
+        os.add_dll_directory(dll_path)
 
 _configure_tlcam_dll_path()
 
