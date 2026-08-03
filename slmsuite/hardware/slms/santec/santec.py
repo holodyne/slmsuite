@@ -7,9 +7,7 @@ Note
 The ``"dll"`` backend requires dynamically linked libraries from Santec in the
 runtime directory: ``SLMFunc.dll`` and ``FTD3XX.dll`` (Windows only).
 
-The ``"usb"`` backend requires ``PyD3XX`` (cross-platform)::
-
-    pip install PyD3XX
+The ``"usb"`` backend requires ``PyD3XX`` (cross-platform): ``pip install PyD3XX``.
 
 Note
 ~~~~
@@ -48,27 +46,13 @@ class Santec(SLM):
     """
     Interfaces with Santec SLMs via DLL or USB backend.
 
-    The two backends are complementary, not interchangeable:
-
-    =========  =====  ======
-    Backend    DVI    Memory
-    =========  =====  ======
-    ``"dll"``  yes    no
-    ``"usb"``  no     yes
-    =========  =====  ======
-
     The ``"dll"`` backend requires ``SLMFunc.dll`` and ``FTD3XX.dll`` in the
     runtime directory (Windows only). The ``"usb"`` backend requires
     ``PyD3XX`` (cross-platform, install with ``pip install PyD3XX``).
 
     The ``"usb"`` backend operates in USB/Memory mode (``VI=0``). Phase patterns
     are double-buffered across slots 1 and 2 so the active slot is never written
-    while being displayed.
-
-    The public multi-slot API (``upload_slot``, ``display_slot``, slot cycling,
-    trigger-driven slot advance) is reserved for a future superclass release.
-    Private wiring already conforms to the announced
-    ``_set_phase_hw(display, index=None)`` hook.
+    while being displayed. In the future, the DVI interface may be supported.
 
     Attributes
     ----------
@@ -110,16 +94,24 @@ class Santec(SLM):
         Idempotent: safe to call multiple times; returns immediately if already
         loaded.
 
-        Args:
-            backend: ``"dll"`` or ``"usb"`` (case-insensitive), or a _BACKEND value.
-            dll_path: Reserved for future use; currently unused.
+        Parameters
+        ----------
+        backend : str OR _BACKEND
+            ``"dll"`` or ``"usb"`` (case-insensitive), or a :class:`._BACKEND` value.
+        dll_path : str OR None
+            Reserved for future use; currently unused.
 
-        Returns:
-            The resolved _BACKEND enum value.
+        Returns
+        -------
+        _BACKEND
+            The resolved backend enum value.
 
-        Raises:
-            ImportError: If the required library (SLMFunc.dll or PyD3XX) is unavailable.
-            RuntimeError: If backend is unrecognized.
+        Raises
+        ------
+        ImportError
+            If the required library (``SLMFunc.dll`` or ``PyD3XX``) is unavailable.
+        RuntimeError
+            If ``backend`` is unrecognized.
         """
         if isinstance(backend, str):
             try:
@@ -158,17 +150,24 @@ class Santec(SLM):
         """
         Discover connected Santec SLMs.
 
-        Args:
-            backend: ``"dll"`` lists Windows display numbers and names;
-                ``"usb"`` lists FTDI serial number strings.
-            verbose: Whether to print discovered devices.
+        Parameters
+        ----------
+        backend : str
+            ``"dll"`` lists Windows display numbers and names;
+            ``"usb"`` lists FTDI serial number strings.
+        verbose : bool
+            Whether to print discovered devices.
 
-        Returns:
-            DLL: list of ``(display_number, display_name)`` tuples.
-            USB: list of FTDI serial number strings.
+        Returns
+        -------
+        list
+            For ``"dll"``, a list of ``(display_number, display_name)`` tuples.
+            For ``"usb"``, a list of FTDI serial number strings.
 
-        Raises:
-            ImportError: If the backend library is unavailable.
+        Raises
+        ------
+        ImportError
+            If the backend library is unavailable.
         """
         Santec._load_lib(backend)
         be = _BACKEND[backend.upper()]
@@ -194,9 +193,7 @@ class Santec(SLM):
                     display_list.append((display_number, name))
             return display_list
         if be == _BACKEND.USB:
-            from ._santec_ftdi import SantecFTDI
-
-            serials = SantecFTDI.list_devices()
+            serials = _SantecUSBDriver.list_devices()
             if verbose:
                 print("Santec USB devices detected:")
                 for s in serials:
@@ -577,7 +574,7 @@ class Santec(SLM):
         """
         if self.backend != _BACKEND.USB:
             raise NotImplementedError("Input trigger control is not implemented for the DLL backend.")
-        self._driver._ftdi.set_trigger_input(bool(on))
+        self._driver.set_trigger_input(bool(on))
 
     def set_output_trigger(self, on: bool = False) -> None:
         """
@@ -595,7 +592,7 @@ class Santec(SLM):
         """
         if self.backend != _BACKEND.USB:
             raise NotImplementedError("Output trigger control is not implemented for the DLL backend.")
-        self._driver._ftdi.set_trigger_output(bool(on))
+        self._driver.set_trigger_output(bool(on))
 
     def load_csv(self, filename: str) -> None:
         """
