@@ -96,11 +96,6 @@ class _SantecUSBDriver:
     configuration uses ASCII control commands (``CMD_CONTROL`` packets); image
     data uses a binary multi-packet protocol (``CMD_IMAGEDATA`` packets).
 
-    Also manages the double-buffer slot state used by :meth:`write_frame`, and
-    presents the common driver interface (:meth:`open`, :meth:`prime`,
-    :meth:`close`, :meth:`write_frame`, ...) shared with
-    :class:`._dll_driver._SantecDLLDriver`.
-
     Supports the context manager protocol::
 
         with _SantecUSBDriver("AB000001") as dev:
@@ -161,9 +156,10 @@ class _SantecUSBDriver:
         self.serial_number = serial_number
         self.channel = channel
         self._resolution = resolution
-        # slot displayed by the most recent write_frame(); the double-buffer path
-        # writes to the other slot of the {1, 2} pair. prime() establishes slot 2.
-        self._active_slot = 2
+
+        # Active display slot
+        self._active_slot = 1
+
         # FIFO index (int) for FT_ReadPipeEx / FT_WritePipeEx on Linux/macOS
         self._fifo_out = channel
         self._fifo_in = channel
@@ -287,16 +283,12 @@ class _SantecUSBDriver:
 
     def prime(self) -> None:
         """
-        Set USB/Memory video mode, upload a blank frame to slot 2, and display it.
-
-        Establishes the initial double-buffer state (:attr:`_active_slot` = 2), so
-        the first :meth:`write_frame` call writes to slot 1.
+        Set USB/Memory video mode, upload a blank frame to slot 1, and display it.
         """
         self.set_video_mode(0)
         width, height = self._resolution
-        self.upload_image(2, np.zeros((height, width), dtype=np.uint16))
-        self.display_slot(2)
-        self._active_slot = 2
+        self.upload_image(1, np.zeros((height, width), dtype=np.uint16))
+        self.display_slot(1)
 
     def close(self) -> None:
         """Close the FTDI USB connection."""
@@ -320,21 +312,19 @@ class _SantecUSBDriver:
         frame : numpy.ndarray OR int
             Array to upload, or an int naming the slot to display.
         index : int OR None
-            Target slot for array writes. ``None`` uses the double-buffer path:
-            the frame is written to the inactive slot of the ``{1, 2}`` pair and
-            the display is switched to it, so the displayed slot is never written
-            while it is being displayed. An explicit index writes to that slot
-            without switching the display.
+            Target slot for array writes. ``None`` writes to the next slot after
+            the currently displayed one, wrapping around to
+            ``MIN_SLOT`` after ``MAX_SLOT``.
+            If ``frame`` is an int, this argument is ignored.
         """
         if isinstance(frame, (int, np.integer)):
             self.display_slot(int(frame) + 1)
-            self._active_slot = int(frame) + 1
             return
+
         if index is None:
-            write_slot = 3 - self._active_slot
+            write_slot = self._modulo_slot(self._active_slot + 1)
             self.upload_image(write_slot, frame)
             self.display_slot(write_slot)
-            self._active_slot = write_slot
         else:
             self.upload_image(index + 1, frame)
 
@@ -680,6 +670,22 @@ class _SantecUSBDriver:
 
     # memory slots -- SLM_Ctrl_WriteMI / WriteDS / ReadDS / WriteME
 
+    def _modulo_slot(self, slot: int) -> int:
+        """
+        Wrap a slot index into the valid range.
+
+        Parameters
+        ----------
+        slot : int
+            Slot index to wrap.
+
+        Returns
+        -------
+        int
+            Wrapped slot index in the range ``MIN_SLOT`` to ``MAX_SLOT``.
+        """
+        return ((slot - self.MIN_SLOT) % (self.MAX_SLOT - self.MIN_SLOT + 1)) + self.MIN_SLOT
+
     def upload_image(self, slot: int, image: npt.NDArray[np.uint16]) -> str:
         """
         Upload a uint16 pixel array to a memory slot.
@@ -734,7 +740,6 @@ class _SantecUSBDriver:
         ----------
         slot : int
             Memory slot to display, ``MIN_SLOT`` to ``MAX_SLOT``.
-
         Returns
         -------
         str
@@ -747,7 +752,9 @@ class _SantecUSBDriver:
         """
         if not (self.MIN_SLOT <= slot <= self.MAX_SLOT):
             raise ValueError("Slot {} out of valid range ({}-{}).".format(slot, self.MIN_SLOT, self.MAX_SLOT))
-        return self._control_command(b"DS", [slot])
+        ret = self._control_command(b"DS", [slot])
+        self._active_slot = slot
+        return ret
 
     def get_displayed_slot(self) -> int:
         """
