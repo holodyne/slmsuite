@@ -1,4 +1,4 @@
-"""DLL backend adapter for Santec SLMs (wraps _slm_win ctypes module)."""
+"""DLL backend driver for Santec SLMs (wraps the ``_slm_win`` ctypes module)."""
 
 import ctypes
 import warnings
@@ -23,12 +23,16 @@ class _SantecDLLDriver:
 
     def __init__(self, slm_number: int, display_number: int, slm_win) -> None:
         """
-        Initialize the driver (no DLL calls yet).
+        Initialize the driver. Makes no DLL calls.
 
-        Args:
-            slm_number: USB control port number used by the Santec SDK.
-            display_number: Windows display number used by the Santec SDK.
-            slm_win: Imported ``_slm_win`` module providing ctypes bindings.
+        Parameters
+        ----------
+        slm_number : int
+            USB control port number used by the Santec SDK.
+        display_number : int
+            Windows display number used by the Santec SDK.
+        slm_win : module
+            Imported ``_slm_win`` module providing the ctypes bindings.
         """
         self._sf = slm_win
         self._slm_number = slm_number
@@ -40,18 +44,26 @@ class _SantecDLLDriver:
 
     def _check(self, status: int, raise_error: bool = True) -> tuple[int, str, str]:
         """
-        Parse an SLM_STATUS return code and raise or warn on error.
+        Parse an ``SLM_STATUS`` return code and raise or warn on error.
 
-        Args:
-            status: Integer status code from a DLL call.
-            raise_error: Raise RuntimeError on non-zero status when True.
+        Parameters
+        ----------
+        status : int
+            Integer status code from a DLL call.
+        raise_error : bool
+            Raise ``RuntimeError`` on non-zero status.
 
-        Returns:
-            (code, name, note) tuple.
+        Returns
+        -------
+        (int, str, str)
+            ``(code, name, note)``.
 
-        Raises:
-            ValueError: If status code is not in SLM_STATUS_DICT.
-            RuntimeError: If status is non-zero and raise_error is True.
+        Raises
+        ------
+        ValueError
+            If the status code is not in ``SLM_STATUS_DICT``.
+        RuntimeError
+            If the status is non-zero and ``raise_error`` is ``True``.
         """
         status = int(status)
         if status not in self._sf.SLM_STATUS_DICT:
@@ -68,8 +80,10 @@ class _SantecDLLDriver:
         """
         Open USB control, wait until the device is ready, and set DVI video mode.
 
-        Raises:
-            RuntimeError: On any non-OK, non-busy status from the device.
+        Raises
+        ------
+        RuntimeError
+            On any non-OK, non-busy status from the device.
         """
         self._check(self._sf.SLM_Ctrl_Open(self._slm_number))
         while True:
@@ -86,8 +100,10 @@ class _SantecDLLDriver:
         """
         Open the SLM display window.
 
-        Raises:
-            RuntimeError: On DLL error.
+        Raises
+        ------
+        RuntimeError
+            On DLL error.
         """
         self._check(self._sf.SLM_Disp_Open(self._display_number))
 
@@ -100,15 +116,20 @@ class _SantecDLLDriver:
         """
         Query display dimensions and cache display metadata.
 
-        Populates :attr:`product_code_id` and the firmware serial used by
+        Populates :attr:`product_code_id` and the firmware serial returned by
         :meth:`get_firmware_serial`.
 
-        Returns:
-            (width, height) in pixels.
+        Returns
+        -------
+        (int, int)
+            ``(width, height)`` in pixels.
 
-        Raises:
-            ValueError: If the display number does not correspond to an LCOS-SLM.
-            RuntimeError: On DLL error.
+        Raises
+        ------
+        ValueError
+            If the display number does not correspond to an LCOS-SLM.
+        RuntimeError
+            On DLL error.
         """
         width = ctypes.c_ushort(0)
         height = ctypes.c_ushort(0)
@@ -127,10 +148,12 @@ class _SantecDLLDriver:
 
     def get_board_serials(self) -> None:
         """
-        Query and cache drive and option board serial numbers.
+        Query and cache the drive and option board serial numbers.
 
-        Raises:
-            RuntimeError: On DLL error.
+        Raises
+        ------
+        RuntimeError
+            On DLL error.
         """
         driveboard_buf = ctypes.create_string_buffer(16)
         optionboard_buf = ctypes.create_string_buffer(16)
@@ -142,14 +165,18 @@ class _SantecDLLDriver:
         """
         Write a frame to the SLM display (DVI mode only).
 
-        Args:
-            frame: ndarray to display. Passing an int (slot switch) or a non-None
-                index (slot-addressed write) raises NotImplementedError because DVI
-                mode has no slot concept.
-            index: Must be None for DVI mode.
+        Parameters
+        ----------
+        frame : numpy.ndarray OR int
+            Array to display. Passing an int (slot switch) raises
+            ``NotImplementedError`` because DVI mode has no slot concept.
+        index : int OR None
+            Must be ``None`` for DVI mode.
 
-        Raises:
-            NotImplementedError: If frame is an int or index is not None.
+        Raises
+        ------
+        NotImplementedError
+            If ``frame`` is an int or ``index`` is not ``None``.
         """
         if isinstance(frame, (int, np.integer)):
             raise NotImplementedError("Slot switching is not supported for the DLL backend (DVI mode only).")
@@ -164,14 +191,20 @@ class _SantecDLLDriver:
         """
         Read the current phase table wavelength and maximum phase.
 
+        Note
+        ~~~~
         The DLL encodes max phase as ``int(phase_rad * 100 / pi)``; this method
         converts to the ``(nm, phase_pi)`` convention shared with the USB driver.
 
-        Returns:
-            (wav_nm, phase_pi) where phase_pi is in units of pi.
+        Returns
+        -------
+        (int, float)
+            ``(wav_nm, phase_pi)``, where ``phase_pi`` is in units of pi.
 
-        Raises:
-            RuntimeError: On DLL error.
+        Raises
+        ------
+        RuntimeError
+            On DLL error.
         """
         wav_nm = ctypes.c_uint32(0)
         phase_val = ctypes.c_ulong(0)
@@ -182,13 +215,18 @@ class _SantecDLLDriver:
         """
         Update the phase calibration wavelength.
 
-        Args:
-            wav_nm: Wavelength in nanometres.
-            max_phase_pi: Maximum phase in units of pi; converted to
-                ``int(round(max_phase_pi * 100))`` for the DLL call.
+        Parameters
+        ----------
+        wav_nm : int
+            Wavelength in nanometres.
+        max_phase_pi : float
+            Maximum phase in units of pi, converted to
+            ``int(round(max_phase_pi * 100))`` for the DLL call.
 
-        Raises:
-            RuntimeError: On DLL error.
+        Raises
+        ------
+        RuntimeError
+            On DLL error.
         """
         phase_val = int(round(max_phase_pi * 100))
         self._check(self._sf.SLM_Ctrl_WriteWL(self._slm_number, ctypes.c_uint32(wav_nm), phase_val))
@@ -197,20 +235,26 @@ class _SantecDLLDriver:
         """
         Persist the current phase table to EEPROM.
 
-        Raises:
-            RuntimeError: On DLL error.
+        Raises
+        ------
+        RuntimeError
+            On DLL error.
         """
         self._check(self._sf.SLM_Ctrl_WriteAW(self._slm_number))
 
     def get_temperature(self) -> tuple[float, float]:
         """
-        Read drive and option board temperatures.
+        Read the drive and option board temperatures.
 
-        Returns:
-            (drive_temp_C, option_temp_C).
+        Returns
+        -------
+        (float, float)
+            ``(drive_temp_celsius, option_temp_celsius)``.
 
-        Raises:
-            RuntimeError: On DLL error.
+        Raises
+        ------
+        RuntimeError
+            On DLL error.
         """
         drive_temp = ctypes.c_uint32(0)
         option_temp = ctypes.c_uint32(0)
@@ -219,13 +263,17 @@ class _SantecDLLDriver:
 
     def get_errors(self) -> tuple[int, int]:
         """
-        Read drive and option board error bitfields.
+        Read the drive and option board error bitfields.
 
-        Returns:
-            (drive_error_bits, option_error_bits) as raw integers.
+        Returns
+        -------
+        (int, int)
+            ``(drive_error_bits, option_error_bits)`` as raw integers.
 
-        Raises:
-            RuntimeError: On DLL error.
+        Raises
+        ------
+        RuntimeError
+            On DLL error.
         """
         drive_error = ctypes.c_uint32(0)
         option_error = ctypes.c_uint32(0)
@@ -234,10 +282,12 @@ class _SantecDLLDriver:
 
     def get_status(self) -> tuple[int, str, str]:
         """
-        Read and decode current device status.
+        Read and decode the current device status.
 
-        Returns:
-            (code, name, note) tuple.
+        Returns
+        -------
+        (int, str, str)
+            ``(code, name, note)``.
         """
         status = int(self._sf.SLM_Ctrl_ReadSU(self._slm_number))
         if status not in self._sf.SLM_STATUS_DICT:
@@ -249,8 +299,12 @@ class _SantecDLLDriver:
         """
         Return the cached drive board serial number.
 
-        Returns:
-            Drive board serial string. Call :meth:`get_board_serials` first.
+        Call :meth:`get_board_serials` first.
+
+        Returns
+        -------
+        str
+            Drive board serial string.
         """
         return self._driveboard_id
 
@@ -258,18 +312,26 @@ class _SantecDLLDriver:
         """
         Return the cached option board serial number.
 
-        Returns:
-            Option board serial string. Call :meth:`get_board_serials` first.
+        Call :meth:`get_board_serials` first.
+
+        Returns
+        -------
+        str
+            Option board serial string.
         """
         return self._optionboard_id
 
     def get_firmware_serial(self) -> str:
         """
-        Return the cached firmware version string (SerialNumberID from SLM_Disp_Info2).
+        Return the cached firmware version string.
 
-        Returns:
-            Firmware serial string, e.g. ``"2018021001"``. Call
-            :meth:`get_display_dims` first.
+        This is the ``SerialNumberID`` from ``SLM_Disp_Info2``. Call
+        :meth:`get_display_dims` first.
+
+        Returns
+        -------
+        str
+            Firmware serial string, e.g. ``"2018021001"``.
         """
         return self._firmware_serial
 
@@ -277,10 +339,14 @@ class _SantecDLLDriver:
         """
         Write the phase image from a CSV file to the display.
 
-        Args:
-            filename: Path to the CSV file.
+        Parameters
+        ----------
+        filename : str
+            Path to the CSV file.
 
-        Raises:
-            RuntimeError: On DLL error.
+        Raises
+        ------
+        RuntimeError
+            On DLL error.
         """
         self._check(self._sf.SLM_Disp_ReadCSV(self._display_number, 0, filename))
