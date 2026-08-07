@@ -686,7 +686,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             if phase_torch is None:
                 try:
                     self.farfield = self._nearfield2farfield_cuda(nearfield)
-                    self._midloop_cleaning()
+                    self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
                 except Exception as err:    # Fallback to cupy upon error.
                     warnings.warn("Falling back to cupy:\n" + str(err))
                     raise err
@@ -700,11 +700,11 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         if not self.cuda:
             if phase_torch is None:
                 self.farfield = self._nearfield2farfield_cupy(nearfield)
-                self._midloop_cleaning()
+                self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
             else:
                 farfield_torch = self._nearfield2farfield_cupy(nearfield)
                 self.farfield = cp.asarray(farfield_torch.detach())
-                self._midloop_cleaning()
+                self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
                 return farfield_torch
 
     def _nearfield2farfield_cuda(self, nearfield):
@@ -990,7 +990,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
     def _calculate_stats_computational_spot(self, stats, stat_groups=[]):
         """
-        Wrapped by :meth:`SpotHologram._update_stats()`.
+        Wrapped by :meth:`CompressedSpotHologram._update_stats()`.
         """
         if "computational_spot" in stat_groups:
             stats["computational_spot"] = self._calculate_stats(
@@ -1012,7 +1012,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         """
         stats = {}
 
-        # self._calculate_stats_computational_spot(stats, stat_groups)
+        self._calculate_stats_computational_spot(stats, stat_groups)
         self._calculate_stats_experimental_spot(stats, stat_groups)
 
         self._update_stats_dictionary(stats)

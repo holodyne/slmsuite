@@ -101,6 +101,7 @@ class FeedbackHologram(Hologram):
 
         super().__init__(target=shape, amp=amp, **kwargs)
 
+        self._updated_slm = False
         self.img_ij = None
         self.img_knm = None
         if target_ij is None:
@@ -235,6 +236,33 @@ class FeedbackHologram(Hologram):
         return target
 
     # Measurement.
+    def _update_slm(self, force=False, cleanup_images=True):
+        """
+        Method to update the SLM with the current phase pattern.
+        This is separate from :meth:`measure()`
+        """
+        if not self._updated_slm or force:   # If we have not already updated the SLM.
+            # Parse the current feedback and stats to see if an update is needed.
+            should_update = False
+            feedback = self.flags["feedback"]
+
+            if "experimental" in feedback or "external" in feedback:
+                should_update = True
+
+            for group in self.flags["stat_groups"]:
+                if "experimental" in group or "external" in group:
+                    should_update = True
+
+            # Then actually update the SLM.
+            if should_update and self.cameraslm is not None:
+                self.cameraslm.slm.set_phase(self.get_phase(include_propagation=True), settle=True)
+                self._updated_slm = True
+
+                # Erase images from the past loop.
+                if cleanup_images:
+                    self.img_ij = None
+                    self.img_knm = None
+
     def measure(self, basis="ij"):
         """
         Method to request a measurement to occur. If :attr:`img_ij` is ``None``,
@@ -253,10 +281,10 @@ class FeedbackHologram(Hologram):
             This is useful to avoid (expensive) transformation from the ``"ij"`` to the
             ``"knm"`` basis if :attr:`img_knm` is not needed.
         """
-        if self.img_ij is None and (basis == "knm" or basis == "ij"):
-            # Apply the pattern to the SLM at the desired depth (implemented by propagation_kernel)
-            self.cameraslm.slm.set_phase(self.get_phase(include_propagation=True), settle=True)
+        # Make sure the SLM is updated before measurement (usually, the SLM should already be updated.
+        self._update_slm()
 
+        if self.img_ij is None and (basis == "knm" or basis == "ij"):
             # Measure the result.
             self.cameraslm.cam.flush()
             self.img_ij = np.array(self.cameraslm.cam.get_image(), copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype)

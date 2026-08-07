@@ -949,16 +949,6 @@ class Hologram(_HologramStats):
         self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
         self.phase_ff = cp.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
 
-    def _midloop_cleaning(self):
-        # 2.1) Cache amp_ff for weighting (if None, will init; otherwise in-place).
-        self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
-
-        # 2.2) Erase images from the past loop. FUTURE: Make better and faster.
-        if hasattr(self, "img_ij"):
-            self.img_ij = None
-        if hasattr(self, "img_knm"):
-            self.img_knm = None
-
     def _remove_vortices(self, plot=False):
         """
         Removes the computed phase vortices in the farfield where the target amplitude is positive.
@@ -1047,14 +1037,14 @@ class Hologram(_HologramStats):
 
         if phase_torch is None:
             self.farfield = cp.fft.fftshift(cp.fft.fft2(cp.fft.fftshift(nearfield), norm="ortho"))
+            self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
         else:
             farfield_torch = self._get_torch_tensor_from_cupy(self.farfield)
             farfield_torch = torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(nearfield), norm="ortho"))
             self.farfield = cp.asarray(farfield_torch.detach())
+            self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
 
             return farfield_torch
-
-        self._midloop_cleaning()
 
     def _farfield2nearfield(self, extract=True):
         """
@@ -1316,6 +1306,8 @@ class Hologram(_HologramStats):
             :meth:`scipy.optimize.minimize()`. ``callback`` must accept a Hologram
             or Hologram subclass as the single argument. If ``callback`` returns
             ``True``, then the optimization exits. Ignored if ``None``.
+            When applying ``"external_spot"`` feedback, this callback is the place to update
+            the ``"external_spot_amp"`` attribute.
         feedback : str OR None
             Type of feedback to use during optimization, for instance when weighting in ``"WGS"``.
             For direct instances of :class:`Hologram`, this can only
@@ -1335,7 +1327,7 @@ class Hologram(_HologramStats):
               spots in an optical focus array. More stable than ``"experimental"`` for spots.
               Specific to subclasses of :class:`SpotHologram`.
             - ``"external_spot"`` Uses some external user-provided metric for spot
-              feedback. See :attr:`external_spot_amp`.
+              feedback. See :attr:`external_spot_amp`. Usually applied during ``callback``.
               Specific to subclasses of :class:`SpotHologram`.
 
         stat_groups : list of str OR None
@@ -1464,26 +1456,29 @@ class Hologram(_HologramStats):
         mraf_variables = self._mraf_helper_routines()
 
         for _ in iterations:
-            # (A) Nearfield -> Farfield
-            # This uses the self.phase and self.amplitude attributes to populate the
-            # self.farfield attribute. Also cleans per-loop variables such as self.img_ij
+            # (A) Project the phase on the SLM if it is expected by the feedback method and stat groups.
+            # Also cleans per-loop variables such as self.img_ij
+            self._update_slm(force=True, cleanup_images=True)
+
+            # (B) Nearfield -> Farfield
+            # This uses the self.phase and self.amplitude attributes to populate the self.farfield attribute.
             self._nearfield2farfield()
 
-            # (B) Midloop Farfield Routines
-            # (B.1) Run step function if present and check termination conditions.
+            # (C) Midloop Farfield Routines
+            # (C.1) Run step function if present and check termination conditions.
             if callback is not None:
                 if callback(self):
                     break
 
-            # (B.2) Update statistics based on the current farfield and potentially current
-            # experimental results.
+            # (C.2) Update statistics based on the current farfield and potentially
+            # the current experimental results.
             self._update_stats(self.flags["stat_groups"])
 
-            # (B.3) Evaluate method-specific routines, stats, etc. This includes camera feedback/etc.
+            # (C.3) Evaluate method-specific routines, stats, etc. This includes camera feedback/etc.
             # If you want to add new functionality to GS, do so here to keep the main loop clean.
             self._gs_farfield_routines(mraf_variables)
 
-            # (C) Farfield -> Nearfield
+            # (D) Farfield -> Nearfield
             # This populates the self.nearfield and self.phase attributes.
             self._farfield2nearfield()
 
@@ -1492,6 +1487,9 @@ class Hologram(_HologramStats):
 
         # Update the final farfield using phase and amp.
         self._populate_results()
+
+        # Project the phase on the SLM if it is expected by the feedback method and stat groups.
+        self._update_slm(force=True, cleanup_images=False)
 
     def _mraf_helper_routines(self):
         # MRAF helper variables
@@ -1678,6 +1676,11 @@ class Hologram(_HologramStats):
         directly. It is left as a public function exposed in documentation to clarify
         how the internals of :meth:`.optimize()` work.
 
+        Caution
+        ~~~~~~~
+        This method does not currently support
+        ``"experimental_spot"`` or ``"external_spot"`` feedback.
+
         Parameters
         ----------
         iterations : iterable
@@ -1703,11 +1706,14 @@ class Hologram(_HologramStats):
         self.optimizer = optim_class([phase_torch], **self.flags["optimizer_kwargs"])
 
         for _ in iterations:
-            # (A) Step the Conjugate Gradient Optimization
-            # (A.1) Reset the gradients for this step.
+            # (A) Project the phase on the SLM if it is expected by the feedback method and stat groups.
+            self._update_slm(force=True, cleanup_images=True)
+
+            # (B) Step the Conjugate Gradient Optimization
+            # (B.1) Reset the gradients for this step.
             self.optimizer.zero_grad()
 
-            # (A.1) Compute the loss for this phase pattern.
+            # (B.2) Compute the loss for this phase pattern.
             # This computes the farfield (and potentially experimental results)
             # and then passes these values to the current ``loss`` function.
             result = self._cg_loss(phase_torch)
@@ -1717,19 +1723,19 @@ class Hologram(_HologramStats):
             if hasattr(iterations, "set_description"):
                 iterations.set_description("loss="+str(self.flags["loss_result"]))
 
-            # (A.2) Compute the gradients of the phase pattern with respect to loss.
+            # (B.3) Compute the gradients of the phase pattern with respect to loss.
             result.backward(retain_graph=True)
 
-            # (A.3) Step the optimization of phase_torch according to the gradients calculated.
+            # (B.4) Step the optimization of phase_torch according to the gradients calculated.
             self.optimizer.step()
 
-            # (B) Midloop Routines
-            # (B.1) Run step function if present and check termination conditions.
+            # (C) Midloop Routines
+            # (C.1) Run step function if present and check termination conditions.
             if callback is not None:
                 if callback(self):
                     break
 
-            # (B.2) Update statistics.
+            # (C.2) Update statistics.
             self._update_stats(self.flags["stat_groups"])
 
             # Increment iteration.
@@ -1756,19 +1762,23 @@ class Hologram(_HologramStats):
         # Evaluate loss depending on the feedback mechanism.
         feedback = self.flags["feedback"]
 
-        if feedback == "computational":
+        if feedback == "computational" or feedback == "computational_spot":
             return loss(farfield_torch, target_torch)
         elif feedback == "experimental":
             self.measure("knm")  # Make sure data is there.
-            img_knm_torch = Hologram._get_torch_tensor_from_cupy(self.target)
+            img_knm_torch = Hologram._get_torch_tensor_from_cupy(self.img_knm)
 
             # Replace the values of the farfield with the measured values, but keep the
             # gradients using detach().
             farfield_feedback_torch = farfield_torch.detach()
-            farfield_feedback_torch[:] = img_knm_torch[:]
+            farfield_feedback_torch[:] = img_knm_torch[:]   # TODO: retain phase?
             farfield_feedback_torch = farfield_feedback_torch.requires_grad_()
 
             return loss(farfield_feedback_torch, target_torch)
+        elif feedback == "experimental_spot":
+            raise RuntimeError("experimental_spot feedback not yet implemented for CG optimization.")
+        elif feedback == "external_spot":
+            raise RuntimeError("external_spot feedback not yet implemented for CG optimization.")
 
     @staticmethod
     def _get_torch_tensor_from_cupy(array):
@@ -1923,6 +1933,21 @@ class Hologram(_HologramStats):
             self._update_weights_generic(self.weights, self.amp_ff, self.target)
 
     # Other helper functions.
+    def _update_slm(self, force=False, cleanup_images=True):
+        """
+        Placeholder for `FeedbackHologram` SLM updates.
+        """
+        pass
+
+    def measure(self, basis="ij"):
+        """
+        Placeholder for `FeedbackHologram` measurements.
+        """
+        raise NotImplementedError(
+            "measure() is not implemented for the base Hologram class. "
+            "Use FeedbackHologram or a subclass."
+        )
+
     @staticmethod
     def set_mempool_limit(device=0, size=None, fraction=None):
         """
