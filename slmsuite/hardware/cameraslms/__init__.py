@@ -18,6 +18,7 @@ from slmsuite.hardware.slms.simulated import SimulatedSLM
 
 # Import calibrations (separated into different files for readability).
 from slmsuite.hardware.cameraslms._fourier import _FourierCalibration
+from slmsuite.hardware.cameraslms._farfield import _FarfieldCalibration
 from slmsuite.hardware.cameraslms._pixel import _PixelCalibration
 from slmsuite.hardware.cameraslms._settle import _SettleCalibration
 from slmsuite.hardware.cameraslms._wavefront import _WavefrontCalibration
@@ -197,6 +198,7 @@ class NearfieldSLM(CameraSLM):
 class FourierSLM(
     CameraSLM,
     _FourierCalibration,
+    _FarfieldCalibration,
     _PixelCalibration,
     _SettleCalibration,
     _WavefrontCalibration,
@@ -215,6 +217,14 @@ class FourierSLM(
             See :meth:`~slmsuite.hardware.cameraslms.FourierSLM.fourier_calibrate()`.
 
             This data is critical for much of :mod:`slmsuite`'s functionality.
+        "farfield" : dict
+            Raw data measuring the diffraction efficiency over the farfield
+            (including aperture cropping) and the 0th order scatter.
+
+            See
+            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.farfield_calibrate()`.
+            Usable data is produced by running
+            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.farfield_calibration_process()`.
         "wavefront" : dict
             Raw data for correcting aberrations in the optical system (``phase``) and
             measuring the optical amplitude distribution incident on the SLM (``amp``).
@@ -436,9 +446,13 @@ class FourierSLM(
         )
         self.save_calibration(calibration_type, path, name)
 
+    # Raw image stacks dominate the file size and only serve reprocessing in-session.
+    _CALIBRATION_UNSAVED = ("efficiency_raw", "background_raw")
+
     def save_calibration(self, calibration_type, path=".", name=None):
         """
         Saves the calibration to a file like ``"path/name_id.h5"``.
+        Raw image stacks are omitted; the processed results are saved.
 
         Parameters
         ----------
@@ -464,7 +478,11 @@ class FourierSLM(
         if name is None:
             name = self.name_calibration(calibration_type)
         file_path = generate_path(path, name, extension="h5")
-        save_h5(file_path, self.calibrations[calibration_type])
+        save_h5(file_path, {
+            key: value
+            for (key, value) in self.calibrations[calibration_type].items()
+            if key not in self._CALIBRATION_UNSAVED
+        })
 
         self.logger.info("Saved '%s' calibration to '%s'.", calibration_type, file_path)
 
@@ -533,6 +551,18 @@ class FourierSLM(
                 "You are using slmsuite %s, but the calibration in '%s' was created in %s.",
                 __version__, file_path, cal_ver,
             )
+
+        # Every calibration is wavelength specific, so flag a retuned source.
+        cal_wav_um = cal.get("__meta__", {}).get("slm", {}).get("wav_um", None)
+        if cal_wav_um is not None and not np.isclose(cal_wav_um, self.slm.wav_um):
+            self.logger.warning(
+                "The '%s' calibration was taken at %s um, but this SLM is set to %s um.",
+                calibration_type, cal_wav_um, self.slm.wav_um,
+            )
+
+        # Restore the measured phase response, as the SLM applies it on every write.
+        if calibration_type == "pixel":
+            self._pixel_calibration_apply_gamma()
 
         return file_path
 
