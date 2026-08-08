@@ -6,6 +6,7 @@ try:
     import cupy as cp   # type: ignore
 except ImportError:
     cp = np
+from scipy.special import jn_zeros
 from typing import Tuple, Union, Callable
 from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
 
@@ -52,11 +53,69 @@ def blaze(
     return result
 
 
+def triangle(
+    grid: Union[Tuple[np.ndarray, np.ndarray], object],
+    vector: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
+    shift: float = 0,
+    a: float = 2 * np.pi,
+    b: float = 0,
+    bias: float = 0,
+):
+    r"""
+    Returns a triangle wave grating toward a given vector in :math:`k`-space, ramping
+    up over a fraction :math:`d = (\text{bias}+1)/2` of each period and back down over
+    the remainder.
+
+    .. math:: \phi(\vec{x}) =
+        (a-b) \min\left(\frac{t}{d}, \frac{1-t}{1-d}\right) + b,
+        \quad t = \frac{(2\pi \cdot \vec{k} \cdot \vec{x} + s) \,\text{mod}\, 2\pi}{2\pi}
+
+    Important
+    ---------
+    ``bias`` sweeps between the blazed gratings :meth:`.blaze()` toward :math:`+\vec{k}`
+    at :math:`1` and :math:`-\vec{k}` at :math:`-1`, by way of a symmetric triangle at
+    :math:`0`. Power is split between the two by symmetry in between.
+
+
+    :param grid:
+        :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
+        corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
+        These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
+        such a class can be passed instead of the grids directly.
+    :param vector:
+        :math:`\vec{k}`. Blaze vector in normalized :math:`\frac{k_x}{k}` units.
+        See :meth:`~slmsuite.holography.toolbox.convert_vector()`.
+    :param shift:
+        Radians to laterally shift the period of the grating by.
+    :param a:
+        Value at the peak of the triangle.
+    :param b:
+        Value at the trough of the triangle.
+    :param bias:
+        Position of the peak within the period, on :math:`[-1, 1]`.
+    :return:
+        The phase for this function.
+    """
+    duty_cycle = (float(np.clip(bias, -1, 1)) + 1) / 2
+
+    # Position within the period, on [0, 1).
+    t = np.mod(blaze(grid, vector) + shift, 2 * np.pi) / (2 * np.pi)
+
+    if duty_cycle <= 0:
+        ramp = 1 - t
+    elif duty_cycle >= 1:
+        ramp = t
+    else:
+        ramp = np.minimum(t / duty_cycle, (1 - t) / (1 - duty_cycle))
+
+    return (a - b) * ramp + b
+
+
 def sinusoid(
     grid: Union[Tuple[np.ndarray, np.ndarray], object],
     vector: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
     shift: float = 0,
-    a: float = np.pi,
+    a: float = 2 * jn_zeros(0, 1)[0],
     b: float = 0,
 ):
     r"""
@@ -84,8 +143,8 @@ def sinusoid(
         Radians to laterally shift the period of the grating by.
     :param a:
         Value at one extreme of the sinusoid.
-        Ignoring crosstalk,
-        the 0th order will be minimized when ``|a-b|`` is equal to :math:`\pi`.
+        The :math:`n`\ th order carries :math:`J_n^2(|a-b|/2)`, so the 0th order
+        vanishes at ``|a-b|`` :math:`= 2j_{0,1} = 4.8097`, the default.
     :param b:
         Value at the other extreme of the sinusoid.
         Defaults to zero, in which case ``a`` is the amplitude.
