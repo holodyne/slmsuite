@@ -48,15 +48,180 @@ except:
     def get_pyglet_display():
         raise ImportError("pyglet not installed.")
 
-# Try to import CuPy for optimized GPU transfers
+# Optional cupy, for GPU frames and page-locked host memory.
 try:
     import cupy as cp
+    from cupyx import zeros_pinned
 except ImportError:
     cp = None
+    zeros_pinned = None
 
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
+
+# CUDA driver API, for OpenGL interop; cupy exposes no interop bindings of its own.
+try:
+    _cuda = ctypes.WinDLL("nvcuda.dll") if os.name == "nt" else ctypes.CDLL("libcuda.so.1")
+    _cuda.cuGraphicsGLRegisterBuffer.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint, ctypes.c_uint
+    ]
+    _cuda.cuGraphicsResourceGetMappedPointer_v2.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p
+    ]
+    for _name in ("cuGraphicsMapResources", "cuGraphicsUnmapResources"):
+        getattr(_cuda, _name).argtypes = [
+            ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p
+        ]
+    _cuda.cuDevicePrimaryCtxRetain.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
+    _cuda.cuDevicePrimaryCtxRelease.argtypes = [ctypes.c_int]
+    _cuda.cuCtxGetCurrent.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    _cuda.cuCtxSetCurrent.argtypes = [ctypes.c_void_p]
+    _cuda.cuGraphicsUnregisterResource.argtypes = [ctypes.c_void_p]
+    _cuda.cuGetErrorName.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+except Exception:
+    _cuda = None
+
+
+def _cu(name, *args):
+    """Call a CUDA driver function, raising with the resolved status name on failure."""
+    result = getattr(_cuda, name)(*args)
+    if result:
+        message = ctypes.c_char_p()
+        _cuda.cuGetErrorName(result, ctypes.byref(message))
+        raise RuntimeError("{} failed: {}".format(name, message.value))
+
+
+def _stream():
+    """The stream that :mod:`cupy` is currently queueing work onto."""
+    return ctypes.c_void_p(cp.cuda.get_current_stream().ptr)
+
+
+class _PixelBuffer(object):
+    """
+    An ``OpenGL`` pixel buffer registered with ``CUDA``, writable as a :mod:`cupy` array.
+
+    Lets phase data reach the display without ever crossing PCIe: :meth:`map` hands back a
+    :mod:`cupy` view of the buffer's device memory, and :meth:`~_Window.render` uploads it to
+    the texture entirely on the GPU.
+
+    Important
+    ~~~~~~~~~
+    Construction and :meth:`release` require the ``OpenGL`` context, so they must run on the
+    window thread. :meth:`map` and :meth:`unmap` must instead run on the thread that writes
+    the data, which must hold the ``CUDA`` primary context.
+    """
+
+    def __init__(self, shape, device):
+        """Allocate a pixel buffer of ``shape`` on ``device`` and register it with ``CUDA``."""
+        if _cuda is None or cp is None:
+            raise RuntimeError("CUDA driver or cupy unavailable.")
+        if device is None:
+            raise RuntimeError("No CUDA device to register against.")
+        if not gl.base.gl_info.have_version(3, 0):
+            raise RuntimeError("Pixel buffers require OpenGL 3.0+.")
+
+        self.shape = shape
+        self.buffer = gl.GLuint()
+        self.device = device
+        self.context = None
+        self.resource = None
+        self.mapped = False
+
+        try:
+            # Registering needs a context on this thread; the primary one is what cupy uses.
+            context = ctypes.c_void_p()
+            _cu("cuDevicePrimaryCtxRetain", ctypes.byref(context), self.device)
+            self.context = context
+            _cu("cuCtxSetCurrent", context)
+
+            gl.glGenBuffers(1, ctypes.byref(self.buffer))
+            gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.buffer.value)
+            gl.glBufferData(
+                gl.GL_PIXEL_UNPACK_BUFFER, int(np.prod(shape)), None, gl.GL_STREAM_DRAW
+            )
+            gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
+
+            resource = ctypes.c_void_p()
+            _cu("cuGraphicsGLRegisterBuffer", ctypes.byref(resource), self.buffer.value, 0)
+            self.resource = resource
+
+            # Blank the undefined buffer, on the writer's device, so alpha starts opaque.
+            with cp.cuda.Device(self.device):
+                frame = self.map()
+                frame.fill(0)
+                frame[:, :, 3] = 255
+                self.unmap()
+        except BaseException:
+            self.release()
+            raise
+
+    def map(self):
+        """Map the buffer into ``CUDA`` and return a :mod:`cupy` view of it."""
+        device = cp.cuda.runtime.getDevice()
+        if device != self.device:
+            raise RuntimeError("Frame is registered to device {}, but cupy is on device {}."
+                .format(self.device, device))
+
+        # Registering happened on the window thread, so this one may hold no context yet.
+        current = ctypes.c_void_p()
+        _cu("cuCtxGetCurrent", ctypes.byref(current))
+        if not current.value:
+            _cu("cuCtxSetCurrent", self.context)
+
+        # Mapping synchronizes against one stream, which must be the one the writes go to.
+        _cu("cuGraphicsMapResources", 1, ctypes.byref(self.resource), _stream())
+        self.mapped = True
+
+        try:
+            pointer = ctypes.c_void_p()
+            size = ctypes.c_size_t()
+            _cu(
+                "cuGraphicsResourceGetMappedPointer_v2",
+                ctypes.byref(pointer), ctypes.byref(size), self.resource
+            )
+        except BaseException:
+            # Else the buffer stays mapped and every later frame fails.
+            self.unmap()
+            raise
+
+        # The device pointer is not guaranteed to survive a remap, so rewrap every time.
+        memory = cp.cuda.UnownedMemory(pointer.value, size.value, self)
+        return cp.ndarray(self.shape, cp.uint8, cp.cuda.MemoryPointer(memory, 0))
+
+    def unmap(self):
+        """Release the buffer back to ``OpenGL``. Idempotent."""
+        if not self.mapped:
+            return
+        _cu("cuGraphicsUnmapResources", 1, ctypes.byref(self.resource), _stream())
+        self.mapped = False
+
+    def release(self):
+        """Unregister and delete the buffer. Must run on the window thread."""
+        # Separate guards, so a failure in one step still frees the others.
+        if self.resource is not None:
+            try:
+                # Unregistering under a live mapping frees memory cupy still points at.
+                self.unmap()
+            except Exception as e:
+                logger.debug("Unmapping the interop frame failed: %s", e)
+            try:
+                _cu("cuGraphicsUnregisterResource", self.resource)
+            except Exception as e:
+                logger.debug("Unregistering the interop frame failed: %s", e)
+        if self.buffer.value:
+            try:
+                gl.glDeleteBuffers(1, ctypes.byref(self.buffer))
+            except Exception as e:
+                logger.debug("Deleting the interop buffer failed: %s", e)
+        if self.context is not None:
+            try:
+                _cu("cuDevicePrimaryCtxRelease", self.device)
+            except Exception as e:
+                logger.debug("Releasing the CUDA context failed: %s", e)
+
+        self.resource, self.context, self.mapped = None, None, False
+        self.buffer = gl.GLuint()
 
 
 class _Window(__Window):
@@ -64,33 +229,41 @@ class _Window(__Window):
     A :mod:`pyglet` window subclass for displaying SLM phase patterns.
 
     Wraps a fullscreen (or windowed) ``OpenGL`` surface with a texture-based
-    rendering pipeline. Phase data is written into an RGBA :attr:`buffer`,
+    rendering pipeline. Phase data is written into an RGBA :attr:`frame`,
     uploaded to an ``OpenGL`` texture via ``glTexSubImage2D``, and displayed
     via double-buffered vsync'd flips.
+
+    The frame is claimed with :meth:`acquire`, filled, and handed over with :meth:`commit`
+    before :meth:`render` displays it. Since there is only one, the writer must let a
+    :meth:`render` finish before starting the next frame.
 
     Supports both ``OpenGL`` 3.0+ (programmable shader pipeline, pyglet 2.0+)
     and ``OpenGL`` 2.0 (fixed-function pipeline, pyglet < 2.0).
 
     Important
     ~~~~~~~~~
-    All methods on this class (except :meth:`info`) must be called from the
-    same thread that created the window. Use :class:`_WindowThread` to ensure
+    All methods on this class except :meth:`info`, :meth:`acquire` and :meth:`commit` must
+    be called from the thread that created the window. Use :class:`_WindowThread` to ensure
     thread affinity.
 
     Attributes
     ----------
     shape : (int, int)
         The ``(height, width)`` of the window in pixels.
-    buffer : numpy.ndarray
-        RGBA buffer of shape ``(height, width, 4)`` and dtype ``uint8``.
-        Write grayscale data to channels 0-2 before calling :meth:`render`.
-    cbuffer : ctypes array
-        A ctypes view into :attr:`buffer` for passing to ``OpenGL``.
+    mode : {"interop", "pinned", "pageable"}
+        Which frame storage :meth:`_setup_frame` settled on.
+    frame : numpy.ndarray or None
+        Host RGBA frame of shape ``(height, width, 4)`` and dtype ``uint8``.
+        ``None`` in ``"interop"`` mode.
+    cframe : ctypes array or None
+        A ctypes view into :attr:`frame` for passing to ``OpenGL``.
+    pixel_buffer : _PixelBuffer or None
+        The device-side frame; ``None`` outside ``"interop"`` mode.
     texture : pyglet.gl.GLuint
         Handle to the ``OpenGL`` texture object.
     """
 
-    def __init__(self, shape, screen=None, caption=""):
+    def __init__(self, shape, screen=None, caption="", interop=None, device=None):
         """
         Create a :mod:`pyglet` window on the specified screen.
 
@@ -103,7 +276,20 @@ class _Window(__Window):
             Target screen. If ``None``, uses the default screen.
         caption : str
             Window title (visible in windowed mode).
+        interop : bool or None
+            Whether to render from ``CUDA``-mapped device memory. ``None`` uses it when
+            available.
+        device : int or None
+            ``CUDA`` device that will write the frames, which is not necessarily the one
+            current on this thread.
         """
+        self.interop = interop
+        self.device = device
+        self.mode = None
+        self.frame = None
+        self.cframe = None
+        self.pixel_buffer = None
+
         # Make the window and do basic setup.
         if screen is None:
             display = get_pyglet_display()
@@ -273,6 +459,70 @@ class _Window(__Window):
             except Exception:
                 pass
 
+    def _setup_frame(self, shape, B):
+        """
+        Allocate the frame, degrading ``interop`` to ``pinned`` to ``pageable``.
+
+        Reallocates, so it must not run while a frame is being written or rendered.
+        """
+        self._release_frame()
+
+        if self.interop is not False:
+            try:
+                self.pixel_buffer = _PixelBuffer(shape + (B,), self.device)
+                self.mode = "interop"
+            except Exception as e:
+                if self.interop:
+                    raise RuntimeError(
+                        "interop=True requested, but unavailable: {}".format(e)
+                    )
+                logger.debug("Interop frame unavailable: %s", e)
+
+        if self.pixel_buffer is None:
+            try:
+                if zeros_pinned is None:
+                    raise RuntimeError("cupy unavailable.")
+                self.frame = zeros_pinned(shape + (B,), dtype=np.uint8)
+                self.mode = "pinned"
+            except Exception as e:
+                logger.debug("Pinned frame unavailable: %s", e)
+                self.frame = np.zeros(shape + (B,), dtype=np.uint8)
+                self.mode = "pageable"
+
+            self.frame[:, :, 3] = 255  # Opaque alpha
+            self.cframe = (gl.GLubyte * int(shape[0] * shape[1] * B)).from_buffer(self.frame)
+
+        logger.info("Frame: '%s'.", self.mode)
+
+    def _release_frame(self):
+        """Free the frame. Must run on the window thread."""
+        try:
+            if self.pixel_buffer is not None:
+                self.pixel_buffer.release()
+        finally:
+            self.frame, self.cframe, self.pixel_buffer, self.mode = None, None, None, None
+
+    def acquire(self):
+        """
+        Claim the frame for writing.
+
+        Returns
+        -------
+        numpy.ndarray or cupy.ndarray
+            The RGBA array to write into.
+        """
+        # Read once; the window thread may release the frame concurrently.
+        pixel_buffer, frame = self.pixel_buffer, self.frame
+        if pixel_buffer is None and frame is None:
+            raise RuntimeError("Window has closed; its frame is released.")
+
+        return pixel_buffer.map() if pixel_buffer is not None else frame
+
+    def commit(self):
+        """Hand the written frame back to ``OpenGL``, ready for :meth:`render`."""
+        if self.pixel_buffer is not None:
+            self.pixel_buffer.unmap()
+
     def _setup_context(self):
         """
         Initialize the ``OpenGL`` context, buffers, and texture.
@@ -296,11 +546,7 @@ class _Window(__Window):
             # Channels: R+G+B+A=4
             B = 4
 
-            # Setup buffers (texbuffer is power of 2 padded to init the memory in OpenGL)
-            self.buffer = np.zeros(shape + (B,), dtype=np.uint8)
-            self.buffer[:, :, 3] = 255  # Opaque alpha
-            N = int(shape[0] * shape[1] * B)
-            self.cbuffer = (gl.GLubyte * N).from_buffer(self.buffer)
+            self._setup_frame(shape, B)
 
             # Setup the texture
             self.texture = gl.GLuint()
@@ -310,12 +556,12 @@ class _Window(__Window):
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
 
-            # Malloc the OpenGL memory
+            # Malloc the OpenGL memory, blanked so nothing is displayed before the first frame
             gl.glTexImage2D(
                 gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8,
                 shape[1], shape[0],
-                0, gl.GL_BGRA, gl.GL_UNSIGNED_BYTE,
-                self.cbuffer
+                0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
+                (gl.GLubyte * int(shape[0] * shape[1] * B))()
             )
 
             # Use the default pyglet shader; this is required in 2.0+.
@@ -368,9 +614,7 @@ class _Window(__Window):
             B = 4
 
             # Setup buffers (texbuffer is power of 2 padded to init the memory in OpenGL).
-            self.buffer = np.zeros(shape + (B,), dtype=np.uint8)
-            N = int(shape[0] * shape[1] * B)
-            self.cbuffer = (gl.GLubyte * N).from_buffer(self.buffer)
+            self._setup_frame(shape, B)
 
             texbuffer = np.zeros(texture_shape + (B,), dtype=np.uint8)
             Nt = int(texture_shape[0] * texture_shape[1] * B)
@@ -390,7 +634,7 @@ class _Window(__Window):
             gl.glTexImage2D(
                 gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8,
                 texture_shape[1], texture_shape[0],
-                0, gl.GL_BGRA, gl.GL_UNSIGNED_BYTE,
+                0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
                 texcbuffer
             )
 
@@ -398,8 +642,8 @@ class _Window(__Window):
             gl.glTexSubImage2D(
                 gl.GL_TEXTURE_2D, 0, 0, 0,
                 shape[1], shape[0],
-                gl.GL_BGRA, gl.GL_UNSIGNED_BYTE,
-                self.cbuffer
+                gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
+                self.cframe
             )
 
             # Cleanup.
@@ -410,13 +654,12 @@ class _Window(__Window):
 
     def render(self):
         """
-        Upload the current :attr:`buffer` contents to the ``OpenGL`` texture
-        and display them.
+        Upload the current frame to the ``OpenGL`` texture and display it.
 
         This method:
 
         1.  Activates this window's ``OpenGL`` context via ``switch_to()``.
-        2.  Uploads :attr:`buffer` data to the GPU texture with ``glTexSubImage2D``.
+        2.  Uploads the frame to the GPU texture with ``glTexSubImage2D``.
         3.  Draws the textured quad to the back buffer.
         4.  Calls ``flip()`` to swap front/back buffers (blocks on vsync).
         5.  Calls ``dispatch_events()`` for additional event processing.
@@ -428,6 +671,28 @@ class _Window(__Window):
         """
         self.switch_to()
 
+        # In interop the source is device memory, addressed as an offset into the bound buffer.
+        bound = self.pixel_buffer is not None
+        if bound:
+            gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.pixel_buffer.buffer.value)
+            source = 0
+        else:
+            source = self.cframe
+
+        try:
+            self._blit(source)
+        finally:
+            # A binding left behind would turn every later upload's pointer into an offset.
+            if bound:
+                gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
+
+        # Display the other side of the double buffer.
+        # (with vsync enabled, this will block until the next frame is ready to display).
+        self.flip()
+        self.dispatch_events()
+
+    def _blit(self, source):
+        """Upload ``source`` to the texture and draw it. See :meth:`render`."""
         shape = self.shape
 
         if gl.base.gl_info.have_version(3,0):       # Pyglet >= 2.0.0
@@ -440,7 +705,7 @@ class _Window(__Window):
                 gl.GL_TEXTURE_2D, 0, 0, 0,
                 shape[1], shape[0],
                 gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
-                self.cbuffer
+                source
             )
 
             # Draw the quad.
@@ -468,14 +733,14 @@ class _Window(__Window):
                 x1, y2, 0., 1.
             )
 
-            # Update the texture with the cbuffer.
+            # Update the texture with the frame.
             gl.glEnable(gl.GL_TEXTURE_2D)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
             gl.glTexSubImage2D(
                 gl.GL_TEXTURE_2D, 0, 0, 0,
                 shape[1], shape[0],
                 gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
-                self.cbuffer
+                source
             )
 
             # Blit the texture.
@@ -483,11 +748,6 @@ class _Window(__Window):
             gl.glInterleavedArrays(gl.GL_T4F_V4F, 0, array)
             gl.glDrawArrays(gl.GL_QUADS, 0, 4)
             gl.glPopClientAttrib()
-
-        # Display the other side of the double buffer.
-        # (with vsync enabled, this will block until the next frame is ready to display).
-        self.flip()
-        self.dispatch_events()
 
     @staticmethod
     def info(verbose=True):
@@ -597,7 +857,7 @@ class _WindowThread(object):
         thread has finished initialization.
     """
 
-    def __init__(self, shape, screen, caption, manager=None):
+    def __init__(self, shape, screen, caption, manager=None, **kwargs):
         """
         Create a :class:`_Window` on a dedicated background thread.
 
@@ -617,6 +877,8 @@ class _WindowThread(object):
             The :class:`_WindowManager` that owns this thread. If provided,
             :meth:`close` will automatically remove this thread from the
             manager.
+        **kwargs
+            See :meth:`_Window.__init__` for permissible options.
 
         Raises
         ------
@@ -634,8 +896,14 @@ class _WindowThread(object):
         self._ready = threading.Event()
         self._error = None
         self._manager = manager
-        # Store creation params for the window thread to use.
+        # Store creation params; the device is sampled here, on the thread that writes frames.
         self._init_args = (shape, screen, caption)
+        self._init_kwargs = kwargs
+        if cp is not None and "device" not in kwargs:
+            try:
+                self._init_kwargs["device"] = cp.cuda.runtime.getDevice()
+            except Exception:
+                pass  # No usable device; the frame ladder degrades on its own.
         self._start()
 
     def _start(self):
@@ -698,7 +966,7 @@ class _WindowThread(object):
 
             gl.current_context = None
 
-            self._window = _Window(shape, screen, caption)
+            self._window = _Window(shape, screen, caption, **self._init_kwargs)
 
             # Restore gl_info state. Do NOT restore gl.current_context —
             # the new window's context is now current on this thread, and
@@ -713,6 +981,8 @@ class _WindowThread(object):
             self._window._bring_to_front()
         except Exception as e:
             self._error = e
+            # Else a half-built window is stranded on screen with nothing left to close it.
+            self._teardown()
             self._ready.set()
             return
 
@@ -764,13 +1034,23 @@ class _WindowThread(object):
                 future['error'] = RuntimeError("Window thread exited before the command ran.")
                 future['event'].set()
 
-        # Close the window and deregister from the manager.
+        self._teardown()
+        if self._manager is not None:
+            self._manager.remove_thread(self)
+
+    def _teardown(self):
+        """Free the frame and close the window. Must run on the window thread."""
+        if self._window is None:
+            return
+        # Separate guards, so a failed release still lets the window close.
+        try:
+            self._window._release_frame()
+        except Exception:
+            pass
         try:
             self._window.close()
         except Exception:
             pass
-        if self._manager is not None:
-            self._manager.remove_thread(self)
 
     def submit(self, func, *args, **kwargs):
         """
@@ -816,7 +1096,7 @@ class _WindowThread(object):
         return future
 
     @staticmethod
-    def wait(future):
+    def wait(future, timeout=None):
         """
         Block until a submitted future completes.
 
@@ -824,6 +1104,8 @@ class _WindowThread(object):
         ----------
         future : dict
             Future returned by :meth:`submit`.
+        timeout : float or None
+            Seconds to wait before raising. ``None`` waits forever.
 
         Returns
         -------
@@ -832,11 +1114,14 @@ class _WindowThread(object):
 
         Raises
         ------
+        TimeoutError
+            If the command did not finish within ``timeout``.
         Exception
             Re-raises any exception that occurred during execution on
             the window thread.
         """
-        future['event'].wait()
+        if not future['event'].wait(timeout):
+            raise TimeoutError("Window thread did not finish within {} s.".format(timeout))
         if future['error'] is not None:
             raise future['error']
         return future['result']
@@ -854,6 +1139,8 @@ class _WindowThread(object):
         Safe to call multiple times.
         """
         self._running = False
+        # Else the loop sleeps out its full dispatch timeout before noticing.
+        self._command_event.set()
         if self._thread.is_alive():
             self._thread.join(timeout=3.0)
 
@@ -899,7 +1186,7 @@ class _WindowManager(object):
         self._threads_lock = threading.Lock()
         atexit.register(self.shutdown)
 
-    def create_window(self, shape, screen, caption):
+    def create_window(self, shape, screen, caption, **kwargs):
         """
         Create a new :class:`_Window` on its own dedicated thread.
 
@@ -911,6 +1198,8 @@ class _WindowManager(object):
             Target screen for the window.
         caption : str
             Window title.
+        **kwargs
+            See :meth:`_Window.__init__` for permissible options.
 
         Returns
         -------
@@ -922,7 +1211,7 @@ class _WindowManager(object):
         RuntimeError
             If the window thread fails to start.
         """
-        wt = _WindowThread(shape, screen, caption, manager=self)
+        wt = _WindowThread(shape, screen, caption, manager=self, **kwargs)
         with self._threads_lock:
             self._threads.append(wt)
         return wt

@@ -8,7 +8,6 @@ thread via a thread-safe queue.
 """
 import time
 import warnings
-import numpy as np
 
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.hardware._pyglet import _Window, _WindowManager, _WindowThread, get_pyglet_display
@@ -88,10 +87,17 @@ class ScreenMirrored(SLM):
 
     GPU Optimization
     ~~~~~~~~~~~~~~~~
-    This class supports GPU arrays when CuPy is available. Phase data can stay on the GPU
-    throughout the processing pipeline, with only the final display step transferring to CPU.
-    When pinned memory is available, direct CUDA memcpy to pinned host memory is used for
-    faster DMA transfers compared to standard ``cp.asnumpy()``.
+    Grayscale data is expanded to RGBA and delivered to the display by whichever of the
+    following the hardware supports, in order of preference:
+
+    -   ``"interop"``, which writes into ``OpenGL`` memory mapped into ``CUDA`` and never
+        crosses PCIe. Requires an NVIDIA driver and ``OpenGL`` 3.0+.
+    -   ``"pinned"``, page-locked host memory for fast DMA. Requires a ``CUDA`` device.
+    -   ``"pageable"``, ordinary host memory, which always works.
+
+    See ``interop`` in :meth:`__init__` and :attr:`~slmsuite.hardware._pyglet._Window.mode`.
+    Constructing with ``gpu=True`` (see :meth:`.SLM.__init__`) additionally keeps the phase
+    pipeline on the GPU, avoiding a host round-trip before the expansion.
 
     Important
     ~~~~~~~~~
@@ -108,9 +114,11 @@ class ScreenMirrored(SLM):
     the background threads to handle OS events and independent event
     dispatch/vsync timing for multi-SLM support.
 
-    This main thread communicates with those window threads via
-    :meth:`~slmsuite.hardware._pyglet._WindowThread.submit`, which blocks until
-    the command completes on the window thread.
+    The main thread communicates with those window threads via
+    :meth:`~slmsuite.hardware._pyglet._WindowThread.submit`, which queues a command and
+    returns. Since a single frame is shared with the window thread, each
+    :meth:`.set_phase` waits for the previous render regardless of ``block``, and for its
+    own only when ``block=True``.
 
     Note
     ~~~~
@@ -133,6 +141,7 @@ class ScreenMirrored(SLM):
         wav_um=1,
         pitch_um=(8,8),
         slm_resolution=None,
+        interop=None,
         **kwargs
     ):
         """
@@ -181,6 +190,10 @@ class ScreenMirrored(SLM):
             different shape than the display. Note that different SLM and
             screen resolutions are not generally supported unless explicitly
             implemented in the associated SLM class.
+        interop : bool or None
+            Whether to render directly from ``CUDA``-mapped device memory, avoiding all host
+            transfers. Defaults to ``None``, which uses it when available. Set ``False`` to
+            force host memory.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
         """
@@ -240,7 +253,7 @@ class ScreenMirrored(SLM):
         try:
             time.sleep(0.2) # Short delay
             wm = _WindowManager.get_instance()
-            self._window_thread = wm.create_window(None, screen, self.name)
+            self._window_thread = wm.create_window(None, screen, self.name, interop=interop)
             self.window = self._window_thread.window
         except Exception as e:
             self.logger.error("Window creation failed.")
@@ -258,14 +271,17 @@ class ScreenMirrored(SLM):
         # Variable to keep track of the last thread future.
         self._window_thread_future = None
 
+        # Staging array for expanding a GPU display to RGBA before a single transfer.
+        self._display_rgba = None
+
     def _set_phase_hw(self, display, execute=True, block=True):
         """
         Writes phase data from `display` to the screen via the window's
         dedicated thread.
 
-        The GPU→CPU transfer (if needed) happens on the main thread,
-        then the buffer copy and ``OpenGL`` render are submitted to the window
-        thread. By default the main thread blocks until rendering is complete.
+        The expansion to RGBA happens on the main thread, then the ``OpenGL`` render is
+        submitted to the window thread. By default the main thread blocks until rendering
+        is complete.
 
         Parameters
         ----------
@@ -274,35 +290,53 @@ class ScreenMirrored(SLM):
         execute : bool
             Whether to actually send the image to the SLM. See :meth:`.SLM._set_phase_hw`.
         block : bool
-            Whether to block the thread until the image is fully rendered.
-            See :meth:`.SLM._set_phase_hw`.
+            Whether to block the thread until this image is fully rendered.
+            See :meth:`.SLM._set_phase_hw`. The *previous* image is always waited on,
+            as the two share one frame.
         """
-        # GPU→CPU transfer happens on main thread (no OpenGL needed).
-        if cp is not None and isinstance(display, cp.ndarray):
-            display = cp.asnumpy(display)
-        elif not block:
-            display = display.copy()
+        # Let any outstanding render reach the screen before its frame is overwritten.
+        self._wait()
 
-        # Submit render to the window's dedicated thread.
-        if execute:
-            self._window_thread_future = self._window_thread.submit(
-                self._render,
-                self.window,
-                display
-            )
-        if block and self._window_thread_future is not None:
-            _WindowThread.wait(self._window_thread_future)
+        if not execute:
+            return
 
-    @staticmethod
-    def _render(window, display):
-        """Copy grayscale data to RGBA buffer and render on window thread."""
-        window.switch_to()
-        # 3x writes faster than single broadcast
-        # (buffer[:,:,:3] = display[:,:,np.newaxis])
-        window.buffer[:,:,0] = display # R
-        window.buffer[:,:,1] = display # G
-        window.buffer[:,:,2] = display # B
-        window.render()
+        frame = self.window.acquire()
+        try:
+            self._pack(display, frame)
+        finally:
+            self.window.commit()
+
+        self._window_thread_future = self._window_thread.submit(self.window.render)
+
+        if block:
+            self._wait()
+
+    def _wait(self, timeout=None):
+        """Block until any outstanding render has finished."""
+        if self._window_thread_future is not None:
+            future, self._window_thread_future = self._window_thread_future, None
+            _WindowThread.wait(future, timeout)
+
+    def _pack(self, display, frame):
+        """Expand grayscale or per-channel ``display`` into an RGBA ``frame``."""
+        if cp is not None and isinstance(frame, cp.ndarray):
+            # Interop: write into OpenGL memory directly, so no transfer at all.
+            target = frame
+            display = cp.asarray(display)
+        elif cp is not None and isinstance(display, cp.ndarray):
+            if self._display_rgba is None or self._display_rgba.shape != frame.shape:
+                self._display_rgba = cp.zeros(frame.shape, dtype=cp.uint8)
+                self._display_rgba[:, :, 3] = 255  # Opaque alpha
+            target = self._display_rgba
+        else:
+            target = frame
+
+        # Per-channel writes outpace a single broadcast into [:, :, :3].
+        for c in range(3):
+            target[:, :, c] = display if display.ndim == 2 else display[c % len(display)]
+
+        if target is not frame:
+            target.get(out=frame)
 
     def close(self):
         """
@@ -310,6 +344,11 @@ class ScreenMirrored(SLM):
 
         See :class:`.SLM`.
         """
+        # Let a non-blocking final frame reach the screen, but never fail or stall the close.
+        try:
+            self._wait(timeout=1)
+        except Exception:
+            pass
         self._window_thread.close()
 
     @staticmethod
