@@ -290,12 +290,11 @@ class _FarfieldCalibration(object):
         )
 
     def get_farfield_background(self):
-        """The camera background, in the raw counts of
-        ``calibrations["farfield"]["efficiency_raw"]`` rather than the normalized
-        :meth:`get_farfield_efficiency()`.
+        """The camera background, in raw counts at the farfield exposure rather than
+        the normalized :meth:`get_farfield_efficiency()`, from which it is subtracted.
 
-        The blazed orders used to vacate the farfield leave the zeroth order in place,
-        so this image still contains whatever the SLM scatters there.
+        The deflected orders leave the zeroth order in place, so this image still
+        contains whatever the SLM scatters there.
 
         See :meth:`farfield_calibrate()`.
         """

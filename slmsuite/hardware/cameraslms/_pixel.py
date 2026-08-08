@@ -1,7 +1,6 @@
 import matplotlib.pyplot as plt
 from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
-from scipy import ndimage
 from tqdm.auto import tqdm
 
 from slmsuite.holography import analysis
@@ -21,28 +20,38 @@ class _PixelCalibration(object):
         periods=2,
         orders=2,
         directions="xy",
+        test_index=None,
         window=None,
         field_period=10,
-        test_index=None,
         autoexpose=False,
-        plot=True,
+        plot=False,
     ):
         r"""
-        Measure the pixel crosstalk (blurring) and phase response (gamma) of the SLM.
+        Measure the phase response (gamma) and pixel crosstalk (blurring) of the SLM.
 
         Physical SLMs do not produce perfectly sharp and discrete blocks of a desired
         phase at each pixel. Rather, the realized phase might deviate from the desired
         phase (error) and be blurred between pixels (crosstalk).
 
         We adopt a literature approach to calibrating both phenomena by `measuring the
-        system response of binary gratings <https://doi.org/10.1364/OE.20.022334>`_.
+        system response of binary gratings <https://doi.org/10.1364/OE.20.022334>`_
+        at multiple levels (bitlevels of the SLM), periods (periods of the gratings),
+        and orders (deflection orders of the response).
         In the future, we intend to fit the measured data to `an upgraded asymmetric
         model of phase crosstalk <https://doi.org/10.1364/OE.27.025046>`_, and then
         apply the model to beam propagation during holographic optimization. A better
         understanding of the system error can lead to holograms that take this error
         into account.
 
-        Note that this algorithm does not operate at the level of individual pixels, but
+        Note
+        ~~~~
+        Most often, the user will not need to change parameters for this calibration
+        when using it for gamma calibration.
+        Pixel crosstalk calibration processing and mitigation is still **experimental**.
+
+        Note
+        ~~~~
+        This algorithm does not operate at the level of individual pixels, but
         rather on aggregate statistics over a region of pixels.
         Right now, this calibration is done for one region (which defaults to the full
         SLM). In the future, we might want to calibrate many regions across the SLM to
@@ -54,7 +63,8 @@ class _PixelCalibration(object):
 
         Caution
         ~~~~~~~
-        Data must be acquired without wavefront calibration applied.
+        Data is internally acquired without wavefront calibration applied
+        (``.set_phase(..., phase_correct=False)`` is used).
         If the uncalibrated SLM produces too defocussed of a spot,
         then this measurement may not be ideal. On the flip side, a
         too-focussed spot might increase error by integrating over fewer camera pixels.
@@ -63,10 +73,11 @@ class _PixelCalibration(object):
         ----------
         levels : int OR array_like of int
             Which bitlevels to test, out of the :math:`2^B` levels available for a
-            :math:`B`-bit SLM. Note that runtime scales with :math:`\mathcal{O}(B^2)`.
+            :math:`B`-bit SLM. Note that runtime scales with :math:`\mathcal{O}(L^2)`
+            where :math:`L` is the number of bitlevels.
             If an integer is passed, the integer is rounded up to the next largest power of
             two, and this number of bitlevels are sampled.
-            Also truncates to the bitresolution of the SLM if necessary.
+            Also truncates to the bitresolution of the SLM if necessary (warns the user).
             Defaults to 32 levels.
         periods : int OR array_like of int
             List of periods (in pixels) of the binary gratings that we will apply.
@@ -77,11 +88,18 @@ class _PixelCalibration(object):
             Orders (..., -1st, 0th, 1st, ...) of the binary gratings to measure data at.
             If scalar :math:`o` is provided,
             measures orders between :math:`-o`th and :math:`o`th order, inclusive.
+            When the 0th order is off the camera, orders deflecting further off it are
+            dropped if :math:`o` is scalar, and raise otherwise.
         directions : str OR array_like of int
             Directions to apply the binary grating in.
             Can be any combination of "x" and "y".
             Can also be specified with integers, where 0 corresponds to "x" and 1 corresponds to "y".
             If ``None``, defaults to "xy".
+        test_index : bool OR int OR list OR None
+            Project the grating for only a subset of points in the full sweep, for testing
+            purposes. Return the results of the test instead of storing a calibration.
+            Indices are taken modulo the length of the sweep.
+            ``True`` tests every index; ``None`` (default) or ``False`` runs the full sweep.
         window
             If not ``None``, the pixel calibration is only done over the region of the SLM
             defined by ``window``.
@@ -90,12 +108,6 @@ class _PixelCalibration(object):
         field_period : int
             If ``window`` is not ``None``, then the field is deflected away in an
             orthogonal direction with a grating of the given period.
-        test_index : bool OR int OR list OR None
-            Project the grating for only a subset of points in the full sweep, for testing purposes.
-            This test index or test indices is executed modulo the length of the sweep.
-            If ``True``, then the test indices are set to scan over the full sweep.
-            Defaults to ``None``, which means that no test index is used and the full sweep is executed.
-            ``False`` is treated the same as ``None``.
         autoexpose : bool OR float
             If ``True``, then the camera exposure is automatically
             adjusted at the start of the sweep, or adjusted to not overexpose the given test indices.
@@ -120,53 +132,20 @@ class _PixelCalibration(object):
                 levels = self.slm.bitresolution
 
             levels = np.arange(levels) * (self.slm.bitresolution / levels)
-        levels = np.mod(levels, self.slm.bitresolution).astype(self.slm.display.dtype)
+        levels = np.asarray(levels)
+        valid = (levels >= 0) & (levels < self.slm.bitresolution)
+        if not np.all(valid):
+            self.logger.warning(
+                "Omitting requested levels %s, outside the valid range [0, %s).",
+                levels[~valid], self.slm.bitresolution,
+            )
+            levels = levels[valid]
+        levels = levels.astype(self.slm.display.dtype)
+        levels = np.unique(levels)  # Processing reads the response in level order.
         N = len(levels)
 
-        # Parse orders by forcing integer.
-        if np.isscalar(orders):
-            orders = int(orders)
-            orders = np.arange(-orders, orders+1)
-        orders = np.rint(orders).astype(int)
-        M = len(orders)
-
-        if not 1 in orders:
-            raise ValueError("1st order must be included.")
-
-        # Find the minimum period based on the FoV size.
-        camera_extent_knm = toolbox.convert_vector(
-            np.array([
-                (0,0),    # top left
-                (self.cam.width - 1, 0),    # top right
-                (0, self.cam.height - 1),    # bottom left
-                (self.cam.width - 1, self.cam.height - 1),    # bottom right
-            ]).T,
-            from_units="ij",
-            to_units="knm",
-            shape=(1,1),
-            hardware=self,
-        )
-        camera_extent_kspace = (camera_extent_knm - toolbox.format_2vectors((.5, .5))) * 2
-        max_order = np.max(np.abs(orders))
-        min_periods = max_order / np.max(np.abs(camera_extent_kspace), axis=1)
-        min_period = max(2, 8 * int(np.floor(np.max(min_periods)/2)))
-
-        # Parse periods by forcing positive even integer.
-        if np.isscalar(periods):
-            periods = min_period + 2 * np.arange(periods)
-
-        periods = np.rint(periods).astype(int)  # Force integer.
-        P = len(periods)
-
-        # Error check periods.
-        if np.any(periods % 2 != 0):
-            raise ValueError(f"Periods {periods} must be even integers.")
-
-        if len(np.unique(periods)) != len(periods):
-            raise ValueError(f"Repeated periods in {periods}")
-
-        if np.any(periods <= 0):
-            raise ValueError(f"Periods {periods} must be positive.")
+        if N == 0:
+            raise ValueError("No valid levels specified.")
 
         # Parse directions.
         if directions is None:
@@ -185,13 +164,102 @@ class _PixelCalibration(object):
                 directions.append(1)
         D = len(directions)
 
+        if D == 0:
+            raise ValueError(f"No valid directions in {directions_}.")
+
+        # How far the camera reaches either side of the 0th order along the swept axes,
+        # in units where the edge of k-space is unity.
+        camera_extent_kspace = 2 * self.get_camera_extent(units="freq")[directions, :]
+        reach = np.array([
+            np.min(np.max(camera_extent_kspace, axis=1)),
+            np.min(-np.min(camera_extent_kspace, axis=1)),
+        ])
+
+        # Parse orders by forcing integer.
+        orders_given = not np.isscalar(orders)
+        if not orders_given:
+            orders = int(orders)
+            orders = np.arange(-orders, orders+1)
+        orders = np.rint(orders).astype(int)
+
+        if len(np.unique(orders)) != len(orders):
+            raise ValueError(f"Repeated orders in {orders}")
+
+        # Gratings deflect either way, so a 0th order off the camera forfeits one side.
+        if np.any(reach <= 0):
+            keep = orders > 0 if reach[0] > 0 else orders < 0
+
+            if not np.all(keep):
+                if orders_given:
+                    raise ValueError(
+                        f"The 0th order is off the camera, so orders {orders[~keep]} deflect "
+                        f"further off it. Only the {'+' if reach[0] > 0 else '-'} side is visible."
+                    )
+                self.logger.warning(
+                    "The 0th order is off the camera. Omitting orders %s.", orders[~keep]
+                )
+                orders = orders[keep]
+
+        M = len(orders)
+
+        if M == 0:
+            raise ValueError("No orders land on the camera.")
+
+        if not (1 in orders or -1 in orders):
+            raise ValueError("1st order must be included.")
+
+        # Parse periods. Long enough that the largest order stays inside the far edge of
+        # the camera, short enough that the smallest reaches the near edge at all.
+        period_min = np.max([2 * abs(o) / reach[0 if o > 0 else 1] for o in orders if o != 0])
+        period_max = (
+            2 * np.min(np.abs(orders[orders != 0])) / -np.min(reach)
+            if np.any(reach < 0) else np.inf
+        )
+
+        if period_min > period_max:
+            raise ValueError(
+                f"No period puts orders {orders} on the camera: they need at least "
+                f"{period_min:.1f} pixels to stay inside its far edge, but at most "
+                f"{period_max:.1f} to clear the 0th order which has fallen off it."
+            )
+
+        # Double for margin, without overshooting back off the camera.
+        min_period = 2 * int(np.ceil(min(2 * period_min, period_max) / 2))
+        if min_period > period_max:
+            min_period -= 2
+        min_period = max(2, min_period)
+
+        # Force positive even integer.
+        if np.isscalar(periods):
+            periods = min_period + 2 * np.arange(periods)
+
+        periods = np.rint(periods).astype(int)  # Force integer.
+        P = len(periods)
+
+        # Error check periods.
+        if np.any(periods % 2 != 0):
+            raise ValueError(f"Periods {periods} must be even integers.")
+
+        if np.any(periods > period_max):
+            raise ValueError(
+                f"Periods {periods[periods > period_max]} deflect the orders short of "
+                f"the camera, which the 0th order has fallen off. "
+                f"Periods must be at most {period_max:.1f}."
+            )
+
+        if len(np.unique(periods)) != len(periods):
+            raise ValueError(f"Repeated periods in {periods}")
+
+        if np.any(periods <= 0):
+            raise ValueError(f"Periods {periods} must be positive.")
+
         # Error check window size vs periods.
         if window is not None:
             (_, w, _, h) = toolbox.window_extent(window)
             if np.any(periods > w // 2) or np.any(periods > h // 2):
-                raise ValueError(f"Periods {periods} must be at least half of the window size ({w}, {h}).")
+                raise ValueError(f"Periods {periods} must be at most half of the window size ({w}, {h}).")
 
-        # Figure out our shape. We store for two directions even if only one is measured.
+        # Figure out the shape of the stored data. We store for two directions even if only one is measured.
         shape = (2, P, N, N, M)
         length = D * P * N * N
         data = np.zeros(shape)
@@ -215,8 +283,9 @@ class _PixelCalibration(object):
             to_units="norm",
             hardware=self
         )
-        field_values = np.array([self.slm.bitresolution / 2, 0]).astype(self.slm.display.dtype)
-        field_hi, field_lo = field_values
+        (field_hi, field_lo) = np.array(
+            [self.slm.bitresolution / 2, 0]
+        ).astype(self.slm.display.dtype)
 
         field_ij = toolbox.convert_vector(
             field_freq,
@@ -236,57 +305,64 @@ class _PixelCalibration(object):
         for i in range(2*P):
             order_ij.append(center + orders * dorder[:, [i]])
 
-        integration_size = int(np.ceil(np.min([
+        integration_size = max(1, int(np.floor(np.min([
             np.min(np.max(np.abs(dorder), axis=0)),
             np.min(np.max(np.abs(dfield), axis=0))
-        ])))
+        ]))))
 
-        canvas = np.zeros(self.cam.shape)
-
-        # Figure out if we exceed the camera's field of view, and if so, raise an error.
-        try:
-            for i in range(2*P):
-                mask = analysis.take(
-                    images=canvas,
-                    vectors=order_ij[i],
-                    size=integration_size,
-                )
-        except IndexError:
-            raise ValueError(
-                f"Some orders are too far from the center to be captured by the camera. "
-                f"Try increasing the period or decreasing the order."
+        if integration_size < 3:
+            self.logger.warning(
+                "Orders are only %s camera pixels apart; the integration windows are too "
+                "small to measure them reliably. Consider a longer period or focal length.",
+                integration_size,
             )
 
+        # Error check that the windows of the swept directions fit on the camera.
+        half = integration_size // 2
+        for i in directions:
+            for j in range(P):
+                if (
+                    np.any(order_ij[j + P*i] - half < 0) or
+                    np.any(order_ij[j + P*i] + half >= np.flip(self.cam.shape)[:, np.newaxis])
+                ):
+                    raise ValueError(
+                        f"Some orders miss the camera. "
+                        f"Try adjusting the periods or reducing the orders."
+                    )
+
         if plot >= 2:
+            canvas = np.zeros(self.cam.shape)
             for i in directions:
                 for j in range(P):
-                    mask = analysis.take(
+                    canvas += analysis.take(
                         images=canvas,
                         vectors=order_ij[j + P*i],
                         size=integration_size,
                         return_mask=True,
                     )
-                    canvas += mask
             self.cam.plot(canvas, title="Order integration mask")
             _slmsuite_plt_show(name="pixel_calibrate_masks")
 
-        show_tqdm = True
+        # ``True`` scans the whole sweep; ``False`` is not a test at all.
+        if np.ndim(test_index) == 0 and np.asarray(test_index).dtype == bool:
+            test_index = np.arange(length) if test_index else None
+
+        show_tqdm = test_index is None
 
         if test_index is not None:
-            # Make test_index a list if we only got a single integer.
-            if np.isscalar(test_index):
-                test_index = [test_index]
+            # Force a sorted list of unique in-range integers.
+            test_index = np.rint(np.atleast_1d(test_index)).astype(int)
+            test_index = sorted(set(np.mod(test_index, length)))
 
-            # Make sure test_index is a sorted list of unique integers between 0 and length-1.
-            test_index = np.rint(test_index).astype(int)
-            test_index = np.mod(test_index, length)
-            test_index = sorted(list(set(test_index)))
+            if len(test_index) == 0:
+                raise ValueError("test_index selected no points of the sweep.")
 
-            show_tqdm = False
+            # Otherwise a full-sweep test would plot thousands of figures.
+            plot = plot and len(test_index) <= 8
+
             results = []
             autoexposure_results = []
 
-        # if True: iterations = tqdm(range(P*(N-1)*N))
         if show_tqdm: iterations = tqdm(range(length))
 
         # Big sweep.
@@ -432,10 +508,7 @@ class _PixelCalibration(object):
             If ``True``, then the summed data is averaged with its transpose across the diagonal. This can help reduce noise by enforcing symmetry.
         """
         cal = self.calibrations["pixel"]
-        periods = cal["periods"]
         orders_ = cal["orders"]
-        levels = cal["levels"]
-        leveli = np.arange(len(levels))
         data = cal["data"]
 
         # Parse orders.
@@ -492,25 +565,31 @@ class _PixelCalibration(object):
             orders = [-orders, orders]
         orders =  [o for o in orders_ if o in orders]
 
+        if len(orders) == 0:
+            raise ValueError(f"None of the requested orders were measured; have {list(orders_)}.")
+
         if not summed:
+            # The requested orders index into the measured orders, not into 0, 1, 2, ...
+            index = [list(orders_).index(o) for o in orders]
+            M = len(orders)
             cmin = np.min(data)
             cmax = np.max(data)
-            for i, direction in enumerate(["x", "y"]):
-                for j, period in enumerate(periods[[0]]):
-                    M = len(orders)
-                    fig, axs = plt.subplots(1, M, figsize=(5*M, 5))
+
+            for i in cal["directions"]:
+                for j, period in enumerate(periods):
+                    fig, axs = plt.subplots(1, M, figsize=(5*M, 5), squeeze=False)
                     for o, order in enumerate(orders):
-                        im = axs[o].imshow(data[i,j,:,:,o])
+                        im = axs[0, o].imshow(data[i,j,:,:,index[o]])
                         im.set_clim(cmin, cmax)
 
-                        axs[o].set_xlabel("Level b")
-                        axs[o].set_ylabel("Level a")
-                        axs[o].set_xticks(leveli)
-                        axs[o].set_yticks(leveli)
+                        axs[0, o].set_xlabel("Level b")
+                        axs[0, o].set_ylabel("Level a")
+                        axs[0, o].set_xticks(leveli)
+                        axs[0, o].set_yticks(leveli)
 
-                        axs[o].set_title(f"Order ${order:+d}$")
+                        axs[0, o].set_title(f"Order ${order:+d}$")
 
-                    fig.suptitle(f"${direction}$-grating, {period} pixel period")
+                    fig.suptitle(f"${'xy'[i]}$-grating, {period} pixel period")
                     _slmsuite_plt_show(name="pixel_calibration_plot")
         else:
             data_summed = self._pixel_calibration_process_get_summed(orders=orders)
@@ -530,8 +609,8 @@ class _PixelCalibration(object):
 
             _slmsuite_plt_show(name="pixel_calibration_plot")
 
-    def pixel_calibration_process_gamma(self, plot=False):
-        """
+    def pixel_calibration_process_gamma(self, plot=False, apply=True):
+        r"""
         Process the pixel calibration data to extract the phase response curve (gamma).
 
         Parameters
@@ -539,6 +618,15 @@ class _PixelCalibration(object):
         plot : bool
             If ``True``, then the extracted gamma curve is plotted, as well as the fit of the
             model to the data.
+        apply : bool
+            If ``True``, load the result onto the SLM with
+            :meth:`~slmsuite.hardware.slms.slm.SLM.set_gamma`.
+
+        Returns
+        -------
+        numpy.ndarray
+            Phase response at the sampled ``levels``, in units of :math:`2\pi`,
+            on the increasing branch with its minimum at zero.
         """
         # Construct x data.
         cal = self.calibrations["pixel"]
@@ -549,6 +637,12 @@ class _PixelCalibration(object):
         # Construct y data.
         data_summed = self._pixel_calibration_process_get_summed(orders=[-1, +1])
         data_ravel = data_summed.ravel()
+
+        if np.ptp(data_ravel) == 0:
+            raise RuntimeError(
+                "The 1st orders carry no signal, so gamma cannot be fit. "
+                "Check the exposure and that the orders land on the camera."
+            )
 
         # Construct the model.
         def model(_, a, c, *gamma):
@@ -567,8 +661,10 @@ class _PixelCalibration(object):
         from scipy.optimize import curve_fit
         popt, pcov = curve_fit(model, None, data_ravel, p0=guess)
 
-        # Extract the gamma values from the fit parameters, and normalize so that the minimum is 0.
-        gamma = popt[2:]
+        # The model resolves each level only modulo a cycle, and mirrors freely.
+        gamma = np.unwrap(popt[2:], period=1)
+        if np.corrcoef(gamma, leveli)[0, 1] < 0:
+            gamma = -gamma
         gamma -= np.min(gamma)
 
         # Get rsquared of the fit.
@@ -577,7 +673,7 @@ class _PixelCalibration(object):
         ss_tot = np.sum((data_ravel - np.mean(data_ravel))**2)
         r_squared = 1 - (ss_res / ss_tot)
 
-        if r_squared < 0.9:
+        if not r_squared >= 0.9:
             self.logger.warning("Low R^2 value of %.3f for gamma fit. Fit may be inaccurate.", r_squared)
 
         if plot:
@@ -594,23 +690,72 @@ class _PixelCalibration(object):
             axs[2].imshow(data_resid, cmap="bwr", vmin=-M, vmax=M)
             _slmsuite_plt_show(name="pixel_calibration_process_gamma_residuals")
 
-        # TODO: apply data to SLM.
-
         self.calibrations["pixel"]["gamma"] = gamma
+        self.calibrations["pixel"]["gamma_r2"] = r_squared
+
+        if apply:
+            self._pixel_calibration_apply_gamma()
 
         return gamma
 
+    def _pixel_calibration_apply_gamma(self):
+        """
+        Loads the fitted phase response onto the SLM, spreading the sampled levels across
+        all of them. Does nothing if the calibration has not been processed.
+        """
+        cal = self.calibrations["pixel"]
+        if "gamma" not in cal or "levels" not in cal:
+            return
+
+        # Levels are meaningless across a change of bitdepth.
+        bitresolution = self.slm.bitresolution
+        measured = cal.get("__meta__", {}).get("slm", {}).get("bitresolution", bitresolution)
+        if measured != bitresolution:
+            self.logger.warning(
+                "The calibration was taken on a %s level SLM, but this one has %s. "
+                "Not applying its gamma.",
+                measured, bitresolution,
+            )
+            return
+
+        # Half a cycle between sampled levels is the most the fit can resolve.
+        step = np.max(np.abs(np.diff(cal["gamma"])))
+        if step > .25:
+            self.logger.warning(
+                "Gamma steps by up to %.2f of a cycle between sampled levels, nearing "
+                "the half cycle this measurement resolves. Sample more levels.", step,
+            )
+
+        self.slm.set_gamma(
+            self.slm.interpolate_gamma(cal["gamma"], cal["levels"])
+        )
+
     @staticmethod
-    def pixel_kernel(x, a_pix=.1, n=1, a_minus_pix=None, n_minus=None):
+    def pixel_kernel(x, a_pix=.1, n=1, a_minus_pix=None, n_minus=None, x0_pix=0):
         r"""
-        Blurring kernel
+        Normalized crosstalk kernel, evaluated at positions ``x`` in units of SLM pixels.
+        This is Eq. (9) of `Moser et al. <https://doi.org/10.1364/OE.27.025046>`_,
+        generalized to a per-side exponent.
 
         .. math:: K(x) =    \left\{
                                 \begin{array}{ll}
-                                    \exp\left(-\left|\frac{x}{\alpha_+}\right|^{n_+}\right), & x \ge 0, \\
-                                    \exp\left(-\left|\frac{x}{\alpha_-}\right|^{n_-}\right), & x < 0.
+                                    \exp\left(-\left|\frac{x-x_0}{\alpha_+}\right|^{n_+}\right), & x \ge x_0, \\
+                                    \exp\left(-\left|\frac{x-x_0}{\alpha_-}\right|^{n_-}\right), & x < x_0.
                                 \end{array}
                             \right.
+
+        Parameters
+        ----------
+        x : array_like
+            Positions in pixels, on a uniform grid: the kernel is normalized by its sum.
+        a_pix, n : float
+            Width :math:`\alpha_+` and exponent :math:`n_+` for :math:`x \ge x_0`.
+            ``n=1`` gives an exponential, ``n=2`` a Gaussian.
+        a_minus_pix, n_minus : float OR None
+            Width :math:`\alpha_-` and exponent :math:`n_-` for :math:`x < x_0`.
+            Each defaults to its counterpart, making the kernel symmetric.
+        x0_pix : float
+            Displacement :math:`x_0` of the peak, in pixels.
         """
         # Parse minus parameters by defaulting to plus parameters.
         if a_minus_pix is None:
@@ -618,49 +763,104 @@ class _PixelCalibration(object):
         if n_minus is None:
             n_minus = n
 
-        # Create and normalize the kernel.
-        kernel = np.where(
-            x >= 0,
-            np.exp(-np.power(np.abs(x / a_pix), n)),
-            np.exp(-np.power(np.abs(x / a_minus_pix), n_minus)),
-        )
-        kernel /= np.sum(kernel)
+        x = x - x0_pix
 
-        return kernel
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            kernel = np.where(
+                x >= 0,
+                np.exp(-np.power(np.abs(x / a_pix), n)),
+                np.exp(-np.power(np.abs(x / a_minus_pix), n_minus)),
+            )
+            total = np.sum(kernel)
 
-    def _pixel_calibrate_simulate(self, period=16, supersample=16, **kwargs):
-        N = int(period * supersample)
+        # A kernel narrower than the sampling underflows; that limit is a delta.
+        if not total > 0:
+            kernel = np.asarray(np.abs(x) == np.min(np.abs(x)), dtype=float)
+            total = np.sum(kernel)
 
-        x = np.linspace(-period, period, N)
-        x -= np.mean(x)
+        return kernel / total
 
-        y = np.zeros_like(x)
-        y[x < 0] = 1
+    # Kernel support in pixels; crosstalk is sub-pixel, so truncating here is negligible.
+    _pixel_kernel_reach = 32
 
-        blaze = np.linspace(0, 2, N)
-        # blaze -= np.mean(blaze)
+    @classmethod
+    def _pixel_crosstalk_simulate(cls, phase, supersample=16, plot=False, **kwargs):
+        r"""
+        Diffraction orders of one period of a pixelated phase pattern subject to pixel
+        crosstalk, after `Moser et al. <https://doi.org/10.1364/OE.27.025046>`_.
 
-        plt.plot(x, y)
-        plt.plot(x, blaze)
+        Each pixel edge :math:`\phi_0 \rightarrow \phi_1` realizes the transition
+        :math:`\phi_0 + (\phi_1 - \phi_0)K(x)` for the integrated :meth:`pixel_kernel`
+        :math:`K` (Eq. 10), summed over the periodic pattern (Eq. 12). Constant
+        parameters reduce this to convolving the supersampled phase with the kernel.
 
-        x2 = np.linspace(-2, 2, 4*supersample)
-        x2 -= np.mean(x2)
-        K = self.pixel_kernel(x2, **kwargs)
+        Caution
+        ~~~~~~~
+        A binary grating of 50% duty cycle obeys :math:`\phi(x + p/2) = a + b - \phi(x)`,
+        which any *constant* kernel preserves, forcing :math:`|E_m| = |E_{-m}|`. The
+        order asymmetry Moser et al. measure on exactly these gratings therefore needs a
+        level-dependent ``a_pix``, not merely an asymmetric kernel. A duty cycle other
+        than 50% exposes a constant kernel's asymmetry instead.
 
-        y = ndimage.convolve1d(y, K, mode="wrap")
+        Parameters
+        ----------
+        phase : array_like of float
+            One period of the commanded phase in radians, one value per SLM pixel.
+        supersample : int
+            Subpixel samples per SLM pixel.
+        plot : bool
+            Whether to plot the blurred phase and the resulting orders.
+        **kwargs
+            Passed to :meth:`pixel_kernel`. Each may be a scalar or a
+            ``callable(phi0, phi1)`` returning the value for that edge. A constant
+            ``x0_pix`` merely translates the pattern, so it acts only when level-dependent.
 
-        plt.plot(x, y)
-        _slmsuite_plt_show(name="pixel_calibrate_simulate_x")
+        Returns
+        -------
+        numpy.ndarray
+            Power in each of the ``phase.size * supersample`` diffraction orders, with
+            order :math:`m` at index ``m`` (:mod:`numpy` FFT ordering). Sums to unity.
+        """
+        phase = np.ravel(np.asarray(phase, dtype=float))
+        supersample = int(supersample)
+        (P, N) = (phase.size, phase.size * supersample)
 
-        kx = np.arange(float(N)) #/ supersample
-        kx -= np.mean(kx)
+        x = np.arange(N) / supersample
+        reach = max(cls._pixel_kernel_reach, P)
+        offset = (np.arange(reach * supersample) - reach * supersample // 2) / supersample
+        replicas = P * np.arange(-(reach // P) - 1, reach // P + 2)
 
-        Y = np.fft.fftshift(np.fft.fft(np.exp(1j * np.pi * y)))
+        # Sum the transition of every pixel edge, and of its periodic neighbors.
+        blurred = np.zeros(N)
+        for j in np.flatnonzero(np.roll(phase, -1) != phase):
+            (phi0, phi1) = (phase[j], phase[(j + 1) % P])
+            transition = np.cumsum(cls.pixel_kernel(
+                offset,
+                **{k: v(phi0, phi1) if callable(v) else v for (k, v) in kwargs.items()},
+            ))
+            for replica in replicas:
+                blurred += (phi1 - phi0) * np.interp(
+                    x - (j + 1 + replica), offset, transition, left=0, right=1
+                )
 
-        Y2 = np.fft.fftshift(np.fft.fft(np.exp(1j * np.pi * blaze)))
+        orders = np.square(np.abs(np.fft.fft(np.exp(1j * blurred)) / N))
 
-        plt.hlines(0, np.min(kx), np.max(kx))
-        plt.scatter(kx, np.square(np.abs(Y)))
-        plt.scatter(kx, np.square(np.abs(Y2)))
-        # plt.xlim(-10, 10)
-        _slmsuite_plt_show(name="pixel_calibrate_simulate_k")
+        if plot:
+            (fig, axs) = plt.subplots(1, 2, figsize=(10, 4))
+
+            # A normalized kernel preserves the mean; anchor there to compare levels.
+            axs[0].plot(x, np.repeat(phase, supersample), label="commanded")
+            axs[0].plot(x, blurred + np.mean(phase) - np.mean(blurred), label="blurred")
+            axs[0].set_xlabel("SLM pixel")
+            axs[0].set_ylabel("Phase [rad]")
+            axs[0].legend(fontsize="x-small")
+
+            m = np.arange(-((P - 1) // 2), P // 2 + 1)
+            axs[1].stem(m, orders[m])
+            axs[1].set_xlabel("Diffraction order")
+            axs[1].set_ylabel("Power")
+
+            fig.tight_layout()
+            _slmsuite_plt_show(name="pixel_crosstalk_simulate")
+
+        return orders

@@ -35,6 +35,7 @@ from enum import IntEnum
 import numpy as np
 from slmsuite.hardware._pyglet import _WindowThread
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
+from slmsuite.hardware.slms.slm import LUT_SIZE
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
@@ -57,7 +58,6 @@ except ImportError:
     HID_AVAILABLE = False
 
 # PLM Constants
-LUT_SIZE = 1 << 16 # Size of quantization LUT (64 KB for 2^16 entries)
 MODEL_DB_PATH = os.path.join(os.path.dirname(__file__), "texas_instruments.yaml")
 DLPC900_VENDOR_ID = 0x0451
 DLPC900_PRODUCT_ID = 0xC900
@@ -118,6 +118,7 @@ class PLM(ScreenMirrored):
     data_flip : tuple
         Axis flip flags for electrode output.
     """
+    _gamma_sign = +1        # Increasing displacement increases phase delay.
 
     def __init__(
         self,
@@ -165,14 +166,10 @@ class PLM(ScreenMirrored):
             Index of the DLPC900 device to open when multiple units are connected.
             Defaults to ``0``. Only used when ``configure_usb=True``.
         gpu : bool or None, optional
-            Whether to use GPU acceleration via :mod:`cupy`.
-            When ``gpu=True`` (or ``None`` with :mod:`cupy` installed), all
-            internal buffers and LUTs are stored on the GPU. Any :mod:`numpy`
-            array subsequently passed to :meth:`set_phase` will be transferred
-            to the GPU on every call. Avoid mixing :mod:`numpy` and
-            :mod:`cupy` inputs when ``gpu=True`` — pass :mod:`cupy` arrays
-            consistently to avoid repeated CPU→GPU transfers that can
-            significantly reduce throughput.
+            See :attr:`~slmsuite.hardware.slms.slm.SLM.xp`. Unlike the base class, this
+            defaults to ``None``, using :mod:`cupy` whenever it is installed. Pass
+            :mod:`cupy` arrays to :meth:`set_phase` consistently to avoid a CPU→GPU
+            transfer on every call.
         **kwargs
             Additional arguments for :class:`ScreenMirrored`.
         """
@@ -181,19 +178,6 @@ class PLM(ScreenMirrored):
 
         # Load model configuration from YAML database
         self.model_config = self.load_model_config(model_name)
-
-        # Determine compute backend
-        if gpu is None:
-            self.xp = cp  # cp is already np if cupy unavailable
-        elif gpu:
-            if cp is np:
-                raise ImportError("gpu=True requested but cupy is not installed")
-            self.xp = cp
-        else:
-            self.xp = np
-
-        backend = "GPU (cupy)" if self.xp is not np else "CPU (numpy)"
-        logger.debug("PLM using %s backend", backend)
 
         # Extract model parameters
         model_shape = tuple(self.model_config["shape"])  # (rows, cols) - input phase shape
@@ -224,8 +208,11 @@ class PLM(ScreenMirrored):
             bitdepth=bitdepth,
             pitch_um=pitch_um,
             name=kwargs.pop("name", model_name),
+            gpu=gpu,
             **kwargs
         )
+
+        logger.debug("PLM using %s backend", "GPU (cupy)" if self.xp is not np else "CPU (numpy)")
 
         # Calculate display shape after electrode mapping
         elec_shape = self._electrode_layout_raw.shape
@@ -251,8 +238,11 @@ class PLM(ScreenMirrored):
         if configure_usb:
             PLM._usb_post_configure(self.dlpc900, video_input, pixel_mode)
 
-        # Pre-compute quantization LUT
-        self._init_quantize_lut()
+        # Pre-compute the quantization LUT from the model's non-uniform phase response.
+        self.set_gamma(
+            np.array(self.model_config["displacement_ratios"])
+            * (self.bitresolution - 1) / self.bitresolution
+        )
 
         # Convert model arrays to backend (GPU or CPU)
         self.memory_lut = self.xp.array(self.model_config["memory_lut"], dtype=np.uint8)
@@ -465,6 +455,17 @@ class PLM(ScreenMirrored):
             self.dlpc900 = None
         super().close()
 
+    def set_gamma(self, gamma=None, lut_size=LUT_SIZE):
+        """
+        See :meth:`~slmsuite.hardware.slms.slm.SLM.set_gamma`. A PLM addresses its phase
+        states through the table, so it has no ideal linear response to clear back to.
+        """
+        if gamma is None:
+            raise ValueError(
+                "A PLM requires a lookup table; pass the model's displacement ratios."
+            )
+        return super().set_gamma(gamma, lut_size)
+
     def _init_quantize_lut(self, displacement_ratios=None):
         """
         Pre-compute a quantization lookup table (LUT) that maps discretized
@@ -494,7 +495,6 @@ class PLM(ScreenMirrored):
         phase_buckets = (phase_disp[:-1] + phase_disp[1:]) / 2
 
         # Build LUT: map each of the uniformly-spaced phase values to a state
-        self._phase_to_lut = np.float64(LUT_SIZE / (2 * np.pi))
         grid = np.arange(LUT_SIZE, dtype=np.float64) * (2 * np.pi / LUT_SIZE)
         lut = np.searchsorted(phase_buckets, grid, side='right')
         lut = (lut & (self.bitresolution - 1)).astype(np.uint8)
@@ -502,29 +502,10 @@ class PLM(ScreenMirrored):
 
     def _quantize(self, phase_map):
         """
-        Quantize continuous phase values to discrete phase states via LUT.
-
-        Converts float phase to a uint16 grid index (implicitly wrapping
-        mod 2pi), then indexes into the pre-computed LUT.
-
-        Parameters
-        ----------
-        phase_map : ndarray
-            Phase data in any range (wrapping is handled by integer cast).
-
-        Returns
-        -------
-        ndarray (uint8)
-            Quantized phase state indices [0, bitresolution).
+        Quantize continuous phase (in any range) to discrete phase state indices via
+        :attr:`~slmsuite.hardware.slms.slm.SLM.lut`.
         """
-        xp = self.xp
-        phase_map = xp.asarray(phase_map)
-
-        # Multiply into [0, 65536) per 2pi, cast to int32, mask to uint16 range.
-        # The int32 -> & 0xFFFF gives well-defined wrapping for any input range.
-        lut_idx = (phase_map * self._phase_to_lut).astype(xp.int32) & 0xFFFF
-
-        return self._quantize_lut[lut_idx]
+        return self.lut[self._phase2lut(self.xp.asarray(phase_map))]
 
     def _electrode_map(self, phase_state_idx):
         """
@@ -570,7 +551,7 @@ class PLM(ScreenMirrored):
 
         return out
 
-    def _format_phase_hw(self, phase, replicate_bits=True, enforce_shape=True):
+    def _format_phase_hw(self, phase, replicate_bits=True):
         """
         Process phase array into PLM electrode bitmap.
 
@@ -586,8 +567,6 @@ class PLM(ScreenMirrored):
         replicate_bits : bool, optional
             Multiply final bitplane by 255 to display same CGH for full frame.
             Defaults to True.
-        enforce_shape : bool, optional
-            Check that input shape matches model shape. Defaults to True.
 
         Returns
         -------
@@ -603,25 +582,19 @@ class PLM(ScreenMirrored):
         xp = self.xp
 
         # Shape validation
-        if enforce_shape:
-            expected_shape = self.shape
-            if len(phase.shape) < 2 or phase.shape[-2:] != expected_shape:
-                raise ValueError(
-                    f"Phase map shape {phase.shape} does not match "
-                    f"model shape {expected_shape}"
-                )
+        if len(phase.shape) < 2 or phase.shape[-2:] != self.shape:
+            raise ValueError(
+                f"Phase map shape {phase.shape} does not match "
+                f"model shape {self.shape}"
+            )
 
         # Coerce input to match backend (e.g. numpy→cupy if gpu=True)
         phase = xp.asarray(phase)
 
-        # Ensure self.display is on the same backend as phase (mirrors _phase2gray logic).
-        if xp is cp and not isinstance(self.display, cp.ndarray):
-            self.display = cp.zeros(self.display_shape, dtype=self.dtype)
-
         # Quantize phase to discrete states (handles [0, 2π) wrapping internally)
         phase_state_idx = self._quantize(phase)
 
-        return self._gray2display(phase_state_idx)
+        return self._gray2display(phase_state_idx, replicate_bits=replicate_bits)
 
     def _gray2display(self, gray, replicate_bits=True):
         xp = self.xp

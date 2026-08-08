@@ -27,6 +27,9 @@ from slmsuite.misc import fitfunctions
 from slmsuite.misc.files import generate_path, latest_path, load_h5, save_h5
 
 
+LUT_SIZE = 1 << 16      # Default number of entries in a phase lookup table.
+
+
 def _xp(array):
     """Return cupy if array is a cupy ndarray, else numpy."""
     if cp is not np and isinstance(array, cp.ndarray):
@@ -107,13 +110,24 @@ class SLM(_Common, ABC):
         store the true source properties (defined by the user) used to simulate the SLM's
         far-field.
 
-    phase : numpy.ndarray
-        Last displayed data in units of phase (radians). If wavefront calibration
-        (`phase_correct=True`) is used, this includes the calibration data.
-    display : numpy.ndarray
-        Last displayed data in discrete SLM units (integers). This is the data
-        that is actually displayed by the bit-limited hardware. If wavefront calibration
-        (`phase_correct=True`) is used, this includes the calibration data.
+    xp : module
+        The array backend, :mod:`numpy` or :mod:`cupy`, that this SLM stores and processes
+        data with. Selected by the ``gpu`` argument.
+    phase : numpy.ndarray OR cupy.ndarray
+        Last displayed data in units of phase (radians), held on :attr:`xp`.
+        If wavefront calibration (`phase_correct=True`) is used, this includes the
+        calibration data.
+    display : numpy.ndarray OR cupy.ndarray
+        Last displayed data in discrete SLM units (integers), held on :attr:`xp`. This is
+        the data that is actually displayed by the bit-limited hardware. If wavefront
+        calibration (`phase_correct=True`) is used, this includes the calibration data.
+    gamma : numpy.ndarray OR cupy.ndarray OR None
+        Measured phase response, in units of :math:`2\pi`, resampled onto every one of the
+        :attr:`bitresolution` grayscale levels. Set by :meth:`set_gamma`.
+    lut : numpy.ndarray OR cupy.ndarray OR None
+        Lookup table mapping phase onto the grayscale level which realizes it, inverted
+        from :attr:`gamma` by :meth:`set_gamma`. If ``None`` (the default), the private
+        method :meth:`_phase2gray` assumes the ideal linear phase response instead.
     settle : bool
         Default behavior for the ``settle`` argument of :meth:`set_phase()`. Defaults to ``False``.
     phase_correct : bool
@@ -137,6 +151,7 @@ class SLM(_Common, ABC):
         "phase",
         "display",
     ]
+    _gamma_sign = -1        # Increasing grayscale decreases phase delay; +1 for the reverse.
 
     @abstractmethod
     def __init__(
@@ -148,6 +163,7 @@ class SLM(_Common, ABC):
         wav_design_um=None,
         pitch_um=(8,8),
         settle_time_s=0.3,
+        gpu=False,
     ):
         """
         Initialize SLM.
@@ -173,7 +189,24 @@ class SLM(_Common, ABC):
             See :attr:`pitch_um`. Defaults to 8 micron square pixels.
         settle_time_s
             See :attr:`settle_time_s`.
+        gpu
+            Whether to store and process data with :mod:`cupy` (see :attr:`xp`).
+            ``None`` uses :mod:`cupy` if it is installed. Defaults to ``False``.
         """
+        # Choose the array backend that this SLM will hold all of its data in.
+        if gpu is None:
+            self.xp = cp
+        elif gpu:
+            if cp is np:
+                raise ImportError("gpu=True requested, but cupy is not installed.")
+            self.xp = cp
+        else:
+            self.xp = np
+
+        # Empty handles for the phase response and its lookup table (see set_gamma).
+        self.gamma = None
+        self.lut = None
+
         # Initialize the common hardware attributes.
         _Common.__init__(
             self,
@@ -185,8 +218,8 @@ class SLM(_Common, ABC):
         )
 
         # Phase and display caches for user reference.
-        self.phase = np.zeros(self.shape)
-        self.display = np.zeros(self.shape, dtype=self.dtype)
+        self.phase = self.xp.zeros(self.shape)
+        self.display = self.xp.zeros(self.shape, dtype=self.dtype)
 
         # By default, target wavelength is the design wavelength
         self.wav_um = float(wav_um)
@@ -391,6 +424,8 @@ class SLM(_Common, ABC):
         """
         if phase is None:
             phase = self.phase
+        if _xp(phase) is not np:
+            phase = phase.get()
         phase = np.array(phase, copy=(False if np.__version__[0] == '1' else None))
         phase = np.mod(phase, 2*np.pi) / np.pi
 
@@ -451,9 +486,238 @@ class SLM(_Common, ABC):
     def pitch(self):
         return self.pitch_um / self.wav_um
 
+    # Phase scaling and LUT methods
+
     @property
     def phase_scaling(self):
         return self.wav_um / self.wav_design_um
+
+    def interpolate_gamma(self, gamma, levels):
+        r"""
+        Interpolates a phase response measured at some ``levels`` onto all
+        :attr:`bitresolution` grayscale levels, as :meth:`set_gamma` requires. Levels
+        outside the sampled range are closed circularly, at the curve's average slope.
+
+        Parameters
+        ----------
+        gamma : array_like
+            Measured phase response, in units of :math:`2\pi`. See :meth:`set_gamma`.
+        levels : array_like
+            The grayscale levels at which ``gamma`` was sampled, in any order.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``gamma`` sampled at every grayscale level.
+        """
+        bitresolution = self.bitresolution
+        gamma = np.ravel(np.array(gamma, dtype=float))
+        levels = np.ravel(np.array(levels, dtype=float))
+
+        if len(levels) != len(gamma):
+            raise ValueError(
+                f"Expected {len(gamma)} levels to pair with gamma; got {len(levels)}."
+            )
+
+        order = np.argsort(levels)
+        (levels, gamma) = (levels[order], gamma[order])
+
+        if len(gamma) < 2 or levels[0] == levels[-1]:
+            raise ValueError("Expected gamma to sample at least two distinct levels.")
+        if levels[-1] - levels[0] >= bitresolution:
+            raise ValueError(
+                f"Expected levels to span less than the bitresolution {bitresolution}; "
+                f"got {levels[0]} to {levels[-1]}."
+            )
+
+        span = (gamma[-1] - gamma[0]) * bitresolution / (levels[-1] - levels[0])
+
+        return np.interp(
+            np.arange(bitresolution),
+            np.concatenate(([levels[-1] - bitresolution], levels, [levels[0] + bitresolution])),
+            np.concatenate(([gamma[-1] - span], gamma, [gamma[0] + span])),
+        )
+
+    def set_gamma(self, gamma=None, lut_size=LUT_SIZE):
+        r"""
+        Sets :attr:`lut`, the lookup table mapping a desired phase onto the grayscale
+        level which best realizes it, from a measured phase response ``gamma``.
+        Measure ``gamma`` with
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibration_process_gamma`.
+        Its sweep projects grayscale levels directly, so a previously-set :attr:`lut`
+        does not disturb the measurement.
+
+        Note
+        ~~~~
+        The lookup table supersedes :attr:`phase_scaling`, as a measured ``gamma`` already
+        contains the phase range which the SLM achieves at :attr:`wav_um`. Phases outside
+        this range are mapped to the nearest phase which the SLM can realize.
+
+        Parameters
+        ----------
+        gamma : array_like OR None
+            Magnitude of the phase realized by each of the :attr:`bitresolution` grayscale
+            levels, in units of :math:`2\pi`, increasing with level for the usual SLM. Its
+            sense is set per class, as most SLMs decrease phase delay with increasing level
+            whereas a :class:`~slmsuite.hardware.slms.texasinstruments.PLM` increases it.
+            Must be unwrapped, as an SLM with more than :math:`2\pi` of range spans more
+            than one unit. Pass a measurement of only some levels through
+            :meth:`interpolate_gamma` first. ``None`` clears :attr:`lut`, restoring the
+            ideal linear response.
+        lut_size : int
+            Number of entries in :attr:`lut`. Must be a power of two.
+
+        Returns
+        -------
+        numpy.ndarray OR cupy.ndarray OR None
+            :attr:`lut`.
+        """
+        if gamma is None:
+            self.gamma = self.lut = None
+            return self.lut
+
+        if lut_size < 1 or lut_size & (lut_size - 1):
+            raise ValueError(f"Expected lut_size {lut_size} to be a positive power of two.")
+
+        if _xp(gamma) is not np:
+            gamma = gamma.get()
+        gamma = np.ravel(np.array(gamma, dtype=float))
+
+        if len(gamma) != self.bitresolution:
+            raise ValueError(
+                f"Expected gamma to span all {self.bitresolution} levels; got {len(gamma)}."
+            )
+        if not np.all(np.isfinite(gamma)):
+            raise ValueError("Expected finite gamma; a degenerate fit may produce nan.")
+
+        if self.phase_scaling != 1:
+            self.logger.warning(
+                "The gamma lookup table supersedes this SLM's phase_scaling of %s.",
+                self.phase_scaling,
+            )
+
+        # Phase realized by each level, sorted and tiled to bucket phase circularly.
+        phase = np.mod(self._gamma_sign * gamma * 2 * np.pi, 2 * np.pi)
+        ranking = np.argsort(phase)
+        tiled = np.concatenate(
+            (phase[ranking] - 2*np.pi, phase[ranking], phase[ranking] + 2*np.pi)
+        )
+
+        # Assign each of the lut_size uniformly spaced phases to the nearest level.
+        grid = np.arange(lut_size) * (2 * np.pi / lut_size)
+        index = np.searchsorted((tiled[:-1] + tiled[1:]) / 2, grid, side="right")
+
+        self.gamma = self.xp.asarray(gamma)
+        self.lut = self.xp.asarray(ranking[np.mod(index, self.bitresolution)].astype(self.dtype))
+
+        return self.lut
+
+    @property
+    def _phase_to_lut(self):
+        """Scale factor from phase in radians onto an index of :attr:`lut`."""
+        return np.float64(self.lut.size / (2 * np.pi))
+
+    def _phase2lut(self, phase):
+        r"""
+        Helper function to index :attr:`lut` with phase in radians, wrapping modulo
+        :math:`2\pi`.
+        """
+        xp = self.xp
+        return xp.floor(phase * self._phase_to_lut).astype(xp.int64) & (self.lut.size - 1)
+
+    def _phase2gray(self, phase, out=None):
+        r"""
+        Helper function to convert an array of phases (units of :math:`2\pi`) to an array of
+        :attr:`~slmsuite.hardware.slms.slm.SLM.bitresolution` -scaled and -cropped integers.
+        This is used by :meth:`set_phase()`. See special cases described in :meth:`set_phase()`.
+        If :attr:`lut` is set, the conversion is a lookup into the measured phase response
+        rather than the ideal linear scaling.
+
+        Parameters
+        ----------
+        phase : numpy.ndarray or cupy.ndarray
+            Array of phases in radians.
+        out : numpy.ndarray or cupy.ndarray
+            Array to store integer values scaled to SLM voltage, i.e. for in-place
+            operations.
+            If ``None``, an appropriate array will be allocated.
+
+        Returns
+        -------
+        out
+        """
+        xp = self.xp
+
+        if out is None:
+            out = xp.zeros(self.shape, dtype=self.dtype)
+
+        if self.lut is not None:
+            return xp.take(self.lut, self._phase2lut(phase), out=out)
+
+        if self.phase_scaling == 1:
+            # Prepare the 2pi -> integer conversion factor and convert.
+            factor = self._gamma_sign * (self.bitresolution / 2 / np.pi)
+            phase *= factor
+
+            # Cast via signed integers; cupy clamps negative floats cast to unsigned.
+            xp.rint(phase, out=phase)
+            index = phase.astype(xp.int32)
+
+            # Restore phase (usually self.phase) as these operations are in-place.
+            phase *= 1 / factor
+
+            # Shift by one so that phase=0 --> display=max. That way, phase will be more continuous.
+            index -= 1
+
+            # This implements modulo much faster than xp.mod().
+            if self.bitresolution & (self.bitresolution - 1) == 0:
+                active_bits_mask = int(self.bitresolution - 1)
+                xp.bitwise_and(index, active_bits_mask, out=index)
+            else:
+                # Slow backup using xp.mod().
+                xp.mod(index, self.bitresolution, out=index)
+
+            # Copy and cast the data to the output (usually self.display)
+            xp.copyto(out, index, casting="unsafe")
+        else:
+            # The bounds and truncation below are written for decreasing phase delay.
+            if self._gamma_sign != -1:
+                raise NotImplementedError(
+                    "An SLM with increasing phase delay must use a gamma lookup table "
+                    "(see set_gamma) when phase_scaling is not one."
+                )
+
+            # phase_scaling is not included in the scaling.
+            factor = -(self.bitresolution * self.phase_scaling / 2 / np.pi)
+            phase *= factor
+
+            # Only if necessary, modulo the phase to remain within SLM bounds.
+            if xp.amin(phase) <= -self.bitresolution or xp.amax(phase) > 0:
+                # Minus 1 is to conform with the in-bound case.
+                phase -= 1
+                # xp.mod is the slowest step. It could maybe be faster if phase is converted to
+                # an integer beforehand, but there is an amount of risk for overflow.
+                # For instance, a standard double can represent numbers far larger than
+                # even a 64 bit integer. If this optimization is implemented, take care to
+                # generate checks for the conversion to long integer / etc before the final
+                # conversion to dtype of uint8 or uint16.
+                xp.mod(phase, self.bitresolution * self.phase_scaling, out=phase)
+                phase += self.bitresolution * (1 - self.phase_scaling)
+
+                # Set values still out of range to zero.
+                if self.phase_scaling > 1:
+                    phase[phase < 0] = self.bitresolution - 1
+            else:
+                # Go from negative to positive.
+                phase += self.bitresolution - 1
+
+            # Copy and cast the data to the output (usually self.display)
+            xp.copyto(out, phase, casting="unsafe")
+
+            # Restore phase (though we do not unmodulo)
+            phase *= 1 / factor
+
+        return out
 
     # Writing methods
 
@@ -501,99 +765,8 @@ class SLM(_Common, ABC):
         For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`),
         this is a more complicated step to convert from grayscale to an electrode bitmap.
         """
-        xp = _xp(gray)
-        xp.copyto(self.display, gray)
+        self.xp.copyto(self.display, gray)
         return self.display
-
-    def _phase2gray(self, phase, out=None):
-        r"""
-        Helper function to convert an array of phases (units of :math:`2\pi`) to an array of
-        :attr:`~slmsuite.hardware.slms.slm.SLM.bitresolution` -scaled and -cropped integers.
-        This is used by :meth:`set_phase()`. See special cases described in :meth:`set_phase()`.
-        Supports both :mod:`numpy` and :mod:`cupy` arrays for GPU acceleration.
-
-        Parameters
-        ----------
-        phase : numpy.ndarray or cupy.ndarray
-            Array of phases in radians.
-        out : numpy.ndarray or cupy.ndarray
-            Array to store integer values scaled to SLM voltage, i.e. for in-place
-            operations.
-            If ``None``, an appropriate array will be allocated.
-
-        Returns
-        -------
-        out
-        """
-        xp = _xp(phase)
-
-        if out is None:
-            out = xp.zeros(self.shape, dtype=self.dtype)
-        elif xp is cp and not isinstance(out, cp.ndarray):
-            out = cp.zeros(self.shape, dtype=self.dtype)
-            self.display = out
-
-        if self.phase_scaling == 1:
-            # Prepare the 2pi -> integer conversion factor and convert.
-            factor = -(self.bitresolution / 2 / np.pi)
-            phase *= factor
-
-            # There is some randomness involved in casting positive floats to integers.
-            # Avoid this by going all negative.
-            maximum = xp.amax(phase)
-            if maximum >= 0:
-                toshift = self.bitresolution * 2 * float(xp.ceil(maximum / self.bitresolution))
-                phase -= toshift
-
-            # Copy and cast the data to the output (usually self.display)
-            xp.rint(phase, out=phase)
-            xp.copyto(out, phase, casting="unsafe")
-
-            # Restore phase (usually self.phase) as these operations are in-place.
-            phase *= 1 / factor
-
-            # Shift by one so that phase=0 --> display=max. That way, phase will be more continuous.
-            out -= 1
-
-            # This part (along with the choice of type), implements modulo much faster than xp.mod().
-            if self.bitresolution & (self.bitresolution - 1) == 0:
-                active_bits_mask = int(self.bitresolution - 1)
-                xp.bitwise_and(out, active_bits_mask, out=out)
-            else:
-                # Slow backup using xp.mod().
-                xp.mod(out, self.bitresolution, out=out)
-        else:
-            # phase_scaling is not included in the scaling.
-            factor = -(self.bitresolution * self.phase_scaling / 2 / np.pi)
-            phase *= factor
-
-            # Only if necessary, modulo the phase to remain within SLM bounds.
-            if xp.amin(phase) <= -self.bitresolution or xp.amax(phase) > 0:
-                # Minus 1 is to conform with the in-bound case.
-                phase -= 1
-                # xp.mod is the slowest step. It could maybe be faster if phase is converted to
-                # an integer beforehand, but there is an amount of risk for overflow.
-                # For instance, a standard double can represent numbers far larger than
-                # even a 64 bit integer. If this optimization is implemented, take care to
-                # generate checks for the conversion to long integer / etc before the final
-                # conversion to dtype of uint8 or uint16.
-                xp.mod(phase, self.bitresolution * self.phase_scaling, out=phase)
-                phase += self.bitresolution * (1 - self.phase_scaling)
-
-                # Set values still out of range to zero.
-                if self.phase_scaling > 1:
-                    phase[phase < 0] = self.bitresolution - 1
-            else:
-                # Go from negative to positive.
-                phase += self.bitresolution - 1
-
-            # Copy and cast the data to the output (usually self.display)
-            xp.copyto(out, phase, casting="unsafe")
-
-            # Restore phase (though we do not unmodulo)
-            phase *= 1 / factor
-
-        return out
 
     def set_phase(
         self,
@@ -633,8 +806,10 @@ class SLM(_Common, ABC):
         The user does not need to wrap (e.g. :mod:`numpy.mod(data,
         2*numpy.pi)`) the passed phase data, unless they are pre-caching data
         for speed (see below). :meth:`.set_phase()` uses optimized routines to
-        wrap the phase (see the private method :meth:`_phase2gray()`). Which
-        routine is used depends on :attr:`phase_scaling`:
+        wrap the phase (see the private method :meth:`_phase2gray()`). When a
+        measured phase response is loaded with :meth:`set_gamma()`, phase is
+        instead wrapped and converted by lookup into :attr:`lut`. Otherwise,
+        which routine is used depends on :attr:`phase_scaling`:
 
         -  :attr:`phase_scaling` is one.
             Fast bitwise integer modulo is used. Much faster than the other
@@ -777,29 +952,20 @@ class SLM(_Common, ABC):
             # If we passed a hologram, grab the phase from there.
             phase = phase.get_phase()
 
+        xp = self.xp
+
         if phase is None:
             # Zero the phase pattern.
             self.phase.fill(0)
-            xp = _xp(self.phase)
         else:
-            # Make sure the array is an ndarray (cupy or numpy).
-            xp = _xp(phase)
+            # Move the data onto this SLM's backend; numpy cannot read GPU memory.
+            if xp is np and _xp(phase) is not np:
+                phase = phase.get()
             phase = xp.asarray(phase)
 
-            # If internal structures are already on GPU but input is numpy, upgrade the input.
-            if cp is not np and xp is np and isinstance(self.phase, cp.ndarray):
-                xp = cp
-                phase = cp.asarray(phase)
-
-            # Promote self.phase and self.display to GPU if input is cupy.
-            if xp is cp:
-                if not isinstance(self.phase, cp.ndarray):
-                    self.phase = cp.zeros(self.shape)
-                if not isinstance(self.display, cp.ndarray):
-                    self.display = cp.zeros(self.shape, dtype=self.dtype)
-
+        # Pass integer data directly to the SLM (no quantize/wrapping).
         if phase is not None and np.issubdtype(phase.dtype, np.integer):
-            # Check the type.
+            # First, check the type.
             if phase.dtype != self.dtype:
                 raise TypeError(
                     f"Unexpected integer type {phase.dtype}. Expected {self.dtype}."
@@ -819,9 +985,14 @@ class SLM(_Common, ABC):
             self.display = self._gray2display(phase)
 
             # Update the phase variable with the integer data that we displayed.
-            self.phase = 2 * np.pi - phase * (
-                2 * np.pi / self.phase_scaling / self.bitresolution
-            )
+            if self.gamma is None:
+                self.phase = xp.mod(
+                    phase * (self._gamma_sign * 2 * np.pi
+                             / self.phase_scaling / self.bitresolution),
+                    2 * np.pi,
+                )
+            else:
+                self.phase = xp.mod(self._gamma_sign * 2 * np.pi * self.gamma[phase], 2 * np.pi)
         else:
             # If float data was passed (or the None case).
             # Unpad if necessary.
@@ -851,12 +1022,11 @@ class SLM(_Common, ABC):
 
             # Maybe some of that time will be spent rendering the data in the viewer...
             if self.viewer is not None:
-                xp = _xp(self.phase)
+                phase = self.phase if self.xp is np else self.phase.get()
                 factor = (self.phase_scaling * self.bitresolution / (2 * np.pi))
-                if xp == np:
-                    self.viewer.render((self.phase * factor).astype(self.dtype))
-                else:
-                    self.viewer.render((self.phase.get() * factor).astype(self.dtype))
+                self.viewer.render(
+                    (phase * factor).astype(self.dtype) / (self.bitresolution - 1)
+                )
 
         # Optional delay.
         if settle is None:
@@ -960,14 +1130,18 @@ class SLM(_Common, ABC):
 
         data = load_h5(file_path)
 
-        self._set_phase_hw(data["display"])
-        self.display = data["display"]
-        self.phase = data["phase"]
+        display = self.xp.asarray(data["display"])
+        self.phase = self.xp.asarray(data["phase"])
+
+        self._set_phase_hw(display)
 
         self.logger.info("Loaded phase from '%s'.", file_path)
 
-        if not np.all(np.isclose(data["display"], self._format_phase_hw(data["phase"]))):
+        # Verify the file's display against one recomputed from its phase.
+        if not self.xp.all(self.xp.isclose(display, self._format_phase_hw(self.phase))):
             self.logger.warning("Integer data in 'display' does not match 'phase' for this SLM.")
+
+        self.display = display
 
         # Optional delay.
         if settle:

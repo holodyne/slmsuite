@@ -3,10 +3,10 @@ A simulated SLM.
 """
 
 import numpy as np
-from slmsuite.hardware.slms.slm import SLM
+from slmsuite.hardware.slms.slm import SLM, _xp
 
 class SimulatedSLM(SLM):
-    """
+    r"""
     A simulated SLM to emulate physical artifacts of actual SLMs.
 
     Attributes
@@ -19,9 +19,14 @@ class SimulatedSLM(SLM):
             User-defined source amplitude (with the dimensions of :attr:`shape`) on the SLM.
         ``"phase_sim"`` : numpy.ndarray
             User-defined source phase (with the dimensions of :attr:`shape`) on the SLM.
+    gamma_sim : numpy.ndarray OR None
+        User-defined phase response actually realized by each grayscale level, in units of
+        :math:`2\pi`. ``None`` simulates the ideal linear response. This is the truth which
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibrate` measures, as
+        opposed to the :attr:`~slmsuite.hardware.slms.slm.SLM.gamma` it recovers.
     """
 
-    def __init__(self, resolution, pitch_um=(8,8), source=None, **kwargs):
+    def __init__(self, resolution, pitch_um=(8,8), source=None, gamma_sim=None, **kwargs):
         r"""
         Initialize simulated slm.
 
@@ -38,10 +43,16 @@ class SimulatedSLM(SLM):
             Pixel pitch in microns. Defaults to 8 micron square pixels.
         source : dict
             See :attr:`source`. Defaults to uniform illumination with a flat phase if ``None``.
+        gamma_sim : array_like OR None
+            See :attr:`gamma_sim`. Must span every one of the ``bitresolution`` levels;
+            interpolate a sparse measurement with
+            :meth:`~slmsuite.hardware.slms.slm.SLM.interpolate_gamma` first.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
         """
         super().__init__(resolution, pitch_um=pitch_um, settle_time_s=0, **kwargs)
+
+        self.gamma_sim = gamma_sim
 
         if source is None:
             self.source["amplitude_sim"] = np.ones_like(self.grid[0])
@@ -57,6 +68,36 @@ class SimulatedSLM(SLM):
                 self.source["phase_sim"] = -self.source["phase"]
 
         self.set_phase(None)
+
+    @property
+    def gamma_sim(self):
+        """The phase response that this SLM simulates, or ``None`` for the ideal one."""
+        return self._gamma_sim
+
+    @gamma_sim.setter
+    def gamma_sim(self, gamma_sim):
+        if gamma_sim is None:
+            self._gamma_sim = None
+            return
+
+        gamma_sim = np.ravel(np.array(gamma_sim, dtype=float))
+        if len(gamma_sim) != self.bitresolution:
+            raise ValueError(
+                f"Expected gamma_sim to span all {self.bitresolution} levels; "
+                f"got {len(gamma_sim)}."
+            )
+        if not np.all(np.isfinite(gamma_sim)):
+            raise ValueError("Expected finite gamma_sim.")
+
+        self._gamma_sim = gamma_sim
+
+    def _display2phase(self, display, dtype=float):
+        """Phase realized by the integer ``display``, including any simulated response."""
+        if self.gamma_sim is None:
+            return display.astype(dtype) * (self._gamma_sign * 2 * np.pi / self.bitresolution)
+
+        gamma_sim = _xp(display).asarray(self.gamma_sim, dtype=dtype)
+        return gamma_sim[display] * (self._gamma_sign * 2 * np.pi)
 
     def close(self):
         pass

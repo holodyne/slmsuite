@@ -94,7 +94,8 @@ class SegmentedSLM(SLM):
         ):
             raise ValueError("Window is out of bounds of the parent SLM.")
 
-        # Instantiate the superclass
+        # Instantiate the superclass, sharing the parent's backend and phase conventions.
+        self._gamma_sign = parent._gamma_sign
         super().__init__(
             (extent[1], extent[3]),
             bitdepth=parent.bitdepth,
@@ -103,12 +104,31 @@ class SegmentedSLM(SLM):
             wav_design_um=parent.wav_design_um,
             pitch_um=parent.pitch_um,
             settle_time_s=parent.settle_time_s,
+            gpu=(parent.xp is not np),
         )
 
         # Load source data from the parent SLM when available.
         for key in ("amplitude", "phase"):
             if key in self.parent.source:
                 self.source[key] = self.parent.source[key][*self.extent_slice]
+
+    @property
+    def gamma(self):
+        """This segment's own phase response, falling back to the parent's when unset."""
+        return self.parent.gamma if self._gamma is None else self._gamma
+
+    @gamma.setter
+    def gamma(self, gamma):
+        self._gamma = gamma
+
+    @property
+    def lut(self):
+        """This segment's own lookup table, falling back to the parent's when unset."""
+        return self.parent.lut if self._lut is None else self._lut
+
+    @lut.setter
+    def lut(self, lut):
+        self._lut = lut
 
     def close(self):
         """Raise an error when attempting to close a segmented SLM."""
