@@ -187,8 +187,19 @@ class FeedbackHologram(Hologram):
         b2 = affine.b
 
         # Composite transformation (along with xy -> yx).
-        M = cp.array(np.flip(np.flip(np.matmul(M2, M1), axis=0), axis=1))
-        b = cp.array(np.flip(np.squeeze(np.matmul(M2, b1) + b2)))
+        M_np = np.flip(np.flip(np.matmul(M2, M1), axis=0), axis=1)
+        b_np = np.flip(np.squeeze(np.matmul(M2, b1) + b2))
+
+        # A non-finite affine is always a calibration bug
+        if not (np.all(np.isfinite(M_np)) and np.all(np.isfinite(b_np))):
+            raise RuntimeError(
+                f"ijcam_to_knmslm produced a non-finite transformation (M={M_np}, b={b_np}). "
+                "Check the Fourier calibration and that cameraslm.slm exposes a usable "
+                "pitch and shape."
+            )
+
+        M = cp.array(M_np)
+        b = cp.array(b_np)
 
         # See if the user wants to blur.
         if blur_ij is None:

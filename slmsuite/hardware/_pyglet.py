@@ -12,6 +12,8 @@ windows from freezing between :meth:`~slmsuite.hardware.slms.slm.SLM.set_phase`
 calls.
 """
 import os
+import sys
+import time
 import ctypes
 import threading
 import queue
@@ -57,6 +59,178 @@ except ImportError:
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
+
+
+# Win32 ``EnumDisplayDevicesW`` flag requesting the device interface path.
+_EDD_GET_DEVICE_INTERFACE_NAME = 0x00000001
+
+# Class for Windows-only display information.
+class _DISPLAY_DEVICEW(ctypes.Structure):
+    """Win32 ``DISPLAY_DEVICEW``, used by :func:`_screen_id`."""
+    _fields_ = [
+        ("cb",              ctypes.c_ulong),
+        ("DeviceName",      ctypes.c_wchar * 32),
+        ("DeviceString",    ctypes.c_wchar * 128),
+        ("StateFlags",      ctypes.c_ulong),
+        ("DeviceID",        ctypes.c_wchar * 128),
+        ("DeviceKey",       ctypes.c_wchar * 128),
+    ]
+
+def _screen_id(screen):
+    """
+    Get a stable, OS-level identifier for a monitor.
+
+    Unlike a screen's index or geometry, this does not change when other
+    monitors are attached or when the desktop is rearranged: on Windows it is
+    the monitor's device interface path, which is tied to the physical display
+    output. This is used to keep track of which display belongs to which SLM
+    across display hotplugs (see
+    :meth:`~slmsuite.hardware.slms.texasinstruments.PLM.open_all`).
+
+    Parameters
+    ----------
+    screen : pyglet screen object
+        Screen to identify.
+
+    Returns
+    -------
+    str
+        Stable identifier, e.g. ``"DISPLAY#DLP03C9#5&4c0ed3&1&UID4353"``. Falls
+        back to the screen geometry on platforms where no such identifier is
+        available.
+    """
+    device_name = getattr(screen, "_device_name", None)
+
+    if sys.platform == "win32" and device_name is not None:
+        try:
+            device = _DISPLAY_DEVICEW()
+            device.cb = ctypes.sizeof(device)
+            if ctypes.windll.user32.EnumDisplayDevicesW(
+                device_name,
+                0,
+                ctypes.byref(device),
+                _EDD_GET_DEVICE_INTERFACE_NAME):
+                # e.g. '\\?\DISPLAY#DLP03C9#5&4c0ed3&1&UID4353#{e6f07b5f-ee97-...}'
+                # Drop interface GUID.
+                device_id = device.DeviceID.split("#{")[0]      
+                if device_id.startswith("\\\\?\\"):
+                    # Drop interface prefix.
+                    device_id = device_id[4:]                   
+                if device_id:
+                    return device_id
+        except Exception as e:
+            logger.debug("Could not resolve monitor identifier: %s", e)
+
+    return "{}x{}+{}+{}".format(screen.width, screen.height,
+                                screen.x, screen.y)
+
+def _screen_ids():
+    """
+    Get the identifiers of all currently-attached screens.
+
+    Returns
+    -------
+    set of str
+        See :func:`_screen_id`.
+    """
+    return {_screen_id(screen) for screen in get_pyglet_display().get_screens()}
+
+def _screen_index(screen_id):
+    """
+    Find the index of the screen with the given :func:`_screen_id`.
+
+    Parameters
+    ----------
+    screen_id : str
+        Identifier previously returned by :func:`_screen_id`.
+
+    Returns
+    -------
+    int OR None
+        The current index of the matching screen, or ``None`` if it is not attached.
+    """
+    for index, screen in enumerate(get_pyglet_display().get_screens()):
+        if _screen_id(screen) == screen_id:
+            return index
+    return None
+
+def _wait_for_new_screen(known_ids, timeout_s=60, interval_s=1):
+    """
+    Poll until a screen outside ``known_ids`` is attached.
+
+    Parameters
+    ----------
+    known_ids : set of str
+        Identifiers of the screens that were already attached, from :func:`_screen_ids`.
+    timeout_s, interval_s : float
+        Maximum time to wait, and sleep interval between polls, in seconds. Displays
+        can take a surprisingly long and variable time to enumerate after a hotplug,
+        so ``timeout_s`` is generous by default.
+
+    Returns
+    -------
+    str OR None
+        Identifier of the new screen, or ``None`` if none appeared in time.
+
+    Raises
+    ------
+    RuntimeError
+        If several screens appear at once, as they cannot then be told apart.
+    """
+    deadline = time.time() + timeout_s
+    candidate = None
+
+    while time.time() < deadline:
+        time.sleep(interval_s)
+        new_ids = _screen_ids() - known_ids
+
+        if len(new_ids) > 1:
+            raise RuntimeError(
+                "Several displays appeared at once ({}); cannot tell them apart."
+                .format(sorted(new_ids))
+            )
+        elif len(new_ids) == 1:
+            # A monitor's identifier changes while the OS finishes enumerating
+            # it (:func:`_screen_id` falls back to geometry until the monitor's
+            # device interface exists), so only accept one that holds across
+            # two polls.
+            new_id = new_ids.pop()
+            if new_id == candidate:
+                return new_id
+            candidate = new_id
+        else:
+            candidate = None
+
+    return None
+
+
+def _wait_for_screens_settled(timeout_s=20, settle_s=2, interval_s=0.5):
+    """
+    Poll until the set of attached screens has stopped changing.
+
+    Useful after detaching displays, which the OS does not do instantaneously.
+
+    Parameters
+    ----------
+    timeout_s, settle_s, interval_s : float
+        Maximum time to wait, time the screen set must be unchanged for, and sleep
+        interval between polls, in seconds.
+    """
+    deadline = time.time() + timeout_s
+    screen_ids = _screen_ids()
+    settled = time.time()
+
+    while time.time() < deadline:
+        time.sleep(interval_s)
+        current_ids = _screen_ids()
+
+        if current_ids != screen_ids:
+            screen_ids = current_ids
+            settled = time.time()
+        elif time.time() - settled >= settle_s:
+            return
+
+    logger.warning("Displays did not settle within %s seconds.", timeout_s)
 
 
 class _Window(__Window):
@@ -191,6 +365,28 @@ class _Window(__Window):
         """Allow the close button to stop the event loop."""
         self.has_exit = True
 
+    def switch_to(self):
+        """
+        Activate this window's ``OpenGL`` context, if it has one.
+
+        Guards against a :mod:`pyglet` race on window creation.
+        ``Window._create()`` calls ``SetWindowPos`` to move the new fullscreen
+        window onto the SLM's monitor, which sends ``WM_DPICHANGED``
+        *synchronously* whenever that monitor has a different DPI than the
+        previous one. Pyglet's handler for that message calls ``switch_to()``,
+        but the ``OpenGL`` canvas is only attached to the context a few lines
+        later in ``_create()``. The unguarded call raises ``RuntimeError:
+        Canvas has not been attached`` inside the Win32 window procedure, which
+        Python prints as an ignored ctypes callback exception.
+
+        Also makes ``switch_to()`` a no-op after :meth:`close`, when the
+        context has been destroyed.
+        """
+        context = getattr(self, "context", None)
+        if context is None or context.canvas is None:
+            return
+        super().switch_to()
+
     def dispatch_events(self):
         """
         Process pending OS events for this window.
@@ -205,8 +401,6 @@ class _Window(__Window):
         On Linux and macOS, the parent implementation works correctly from
         background threads, so we delegate to it directly.
         """
-        import sys
-
         if sys.platform == "win32":
             import ctypes
             from pyglet.libs.win32 import _user32
@@ -236,8 +430,6 @@ class _Window(__Window):
         ``NSFloatingWindowLevel`` on macOS. Falls back to
         :meth:`~pyglet.window.Window.activate` on unknown platforms.
         """
-        import sys
-
         if sys.platform == "win32":
             try:
                 from pyglet.libs.win32 import _user32, constants
@@ -501,9 +693,10 @@ class _Window(__Window):
 
         Returns
         -------
-        list of (int, (int, int, int, int), bool, bool) tuples
-            The number (int), geometry of each display ((int, int, int, int)), and whether
-            it is the main or mirrored display (bool, bool).
+        list of (int, (int, int, int, int), bool, bool, str) tuples
+            The number (int), geometry of each display ((int, int, int, int)),
+            whether it is the main or mirrored display (bool, bool), and a
+            stable identifier for the display (str; see :func:`_screen_id`).
         """
         # Note: in pyglet, the display is the full arrangement of screens,
         # unlike the terminology in other SLM subclasses
@@ -535,12 +728,13 @@ class _Window(__Window):
 
         if verbose:
             print('Display Positions:')
-            print('#,  Position')
+            print('#,  Position,  Identifier')
 
         screen_list = []
 
         for x, screen in enumerate(screens):
             screen_str = parse_screen(screen)
+            screen_id = _screen_id(screen)
 
             # main_bool is True if this screen is the default (main) display.
             main_bool = False
@@ -555,13 +749,14 @@ class _Window(__Window):
                 screen_str += ' (has ScreenMirrored)'
 
             if verbose:
-                print('{},  {}'.format(x, screen_str))
+                print('{},  {},  {}'.format(x, screen_str, screen_id))
 
             screen_list.append((
                 x,
                 parse_screen_int(screen),
                 main_bool,
-                window_bool
+                window_bool,
+                screen_id
             ))
 
         return screen_list

@@ -350,6 +350,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units == "knm" or to_units == "knm":
         if slm is None:
+            logger.warning("slm is required for unit 'knm'")
             pitch = np.nan
         else:
             pitch = format_2vectors(slm.pitch)
