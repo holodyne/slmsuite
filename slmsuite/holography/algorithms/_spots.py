@@ -1402,6 +1402,7 @@ class SpotHologram(_AbstractSpotHologram):
         array_center=None,
         basis="knm",
         orientation_check=False,
+        spot_amp=None,
         **kwargs,
     ):
         """
@@ -1445,6 +1446,9 @@ class SpotHologram(_AbstractSpotHologram):
             See :meth:`__init__()`.
         orientation_check : bool
             Whether to delete the last two points to check for parity.
+        spot_amp : array_like OR None
+            See :attr:`spot_amp`, in the order that the grid is raveled. Trimmed
+            alongside the points that ``orientation_check`` deletes.
         **kwargs
             Any other arguments are passed to :meth:`__init__()`.
         """
@@ -1492,11 +1496,13 @@ class SpotHologram(_AbstractSpotHologram):
         if orientation_check and len(x_list) > 2:
             x_list = x_list[:-2]
             y_list = y_list[:-2]
+            if spot_amp is not None:
+                spot_amp = np.ravel(spot_amp)[:-2]
 
         vectors = np.vstack((x_list, y_list))
 
         # Return a new SpotHologram.
-        return SpotHologram(shape, vectors, basis=basis, spot_amp=None, **kwargs)
+        return SpotHologram(shape, vectors, basis=basis, spot_amp=spot_amp, **kwargs)
 
     def _set_target_spots(self, reset_weights=False):
         """

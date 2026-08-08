@@ -95,7 +95,7 @@ class Hologram(_HologramStats, _Loggable):
         This often differs from :attr:`slm_shape` due to padding of the **nearfield**.
     phase : numpy.ndarray OR cupy.ndarray
         **nearfield** phase pattern to optimize.
-        Initialized with :meth:`random.default_rng().uniform()` by default (``None``).
+        Initialized with :meth:`numpy.random.uniform()` by default (``None``).
         This is of shape :attr:`slm_shape`
         and (upon copying to :attr:`nearfield` during optimization)
         padded to shape :attr:`shape`.
@@ -221,6 +221,7 @@ class Hologram(_HologramStats, _Loggable):
         slm_shape=None,
         dtype=np.float32,
         propagation_kernel=None,
+        name=None,
         **kwargs
     ):
         r"""
@@ -458,8 +459,9 @@ class Hologram(_HologramStats, _Loggable):
             except:
                 pass
 
-        self.name = self.__class__.__name__
+        self.name = name if name is not None else self.__class__.__name__
         _Loggable.__init__(self)
+
     # Initialization helper functions.
     def reset(self, reset_phase=True, reset_flags=False):
         r"""
@@ -549,9 +551,11 @@ class Hologram(_HologramStats, _Loggable):
         )
 
     def _get_random_phase(self):
+        # Drawn from the global generator, which numpy.random.seed() sets, so that a
+        # seeded script reproduces its holograms. default_rng() would seed itself
+        # from the operating system and ignore that.
         if cp == np:        # numpy does not support `dtype=`
-            rng = np.random.default_rng()
-            return rng.uniform(-np.pi, np.pi, self.slm_shape).astype(self.dtype)
+            return np.random.uniform(-np.pi, np.pi, self.slm_shape).astype(self.dtype)
         else:
             return cp.random.uniform(-np.pi, np.pi, self.slm_shape, dtype=self.dtype)
 

@@ -1212,11 +1212,11 @@ class _WavefrontCalibrationSuperpixel(object):
         smooth : bool OR int
             Whether to blur the correction data to avoid aliasing.
             If ``int``, uses this as the number of smoothing iterations.
-            Defaults to 16 if ``True``.
+            Defaults to ``16`` if ``True``.
         r2_threshold : float
             Threshold for a "good fit". Proxy for whether a datapoint should be used or
             ignored in the final data, depending upon the rsquared value of the fit.
-            Should be within [0, 1].
+            Should be within ``[0, 1]``.
         remove_vortices : bool
             A wavefront correct should be smooth when using smooth optics (lenses).
             However, incorrect phase wrapping can lead to phase vortices surrounding the

@@ -23,7 +23,6 @@ from scipy.optimize import curve_fit
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
 from slmsuite.holography.analysis import image_centroids, image_remove_field
-from slmsuite.holography.analysis.files import _gray2rgb
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
@@ -1137,10 +1136,7 @@ class Camera(_Common, ABC):
 
         # Push to viewer if active.
         if self.viewer is not None:
-            if averaging > 1:
-                self.viewer.render(img / averaging)
-            else:
-                self.viewer.render(img)
+            self.viewer.render(img / (2 ** self.bitdepth * averaging - 1))
 
         return img
 
@@ -1202,7 +1198,7 @@ class Camera(_Common, ABC):
 
         # Push to viewer if active.
         if self.viewer is not None:
-            self.viewer.render(imgs[-1])
+            self.viewer.render(imgs[-1] / (2 ** self.bitdepth - 1))
 
         return imgs
 
@@ -1665,12 +1661,15 @@ class Camera(_Common, ABC):
         err = np.abs(status - set_val) / self.bitresolution
         t = time.perf_counter()
 
-        # Loop until timeout expires or we meet tolerance
-        while err > tol and time.perf_counter() - t < timeout_s:
+        # Loop until we meet tolerance, run out of steps, or time out.
+        for _ in range(20):
+            if err <= tol or time.perf_counter() - t > timeout_s:
+                break
+
             exp_prev = exp
 
-            # Clip exposure steps to 0.25x -> 4x, also avoiding division by 0.
-            exp_unclipped = exp * np.clip(set_val / max(status, 1), .25, 4)
+            # Clip exposure steps to 0.1x -> 10x, also avoiding division by 0.
+            exp_unclipped = exp * np.clip(set_val / max(status, 1), .1, 10)
             exp = np.clip(exp_unclipped, exposure_bounds_s[0], exposure_bounds_s[1])
             if exp_unclipped != exp:
                 # If already railed, handle failure cases (TODO).
@@ -1701,7 +1700,7 @@ class Camera(_Common, ABC):
 
             self.logger.log(
                 logging.INFO if verbose else logging.DEBUG,
-                "Autoexpose: exposure = %.2e s, status = %s/%s",
+                "Autoexpose: %.2e s - %s/%s",
                 exp, status, self.bitresolution - (self.averaging if self.averaging is not None else 1),
             )
 
