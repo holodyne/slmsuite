@@ -10,7 +10,7 @@ from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import enum
 from scipy.optimize import curve_fit, minimize
-from scipy.ndimage import binary_erosion
+from scipy.ndimage import binary_erosion, maximum_filter
 
 import warnings
 try:
@@ -1642,7 +1642,8 @@ def blob_detect(
     img : numpy.ndarray
         The image to perform blob detection on.
     filter : {"dist_to_center", "max_amp"} OR None
-        One of ``dist_to_center`` or ``max_amp``.
+        Keeps only the blob nearest the center of ``img``, or only the blob
+        collecting the most power. ``None`` keeps every blob.
     plot : bool
         Whether to show a debug plot.
     **kwargs
@@ -1665,7 +1666,6 @@ def blob_detect(
     params.minThreshold = 10
     params.maxThreshold = 255
     params.thresholdStep = 10
-    # params.minArea = 0
     params.filterByArea = False  # Can be changed to compute rel to diffraction limit
     params.filterByCircularity = False
     params.filterByConvexity = False
@@ -1681,68 +1681,626 @@ def blob_detect(
 
     if len(blobs) == 0:
         return [], detector
-        #raise Exception("No blobs found! Try blurring image.")
 
-    # Sort blobs according to `filter`.
+    # Keep the single best blob according to `filter`.
+    if filter is not None:
+        centers = format_2vectors(np.vstack([blob.pt for blob in blobs]).T)
+
     if filter == "dist_to_center":
-        dist_to_center = [
-            np.linalg.norm(np.array(blob.pt) - np.array(img.shape[::-1]) / 2)
-            for blob in blobs
-        ]
-        blobs = [blobs[np.argmin(dist_to_center)]]
+        distance = np.linalg.norm(
+            centers - format_2vectors(np.flip(np.shape(img)) / 2), axis=0
+        )
+        blobs = [blobs[int(np.argmin(distance))]]
     elif filter == "max_amp":
-        bin_size = int(np.mean([blob.size for blob in blobs]))
-        for i, blob in enumerate(blobs):
-            # Try fails when blob is on edge of camera.
-            try:
-                blobs[i].response = float(
-                    img_8bit[
-                        np.ix_(
-                            int(blob.pt[1]) + np.arange(-bin_size, bin_size),
-                            int(blob.pt[0]) + np.arange(-bin_size, bin_size),
-                        )
-                    ].sum()
-                )
-            except Exception:
-                blobs[i].response = float(0)
-        blobs = [blobs[np.argmax([blob.response for blob in blobs])]]
+        power = np.nan_to_num(take(
+            img_8bit, centers, 2 * int(np.mean([blob.size for blob in blobs])),
+            centered=True, integrate=True, clip=True,
+        ))
+        blobs = [blobs[int(np.argmax(power))]]
 
     if plot:
-        # Get blob statistics.
-        blob_count = len(blobs)
-        blob_centers = np.zeros((2, blob_count))
-        blob_diameters = np.zeros(blob_count)
-        for (blob_idx, blob) in enumerate(blobs):
-            blob_centers[:, blob_idx] = blob.pt
-            blob_diameters[blob_idx] = blob.size
-        blob_xs = blob_centers[0, :]
-        blob_ys = blob_centers[1, :]
-        blob_xmin = np.min(blob_xs)
-        blob_xmax = np.max(blob_xs)
-        blob_ymin = np.min(blob_ys)
-        blob_ymax = np.max(blob_ys)
-        zoom_padx = 2 * (blob_xmax - blob_xmin) / blob_count
-        zoom_pady = 2 * (blob_ymax - blob_ymin) / blob_count
-
-        # Full image.
-        vmin = np.min(img_8bit)
-        vmax = np.max(img_8bit)
-        im = plt.imshow(img_8bit, vmin=vmin, vmax=vmax)
-        ax = plt.gca()
+        plt.imshow(img_8bit)
         plt.colorbar()
-
-        # Blob patches
-        for blob_idx in range(blob_count):
-                patch = matplotlib.patches.Circle(
-                    (float(blob_centers[0, blob_idx]), float(blob_centers[1, blob_idx])),
-                    radius=float(blob_diameters[blob_idx] / 2),
-                    color="red",
-                    linewidth=1,
-                    fill=None
-                )
-                ax.add_patch(patch)
+        for blob in blobs:
+            plt.gca().add_patch(matplotlib.patches.Circle(
+                blob.pt, radius=blob.size / 2, color="red", linewidth=1, fill=None
+            ))
 
     return blobs, detector
+
+
+def image_lattice_detect(img, method="fourier", plot=False, **kwargs):
+    r"""
+    Detect the primitive lattice vectors of a periodic array of spots in an image.
+
+    This recovers the lattice (pitch, rotation, shear) but **not** the absolute
+    position of the array. The two returned vectors are unordered and defined only
+    up to sign: resolving that dihedral ambiguity requires a feature which breaks
+    the lattice's symmetry, such as the fiducial spots that
+    :meth:`blob_array_detect()` looks for.
+
+    Parameters
+    ----------
+    method : {"autocorrelation", "fourier"}
+        Whether to look for the lattice in the image's autocorrelation, whose 0th
+        order is only as wide as a *spot*, or for the reciprocal lattice in its
+        Fourier transform, whose 0th order is as wide as the whole *array* and so
+        hides the lattice of a coarse one. Both survive the array being cropped.
+    **kwargs
+        Passed to the chosen method.
+
+    Returns
+    -------
+    numpy.ndarray
+        Lattice matrix of shape ``(2, 2)`` whose columns are the two primitive
+        lattice vectors, in image coordinates (pixels).
+
+    Raises
+    ------
+    RuntimeError
+        If no prominent periodicity is found in the image.
+    """
+    if method == "autocorrelation":
+        return _lattice_autocorrelation(img, plot=plot, **kwargs)
+    elif method == "fourier":
+        return _lattice_fourier(img, plot=plot, **kwargs)
+    else:
+        raise ValueError(f"Unrecognized lattice detection method '{method}'.")
+
+
+def _lattice_autocorrelation(img, spot_size=2, threshold=0.2, plot=False):
+    """
+    Lattice of a spot array from the peaks of the image's autocorrelation.
+    See :meth:`image_lattice_detect()`.
+
+    Parameters
+    ----------
+    spot_size : float
+        Size of a spot in pixels, used to mask the autocorrelation's central peak.
+        Overestimating this hides fine lattices; underestimating it lets the central
+        peak masquerade as one.
+    threshold : float
+        Peaks below this fraction of the brightest off-center peak are ignored.
+    """
+    if np.ndim(img) != 2:
+        raise RuntimeError(f"Cannot interpret image with shape {np.shape(img)}")
+
+    # Autocorrelation by the Wiener-Khinchin theorem, zero displacement centered.
+    # Transformed at a power of two, which is faster than an awkward camera shape and,
+    # padding rather than cropping, leaves the autocorrelation linear not circular.
+    img = np.asarray(img, dtype=float)
+    size = [1 << int(np.ceil(np.log2(n))) for n in np.shape(img)]
+    correlation = np.fft.fftshift(
+        np.fft.ifft2(np.abs(np.fft.fft2(img - img.mean(), s=size)) ** 2).real
+    )
+    center = np.array([correlation.shape[1] // 2, correlation.shape[0] // 2])
+
+    # Mask the central (zero-displacement) peak, then find local maxima. This is
+    # done over the whole plane so that a peak straddling two pixels suppresses its
+    # own shoulder, and only afterwards restricted to one half plane, the
+    # autocorrelation being symmetric.
+    (yy, xx) = np.indices(correlation.shape)
+    masked = np.where(
+        np.hypot(xx - center[0], yy - center[1]) < max(2.0, spot_size),
+        -np.inf,
+        correlation,
+    )
+
+    peaks = (
+        (masked == maximum_filter(masked, size=3))
+        & np.isfinite(masked)
+        & ((yy > center[1]) | ((yy == center[1]) & (xx > center[0])))
+    )
+    (py, px) = np.nonzero(peaks)
+    if len(px) < 2:
+        raise RuntimeError(
+            "Lattice fitting looks for prominent periodicity, but the image's "
+            "autocorrelation has no clear peaks. The array may be too dim, too "
+            "cropped, or too finely spaced to resolve."
+        )
+
+    values = masked[py, px]
+    keep = values >= threshold * values.max()
+
+    # A real lattice peak stands above the valley between it and the origin, whereas
+    # the central peak's shoulder is still descending. This also drops peaks at even
+    # multiples of the lattice, whose midpoint is itself a peak, which costs some
+    # leverage in the fit below but no accuracy.
+    keep &= values > correlation[
+        np.rint(0.5 * (py + center[1])).astype(int),
+        np.rint(0.5 * (px + center[0])).astype(int),
+    ]
+
+    vectors = np.vstack((px[keep] - center[0], py[keep] - center[1])).astype(float)
+
+    if vectors.shape[1] < 2:
+        raise RuntimeError(
+            "Lattice fitting looks for prominent periodicity, but the image's "
+            "autocorrelation has no clear peaks. The array may be too dim, too "
+            "cropped, or too finely spaced to resolve."
+        )
+
+    # The two shortest independent peaks are the primitive vectors.
+    order = np.argsort(np.linalg.norm(vectors, axis=0))
+    first = vectors[:, order[0]]
+    lattice = None
+    for index in order[1:]:
+        second = vectors[:, index]
+        cross = np.abs(first[0] * second[1] - first[1] * second[0])
+        if cross > 0.3 * np.linalg.norm(first) * np.linalg.norm(second):
+            lattice = np.vstack((first, second)).T
+            break
+
+    if lattice is None:
+        raise RuntimeError(
+            "Lattice fitting found periodicity in only one direction. The array may "
+            "be cropped to a single row or column of spots."
+        )
+
+    # The peaks above are quantized to whole pixels, which is a large error for a
+    # fine lattice. Refine by fitting every peak to its (integer) lattice index;
+    # distant peaks have the most leverage. Repeated, since a quantized guess can
+    # mis-index the most distant (and most informative) peaks.
+    for _ in range(3):
+        indices = np.rint(np.linalg.solve(lattice, vectors))
+        residual = vectors - lattice @ indices
+        inliers = np.linalg.norm(residual, axis=0) < 0.25 * np.min(
+            np.linalg.norm(lattice, axis=0)
+        )
+        if np.sum(inliers) < 3:
+            break
+        (design, target) = (indices[:, inliers], vectors[:, inliers])
+        lattice = np.linalg.solve(
+            design @ design.T, design @ target.T
+        ).T
+
+    if plot:
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6), facecolor="white")
+
+        plt_img = _make_8bit(np.where(np.isfinite(masked), masked, 0))
+
+        # The fit uses one half plane; the plot shows both, the correlation being even.
+        mirrored = np.hstack((vectors, -vectors))
+        (x, y) = (mirrored[0] + center[0], mirrored[1] + center[1])
+
+        # Determine the bounds of the zoom region, padded by zoom_pad
+        zoom_pad = 50
+        xl = [
+            np.clip(np.amin(x) - zoom_pad, 0, plt_img.shape[1]),
+            np.clip(np.amax(x) + zoom_pad, 0, plt_img.shape[1]),
+        ]
+        yl = [
+            np.clip(np.amin(y) - zoom_pad, 0, plt_img.shape[0]),
+            np.clip(np.amax(y) + zoom_pad, 0, plt_img.shape[0]),
+        ]
+
+        # Plot the unzoomed figure
+        axs[0].imshow(plt_img)
+
+        # Plot a red rectangle to show the extents of the zoom region
+        rect = plt.Rectangle(
+            (float(xl[0]), float(yl[0])),
+            float(np.diff(xl).item()), float(np.diff(yl).item()),
+            ec="r", fc="none"
+        )
+        axs[0].add_patch(rect)
+        axs[0].set_title("Autocorrelation - Full")
+        axs[0].set_xticks([])
+        axs[0].set_yticks([])
+
+        # Plot the zoomed figure
+        axs[1].imshow(plt_img)
+        axs[1].scatter(
+            x, y, facecolors="none", edgecolors="r", marker="o", s=100, linewidths=0.5
+        )
+        for i in [0, 1]:
+            axs[1].plot(
+                [center[0] - lattice[0, i], center[0] + lattice[0, i]],
+                [center[1] - lattice[1, i], center[1] + lattice[1, i]],
+                marker=".", c="r",
+            )
+
+        for spine in ["top", "bottom", "right", "left"]:
+            axs[1].spines[spine].set_color("r")
+            axs[1].spines[spine].set_linewidth(1.5)
+        axs[1].set_title("Autocorrelation - Zoom")
+        axs[1].set_xticks([])
+        axs[1].set_yticks([])
+        axs[1].set_xlim(xl)
+        axs[1].set_ylim(np.flip(yl))
+
+        for ax in axs:
+            ax.set_xlabel("Image Displacement $x$ [pix]")
+            ax.set_ylabel("Image Displacement $y$ [pix]")
+        fig.tight_layout(pad=4.0)
+
+        _slmsuite_plt_show(name="image_lattice_detect")
+
+    return lattice
+
+
+def _array_indices(size, pad=0):
+    """
+    Centered index offsets of a ``size`` spot array grown by ``pad`` on every side,
+    ordered as :meth:`~slmsuite.holography.algorithms.SpotHologram.make_rectangular_array()`
+    orders its spots; at ``pad=0`` the last two are the withheld fiducials.
+    """
+    (x, y) = np.meshgrid(*[
+        np.arange(size[axis] + 2 * pad) - (size[axis] + 2 * pad - 1) / 2.0
+        for axis in range(2)
+    ])
+    return np.vstack((x.ravel(), y.ravel()))
+
+
+def _score_array_orientation(img, M, b, size, psf, threshold=0.2):
+    """
+    Scores each orientation of a rectangular spot array against an image.
+
+    An array is unchanged by a rotation or flip of its axes, and by an offset of a
+    whole pitch, so its lattice alone leaves eight possible affines. The two spots
+    that :meth:`~slmsuite.holography.algorithms.SpotHologram.make_rectangular_array()`
+    withholds break both ties: only at the true orientation do they land on darkness.
+
+    Parameters
+    ----------
+    img : numpy.ndarray
+        Image of the array, with its background already removed.
+    M, b : array_like
+        Affine mapping array indices to image coordinates.
+    size : (int, int)
+        Size of the array in number of spots.
+    psf : int
+        Width of the window that each spot's power is collected over.
+    threshold : float
+        Fraction of a typical spot's power above which a spot counts as lit.
+
+    Returns
+    -------
+    (OrientationTransform.D_4, float, float, float) OR None
+        The best orientation, the fraction of its spots that are lit, the power at
+        its withheld pair relative to a spot, and the median distance from the spots
+        to their predictions. ``None`` if too little of the array is in view.
+    """
+    centers = _array_indices(size)
+    b = format_2vectors(b)
+    (h, w) = np.shape(img)
+    best = None
+
+    for code in OrientationTransform.D_4:
+        predicted = (
+            np.matmul(M, np.matmul(OrientationTransform.from_code(code).M(), centers)) + b
+        )
+
+        # Only spots that are actually in view can be checked.
+        visible = (
+            (predicted[0] > 1) & (predicted[0] < w - 2)
+            & (predicted[1] > 1) & (predicted[1] < h - 2)
+        )
+        (fiducial, spots) = (visible.copy(), visible.copy())
+        fiducial[:-2] = False
+        spots[-2:] = False
+        if np.sum(spots) < 4:
+            continue
+
+        windows = np.nan_to_num(take(
+            img, predicted, psf, centered=True, integrate=False, clip=True
+        ))
+        power = np.sum(windows, axis=(1, 2))
+        reference = np.median(power[spots])
+        if reference <= 0:
+            continue
+
+        lit = np.mean(power[spots] > threshold * reference)
+        # A pair pushed off the camera cannot be checked, so it scores as though it
+        # were lit rather than passing for free.
+        dark = np.median(power[fiducial]) / reference if np.any(fiducial) else 1.0
+        # take() floors its positions; undo that to measure from the prediction.
+        shift = image_positions(windows) - (predicted - np.floor(predicted))
+        residual = float(np.median(np.linalg.norm(shift[:, spots], axis=0)))
+
+        if best is None or lit - dark > best[1] - best[2]:
+            best = (code, lit, dark, residual)
+
+    return best
+
+
+def _lattice_fourier(img, dft_threshold=100, dft_padding=0, k=8, tol=0.1, plot=False):
+    """
+    Lattice of a spot array from the peaks of the image's Fourier transform, which
+    are the reciprocal lattice. See :meth:`image_lattice_detect()`.
+    """
+    # 1) FFT to find array pitch and orientation.
+    # 1.1) Subtract the background field before the FFT.
+    # A noisy camera background can dominate the FFT's 0th order.
+    img_centered = image_remove_field([img], deviations=None)[0]
+
+    # 1.2) Take the largest dimension rounded down to nearest power of 2.
+    # FUTURE: clean this up to behave like other parts of the package.
+    fft_size = int(2 ** (np.floor(np.log2(np.max(np.shape(img)))) + dft_padding))
+
+    # 1.3) Actually FFT.
+    dft = np.abs(np.fft.fftshift(np.fft.fft2(img_centered, s=[fft_size, fft_size])))
+
+    # 2) Detect and plot FFT peaks
+    # 2.1) Prepare some helper variables, mainly for filtering out the 0th order.
+    fft_blur_size = int(np.clip(fft_size/200, 1, 5))*2 + 1
+    downscaling = 1
+    dft_amp = None
+    zo_size = 8*fft_blur_size
+    if fft_size <= zo_size*4:
+        raise ValueError(f"Image of shape {img.shape} is too small to detect a lattice by Fourier transform.")
+    zo_x, zo_y = np.meshgrid(
+        np.linspace(-zo_size/2, zo_size/2, zo_size),
+        np.linspace(-zo_size/2, zo_size/2, zo_size)
+    )
+    zo_filter = gaussian2d([zo_x, zo_y], 0, 0, -1, 1, fft_blur_size/2, fft_blur_size/2)
+    points = []
+    blobs = None
+    i = 0
+
+    # 2.2) Look for peaks with progressively greater downscaled blurring. This helps
+    # to mitigate noise on the DFT peaks and enhance the most prominent peaks.
+    while fft_size / downscaling > zo_size*4:
+        dft_amp = cv2.GaussianBlur(dft, (fft_blur_size, fft_blur_size), fft_blur_size/4)
+
+        # Filter 0 order (dominates in the presence of a slowly varying background)
+        zo_i = int(fft_size/2/downscaling-zo_size/2)
+        zo_j = zo_i+zo_size
+        dft_amp[zo_i:zo_j, zo_i:zo_j] *= zo_filter
+
+        thresholdStep = 10
+        blobs, _ = blob_detect(
+            dft_amp,
+            minThreshold=dft_threshold,
+            thresholdStep=thresholdStep,
+        )
+        points += [np.array(blob.pt) * downscaling for blob in blobs]
+
+        # Exit if we've already got enough points.
+        if len(points) > 4 * (i+1):
+            break
+
+        # Downscale so we can try to find peaks again with greater blurring.
+        if fft_size / downscaling > zo_size*4:
+            if not fft_size / (2*downscaling) > zo_size*4:
+                break
+            dft = dft[0::2, 0::2] + dft[0::2, 1::2] + dft[1::2, 0::2] + dft[1::2, 1::2]
+            downscaling *= 2
+            i += 1
+
+    if len(points) < 4:
+
+        # Plot which diffraction orders we used
+        if plot:
+            plt.imshow(img)
+            plt.title("Image")
+            _slmsuite_plt_show(name="blob_array_detect_img")
+
+            plt.imshow(dft)
+            plt.title("DFT")
+            _slmsuite_plt_show(name="blob_array_detect_dft")
+
+            plt.imshow(dft_amp)
+            plt.title("Processed DFT")
+            _slmsuite_plt_show(name="blob_array_detect_processed_dft")
+
+        raise RuntimeError(
+            "Array fitting looks for prominent periodicity, "
+            "but failed to find such in the given image. Try the following:\n"
+            "- Verify that the camera is returning an image of the array. "
+            "For instance, the SLM `settle_time_s` could be too fast for the "
+            "camera to record the settled response, or "
+            "the camera interface could be returning stale frames. "
+            "Pass `plot>=1` to see debug plots. You can also view `cam.last_image`.\n"
+            "- Increasing exposure time to enhance the prominence of spots,\n"
+            "- Increasing the pitch of the array in the image, "
+            "which can isolate spots from neighboring crosstalk,\n"
+            "- Create an issue at https://github.com/holodyne/slmsuite/issues, "
+            "attaching the image data that is resulting in failure. "
+            "You can use `cam.save()` to record the last image alongside metadata."
+        )
+
+    # 3) Fit the primitive lattice vectors
+    # 3.1) Make a list of displacements to each peak's k nearest neighbors
+    def get_kNN(points, k):
+        "Return list of k closest points for each x"
+        dx = points[:,0][:,np.newaxis] - points[:,0][:,np.newaxis].T
+        dy = points[:,1][:,np.newaxis] - points[:,1][:,np.newaxis].T
+        d = np.sqrt(dx**2 + dy**2)
+        inds = np.argsort(d, axis=0)
+        kNN = points[inds[1:k+1,:]] - points
+        kNN = kNN.reshape((points.shape[0]*k, 2))
+
+        # Make inverted copies to avoid group separation based upon arb. branch cut.
+        kNN = np.vstack((kNN, -kNN))
+
+        return kNN
+
+    # Get rid of the points closest to the center - these are noise on the 0th order.
+    points = np.array(points)
+
+    points_lengths = np.sqrt((points[:,0]-fft_size/2)**2 + (points[:,1]-fft_size/2)**2)
+    points = points[points_lengths > .5*np.mean(points_lengths), :]
+    points = np.concatenate((points, np.array([[fft_size/2, fft_size/2]])))
+
+    # Now compute the differences of lattice vectors.
+    k = min(k, len(points)-1)
+    kNN = get_kNN(points, k)
+
+    # 3.2) Cluster into lattice vectors.
+    def cluster(points, k, tol=tol):
+        "Cluster points from k nearest neighbors into groups and return the centers"
+
+        # Find matrix of normalized displacements between points.
+        dx = points[:,0][:,np.newaxis] - points[:,0][:,np.newaxis].T
+        dy = points[:,1][:,np.newaxis] - points[:,1][:,np.newaxis].T
+        dnorm = np.sqrt(dx**2 + dy**2) / np.linalg.norm(points, axis=1)
+
+        # Normalized inverted displacements.
+        dx = points[:,0][:,np.newaxis] + points[:,0][:,np.newaxis].T
+        dy = points[:,1][:,np.newaxis] + points[:,1][:,np.newaxis].T
+        inorm = np.sqrt(dx**2 + dy**2) / np.linalg.norm(points, axis=1)
+
+        # Find groups of points separated by dnorm less than tol.
+        group = 1
+        tags = np.zeros(points.shape[0])
+        for i in np.arange(points.shape[0]):
+            # Assign if they are within tol and have not been assigned yet.
+            new = ((dnorm[i,:] < tol) | (inorm[i,:] < tol)) & np.array(tags == 0) #  | (inorm[i,:] < tol)
+            tags[new] = group
+            if np.any(new): group += 1
+
+        # Get the centerpoint of each group
+        def mean_group(points):
+            len0 = np.sum(np.square(points[0, :]))
+            diff = np.sum(np.square(points - points[[0], :]), axis=1)
+            points[diff > len0] = -points[diff > len0]
+
+            final = np.mean(points, axis=0)
+
+            if final[0] < 0:
+                final *= -1
+
+            return final
+
+        # Filter by the k most populated clusters.
+        tag, count = np.unique(tags, return_counts=True)
+        k = min(k, len(count))
+        best_groups = np.argsort(-count)[:k]
+        centers = np.array([
+            mean_group(points[tags == tag[group]])
+            for group in best_groups
+        ])
+        count = count[best_groups]
+
+        # Order by closest point to center. Choose the closest as our base vector.
+        distance_to_center = np.sqrt(np.square(centers[:, 0]) + np.square(centers[:, 1]))
+        distance_to_center /= np.max(distance_to_center)    # normalize
+        best_groups = np.argsort(distance_to_center)
+        count = count[best_groups]
+        centers = centers[best_groups, :]
+
+        # Weight by orthogonality to the first vector.
+        centers_length = np.sqrt(np.sum(np.square(centers), 1, keepdims=True))
+        centers_norm = centers / centers_length
+        cross_product = (
+            centers_norm[:, 0] * centers_norm[0, 1] -
+            centers_norm[:, 1] * centers_norm[0, 0]
+        )
+        cross_product[0] = 2
+
+        # Prefer orthogal vectors most, then prefer distance to center.
+        fom = 1e4 * (np.abs(cross_product)) - distance_to_center
+        best_groups = np.argsort(-fom)
+        count = count[best_groups]
+        centers = centers[best_groups, :]
+
+        return centers
+
+    centers = cluster(kNN, k).T
+
+    # 3.3) Primitive lattice vectors are the best two.
+    lv = np.array([centers[:,0], centers[:,1]]).T
+
+    if plot > 1:
+        # Plot the points, kNN, and the chosen lattice vecs
+        fig, ax = plt.subplots(constrained_layout=True)
+        kNN_plt = ax.scatter(kNN[:,0], kNN[:,1], fc='none', ec='k', zorder=0)
+
+        for center in centers.T:
+            for s in [-1, 1]:
+                cir = matplotlib.patches.Circle(
+                    (s*center[0], s*center[1]),
+                    np.linalg.norm(center)*.1,
+                    fill=False,
+                    ec='r',
+                    zorder=10,
+                )
+                circ = ax.add_patch(cir)
+
+        for i in [0, 1]:
+            lv_plt = ax.plot([-lv[0,i], lv[0,i]], [-lv[1,i], lv[1,i]], marker='.', c='r')
+        lv_plt = ax.scatter(lv[0,:], lv[1,:], marker='.', c='r')
+
+        ax.set_aspect('equal')
+        ax.set_title('Reciprocal Lattice Vector Fitting')
+        ax.legend([kNN_plt, circ, lv_plt], ['Peak Spacing', '$k$ Clusters', 'Lattice Vectors'])
+        ax.grid()
+        _slmsuite_plt_show(name="blob_array_detect_lattice")
+
+    # 3.4) Convert to image space (dx = 1/dk)
+    M = fft_size*lv/(np.linalg.norm(lv, axis=0)**2)
+
+    # Plot which diffraction orders we used
+    if plot > 1:
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6), facecolor='white')
+
+        plt_img = _make_8bit(dft_amp.copy())
+
+        # Determine the bounds of the zoom region, padded by zoom_pad
+        zoom_pad = 50
+
+        # x = np.array([blob.pt[0] for blob in blobs])
+        x = points[:, 0] / downscaling
+        xl = [
+            np.clip(np.amin(x) - zoom_pad, 0, dft_amp.shape[1]),
+            np.clip(np.amax(x) + zoom_pad, 0, dft_amp.shape[1]),
+        ]
+
+        # y = np.array([blob.pt[1] for blob in blobs])
+        y = points[:, 1] / downscaling
+        yl = [
+            np.clip(np.amin(y) - zoom_pad, 0, dft_amp.shape[0]),
+            np.clip(np.amax(y) + zoom_pad, 0, dft_amp.shape[0]),
+        ]
+
+        # Plot the unzoomed figure
+        axs[0].imshow(plt_img)
+
+        # Plot a red rectangle to show the extents of the zoom region
+        rect = plt.Rectangle(
+            (float(xl[0]), float(yl[0])),
+            float(np.diff(xl).item()), float(np.diff(yl).item()),
+            ec="r", fc="none"
+        )
+        axs[0].add_patch(rect)
+        axs[0].set_title(f"DFT Result ({downscaling}x downscale) - Full")
+        axs[0].set_xticks([])
+        axs[0].set_yticks([])
+
+        # Plot the zoomed figure
+        axs[1].imshow(plt_img)
+        axs[1].scatter(
+            x,
+            y,
+            facecolors="none",
+            edgecolors="r",
+            marker="o",
+            s=100,
+            linewidths=0.5
+        )
+        c = fft_size/2/downscaling
+        lv /= downscaling
+        for i in [0, 1]:
+            lv_plt = axs[1].plot([c-lv[0,i], c+lv[0,i]], [c-lv[1,i], c+lv[1,i]], marker='.', c='r')
+
+        for spine in ["top", "bottom", "right", "left"]:
+            axs[1].spines[spine].set_color("r")
+            axs[1].spines[spine].set_linewidth(1.5)
+        axs[1].set_title(f"DFT Result ({downscaling}x downscale) - Zoom")
+        axs[1].set_xticks([])
+        axs[1].set_yticks([])
+        axs[1].set_xlim(xl)
+        axs[1].set_ylim(np.flip(yl))
+
+        for ax in axs:
+            ax.set_xlabel("Image Reciprocal $x$ [1/pix]")
+            ax.set_ylabel("Image Reciprocal $y$ [1/pix]")
+        fig.tight_layout(pad=4.0)
+
+        _slmsuite_plt_show(name="blob_array_detect_reciprocal_lattice")
+
+    return M
 
 
 def blob_array_detect(
@@ -1755,6 +2313,7 @@ def blob_array_detect(
     k=8,
     tol=0.1,
     plot=False,
+    method="fourier",
 ):
     r"""
     Detect an array of spots and return the orientation as an affine transformation.
@@ -1798,6 +2357,9 @@ def blob_array_detect(
         be considered members of the same group when lattice fitting. Defaults to 10%.
     plot : bool
         Whether or not to plot debug plots. Default is ``False``.
+    method : str
+        How to find the array's lattice, when ``orientation`` is not given.
+        Passed to :meth:`image_lattice_detect()`.
 
     Returns
     --------
@@ -1823,325 +2385,32 @@ def blob_array_detect(
             "Check your camera to make sure it is snapping correctly."
         )
 
-    # If an orientation was provided, use this as a guess.
+    # If an orientation was provided, use this as a guess. Otherwise, measure
+    # the lattice that the array's spots sit on.
     if orientation is not None:
         M = orientation["M"]
-
-    # Otherwise, find a guess orientation.
     else:
-        # 1) FFT to find array pitch and orientation.
-        # 1.1) Subtract the background field before the FFT.
-        # A noisy camera background can dominate the FFT's 0th order.
-        img_centered = image_remove_field([img], deviations=None)[0]
-
-        # 1.2) Take the largest dimension rounded down to nearest power of 2.
-        # FUTURE: clean this up to behave like other parts of the package.
-        fft_size = int(2 ** (np.floor(np.log2(np.max(np.shape(img)))) + dft_padding))
-
-        # 1.3) Actually FFT.
-        dft = np.abs(np.fft.fftshift(np.fft.fft2(img_centered, s=[fft_size, fft_size])))
-
-        # 2) Detect and plot FFT peaks
-        # 2.1) Prepare some helper variables, mainly for filtering out the 0th order.
-        fft_blur_size = int(np.clip(fft_size/200, 1, 5))*2 + 1
-        downscaling = 1
-        dft_amp = None
-        zo_size = 8*fft_blur_size
-        if fft_size <= zo_size*4:
-            raise ValueError(f"Image of shape {img.shape} is too small to use with blob_array_detect.")
-        zo_x, zo_y = np.meshgrid(
-            np.linspace(-zo_size/2, zo_size/2, zo_size),
-            np.linspace(-zo_size/2, zo_size/2, zo_size)
+        M = image_lattice_detect(
+            img,
+            method=method,
+            plot=plot,
+            **(
+                dict(dft_threshold=dft_threshold, dft_padding=dft_padding, k=k, tol=tol)
+                if method == "fourier" else {}
+            ),
         )
-        zo_filter = gaussian2d([zo_x, zo_y], 0, 0, -1, 1, fft_blur_size/2, fft_blur_size/2)
-        points = []
-        blobs = None
-        i = 0
 
-        # 2.2) Look for peaks with progressively greater downscaled blurring. This helps
-        # to mitigate noise on the DFT peaks and enhance the most prominent peaks.
-        while fft_size / downscaling > zo_size*4:
-            dft_amp = cv2.GaussianBlur(dft, (fft_blur_size, fft_blur_size), fft_blur_size/4)
-
-            # Filter 0 order (dominates in the presence of a slowly varying background)
-            zo_i = int(fft_size/2/downscaling-zo_size/2)
-            zo_j = zo_i+zo_size
-            dft_amp[zo_i:zo_j, zo_i:zo_j] *= zo_filter
-
-            thresholdStep = 10
-            blobs, _ = blob_detect(
-                dft_amp,
-                minThreshold=dft_threshold,
-                thresholdStep=thresholdStep,
-            )
-            points += [np.array(blob.pt) * downscaling for blob in blobs]
-
-            # Exit if we've already got enough points.
-            if len(points) > 4 * (i+1):
-                break
-
-            # Downscale so we can try to find peaks again with greater blurring.
-            if fft_size / downscaling > zo_size*4:
-                if not fft_size / (2*downscaling) > zo_size*4:
-                    break
-                dft = dft[0::2, 0::2] + dft[0::2, 1::2] + dft[1::2, 0::2] + dft[1::2, 1::2]
-                downscaling *= 2
-                i += 1
-
-        if len(points) < 4:
-
-            # Plot which diffraction orders we used
-            if plot:
-                plt.imshow(img)
-                plt.title("Image")
-                _slmsuite_plt_show(name="blob_array_detect_img")
-
-                plt.imshow(dft)
-                plt.title("DFT")
-                _slmsuite_plt_show(name="blob_array_detect_dft")
-
-                plt.imshow(dft_amp)
-                plt.title("Processed DFT")
-                _slmsuite_plt_show(name="blob_array_detect_processed_dft")
-
-            raise RuntimeError(
-                "Array fitting looks for prominent periodicity, "
-                "but failed to find such in the given image. Try the following:\n"
-                "- Verify that the camera is returning an image of the array. "
-                "For instance, the SLM `settle_time_s` could be too fast for the "
-                "camera to record the settled response, or "
-                "the camera interface could be returning stale frames. "
-                "Pass `plot>=1` to see debug plots. You can also view `cam.last_image`.\n"
-                "- Increasing exposure time to enhance the prominence of spots,\n"
-                "- Increasing the pitch of the array in the image, "
-                "which can isolate spots from neighboring crosstalk,\n"
-                "- Create an issue at https://github.com/holodyne/slmsuite/issues, "
-                "attaching the image data that is resulting in failure. "
-                "You can use `cam.save()` to record the last image alongside metadata."
-            )
-
-        # 3) Fit the primitive lattice vectors
-        # 3.1) Make a list of displacements to each peak's k nearest neighbors
-        def get_kNN(points, k):
-            "Return list of k closest points for each x"
-            dx = points[:,0][:,np.newaxis] - points[:,0][:,np.newaxis].T
-            dy = points[:,1][:,np.newaxis] - points[:,1][:,np.newaxis].T
-            d = np.sqrt(dx**2 + dy**2)
-            inds = np.argsort(d, axis=0)
-            kNN = points[inds[1:k+1,:]] - points
-            kNN = kNN.reshape((points.shape[0]*k, 2))
-
-            # Make inverted copies to avoid group separation based upon arb. branch cut.
-            kNN = np.vstack((kNN, -kNN))
-
-            return kNN
-
-        # Get rid of the points closest to the center - these are noise on the 0th order.
-        points = np.array(points)
-
-        points_lengths = np.sqrt((points[:,0]-fft_size/2)**2 + (points[:,1]-fft_size/2)**2)
-        points = points[points_lengths > .5*np.mean(points_lengths), :]
-        points = np.concatenate((points, np.array([[fft_size/2, fft_size/2]])))
-
-        # Now compute the differences of lattice vectors.
-        k = min(k, len(points)-1)
-        kNN = get_kNN(points, k)
-
-        # 3.2) Cluster into lattice vectors.
-        def cluster(points, k, tol=tol):
-            "Cluster points from k nearest neighbors into groups and return the centers"
-
-            # Find matrix of normalized displacements between points.
-            dx = points[:,0][:,np.newaxis] - points[:,0][:,np.newaxis].T
-            dy = points[:,1][:,np.newaxis] - points[:,1][:,np.newaxis].T
-            dnorm = np.sqrt(dx**2 + dy**2) / np.linalg.norm(points, axis=1)
-
-            # Normalized inverted displacements.
-            dx = points[:,0][:,np.newaxis] + points[:,0][:,np.newaxis].T
-            dy = points[:,1][:,np.newaxis] + points[:,1][:,np.newaxis].T
-            inorm = np.sqrt(dx**2 + dy**2) / np.linalg.norm(points, axis=1)
-
-            # Find groups of points separated by dnorm less than tol.
-            group = 1
-            tags = np.zeros(points.shape[0])
-            for i in np.arange(points.shape[0]):
-                # Assign if they are within tol and have not been assigned yet.
-                new = ((dnorm[i,:] < tol) | (inorm[i,:] < tol)) & np.array(tags == 0) #  | (inorm[i,:] < tol)
-                tags[new] = group
-                if np.any(new): group += 1
-
-            # Get the centerpoint of each group
-            def mean_group(points):
-                len0 = np.sum(np.square(points[0, :]))
-                diff = np.sum(np.square(points - points[[0], :]), axis=1)
-                points[diff > len0] = -points[diff > len0]
-
-                final = np.mean(points, axis=0)
-
-                if final[0] < 0:
-                    final *= -1
-
-                return final
-
-            # Filter by the k most populated clusters.
-            tag, count = np.unique(tags, return_counts=True)
-            k = min(k, len(count))
-            best_groups = np.argsort(-count)[:k]
-            centers = np.array([
-                mean_group(points[tags == tag[group]])
-                for group in best_groups
-            ])
-            count = count[best_groups]
-
-            # Order by closest point to center. Choose the closest as our base vector.
-            distance_to_center = np.sqrt(np.square(centers[:, 0]) + np.square(centers[:, 1]))
-            distance_to_center /= np.max(distance_to_center)    # normalize
-            best_groups = np.argsort(distance_to_center)
-            count = count[best_groups]
-            centers = centers[best_groups, :]
-
-            # Weight by orthogonality to the first vector.
-            centers_length = np.sqrt(np.sum(np.square(centers), 1, keepdims=True))
-            centers_norm = centers / centers_length
-            cross_product = (
-                centers_norm[:, 0] * centers_norm[0, 1] -
-                centers_norm[:, 1] * centers_norm[0, 0]
-            )
-            cross_product[0] = 2
-
-            # Prefer orthogal vectors most, then prefer distance to center.
-            fom = 1e4 * (np.abs(cross_product)) - distance_to_center
-            best_groups = np.argsort(-fom)
-            count = count[best_groups]
-            centers = centers[best_groups, :]
-
-            return centers
-
-        centers = cluster(kNN, k).T
-
-        # 3.3) Primitive lattice vectors are the best two.
-        lv = np.array([centers[:,0], centers[:,1]]).T
-
-        if plot > 1:
-            # Plot the points, kNN, and the chosen lattice vecs
-            fig, ax = plt.subplots(constrained_layout=True)
-            kNN_plt = ax.scatter(kNN[:,0], kNN[:,1], fc='none', ec='k', zorder=0)
-
-            for center in centers.T:
-                for s in [-1, 1]:
-                    cir = matplotlib.patches.Circle(
-                        (s*center[0], s*center[1]),
-                        np.linalg.norm(center)*.1,
-                        fill=False,
-                        ec='r',
-                        zorder=10,
-                    )
-                    circ = ax.add_patch(cir)
-
-            for i in [0, 1]:
-                lv_plt = ax.plot([-lv[0,i], lv[0,i]], [-lv[1,i], lv[1,i]], marker='.', c='r')
-            lv_plt = ax.scatter(lv[0,:], lv[1,:], marker='.', c='r')
-
-            ax.set_aspect('equal')
-            ax.set_title('Reciprocal Lattice Vector Fitting')
-            ax.legend([kNN_plt, circ, lv_plt], ['Peak Spacing', '$k$ Clusters', 'Lattice Vectors'])
-            ax.grid()
-            _slmsuite_plt_show(name="blob_array_detect_lattice")
-
-        # 3.4) Convert to image space (dx = 1/dk)
-        M = fft_size*lv/(np.linalg.norm(lv, axis=0)**2)
-
-        # Plot which diffraction orders we used
-        if plot > 1:
-            fig, axs = plt.subplots(1, 2, figsize=(12, 6), facecolor='white')
-
-            plt_img = _make_8bit(dft_amp.copy())
-
-            # Determine the bounds of the zoom region, padded by zoom_pad
-            zoom_pad = 50
-
-            # x = np.array([blob.pt[0] for blob in blobs])
-            x = points[:, 0] / downscaling
-            xl = [
-                np.clip(np.amin(x) - zoom_pad, 0, dft_amp.shape[1]),
-                np.clip(np.amax(x) + zoom_pad, 0, dft_amp.shape[1]),
-            ]
-
-            # y = np.array([blob.pt[1] for blob in blobs])
-            y = points[:, 1] / downscaling
-            yl = [
-                np.clip(np.amin(y) - zoom_pad, 0, dft_amp.shape[0]),
-                np.clip(np.amax(y) + zoom_pad, 0, dft_amp.shape[0]),
-            ]
-
-            # Plot the unzoomed figure
-            axs[0].imshow(plt_img)
-
-            # Plot a red rectangle to show the extents of the zoom region
-            rect = plt.Rectangle(
-                (float(xl[0]), float(yl[0])),
-                float(np.diff(xl).item()), float(np.diff(yl).item()),
-                ec="r", fc="none"
-            )
-            axs[0].add_patch(rect)
-            axs[0].set_title(f"DFT Result ({downscaling}x downscale) - Full")
-            axs[0].set_xticks([])
-            axs[0].set_yticks([])
-
-            # Plot the zoomed figure
-            axs[1].imshow(plt_img)
-            axs[1].scatter(
-                x,
-                y,
-                facecolors="none",
-                edgecolors="r",
-                marker="o",
-                s=100,
-                linewidths=0.5
-            )
-            c = fft_size/2/downscaling
-            lv /= downscaling
-            for i in [0, 1]:
-                lv_plt = axs[1].plot([c-lv[0,i], c+lv[0,i]], [c-lv[1,i], c+lv[1,i]], marker='.', c='r')
-
-            for spine in ["top", "bottom", "right", "left"]:
-                axs[1].spines[spine].set_color("r")
-                axs[1].spines[spine].set_linewidth(1.5)
-            axs[1].set_title(f"DFT Result ({downscaling}x downscale) - Zoom")
-            axs[1].set_xticks([])
-            axs[1].set_yticks([])
-            axs[1].set_xlim(xl)
-            axs[1].set_ylim(np.flip(yl))
-
-            for ax in axs:
-                ax.set_xlabel("Image Reciprocal $x$ [1/pix]")
-                ax.set_ylabel("Image Reciprocal $y$ [1/pix]")
-            fig.tight_layout(pad=4.0)
-
-            _slmsuite_plt_show(name="blob_array_detect_reciprocal_lattice")
-
-    # 4) Make the array kernel for convolutional detection of the array center.
-    # Make lists that we will use to make the kernel: the array...
-    x_list = np.arange(-(size[0] - 1) / 2.0, (size[0] + 1) / 2.0)
-    y_list = np.arange(-(size[1] - 1) / 2.0, (size[1] + 1) / 2.0)
-
-    x_centergrid, y_centergrid = np.meshgrid(x_list, y_list)
-    centers = np.vstack((x_centergrid.ravel(), y_centergrid.ravel()))
-
-    # ...and the array padded by one (penalize the border to avoid off-by-one errors).
-    pad = 1
-    p = int(pad * 2)
-
-    x_list_larger = np.arange(-(size[0] + p - 1) / 2.0, (size[0] + p + 1) / 2.0)
-    y_list_larger = np.arange(-(size[1] + p - 1) / 2.0, (size[1] + p + 1) / 2.0)
-
-    x_centergrid_larger, y_centergrid_larger = np.meshgrid(x_list_larger, y_list_larger)
-    centers_larger = np.vstack(
-        (x_centergrid_larger.ravel(), y_centergrid_larger.ravel())
-    )
+    # (4) [after orientation detection] 
+    # Make the array kernel for convolutional detection of the array center:
+    # the array, and the array padded by one to penalize the border against
+    # off-by-one errors.
+    centers = _array_indices(size)
+    centers_larger = _array_indices(size, pad=1)
 
     # If we're not sure about how things are flipped, consider alternatives...
-    if size[0] != size[1] and orientation is None:
+    # A guessed `orientation` fixes the lattice but not which vector is which:
+    # the alternative is tried for a guess too, and scored by template match.
+    if size[0] != size[1]:
         M_alternative = np.array([[M[0, 1], M[0, 0]], [M[1, 1], M[1, 0]]])
         M_options = [M, M_alternative]
     else:
@@ -2192,81 +2461,65 @@ def blob_array_detect(
 
         mask = _make_8bit(mask)
 
-        # 5) Do the autocorrelation
+        # 5) Locate the array. The template match locates the kernel, which
+        # coincides with the array only when the array is symmetric about it, so a
+        # guessed position is scored against it rather than either being trusted.
+        candidates = []
+
+        if orientation is not None and "b" in orientation:
+            candidates.append(format_2vectors(orientation["b"]).astype(float))
+
         try:
             res = cv2.matchTemplate(img_8bit, mask, cv2.TM_CCOEFF)
-            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+            _, _, _, max_loc = cv2.minMaxLoc(res)
+            candidates.append(
+                np.array(max_loc, dtype=float)[:, np.newaxis]
+                + np.flip(mask.shape)[:, np.newaxis] / 2
+            )
         except Exception:
-            max_val = 0
-            max_loc = [0, 0]
+            pass
 
-        b_fixed = (
-            np.array(max_loc)[:, np.newaxis] + np.flip(mask.shape)[:, np.newaxis] / 2
-        )
+        if len(candidates) == 0:
+            candidates.append(np.flip(mask.shape)[:, np.newaxis] / 2.0)
 
-        # Parity check
-        if orientation is None and orientation_check:
+        def spot_power(b):
+            """Typical power collected where this position would place the spots."""
+            return float(np.nanmedian(take(
+                img_8bit, np.matmul(M_trial, centers) + b, 3,
+                centered=True, integrate=True, clip=True,
+            )))
+
+        scores = [spot_power(b) for b in candidates]
+        b_fixed = candidates[int(np.argmax(scores))]
+        max_val = np.max(scores)
+
+        # Parity check. A guess constrains the lattice vectors but not the
+        # rotation and flip between them, which only the fiducial spots reveal.
+        if orientation_check:
             try:
-                cam_array_ind = np.ix_(
-                    max_loc[1] + np.arange(mask.shape[0]),
-                    max_loc[0] + np.arange(mask.shape[1]),
+                # Parity is decided by the fiducials, so a cropped array cannot
+                # decide it; the position is the one chosen above, not the template
+                # match, which may have lost to the guess.
+                corner = np.rint(
+                    np.squeeze(b_fixed) - np.flip(mask.shape) / 2
+                ).astype(int)
+                if np.any(corner < 0) or np.any(
+                    np.flip(corner) + mask.shape > img_8bit.shape
+                ):
+                    raise IndexError("Array is not wholly within the image.")
+
+                best = _score_array_orientation(
+                    image_remove_field(img, deviations=None),
+                    M_trial,
+                    b_fixed,
+                    size,
+                    2 * np.max([1, int(0.2 * max_pitch)]) + 1,
                 )
-                match = img_8bit[cam_array_ind]
+                assert best is not None
 
-                # TODO: replace with take
-                wmask = 0.2
-                w = np.max([1, int(wmask * max_pitch)])
-                edge = np.arange(-w, w + 1)
-
-                integration_x, integration_y = np.meshgrid(edge, edge)
-
-                rotated_integration_x = np.rint(np.add(
-                    integration_x.ravel()[:, np.newaxis].T,
-                    rotated_centers[:][0][:, np.newaxis],
-                )).astype(int)
-                rotated_integration_y = np.rint(np.add(
-                    integration_y.ravel()[:, np.newaxis].T,
-                    rotated_centers[:][1][:, np.newaxis],
-                )).astype(int)
-
-                spotpowers = np.reshape(
-                    np.sum(match[rotated_integration_y, rotated_integration_x], 1),
-                    np.flip(size),
+                M_fixed = np.matmul(
+                    M_trial, OrientationTransform.from_code(best[0]).M()
                 )
-
-                # Find the two dimmest pixels.
-                spotbooleans = spotpowers <= np.sort(spotpowers.ravel())[1]
-
-                assert np.sum(spotbooleans) == 2
-
-                # Find whether the corners are dimmest.
-                corners = spotbooleans[[-1, -1, 0, 0], [-1, 0, 0, -1]]
-
-                assert np.sum(corners) == 1
-
-                # We want a dim corner at -1, -1.
-                rotation_parity = np.where(corners)[0][0]
-                spotbooleans_rotated = np.rot90(spotbooleans, rotation_parity)
-
-                theta = rotation_parity * np.pi / 2
-                c = np.cos(theta)
-                s = np.sin(theta)
-                rotation = np.array([[c, -s], [s, c]])
-
-                # Look for the second missing spot.
-                flip_parity = (
-                    int(spotbooleans_rotated[-1, -2]) -
-                    int(spotbooleans_rotated[-2, -1])
-                )
-
-                assert abs(flip_parity) == 1
-
-                if flip_parity == 1:
-                    flip = np.array([[1, 0], [0, 1]])
-                else:
-                    flip = np.array([[0, 1], [1, 0]])
-
-                M_fixed = np.matmul(M_trial, np.matmul(rotation, flip))
                 parity_success = True
             except Exception as e:
                 M_fixed = M_trial
@@ -2343,11 +2596,7 @@ def blob_array_detect(
         array_center = orientation["b"]
         true_centers = np.matmul(orientation["M"], centers) + orientation["b"]
 
-        showmatch = False
-
-        fig, axs = plt.subplots(
-            1, 2 + showmatch, figsize=(12, 12)
-        )
+        fig, axs = plt.subplots(1, 2, figsize=(12, 12))
 
         # Determine the bounds of the zoom region, padded by 50.
         x = true_centers[0, :]
@@ -2393,10 +2642,6 @@ def blob_array_detect(
         axs[0].add_patch(rect)
         axs[0].set_title("Result - Full")
 
-        if showmatch:
-            axs[2].imshow(match)
-            axs[2].set_title("Result - Match")
-
         # Handle xy labels.
         for ax in axs[:2]:
             ax.set_xlabel("Image $x$ [pix]")
@@ -2437,7 +2682,6 @@ def _make_8bit(img):
 
 
 # Transformations
-
 
 class Affine(object):
     """

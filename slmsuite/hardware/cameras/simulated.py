@@ -68,7 +68,9 @@ class SimulatedCamera(Camera):
 
     """
 
-    def __init__(self, slm, resolution=None, M=None, b=None, noise=None, pitch_um=None, gain=1, **kwargs):
+    def __init__(
+        self, slm, resolution=None, M=None, b=None, noise=None, pitch_um=None, gain=1, **kwargs
+    ):
         """
         Initialize simulated camera.
 
@@ -111,6 +113,10 @@ class SimulatedCamera(Camera):
 
         # Add user-defined noise dictionary
         self.noise = noise
+
+        # Hidden: efficiency of each camera pixel; an image of shape ``_shape`` or None.
+        self._aperture = None
+
 
         # Compute the camera pixel grid in `basis` units (currently "ij")
         self.grid = np.meshgrid(
@@ -159,6 +165,9 @@ class SimulatedCamera(Camera):
             np.arange(self._shape[0]),
         )
         self.shape_padded = self._slm.shape
+        self._supersample = (1, 1)
+        self._knm_cam_super = None
+        self._pixel_area = 1.0
 
         if self._interpolate:
             self.M = M
@@ -184,6 +193,7 @@ class SimulatedCamera(Camera):
                 ]
             )
 
+
             if (
                 cp.amax(cp.abs(self.knm_cam[0] - self.shape_padded[0]/2)) > self.shape_padded[0]/2 or
                 cp.amax(cp.abs(self.knm_cam[1] - self.shape_padded[1]/2)) > self.shape_padded[1]/2
@@ -193,7 +203,34 @@ class SimulatedCamera(Camera):
                     " some pixels may not be targetable."
                 )
 
-        phase = -self._slm.display.astype(float) * (2 * np.pi / self._slm.bitresolution)
+            # Real pixels integrate over their footprint; sampling only their centers
+            # would alias away spots smaller than a k-space cell. Columns of dknm are
+            # the knm steps along ij.
+            dknm = np.flip(np.linalg.inv(M), axis=0) * np.array(
+                [[self.shape_padded[0] * self._slm.pitch[1]],
+                 [self.shape_padded[1] * self._slm.pitch[0]]]
+            )
+            self._supersample = tuple(
+                max(1, int(np.ceil(np.sqrt(np.sum(step ** 2))))) for step in np.flip(dknm.T, axis=0)
+            )
+            self._pixel_area = np.abs(np.linalg.det(dknm))
+
+            if self._supersample != (1, 1):
+                (sv, su) = self._supersample
+                dknm = cp.array(dknm)
+                offset = (
+                    dknm[:, 1, None, None] * (((cp.arange(sv) + 0.5) / sv - 0.5)[None, :, None])
+                    + dknm[:, 0, None, None] * (((cp.arange(su) + 0.5) / su - 0.5)[None, None, :])
+                )
+                self._knm_cam_super = cp.reshape(
+                    self.knm_cam[:, :, None, :, None] + offset[:, None, :, None, :],
+                    (2, self._shape[0] * sv, self._shape[1] * su),
+                ).astype(cp.float32)
+
+        display = self._slm.display
+        if hasattr(display, "get"):
+            display = display.get()
+        phase = self._slm._display2phase(display)
 
         # Suppress power of 2 warning from Hologram.
         with warnings.catch_warnings():
@@ -316,20 +353,37 @@ class SimulatedCamera(Camera):
 
         # Quantized phase
         self._hologram.amp = cp.array(self._slm.source["amplitude_sim"], dtype=self._hologram.dtype)
-        phase = -self._slm.display.astype(self._hologram.dtype) * (2 * np.pi / self._slm.bitresolution)
-        self._hologram.reset_phase(phase - phase.min() + self._slm.source["phase_sim"].astype(self._hologram.dtype))
+        display = cp.asarray(self._slm.display)
+        phase = self._slm._display2phase(display, dtype=self._hologram.dtype)
+        phase = phase - phase.min() + cp.asarray(
+            self._slm.source["phase_sim"], dtype=self._hologram.dtype
+        )
+
+        self._hologram.reset_phase(phase)
 
         ff = self._hologram.get_farfield(get=False)
+        intensity = cp.abs(ff) ** 2
 
         # Use map_coordinates for fastest interpolation
         # Note: by default, map_coordinates sets pixels outside the SLM k-space to 0 as desired
         if self._interpolate:
-            img = map_coordinates(cp.abs(ff) ** 2, self.knm_cam, order=0)
+            # Each pixel collects the mean over its footprint times the footprint's area;
+            # partially outside the k-space aperture, subsamples there return zero.
+            if self._knm_cam_super is not None:
+                (sv, su) = self._supersample
+                img = map_coordinates(intensity, self._knm_cam_super, order=0)
+                img = img.reshape(self._shape[0], sv, self._shape[1], su).mean(axis=(1, 3))
+            else:
+                img = map_coordinates(intensity, self.knm_cam, order=0)
+            img = img * self._pixel_area
         else:
-            img = cp.abs(ff) ** 2
-            img = toolbox.unpad(img, self._shape)
+            img = toolbox.unpad(intensity, self._shape)
         if cp != np:
             img = img.get()
+
+        # Efficiency of each camera pixel (apertures in the optical train, vignetting).
+        if self._aperture is not None:
+            img = img * self._aperture
 
         img = img * (self.exposure_s * self.gain)
 

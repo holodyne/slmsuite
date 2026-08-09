@@ -1550,3 +1550,88 @@ def test_orientation_affine_translation_formula(subtests):
             corner = aff @ np.array([[float(W - 1)], [float(H - 1)]])
             assert 0 <= corner[0, 0] <= out_shape[1] - 1
             assert 0 <= corner[1, 0] <= out_shape[0] - 1
+
+
+def _spot_array(lattice, count=(9, 9), shape=(160, 160), center=None, spot=1.2):
+    """Render a spot array with the given (2, 2) lattice for lattice-detection tests."""
+    if center is None:
+        center = (shape[1] / 2, shape[0] / 2)
+    (gx, gy) = np.meshgrid(
+        np.arange(count[0]) - (count[0] - 1) / 2,
+        np.arange(count[1]) - (count[1] - 1) / 2,
+    )
+    points = np.array(lattice) @ np.vstack((gx.ravel(), gy.ravel()))
+
+    (yy, xx) = np.indices(shape)
+    image = np.zeros(shape)
+    for (px, py) in zip(points[0] + center[0], points[1] + center[1]):
+        image += np.exp(-((xx - px) ** 2 + (yy - py) ** 2) / (2 * spot**2))
+    return image
+
+
+def test_image_lattice_detect(subtests):
+    """Test analysis.image_lattice_detect() over pitches, rotation, and shear."""
+    # The lattice is only defined up to relabeling of its two vectors.
+    dihedral = [
+        np.diag([sx, sy]) @ permutation
+        for permutation in (np.eye(2), np.array([[0.0, 1.0], [1.0, 0.0]]))
+        for sx in (1, -1) for sy in (1, -1)
+    ]
+
+    def error(detected, truth):
+        return min(
+            np.linalg.norm(detected @ relabel - truth) / np.linalg.norm(truth)
+            for relabel in dihedral
+        )
+
+    theta = np.radians(20)
+    rotation = np.array(
+        [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
+    )
+    lattices = {
+        "square": np.array([[8.0, 0.0], [0.0, 8.0]]),
+        "coarse": np.array([[24.0, 0.0], [0.0, 24.0]]),
+        "anisotropic": np.array([[18.0, 0.0], [0.0, 6.0]]),
+        "rotated": rotation @ np.array([[10.0, 0.0], [0.0, 10.0]]),
+        "sheared": np.array([[11.0, 2.0], [-1.5, 9.0]]),
+    }
+
+    # A reciprocal peak sits at fft_size/pitch bins, and the Fourier engine transforms
+    # at the image size rounded *down* to a power of two, so a coarse lattice collapses
+    # its own peaks into the 0th order it filters out. The autocorrelation has no such
+    # limit: its central peak is only as wide as a spot.
+    fourier_limit = 10.0
+
+    for (name, lattice) in lattices.items():
+        for method in ("autocorrelation", "fourier"):
+            if method == "fourier" and np.max(np.linalg.norm(lattice, axis=0)) > fourier_limit:
+                continue
+            with subtests.test(f"{name} ({method})"):
+                detected = analysis.image_lattice_detect(_spot_array(lattice), method=method)
+                assert error(detected, lattice) < 0.05, (
+                    f"{name} ({method}): detected\n{detected}\nexpected\n{lattice}"
+                )
+
+    with subtests.test("survives cropping to a corner of the array"):
+        # A coarse lattice cropped to a few periods, which only the autocorrelation
+        # resolves: cropping weakens its peaks but does not move them.
+        image = _spot_array(lattices["coarse"], count=(15, 15))[:130, :100]
+        detected = analysis.image_lattice_detect(image, method="autocorrelation")
+        assert error(detected, lattices["coarse"]) < 0.05
+
+    with subtests.test("unknown method raises"):
+        with pytest.raises(ValueError):
+            analysis.image_lattice_detect(np.zeros((64, 64)), method="bogus")
+
+    for method in ("autocorrelation", "fourier"):
+        with subtests.test(f"blank image raises ({method})"):
+            with pytest.raises(RuntimeError):
+                analysis.image_lattice_detect(np.zeros((160, 160)), method=method)
+
+    with subtests.test("single row of spots raises"):
+        # Only the autocorrelation names this case: it finds periodicity along one
+        # direction and refuses rather than inventing a second lattice vector.
+        with pytest.raises(RuntimeError):
+            analysis.image_lattice_detect(
+                _spot_array(lattices["square"], count=(9, 1)), method="autocorrelation"
+            )
