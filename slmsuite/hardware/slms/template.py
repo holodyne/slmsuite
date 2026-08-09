@@ -112,6 +112,8 @@ class Template(SLM):
         display
             Integer data to display on the SLM. See :meth:`.SLM._set_phase_hw`.
         """
+        if hasattr(display, "get"):
+            display = display.get()
         # TODO: Insert code here to write raw phase data to the SLM.
         raise NotImplementedError()
 

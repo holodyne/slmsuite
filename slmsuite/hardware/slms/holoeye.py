@@ -172,6 +172,9 @@ class Holoeye(SLM):
         display
             Integer data to display on the SLM. See :meth:`.SLM._set_phase_hw`.
         """
+        if hasattr(display, "get"):
+            display = display.get()
+            
         error = self.slm_lib.showPhaseData(display, phase_unit=256)
         self._handle_error(error)
 
