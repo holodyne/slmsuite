@@ -20,18 +20,25 @@ class _Common(_Viewable, _Loggable, ABC):
         pitch_um,
         is_slm,
     ):
-        # Parse shape.
-        width, height = format_shape(resolution)
-        self.shape = (height, width)
-
         # Remember the name.
         self.name = str(name)
         if len(self.name) == 0:
             self.name = str(self.__class__.__name__)
 
+        # Initialize logger.
+        _Loggable.__init__(self)
+
+        # Parse shape.
+        width, height = format_shape(resolution)
+        self.shape = (height, width)
+        
+        if not np.all((np.array(self.shape) > 100) & (np.array(self.shape) < 1e4)):
+            self.logger.warning("Resolution of %s is unusual. Was this a typo?", resolution)
+
+
         # Parse datatype variables.
         self.bitdepth = int(bitdepth)
-        self.dtype = self._get_dtype()
+        self.dtype = self._get_dtype()  # bitdepth is error-checked here.
 
         # Parse spatial dimensions.
         if pitch_um is None:
@@ -46,17 +53,22 @@ class _Common(_Viewable, _Loggable, ABC):
                 raise ValueError("Expected positive (float, float) for pitch_um")
             self.pitch_um = np.array([float(pitch_um[0]), float(pitch_um[1])])
 
-        # Empty handle for the live viewer.
-        self.viewer = None
+        if self.pitch_um is not None and not np.all(
+            (self.pitch_um > 1) & (self.pitch_um < 50)
+        ):
+            self.logger.warning(
+                "Pixel pitch of %.2f x %.2f um is unusual. Was this a typo?",
+                self.pitch_um[0], self.pitch_um[1],
+            )
 
         # Whether this is an SLM or not, used for some viewer settings.
         self.is_slm = bool(is_slm)
 
         # Initialize viewer.
+        self.viewer = None
         _Viewable.__init__(self)
 
-        # Initialize logger.
-        _Loggable.__init__(self)
+        # With all the init variables filled in, log the state.
         self.log_state()
 
     @abstractmethod
@@ -92,8 +104,9 @@ class _Common(_Viewable, _Loggable, ABC):
         If ``test_data`` is not provided, attempts to get a sample image from the
         hardware; if that also fails, infers the dtype from bitdepth alone.
         """
-        if test_data is None and hasattr(self, "_get_image_hw_tolerant"):
-            test_data = self._get_image_hw_tolerant
+        # One quiet attempt: hardware that cannot yet capture falls back on bitdepth below.
+        if test_data is None and hasattr(self, "_get_image_hw"):
+            test_data = self._get_image_hw
 
         try:
             if test_data is None:
@@ -120,6 +133,9 @@ class _Common(_Viewable, _Loggable, ABC):
                 self.dtype = np.dtype(np.uint64)
             else:
                 self.dtype = np.dtype(float)
+
+            if self.bitdepth > 16:
+                self.logger.warning("Bitdepth %s is unusually high.", self.bitdepth)
 
         try:
             # Determine the bitdepth of the datatype.

@@ -217,6 +217,13 @@ class SLM(_Common, ABC):
             is_slm=True,
         )
 
+        if self.bitdepth > 12:
+            self.logger.warning(
+                "Bitdepth %s is greater than 12 and some features "
+                "(gamma/LUT, etc) may not be supported.", 
+                self.bitdepth
+            )
+
         # Phase and display caches for user reference.
         self.phase = self.xp.zeros(self.shape)
         self.display = self.xp.zeros(self.shape, dtype=self.dtype)
@@ -227,6 +234,11 @@ class SLM(_Common, ABC):
             self.wav_design_um = float(wav_um)
         else:
             self.wav_design_um = float(wav_design_um)
+
+        if not (.3 < self.wav_um < 2):
+            self.logger.warning("SLM operation wavelength of %.2f um is unusual. Was this a typo?", self.wav_um)
+        if not (.3 < self.wav_design_um < 2):
+            self.logger.warning("SLM design wavelength of %.2f um is unusual. Was this a typo?", self.wav_design_um)
 
         # Make normalized coordinate grids. ``_grid_base`` is the immutable geometric
         # grid (centered on the SLM); the public ``grid`` property derives the

@@ -230,8 +230,6 @@ class Camera(_Common, ABC):
         self.get_binning()
         self.get_woi()
 
-        # Color handling. Set before _get_dtype() since the tolerant capture used to probe
-        # the dtype reduces color frames to grayscale via self.color_channel.
         self.color_channel = color_channel
 
         # Set datatype variables.
@@ -255,8 +253,12 @@ class Camera(_Common, ABC):
 
     @property
     def bitresolution(self) -> int:
-        # This overwrites the _Common bitresolution to account for averaging.
-        return (2**self.bitdepth) * (self.averaging if self.averaging is not None else 1)
+        # This overwrites the _Common bitresolution, as averaging and software binning
+        # both sum into a range wider than the bitdepth.
+        scale = self.averaging if self.averaging is not None else 1
+        if self._software_binning:
+            scale *= int(np.prod(self._binning))
+        return (2**self.bitdepth) * scale
 
     # Binning methods.
 

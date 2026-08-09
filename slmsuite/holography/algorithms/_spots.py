@@ -441,18 +441,18 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             )
 
         # Check to make sure spots are within bounds
+        (psf_ij, self.spot_ij) = (np.nan, None)
+
         if cameraslm is not None and hasattr(cameraslm, "slm"):
             kmax = 1. / np.min(cameraslm.slm.pitch) / 2.
             if np.any(np.abs(self.spot_kxy[:2, :]) > 1.1 * kmax):
                 raise ValueError("Spots laterally outside the bounds of the farfield")
 
-            # Generate ij point spread function (psf)
-            psf_kxy = np.mean(cameraslm.slm.get_spot_radius_kxy())
-            self.spot_ij = cameraslm.kxyslm_to_ijcam(self.spot_kxy)
-            psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm)
-        else:
-            psf_ij = np.nan
-            self.spot_ij = None
+            # Generate ij point spread function (psf), which needs the camera located.
+            if "fourier" in cameraslm.calibrations:
+                psf_kxy = np.mean(cameraslm.slm.get_spot_radius_kxy())
+                self.spot_ij = cameraslm.kxyslm_to_ijcam(self.spot_kxy)
+                psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm)
 
         if np.isnan(psf_ij): psf_ij = 0
 
@@ -1278,13 +1278,15 @@ class SpotHologram(_AbstractSpotHologram):
             self.null_region_knm = null_region
 
         # Generate point spread functions (psf) for the knm and ij bases
+        (psf_knm, psf_ij) = (0, np.nan)
+
         if cameraslm is not None:
             psf_kxy = np.mean(cameraslm.slm.get_spot_radius_kxy())
             psf_knm = toolbox.convert_radius(psf_kxy, "kxy", "knm", cameraslm.slm, shape)
-            psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm, shape)
-        else:
-            psf_knm = 0
-            psf_ij = np.nan
+
+            # The ij psf needs the camera located, which is what calibration produces.
+            if "fourier" in cameraslm.calibrations:
+                psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm, shape)
 
         if np.isnan(psf_knm):
             psf_knm = 0

@@ -105,6 +105,11 @@ class _FarfieldCalibration(object):
             "efficiency_raw": np.stack(images),
             "background_raw": np.stack(backgrounds),
             "exposure_raw": exposure_raw,
+            # Summed frames saturate here, and the camera may be reconfigured before processing.
+            "bitresolution": self.cam.bitresolution,
+            "saturation": self.cam.bitresolution - (
+                self.cam.averaging if self.cam.averaging is not None else 1
+            ),
         }
         self.calibrations["farfield"].update(self._get_calibration_metadata())
 
@@ -112,7 +117,7 @@ class _FarfieldCalibration(object):
 
         return self.calibrations["farfield"]
 
-    def farfield_calibration_process(self, size_blur=3):
+    def farfield_calibration_process(self, size_blur=True):
         """
         Processes raw :meth:`farfield_calibrate()` data into a usable efficiency map.
         Averages and blurs the speckle of the raw data, less the background taken as the
@@ -120,9 +125,12 @@ class _FarfieldCalibration(object):
 
         Parameters
         ----------
-        size_blur : int
+        size_blur : int OR bool
             Amount of blurring to apply to the averaged result, in camera pixels.
-            Disabled if zero or ``None``.
+            If ``True``, spans the speckle grain given by
+            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.get_farfield_spot_size()`,
+            to a minimum of three pixels.
+            Disabled if zero, ``False``, or ``None``.
 
         Returns
         -------
@@ -137,6 +145,16 @@ class _FarfieldCalibration(object):
                 "Run farfield_calibrate() first."
             )
 
+        # Blurring away the residual speckle takes a kernel the size of its grain, which
+        # is the spot of the whole SLM rather than of its illuminated part.
+        if isinstance(size_blur, (bool, np.bool_)) and size_blur:
+            size_blur = max(3, (
+                np.max(self.get_farfield_spot_size(
+                    slm_size=np.flip(np.squeeze(self.slm.shape)) * np.squeeze(self.slm.pitch),
+                    basis="ij",
+                ))
+                if "fourier" in self.calibrations else 0
+            ))
         if size_blur:
             size_blur = 2 * (int(size_blur) // 2) + 1   # cv2 requires odd kernels.
 
@@ -150,37 +168,40 @@ class _FarfieldCalibration(object):
 
         # Process the raw farfield data, less the floor that is not diffracted light.
         raw = np.asarray(self.calibrations["farfield"]["efficiency_raw"], dtype=float)
-        measured = blur(np.mean(raw, axis=0))
-        averaged = np.maximum(measured - background, 0)
+        speckle = blur(np.mean(raw, axis=0))
+        signal = np.maximum(speckle - background, 0)
 
-        # Scale to the brightest spot of the farfield proper: neither pixels the camera
-        # railed on nor the zeroth order, which outshines the pattern it is measuring.
-        averaging = self.cam.averaging if self.cam.averaging is not None else 1
+        # Neither pixels the camera railed on nor the zeroth order, which outshines the
+        # pattern it is measuring, say anything about the farfield's brightest spot.
         zeroth = np.asarray(self.calibrations["farfield"]["zeroth"], dtype=float) * (
             self.calibrations["farfield"]["exposure_raw"] /
             self.calibrations["farfield"]["exposure_zeroth"]
         )
-        ignore = (
-            np.any(raw >= self.cam.bitresolution - averaging, axis=0) | (zeroth > measured)
+        unusable = (
+            np.any(raw >= self.calibrations["farfield"]["saturation"], axis=0) | (zeroth > speckle)
         )
 
-        if size_blur:   # The blur spreads ignored power onto its neighbors.
-            ignore = cv2.dilate(
-                ignore.astype(np.uint8), np.ones((size_blur, size_blur), np.uint8)
+        if size_blur:   # The blur spreads unusable power onto its neighbors.
+            unusable = cv2.dilate(
+                unusable.astype(np.uint8), np.ones((size_blur, size_blur), np.uint8)
             ) > 0
 
-        if np.all(ignore):
+        if np.all(unusable):
             self.logger.warning("Farfield calibration has no usable pixels.")
-            ignore = np.zeros_like(ignore)
+            unusable = np.zeros_like(unusable)
 
-        peak = np.nanmax(averaged[~ignore])
+        peak = np.nanmax(signal[~unusable])
 
-        self.calibrations["farfield"]["efficiency"] = averaged / peak
+        if peak <= 0:
+            self.logger.warning("Farfield calibration measured no light.")
+            peak = 1
+
+        self.calibrations["farfield"]["efficiency"] = signal / peak
 
         # The exposure that would perfectly saturate the brightest spot in the farfield.
-        exposure_raw = self.calibrations["farfield"]["exposure_raw"]
         self.calibrations["farfield"]["exposure_saturating"] = (
-            exposure_raw / (peak / self.cam.bitresolution)
+            self.calibrations["farfield"]["exposure_raw"]
+            / (peak / self.calibrations["farfield"]["bitresolution"])
         )
 
         return self.calibrations["farfield"]["efficiency"]
@@ -194,7 +215,8 @@ class _FarfieldCalibration(object):
     ):
         """
         Returns the **measured** efficiency of the farfield **in the coordinates of the camera**:
-        the region which the SLM can illuminate, normalized to the maximum efficiency.
+        the region which the SLM can illuminate, normalized to one at its brightest.
+        Pixels excluded from that normalization, such as the zeroth order, can exceed one.
         If a ``efficiency_threshold`` is given, returns instead a boolean mask where the
         efficiency is above the threshold.
 
@@ -228,11 +250,11 @@ class _FarfieldCalibration(object):
         if fourier_crop and "fourier" in self.calibrations:
             efficiency *= self.get_farfield_extent(return_mask=True)
 
-        if not zeroth_threshold is None:
+        if zeroth_threshold is not None:
             zeroth = self.get_farfield_zeroth()
             efficiency *= (zeroth < zeroth_threshold)
 
-        if not efficiency_threshold is None:
+        if efficiency_threshold is not None:
             mask = efficiency > efficiency_threshold
         else:
             mask = efficiency
@@ -243,14 +265,14 @@ class _FarfieldCalibration(object):
 
             plt.colorbar(label="Relative Efficiency")
 
-            if not efficiency_threshold is None:
+            if efficiency_threshold is not None:
                 plt.contour(
                     mask,
                     colors="r",
                     linewidths=0.5,
                 )
 
-            if not zeroth_threshold is None:
+            if zeroth_threshold is not None:
                 plt.contour(
                     zeroth >= zeroth_threshold,
                     colors="g",
@@ -286,12 +308,15 @@ class _FarfieldCalibration(object):
         return (
             self.calibrations["farfield"]["zeroth"]
             * self.calibrations["farfield"]["exposure_saturating"]
-            / (self.calibrations["farfield"]["exposure_zeroth"] * self.cam.bitresolution)
+            / (
+                self.calibrations["farfield"]["exposure_zeroth"]
+                * self.calibrations["farfield"]["bitresolution"]
+            )
         )
 
     def get_farfield_background(self):
-        """The camera background, in raw counts at the farfield exposure rather than
-        the normalized :meth:`get_farfield_efficiency()`, from which it is subtracted.
+        """Returns the camera background, in raw counts at the farfield exposure and
+        blurred alongside the efficiency, from which it is subtracted before normalizing.
 
         The deflected orders leave the zeroth order in place, so this image still
         contains whatever the SLM scatters there.
@@ -333,53 +358,61 @@ class _FarfieldCalibration(object):
             np.clip(ij[1], 0, h - 1), np.clip(ij[0], 0, w - 1)
         ].astype(float)
 
-        # Unmeasured pixels come back as NaN, which is a floor rather than a peak.
         peak = np.nanmax(efficiency)
         if not peak > 0:
             return np.ones(sampled.shape)
 
-        initial_weights = 1 / np.sqrt(np.maximum(np.nan_to_num(sampled), floor * peak))
+        initial_weights = 1 / np.sqrt(np.maximum(sampled, floor * peak))
         if weights is not None:
             initial_weights *= weights
 
         return initial_weights / np.max(initial_weights)
 
-    def get_farfield_exposure(self, spots, spot_size=None, set_fraction=0.5):
-        """
-        Exposure at which the brightest of ``spots`` spots reaches ``set_fraction``
-        of the camera's dynamic range, computed from the farfield calibration.
-        Assumes constant illumination since :meth:`farfield_calibrate()`.
-
-        Parameters
-        ----------
-        spots : int
-            Number of spots that the farfield's power is divided between.
-        spot_size : float OR (float, float) OR None
-            Size of one spot in camera pixels. Defaults to
-            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.get_farfield_spot_size()`,
-            which requires a Fourier calibration.
-        set_fraction : float
-            Fraction of the dynamic range to aim the brightest spot at; values above
-            one deliberately overexpose.
-
-        Returns
-        -------
-        float
-            Exposure in seconds.
-        """
-        if "exposure_saturating" not in self.calibrations.get("farfield", {}):
-            raise RuntimeError(
-                "No processed farfield calibration. Run farfield_calibrate() first."
-            )
-
-        if spot_size is None:
-            spot_size = self.get_farfield_spot_size(basis="ij")
-
-        # Power cannot concentrate below one pixel.
-        area_spot = np.prod(np.maximum(np.broadcast_to(np.squeeze(spot_size), (2,)), 1))
-        area_farfield = np.nansum(self.calibrations["farfield"]["efficiency"])
-
-        return float(
-            self.calibrations["farfield"]["exposure_saturating"]
-            * set_fraction * spots * area_spot / max(area_farfield, 1)
-        )
+    #     def get_farfield_exposure(self, spots, spot_size=None, set_fraction=0.5):
+    #         """
+    #         Exposure at which the brightest of ``spots`` spots reaches ``set_fraction``
+    #         of the camera's dynamic range, computed from the farfield calibration.
+    #         Assumes constant illumination since :meth:`farfield_calibrate()`, and a spot
+    #         whose power spreads over the diffraction limit given by ``spot_size``.
+    #
+    #         Parameters
+    #         ----------
+    #         spots : int
+    #             Number of spots that the farfield's power is divided between.
+    #         spot_size : float OR (float, float) OR None
+    #             Size of one spot in camera pixels. Defaults to
+    #             :meth:`~slmsuite.hardware.cameraslms.FourierSLM.get_farfield_spot_size()`,
+    #             which requires a Fourier calibration.
+    #         set_fraction : float
+    #             Fraction of the dynamic range to aim the brightest spot at; values above
+    #             one deliberately overexpose.
+    #
+    #         Returns
+    #         -------
+    #         float
+    #             Exposure in seconds.
+    #         """
+    #         if "exposure_saturating" not in self.calibrations.get("farfield", {}):
+    #             raise RuntimeError(
+    #                 "No processed farfield calibration. Run farfield_calibrate() first."
+    #             )
+    #
+    #         if spot_size is None:
+    #             spot_size = self.get_farfield_spot_size(basis="ij")
+    #
+    #         # Power cannot concentrate below one pixel.
+    #         area_spot = np.prod(np.maximum(np.broadcast_to(np.squeeze(spot_size), (2,)), 1))
+    #         area_farfield = np.nansum(self.calibrations["farfield"]["efficiency"])
+    #
+    #         # A hologram gathers the whole accessible zone, of which the camera may see only
+    #         # a part, so the visible sum understates the power that reaches the spots.
+    #         if "fourier" in self.calibrations:
+    #             visible = np.count_nonzero(self.get_farfield_extent(return_mask=True))
+    #             zone = np.abs(self.fourier_affine.det()) / np.prod(self.slm.pitch)
+    #             if visible > 0:
+    #                 area_farfield *= max(1.0, zone / visible)
+    #
+    #         return float(
+    #             self.calibrations["farfield"]["exposure_saturating"]
+    #             * set_fraction * spots * area_spot / max(area_farfield, 1)
+    #         )
