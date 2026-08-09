@@ -1,11 +1,13 @@
 
 import asyncio
-import numpy as np
-from scipy.ndimage import zoom
-import PIL
 import io
+
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import PIL
+
 from slmsuite.holography.analysis import _center, image_centroids, image_remove_field
-from slmsuite.holography.analysis.files import _gray2rgb
 
 _CROSSHAIR_OPTIONS = [
     ("None", "none"),
@@ -14,8 +16,50 @@ _CROSSHAIR_OPTIONS = [
     ("Center+Centroid", "center+centroid"),
 ]
 
+# Frames are encoded as 8-bit palette PNGs: the colormap is sent once as a palette
+# and each pixel is a single index, instead of four RGBA bytes. This is ~12x faster
+# to encode than the equivalent RGBA image at full resolution, and ~20x faster when
+# zoomed in, where the cost is otherwise dominated by building a bitresolution-sized
+# colormap that does not shrink with the crop. That headroom is what keeps mouse
+# zoom and pan tracking the cursor.
+_LEVELS = 253       # Indices 0..252 hold image data.
+_TRANSPARENT = 253  # Reserved for nan.
+_DARK, _LIGHT = 254, 255    # Reserved for crosshairs.
+_palette_cache = {}
 
-class _Viewable(object):
+
+def _viewer_palette(cmap):
+    """
+    Cached palette for the display path.
+
+    Returns the 256-entry RGB palette as ``bytes`` alongside a boolean array
+    marking which entries are dark, used to draw crosshairs in a contrasting
+    color.
+    """
+    # Colormap objects define __eq__ without __hash__, so they cannot be keys.
+    key = cmap if isinstance(cmap, str) else id(cmap)
+
+    if key not in _palette_cache:
+        # Match the colormap aliases understood by :meth:`_gray2rgb`.
+        if cmap == "default":
+            cmap = plt.rcParams["image.cmap"]
+        elif cmap == "grayscale":
+            cmap = "gray"
+
+        colors = (
+            255 * plt.get_cmap(cmap, _LEVELS)(np.linspace(0, 1, _LEVELS))[:, :3]
+        ).astype(np.uint8)
+        luminance = colors.astype(np.float32) @ np.float32([.299, .587, .114])
+
+        _palette_cache[key] = (
+            bytes(np.vstack((colors, (0, 0, 0), (0, 0, 0), (255, 255, 255))).astype(np.uint8).ravel()),
+            np.concatenate((luminance < 128, (False, True, False))),  # Black is dark, white is not.
+        )
+
+    return _palette_cache[key]
+
+
+class _Viewable:
 
     def live(self, activate=None, widgets=True, backend="ipython", **kwargs):
         """
@@ -57,8 +101,6 @@ class _Viewable(object):
         interrupted by user-execution (e.g. running a cell in jupyter),
         blocking until the execution is finished.
 
-        Running multiple viewers live at once might not play nicely right now.
-
         Parameters
         ----------
         activate : bool OR None
@@ -85,8 +127,8 @@ class _Viewable(object):
             )
 
         try:
-            from ipywidgets import Image
             from IPython.display import display
+            from ipywidgets import Image
         except ImportError:
             raise ImportError("jupyter must be installed to use .live().")
 
@@ -105,7 +147,7 @@ class _Viewable(object):
             self.viewer = None
 
 
-class _ViewerObject(object):
+class _ViewerObject:
     """
     Hidden class for live viewing enabled by ipython widgets.
     """
@@ -209,13 +251,15 @@ class _ViewerObject(object):
         ch, cw = src.shape[0], src.shape[1]
         f = min(1.0, Bw / cw, Bh / ch)
         if f < 1.0:
-            img = zoom(
-                src,
-                [f, f] + ([1] if len(src.shape) == 3 else []),
-                order=1
+            img = cv2.resize(
+                np.ascontiguousarray(src, dtype=np.float32),
+                (max(1, round(cw * f)), max(1, round(ch * f))),
+                interpolation=cv2.INTER_AREA,
             )
         else:
-            img = np.copy(src)
+            # Single-precision is ample for an 8-bit display and halves the memory
+            # traffic of the windowing below.
+            img = np.asarray(src, dtype=np.float32)
 
         crosshairs = self.state["crosshair"].split("+") if is_cam else []
 
@@ -224,66 +268,82 @@ class _ViewerObject(object):
             centroid = np.squeeze(image_centroids(image_remove_field([gray], deviations=None)))
 
         # Window the image to the display range, which is in units of the full well.
-        full = self.parent.bitresolution - 1
-        r = np.array(self.state["range"], dtype=float)
-        d = max(r[1] - r[0], 1)
+        # The scalars are plain floats so that they do not promote img back to double.
+        full = float(self.parent.bitresolution - 1)
+        r = [float(v) for v in self.state["range"]]
+        d = max(r[1] - r[0], 1.)
         img = np.clip(img, r[0] / full, r[1] / full) * (full / d) - r[0] / d
 
         if is_cam and self.state["log"]:
             img = np.log10(1 + img * d) / np.log10(1 + d)
 
-        # Quantize to the levels of the colormap built below.
-        img = np.rint(img * d).astype(int)
+        # Quantize to palette indices. Windowing leaves img in [0, 1]; clipping
+        # keeps float error out of the reserved entries above _LEVELS.
+        index = np.clip(img * (_LEVELS - 1) + .5, 0, _LEVELS - 1).astype(np.uint8)
+        palette, is_dark = _viewer_palette(self.state["cmap"])
 
-        # Make image color
-        rgb = _gray2rgb(
-            img,
-            cmap=self.state["cmap"],
-            lut=d,
-            normalize=False,
-            border=self.state["border"]
-        )
+        nan = np.isnan(img)
+        if nan.any():
+            index[nan] = _TRANSPARENT
 
         # Add crosshairs: solid at the sensor center, dashed at the median-subtracted centroid.
         if "center" in crosshairs:
             self._crosshair(
-                rgb,
-                (_center(W) - x0 + .5) * rgb.shape[-2] / (x1 - x0) - .5,
-                (_center(H) - y0 + .5) * rgb.shape[-3] / (y1 - y0) - .5,
+                index,
+                is_dark,
+                (_center(W) - x0 + .5) * index.shape[1] / (x1 - x0) - .5,
+                (_center(H) - y0 + .5) * index.shape[0] / (y1 - y0) - .5,
             )
         if "centroid" in crosshairs:
             self._crosshair(
-                rgb,
-                _center(rgb.shape[-2]) + centroid[0],
-                _center(rgb.shape[-3]) + centroid[1],
+                index,
+                is_dark,
+                _center(index.shape[1]) + centroid[0],
+                _center(index.shape[0]) + centroid[1],
                 dashed=True,
             )
 
         buff = io.BytesIO()
-        rgb = PIL.Image.fromarray(rgb[0])
-        rgb.save(buff, format="png")
+        image = PIL.Image.fromarray(index, mode="P")
+        image.putpalette(palette)
+        image.save(buff, format="png", compress_level=1, transparency=_TRANSPARENT)
 
         return buff.getvalue()
 
     @staticmethod
-    def _crosshair(rgb, x, y, dashed=False):
-        """Invert a horizontal and vertical line through the displayed pixel ``(x, y)``."""
-        H, W = rgb.shape[-3], rgb.shape[-2]
-        cx, cy = int(np.floor(x + .5)), int(np.floor(y + .5))   # Round half up.
+    def _crosshair(index, is_dark, x, y, dashed=False):
+        """
+        Draw a horizontal and vertical line through the displayed pixel ``(x, y)``.
+
+        Each pixel is set to the reserved black or white palette entry, whichever
+        contrasts with the color underneath. Cyclic colormaps such as
+        ``"twilight"`` are light at both ends, so choosing by luminance is what
+        keeps the line visible there.
+        """
+        H, W = index.shape[0], index.shape[1]
         dash = slice(None, None, 2 if dashed else None)
+
+        # Round half up. A nan position, which a centroid over nan data produces,
+        # is pushed out of view so that it is simply not drawn.
+        cx = int(np.floor(x + .5)) if np.isfinite(x) else -1
+        cy = int(np.floor(y + .5)) if np.isfinite(y) else -1
 
         # Each line is drawn only if it falls within the view.
         if 0 <= cx < W:
-            rgb[..., dash, cx, :3] = 255 - rgb[..., dash, cx, :3]
+            index[dash, cx] = np.where(is_dark[index[dash, cx]], _LIGHT, _DARK)
         if 0 <= cy < H:
-            rgb[..., cy, dash, :3] = 255 - rgb[..., cy, dash, :3]
+            index[cy, dash] = np.where(is_dark[index[cy, dash]], _LIGHT, _DARK)
 
     def render(self, img=None):
         try:
             self.image.value = self.parse(img)
         except Exception as e:
+            # Only the latest error is kept. A fault that recurs on every mouse
+            # event would otherwise grow the output widget without bound, which
+            # slows the whole notebook frontend long after the drag has ended.
             if "output" in self.widgets:
                 with self.widgets["output"]:
+                    self.widgets["output"].clear_output(wait=True)
                     print(str(e))
             else:
                 print("slmsuite viewer render error:", str(e))
@@ -409,6 +469,7 @@ class _ViewerObject(object):
         except Exception as e:
             if "output" in self.widgets:
                 with self.widgets["output"]:
+                    self.widgets["output"].clear_output(wait=True)
                     print(str(e))
 
     def _resize_display(self):
@@ -434,6 +495,9 @@ class _ViewerObject(object):
                     )
             return
 
+        # Events are throttled to roughly the rate at which frames can be drawn.
+        # Faster than that and mousemove events queue up in the kernel, so a drag
+        # falls further and further behind the cursor the longer it lasts.
         self._events = Event(
             source=self.image,
             watched_events=[
@@ -441,7 +505,8 @@ class _ViewerObject(object):
                 "mouseleave", "click", "dblclick",
             ],
             prevent_default_action=True,
-            wait=10,
+            throttle_or_debounce="throttle",
+            wait=33,
         )
         self._events.on_dom_event(self._on_dom_event)
 
@@ -455,8 +520,8 @@ class _ViewerObject(object):
         self.render()
 
     def init_image(self):
+        from IPython.display import HTML, display
         from ipywidgets import Image
-        from IPython.display import display, HTML
 
         self.prev_img = np.zeros(self.parent.shape)
 
@@ -480,7 +545,17 @@ class _ViewerObject(object):
         display(self.image)
 
     def init_widgets(self):
-        from ipywidgets import HTML, IntRangeSlider, ToggleButton, Button, Checkbox, Dropdown, FloatLogSlider, Output, Layout
+        from ipywidgets import (
+            HTML,
+            Button,
+            Checkbox,
+            Dropdown,
+            FloatLogSlider,
+            IntRangeSlider,
+            Layout,
+            Output,
+            ToggleButton,
+        )
 
         item_layout = Layout(width="auto")
         range_layout = Layout(width="70%")
@@ -574,8 +649,8 @@ class _ViewerObject(object):
             else:
                 w.observe(self.update, "value")
 
-        from ipywidgets import HBox, VBox
         from IPython.display import display
+        from ipywidgets import HBox, VBox
 
         if self.parent.is_slm:
             self.widgets["layout"] = VBox([

@@ -4,6 +4,7 @@ import cv2
 from tqdm.auto import tqdm
 import warnings
 import pprint
+from collections import OrderedDict
 
 # Import numpy and scipy dependencies.
 import numpy as np
@@ -85,3 +86,45 @@ FEEDBACK_OPTIONS = [
     "experimental_spot",
     "external_spot",
 ]
+
+
+class LRUCache:
+    """
+    Small least-recently-used cache backing the transparent caches that memoize expensive
+    per-geometry setup, such as the ``"ij"`` -> ``"knm"`` transformation in
+    :meth:`~slmsuite.holography.algorithms.FeedbackHologram.ijcam_to_knmslm`.
+
+    Entries hold device arrays, so the capacity is the point: it bounds how much GPU
+    memory the cache can pin for the life of the process. :meth:`clear` releases all of
+    it. Size ``maxsize`` to how large an entry is, not just to the hit rate.
+
+    Parameters
+    ----------
+    maxsize : int
+        Number of entries to retain. The least recently used are evicted beyond this.
+    """
+
+    def __init__(self, maxsize):
+        self.maxsize = int(maxsize)
+        self._data = OrderedDict()
+
+    def get(self, key):
+        """The entry for ``key``, marked most-recently-used, or ``None`` on a miss."""
+        value = self._data.get(key)
+        if value is not None:
+            self._data.move_to_end(key)
+        return value
+
+    def put(self, key, value):
+        """Store ``value`` under ``key``, evict past capacity, and return ``value``."""
+        self._data[key] = value
+        while len(self._data) > self.maxsize:
+            self._data.popitem(last=False)
+        return value
+
+    def clear(self):
+        """Drop every entry, releasing whatever memory they hold."""
+        self._data.clear()
+
+    def __len__(self):
+        return len(self._data)

@@ -2,6 +2,19 @@ from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._hologram import Hologram
 
 
+# amp * exp(1j * phase) * phasor, in one pass, avoiding three full (S, h, w)
+# temporaries per transform. `amp`/`phase` are broadcast across the S planes by
+# the caller.
+_nearfield_build = None
+if cp is not np:
+    _nearfield_build = cp.ElementwiseKernel(
+        "T amp, T phase, C phasor",
+        "C nearfield",
+        "nearfield = phasor * C(amp * cos(phase), amp * sin(phase));",
+        "multiplane_nearfield_build",
+    )
+
+
 class MultiplaneHologram(Hologram):
     """
     Holography combining multiple objectives, potentially across planes of focus or color.
@@ -113,6 +126,22 @@ class MultiplaneHologram(Hologram):
                 return False
         return True
 
+    def _can_batch_routines(self, mraf_variables):
+        """
+        Whether :meth:`_gs_farfield_routines` can run as a single pass over the
+        batched tensors instead of looping the children. Requires that every
+        child would take the same branch: the plain (non-MRAF) path, with no
+        per-child weighting or phase-fixing decisions. Flags are shared with
+        the children by :meth:`_update_flags`.
+        """
+        if not self._batched:
+            return False
+        if "WGS" in self.flags.get("method", ""):
+            return False
+        if self.flags.get("fixed_phase", False):
+            return False
+        return not any(m["mraf_enabled"] for m in mraf_variables)
+
     def _batched_setup(self):
         """Allocate the batched scratch tensors used by the FFT fast path."""
         S = len(self.holograms)
@@ -128,55 +157,116 @@ class MultiplaneHologram(Hologram):
         # so children can be rebound before the first FFT (e.g. for tests).
         self._batched_farfield = cp.zeros((S,) + shape, dtype=complex_dtype)
 
-        # Kernel cache: stacked propagation_kernels and their phasor. Invalidated
-        # by id() check on each child's propagation_kernel attribute.
+        # Stacked child propagation_kernels and their phasor, and the stacked
+        # child target-amplitude weights used by the batched amplitude
+        # replacement. Both are refreshed through _restack_children; see there
+        # for the invalidation scheme.
+        self._batched_kernels = cp.zeros((S,) + tuple(h0.slm_shape), dtype=real_dtype)
         self._batched_kernel_ids = [None] * S
         self._batched_kernel_phasor = None  # (S, slm_h, slm_w) complex
+
+        self._batched_child_weights = cp.zeros((S,) + shape, dtype=real_dtype)
+        self._batched_child_weights_ids = [None] * S
 
         # Cache the meta weights on GPU; refreshed if self.weights changes.
         self._batched_weights_cp = None
         self._batched_weights_id = None
 
-    @staticmethod
-    def _kernel_signature(pk):
-        """Fingerprint a child's propagation_kernel so the batched-phasor cache is
-        invalidated on both reassignment (``id``) and in-place mutation (content sum)."""
-        if pk is None:
-            return None
-        if np.isscalar(pk):
-            return (id(pk), float(pk))
-        return (id(pk), float(cp.sum(pk)))
+    def _restack_children(self, attr, buffer, ids):
+        """
+        Refresh ``buffer[i]`` from each child's ``attr`` if any child rebound
+        it since the last call, and report whether anything changed.
+
+        Detected via ``id()``, which is sound here because each array is kept
+        alive by the child that owns it: methods like :meth:`reset_weights` and
+        :meth:`set_propagation_kernels` rebind the attribute to a fresh array
+        rather than writing into the existing one, so an identity check catches
+        exactly the updates that matter. ``None`` leaves zeros in place.
+
+        Caution
+        ~~~~~~~
+        This detects *rebinding*, not in-place mutation: writing into a child's
+        existing ``propagation_kernel`` or ``weights`` array leaves the stacked
+        copy stale. Use :meth:`set_propagation_kernels` to update kernels.
+        Content-hashing the arrays instead would catch that case, but costs a
+        device synchronization per child per transform -- measured at ~36% of a
+        GS iteration -- so it is deliberately not done.
+        """
+        if all(id(getattr(h, attr)) == cached for h, cached in
+               zip(self.holograms, ids)):
+            return False
+
+        for i, h in enumerate(self.holograms):
+            value = getattr(h, attr)
+            if value is None:
+                buffer[i] = 0
+            else:
+                # Broadcasting handles both scalars and full arrays.
+                buffer[i] = value
+            ids[i] = id(value)
+        return True
+
+    def set_propagation_kernels(self, kernels):
+        """
+        Set every child's :attr:`propagation_kernel` at once from a stacked
+        array.
+
+        The batched fast path works from a single ``(S, slm_h, slm_w)`` tensor
+        internally, so assigning the children one at a time forces it to
+        restack them -- an allocation, ``S`` scatter-assignments, and a dtype
+        cast -- every time. Handing the stack over directly skips all of that.
+        Each child's :attr:`propagation_kernel` is rebound to the corresponding
+        slice, so the per-child and non-batched code paths keep reading what
+        they did before.
+
+        Parameters
+        ----------
+        kernels : array_like
+            Phase kernels of shape ``(S, slm_h, slm_w)``, or anything
+            broadcastable to it (e.g. a single ``(slm_h, slm_w)`` array applied
+            to every plane).
+        """
+        h0 = self.holograms[0]
+        target_shape = (len(self.holograms),) + tuple(h0.slm_shape)
+
+        kernels = cp.ascontiguousarray(
+            cp.broadcast_to(cp.asarray(kernels, dtype=h0.dtype), target_shape)
+        )
+
+        for i, h in enumerate(self.holograms):
+            h.propagation_kernel = kernels[i]
+
+        if self._batched:
+            self._batched_kernels = kernels
+            self._batched_kernel_ids = [id(h.propagation_kernel) for h in
+                                        self.holograms]
+            self._rebuild_batched_kernel_phasor()
+
+    def _rebuild_batched_kernel_phasor(self):
+        """
+        Cache ``exp(1j * kernel)``. Used by both :meth:`_nearfield2farfield_batched` and
+        :meth:`_farfield2nearfield_batched` (via ``cp.conj`` on the same tensor).
+        """
+        self._batched_kernel_phasor = cp.exp(
+            1j * self._batched_kernels.astype(self.holograms[0].dtype_complex)
+        )
 
     def _refresh_batched_kernels(self):
-        """Rebuild the stacked phasor if any child's propagation_kernel was
-        reassigned since the last call. Detected via id()."""
-        need = self._batched_kernel_phasor is None
-        if not need:
-            for i, h in enumerate(self.holograms):
-                if self._kernel_signature(h.propagation_kernel) != self._batched_kernel_ids[i]:
-                    need = True
-                    break
-        if not need:
-            return
+        """Rebuild the stacked phasor if any child's propagation_kernel was reassigned."""
+        # The `is None` arm covers the case where the phasor was never built:
+        # children that all start with propagation_kernel=None leave the stack
+        # matching its initial state, so a restack alone would not be
+        # triggered.
+        if (self._restack_children("propagation_kernel", self._batched_kernels,
+                                   self._batched_kernel_ids) or
+            self._batched_kernel_phasor is None):
+            self._rebuild_batched_kernel_phasor()
 
-        h0 = self.holograms[0]
-        slm_shape = tuple(h0.slm_shape)
-        complex_dtype = h0.dtype_complex
-        real_dtype = h0.dtype
-        S = len(self.holograms)
-
-        kernels = cp.zeros((S,) + slm_shape, dtype=real_dtype)
-        for i, h in enumerate(self.holograms):
-            pk = h.propagation_kernel
-            if pk is None:
-                pass  # leave zeros -> phasor is 1
-            else:
-                # Broadcasting handles both scalars and (slm_h, slm_w) arrays.
-                kernels[i] = pk
-            self._batched_kernel_ids[i] = self._kernel_signature(pk)
-        # Cache exp(1j * kernel). Used in both _nearfield2farfield (forward)
-        # and _farfield2nearfield (via cp.conj on the same tensor).
-        self._batched_kernel_phasor = cp.exp(1j * kernels.astype(complex_dtype))
+    def _refresh_batched_child_weights(self):
+        """Restack the children's target-amplitude ``weights`` if any was
+        reassigned."""
+        self._restack_children( "weights", self._batched_child_weights,
+                               self._batched_child_weights_ids)
 
     def _refresh_batched_weights(self):
         """Mirror self.weights (numpy) onto the GPU."""
@@ -296,10 +386,6 @@ class MultiplaneHologram(Hologram):
         for h in self.holograms:
             h._update_weights(*args, **kwargs)
 
-    def _gs_farfield_routines(self, *args, **kwargs):
-        for h in self.holograms:
-            h._gs_farfield_routines(*args, **kwargs)
-
     def _get_target_moments_knm_norm(self):
         # Get the data from the child holograms.
         centers = []
@@ -334,14 +420,16 @@ class MultiplaneHologram(Hologram):
 
         return center, std
 
-    def reset(self, reset_phase=True, reset_flags=False):
+    def reset(self, reset_phase=True, reset_flags=False, reset_weights=True):
         # Resetting the phase of the parent resets the phase of the children because
         # phase is shared.
-        super().reset(reset_phase, reset_flags)
+        super().reset(reset_phase, reset_flags, reset_weights)
 
-        # Reset the other child variables.
+        # Reset the other child variables. Weights are excluded: the
+        # reset_weights() call inside super().reset() above is this class's
+        # override, which already loops every child.
         for h in self.holograms:
-            h.reset(reset_phase=False, reset_flags=reset_flags)
+            h.reset(reset_phase=False, reset_flags=reset_flags, reset_weights=False)
 
     def reset_weights(self):
         for h in self.holograms:
@@ -402,7 +490,7 @@ class MultiplaneHologram(Hologram):
         for h, w in zip(self.holograms, self.weights):
             h._farfield2nearfield(extract=False)  # Avoid individually extracting phase.
 
-            (i0, i1, i2, i3) = toolbox.unpad(h.shape, h.slm_shape)
+            (i0, i1, i2, i3) = h._unpad_slice
 
             # Add the complex individual nearfields to our meta nearfield.
             if h.propagation_kernel is None:
@@ -423,18 +511,22 @@ class MultiplaneHologram(Hologram):
         self._refresh_batched_kernels()
 
         h0 = self.holograms[0]
-        (i0, i1, i2, i3) = toolbox.unpad(h0.shape, h0.slm_shape)
+        (i0, i1, i2, i3) = h0._unpad_slice
 
-        # Build the batched nearfield in place. base = amp * exp(1j * phase),
-        # broadcast across the S child planes; multiplication by the cached
-        # exp(1j * propagation_kernel) gives each plane's nearfield.
-        self._batched_nearfield.fill(0)
-        base = (self.amp * cp.exp(1j * self.phase)).astype(
-            self._batched_nearfield.dtype
-        )
-        self._batched_nearfield[:, i0:i1, i2:i3] = (
-            base[None, :, :] * self._batched_kernel_phasor
-        )
+        # Build the batched nearfield in place: amp * exp(1j * phase),
+        # broadcast across the S child planes, times the cached exp(1j *
+        # propagation_kernel).
+        # The write below covers the whole tensor whenever the hologram is unpadded, so
+        # only zero the padding when there is any. Compare against h0.shape (the extent of
+        # _batched_nearfield), not self.shape, which is the meta hologram's slm_shape.
+        if (i1 - i0, i3 - i2) != tuple(h0.shape):
+            self._batched_nearfield.fill(0)
+
+        _nearfield_build(
+            self.amp[None, :, :],
+            self.phase[None, :, :],
+            self._batched_kernel_phasor,
+            self._batched_nearfield[:, i0:i1, i2:i3])
 
         # One batched FFT2 over the trailing axes.
         self._batched_farfield = cp.fft.fftshift(
@@ -476,7 +568,7 @@ class MultiplaneHologram(Hologram):
 
         # Weighted reduction:  meta_nearfield = sum_s w_s * nf[s, slice] * conj(phasor[s])
         h0 = self.holograms[0]
-        (i0, i1, i2, i3) = toolbox.unpad(h0.shape, h0.slm_shape)
+        (i0, i1, i2, i3) = h0._unpad_slice
         self._refresh_batched_weights()
 
         # cupy.einsum does not support out=, so use a tensordot-style reduction.
@@ -496,8 +588,33 @@ class MultiplaneHologram(Hologram):
         return [h._mraf_helper_routines() for h in self.holograms]
 
     def _gs_farfield_routines(self, mraf_variables):
+        if self._can_batch_routines(mraf_variables):
+            self._gs_farfield_routines_batched()
+            return
         for h, mraf in zip(self.holograms, mraf_variables):
             h._gs_farfield_routines(mraf)
+
+    def _gs_farfield_routines_batched(self):
+        """
+        Amplitude replacement for every child in one pass over the batched
+        tensors.
+
+        Identical to what the per-child loop does on the plain (non-MRAF) GS
+        path -- keep the computed farfield phase, substitute the target
+        amplitudes -- but as three elementwise calls on the ``(S, h, w)``
+        tensors rather than ``3 * S`` calls on ``(h, w)`` slices. See
+        :meth:`_can_batch_routines` for when this applies.
+        """
+        self._refresh_batched_child_weights()
+
+        cp.arctan2(
+            self._batched_farfield.imag,
+            self._batched_farfield.real,
+            out=self._batched_phase_ff,
+        )
+        cp.exp(1j * self._batched_phase_ff, out=self._batched_farfield)
+        cp.multiply( self._batched_farfield, self._batched_child_weights,
+                    out=self._batched_farfield)
 
     def _remove_vortices(self):
         for h in self.holograms:
