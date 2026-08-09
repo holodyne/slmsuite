@@ -8,7 +8,7 @@ import warnings
 try:
     import cupy as cp
     from cupyx.scipy.ndimage import map_coordinates
-except:
+except Exception:
     cp = np
     from scipy.ndimage import map_coordinates
 

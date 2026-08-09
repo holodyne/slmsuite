@@ -8,7 +8,6 @@ The python header can also be found in the `dddomodossola/nastroprint
 <https://github.com/dddomodossola/nastroprint/blob/master/mvsdk.py>`_
 GitHub package.
 """
-import time
 import numpy as np
 import warnings
 
@@ -20,7 +19,7 @@ logger = make_logger(__name__)
 
 try:
     import mvsdk as _mvsdk
-except:
+except Exception:
     _mvsdk = None
     warnings.warn("mvsdk not installed.")
 

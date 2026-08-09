@@ -62,7 +62,7 @@ class _WavefrontCalibrationZernike(object):
             Tip
             ~~~
             Use :meth:`~slmsuite.holography.toolbox.phase.zernike_convert_index()`
-            to convert to ANSI from various other common indexing conventions.
+            to convert to ANSI from radial indexing.
 
             Important
             ~~~~~~~~~
@@ -205,7 +205,7 @@ class _WavefrontCalibrationZernike(object):
                         )
                     )
                     perr = np.sqrt(np.diag(pcov))   # Single sigma error, which can be multiplied later.
-                except Exception as e:
+                except Exception:
                     popt = guess
                     perr = np.zeros_like(guess)
 
@@ -533,8 +533,6 @@ class _WavefrontCalibrationZernike(object):
 
         # return hologram
 
-        del hologram
-
         return self.calibrations["wavefront_zernike"]
 
     def _wavefront_calibrate_zernike_plot_raw(self, calibration_points=None, index=0):
@@ -694,6 +692,7 @@ class _WavefrontCalibrationZernike(object):
         return final
 
     def _wavefront_calibrate_zernike_apply(
+        self,
         vector,
         from_units="norm",
     ):

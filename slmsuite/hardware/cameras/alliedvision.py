@@ -16,7 +16,6 @@ Color camera functionality is not currently implemented, and will lead to undefi
 
 import time
 import numpy as np
-import warnings
 
 from slmsuite.hardware.cameras.camera import Camera
 from slmsuite._logging import make_logger
@@ -127,18 +126,18 @@ class AlliedVision(Camera):
         try:
             self.cam.BinningHorizontal.set(1)
             self.cam.BinningVertical.set(1)
-        except:
+        except Exception:
             logger.warning("Failed to set binning to 1.")
 
         try:
             self.cam.GainAuto.set("Off")
-        except:
+        except Exception:
             logger.warning("Failed to turn autogain off.")
 
         try:
             self.cam.ExposureAuto.set("Off")
             self.cam.ExposureMode.set("Timed")
-        except:
+        except Exception:
             logger.warning("Failed to set exposure mode to timed.")
 
 
@@ -150,7 +149,7 @@ class AlliedVision(Camera):
             self.cam.TriggerMode.set("Off")
             self.cam.TriggerActivation.set("RisingEdge")
             self.cam.TriggerSource.set("Software")
-        except:
+        except Exception:
             logger.warning("Failed to set acquisition and trigger configuration.")
 
         # Cache whether the camera has ExposureTimeAbs or ExposureTime, for use
@@ -262,17 +261,17 @@ class AlliedVision(Camera):
 
             try:
                 print(prop.get(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_unit(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_description(), end="\n")
-            except:
+            except Exception:
                 print("")
 
     def set_adc_bitdepth(self, bitdepth):
@@ -367,10 +366,7 @@ class AlliedVision(Camera):
         frame = self.cam.get_frame(timeout_ms=int(1e3 * timeout_s))
         frame = frame.as_numpy_ndarray()
 
-        # We have noticed that sometimes the camera gets into a state where
-        # it returns a frame of all zeros apart from one pixel with value of 31.
-        # This method is admittedly a hack to try getting a frame a few more times.
-        # We welcome contributions to fix this.
+        # Retry: the camera sometimes returns an all-zero frame with one pixel at 31.
         while np.sum(frame) == np.amax(frame) == 31 and time.time() - t < timeout_s:
             frame = self.cam.get_frame(timeout_ms=int(1e3 * timeout_s))
             frame = frame.as_numpy_ndarray()

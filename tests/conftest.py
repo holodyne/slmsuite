@@ -5,9 +5,9 @@ The fixtures in this file support testing with any SLM or Camera subclass.
 By default, SimulatedSLM and SimulatedCamera are used for fast, hardware-free testing.
 
 To test with real hardware, set environment variables:
-    SLMSUITE_TEST_SLM_CLASS=slmsuite.hardware.slms.thorlabs.ThorlabsSLM
-    SLMSUITE_TEST_SLM_ARGS='{"monitor_id": 1}'
-    SLMSUITE_TEST_CAMERA_CLASS=slmsuite.hardware.cameras.thorlabs.ThorlabsCamera
+    SLMSUITE_TEST_SLM_CLASS=slmsuite.hardware.slms.screenmirrored.ScreenMirrored
+    SLMSUITE_TEST_SLM_ARGS='{"display_number": 1}'
+    SLMSUITE_TEST_CAMERA_CLASS=slmsuite.hardware.cameras.thorlabs.ThorCam
     SLMSUITE_TEST_CAMERA_ARGS='{"serial": "12345"}'
 
 Automatic Features:

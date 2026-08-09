@@ -6,9 +6,7 @@ from functools import cached_property
 
 import numpy as np
 
-# The string ``spec`` keywords understood by :class:`Aperture`. Kept in one place so the
-# eager validator (:meth:`Aperture._validate_spec`) and the lazy scale computation
-# (:attr:`Aperture.scale`) cannot drift on what counts as a valid spec.
+# The string ``spec`` keywords understood by :class:`Aperture`.
 _STRING_SPECS = ("circular", "elliptical", "cropped")
 
 
@@ -51,12 +49,9 @@ class Aperture:
     ~~~~
     **Centering is owned by the bound grid, and applied exactly once.** Both :meth:`mask`
     and :meth:`transform` subtract :attr:`center` from the bound grid before scaling, so an
-    :class:`Aperture` must be bound to the **raw, unshifted** grid. An SLM does this by
-    binding its stored :attr:`~slmsuite.hardware.slms.slm.SLM.aperture` to its immutable
-    geometric grid; the working :attr:`~slmsuite.hardware.slms.slm.SLM.grid` used to
-    evaluate phase functions is then the *derived* center-shifted frame. Because that
-    derived grid already encodes the offset, an aperture used to mask on it must be
-    center-free --- :meth:`resolve` enforces this so the center is never double-subtracted.
+    :class:`Aperture` must be bound to the **raw, unshifted** grid. An aperture used on the
+    *derived* center-shifted :attr:`~slmsuite.hardware.slms.slm.SLM.grid` must instead be
+    center-free, which :meth:`resolve` enforces.
 
     Attributes
     ----------
@@ -104,9 +99,6 @@ class Aperture:
     def _validate_spec(spec):
         """
         Validate an aperture ``spec``, raising a clear error for unsupported values.
-        Called eagerly from :meth:`__init__` so a bad spec fails at the construction (or
-        :meth:`~slmsuite.hardware.slms.slm.SLM.set_aperture`) call site rather than lazily
-        on first :attr:`scale` access.
         """
         if isinstance(spec, str):
             if spec not in _STRING_SPECS:
@@ -297,7 +289,7 @@ class Aperture:
     def pickle(self, attributes=True, metadata=False):
         """
         Return an h5-serializable dict describing this aperture. Compatible with the
-        :class:`~slmsuite.hardware._pickle._Picklable` recursion used by the SLM.
+        :class:`~slmsuite._pickling._Picklable` recursion used by the SLM.
         """
         return {"spec": self._spec, "center": self._center}
 

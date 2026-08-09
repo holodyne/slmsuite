@@ -284,29 +284,6 @@ class _Loggable(_Picklable):
         """
         return None
 
-    # def _log_setattr(self, enabled=True):
-    #     """Activates or deactivates automatic logging of tracked attributes on assignment.
-
-    #     Parameters
-    #     ----------
-    #     enabled : bool, optional
-    #         If ``True``, any assignment to an attribute in ``_logger_attributes`` will be
-    #         logged at DEBUG level. Defaults to ``True``.
-    #     """
-    #     self.logger.warning(f"{'Enabling' if enabled else 'Disabling'} logging of tracked attributes upon assignment.")
-    #     def __setattr__(name, value):
-    #         print(f"__setattr__ called with name={name}, value={value}")
-    #         object.__setattr__(self, name, value)
-    #         if "logger" in self.__dict__:
-    #             attrs = self.__dict__.get("_logger_attributes")
-    #             print(attrs)
-    #             if attrs is not None and name in attrs:
-    #                 self.logger.debug(f"Set {name} = {_attr_repr(value)}")
-
-    #     __setattr__("test", "test value")
-
-    #     super(self.__class__).__setattr__ = __setattr__ if enabled else _Loggable.__setattr__
-
     def get_log(self, verbose=False):
         """Return this object's log records (only), as a list of plain-text strings.
 

@@ -1,7 +1,7 @@
 """
 Connects to a camera on a remote :class:`~slmsuite.hardware.remote.Server`.
 """
-import warnings, time
+import time
 from slmsuite.hardware.cameras.camera import Camera
 from slmsuite.hardware.remote import _Client, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT
 

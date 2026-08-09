@@ -113,7 +113,7 @@ class Basler(Camera):
         try:
             self.cam.ExposureTime.GetValue()
             self._exposure_time_has_abs = False
-        except:
+        except Exception:
             self.cam.ExposureTimeAbs.GetValue()
             self._exposure_time_has_abs = True
 
@@ -217,17 +217,17 @@ class Basler(Camera):
 
             try:
                 print(prop.get(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_unit(), end="\t")
-            except:
+            except Exception:
                 pass
 
             try:
                 print(prop.get_description(), end="\n")
-            except:
+            except Exception:
                 print("")
 
     def set_adc_bitdepth(self, bitdepth):

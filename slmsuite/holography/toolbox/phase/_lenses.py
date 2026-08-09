@@ -2,14 +2,9 @@
 Lens phase patterns.
 """
 import numpy as np
-try:
-    import cupy as cp   # type: ignore
-except ImportError:
-    cp = np
-
 
 from slmsuite.misc.math import REAL_TYPES
-from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
+from slmsuite.holography.toolbox import _process_grid
 from slmsuite.holography.toolbox.phase._misc import _determine_source_radius
 
 # Basic lenses.

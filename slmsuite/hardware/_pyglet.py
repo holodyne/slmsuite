@@ -42,7 +42,7 @@ try:
             return pyglet.display.get_display()
         else:
             return pyglet.canvas.get_display()
-except:
+except Exception:
     pyglet = None
     gl = None
     __Window = object
@@ -588,7 +588,6 @@ class _Window(__Window):
         background threads, so we delegate to it directly.
         """
         if sys.platform == "win32":
-            import ctypes
             from pyglet.libs.win32 import _user32
             from pyglet.libs.win32 import constants
             from pyglet.libs.win32.types import MSG

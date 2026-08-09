@@ -112,7 +112,7 @@ def _recurse_decompress(msg):
                     base64.b64decode(msg["__zlib__"])
                 ),
                 dtype=np.dtype(msg["__dtype__"])
-            ).reshape(msg["__shape__"])
+            ).copy().reshape(msg["__shape__"])
         elif "__dtype__" in msg and len(msg) == 1:
             return np.dtype(msg["__dtype__"])
         else:
@@ -143,7 +143,7 @@ class _NpEncoder(json.JSONEncoder):
                 "__shape__" : obj.shape,
                 "__dtype__" : str(obj.dtype)
             }
-        if isinstance(obj, np.string_):
+        if isinstance(obj, np.bytes_):
             return str(obj)
         if isinstance(obj, (datetime, date)):
             return obj.isoformat()
@@ -380,7 +380,7 @@ class Server(object):
                     return False, f"{instrument} is not callable."
             else:
                 return False, f"{instrument} not present."
-        except:
+        except Exception:
             return False, traceback.format_exc()
 
 # Abstract client which connects to a server.
@@ -423,7 +423,7 @@ class _Client(_Picklable):
                 kwargs=dict(attributes=False, metadata=True)
             )
             t = time.perf_counter() - t
-        except:
+        except Exception:
             raise RuntimeError(
                 f"Could not connect to '{self.name}' at {self.host}:{self.port}. Options: {hardware}."
             )
@@ -445,8 +445,8 @@ class _Client(_Picklable):
     def _com(
         self,
         command: str = "ping",
-        args: list = [],
-        kwargs: dict = {},
+        args: list = None,
+        kwargs: dict = None,
     ):
         """Helper function to _com without having to put all the name/host information in."""
         return _Client.__com(self.name, self.host, self.port, self.timeout, command, args, kwargs)
@@ -458,10 +458,13 @@ class _Client(_Picklable):
         port: int = DEFAULT_PORT,
         timeout: float = DEFAULT_TIMEOUT,
         command: str = "ping",
-        args: list = [],
-        kwargs: dict = {},
+        args: list = None,
+        kwargs: dict = None,
     ):
         """Generalized function to communicate with a server."""
+        if args is None: args = []
+        if kwargs is None: kwargs = {}
+
         # Create a TCP/IP socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)

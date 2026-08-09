@@ -84,12 +84,7 @@ class MultiplaneHologram(Hologram):
         )
         self.weights /= Hologram._norm(self.weights, xp=np)
 
-        # Batched-FFT fast path: when all children share the computational
-        # shape, padded shape, and dtype, and use the default FFT2-based
-        # transforms, run one batched FFT2 instead of S serial FFTs. Each
-        # child's farfield/amp_ff/phase_ff/nearfield is rebound on every
-        # transform call as a writable view into a (S, ...) batched tensor,
-        # so `_gs_farfield_routines`' in-place mutations propagate cleanly.
+        # Batched-FFT fast path, when the children share shape, dtype, and transforms.
         self._batched = self._can_batch()
         if self._batched:
             self._batched_setup()
@@ -363,7 +358,7 @@ class MultiplaneHologram(Hologram):
         for h in self.holograms:
             h.plot_stats(*args, **kwargs)
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         # FUTURE: make meta stat group.
         for h in self.holograms:
             h._update_stats(stat_groups)

@@ -17,12 +17,9 @@ from math import factorial
 
 import matplotlib.pyplot as plt
 from scipy import special
-from typing import Tuple, Union, Callable
 
 from slmsuite.holography.toolbox import Aperture, _process_grid
 from slmsuite._plotting import _slmsuite_plt_show
-from slmsuite.misc.math import REAL_TYPES
-from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
@@ -37,7 +34,7 @@ def _load_cuda():
 
 try:
     CUDA_KERNELS = _load_cuda()
-except:
+except Exception:
     warnings.warn("Unable to load toolbox/cuda.cu; cannot use custom GPU kernels.")
     CUDA_KERNELS = None
 
@@ -82,9 +79,9 @@ ZERNIKE_NAMES = [
     # 6th order
     "Oblique hexafoil",
     "Oblique secondary quadrafoil",
-    "Oblique trinary astigmatism",
+    "Oblique tertiary astigmatism",
     "Secondary spherical aberration",
-    "Vertical trinary astigmatism",
+    "Vertical tertiary astigmatism",
     "Vertical secondary quadrafoil",
     "Vertical hexafoil",
 ]
@@ -149,6 +146,9 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
         (1, apart from ``"radial"`` indexing which has a dimension of 2).
     from_index, to_index : str
         Zernike index convention. Must be supported.
+        Only ``"ansi"`` and ``"radial"`` are supported as ``from_index``;
+        conversion out of ``"noll"``, ``"fringe"``, or ``"wyant"``
+        raises :class:`NotImplementedError`.
 
     Returns
     -------
@@ -603,11 +603,7 @@ def _zernike_sum_from_basis(basis, weights, out=None):
     result = weights.T @ basis.basis_flat
 
     if out is not None:
-        # Mirror zernike_sum's direct-path out contract: normalize the (possibly
-        # flattened) out buffer to (N, h, w), write into it, and return 2D for a
-        # single sum, else the (N, h, w) stack. Callers reuse a flattened buffer
-        # across calls (e.g. CompressedSpotHologram's batched kernel), so the
-        # reshape-back-to-stack must happen here as _parse_out did before.
+        # Normalize a possibly-flattened out buffer to (N, h, w).
         out = out.reshape((N,) + basis.grid_shape)
         out[...] = result.reshape((N,) + basis.grid_shape)
         return out.reshape(basis.grid_shape) if N == 1 else out
@@ -617,14 +613,9 @@ def _zernike_sum_from_basis(basis, weights, out=None):
     return result.reshape((N,) + basis.grid_shape)
 
 
-# Transparent ZernikeBasis cache. Building the (D, h, w) basis images is the
-# expensive part of zernike_sum / image_zernike_fit; we memoize the basis so that
-# repeated calls with the same grid + indices + aperture reuse it (each subsequent
-# synthesis/fit is then a single matrix product). This mirrors the module-level
-# _zernike_cache of polynomial coefficients (Aperture.mask is itself a plain
-# cached_property on the immutable Aperture, rebuilt whenever the Aperture is replaced).
+# Transparent ZernikeBasis cache, keyed on grid + indices + aperture.
 _ZERNIKE_BASIS_CACHE = OrderedDict()     # key -> ZernikeBasis
-_ZERNIKE_BASIS_CACHE_MAX = 32            # soft LRU cap; backstop to weakref eviction
+_ZERNIKE_BASIS_CACHE_MAX = 32            # LRU cap
 
 
 def clear_zernike_basis_cache():
@@ -651,8 +642,8 @@ def _zernike_get_basis(grid, indices, aperture=None, use_mask=True):
     Return a (cached) :class:`ZernikeBasis` for ``grid``, ``indices``, ``aperture``,
     and ``use_mask``, building and caching it on a miss. The cache is keyed on the
     identity of the grid array (plus its shape), so distinct grids -- e.g. two SLMs --
-    map to separate entries and coexist. Entries are evicted when their grid array is
-    garbage-collected (weakref callback) and capped at ``_ZERNIKE_BASIS_CACHE_MAX``.
+    map to separate entries and coexist. Entries are evicted least-recently-used once
+    the cache exceeds ``_ZERNIKE_BASIS_CACHE_MAX``.
     """
     (x_grid, _) = _process_grid(grid)
     indices = np.ravel(_zernike_indices_parse(indices))
@@ -810,8 +801,11 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     Important
     ~~~~~~~~~
     These polynomials :math:`Z_j` are normalized within the edge of a standard
-    Zernike pupil to a peak-to-valley amplitude of 2, corresponding to :math:`\pm 1` for all
-    polynomials except for the piston, which is identically 1.
+    Zernike pupil to a peak-to-valley amplitude of 2, corresponding to :math:`\pm 1`,
+    with two families of exception: the piston, which is identically 1, and the
+    rotationally symmetric terms of order :math:`n` divisible by four
+    (:math:`Z_{12}`, :math:`Z_{40}`, ...), which reach :math:`+1` but bottom out above
+    :math:`-1` (:math:`-1/2` for :math:`Z_{12}`).
     When ``use_mask=False``, the polynomial is not cropped outside the standard Zernike pupil.
     This should be used carefully, as polynomials outside the unit circle quickly explode with
     :math:`r^O` for terms of order :math:`O`.
@@ -947,7 +941,7 @@ def zernike_pyramid_plot(
         grid,
         order,
         scale=1,
-        titles=["ansi", "radial", "latex", "name"],
+        titles=None,
         cmap="twilight_shifted",
         noborder=False,
         **kwargs
@@ -967,8 +961,8 @@ def zernike_pyramid_plot(
         Maximum radial order to plot.
     scale : float
         Scales the subplots to ``[-scale, scale]``.
-    titles : list of str
-        Which titles to plot. Options:
+    titles : list of str OR None
+        Which titles to plot. Defaults to all of the options:
 
         -   ``"ansi"`` the ANSI singleton index,
         -   ``"radial"`` the radial index pair,
@@ -981,6 +975,8 @@ def zernike_pyramid_plot(
     **kwargs
         Passed to :meth:`.zernike()`.
     """
+    if titles is None: titles = ["ansi", "radial", "latex", "name"]
+
     order = int(order + 1)
     indices_ansi = np.arange((order * (order + 1)) // 2)
     indices_radial = zernike_convert_index(indices_ansi, from_index="ansi", to_index="radial")
@@ -1059,50 +1055,6 @@ def zernike_pyramid_plot(
         a.set_position(box)
 
     _slmsuite_plt_show(name="zernike_pyramid_plot")
-
-
-def _zernike_overlap(
-    grid, indices, aperture=None, use_mask=True
-):
-    r"""
-    **(Incomplete)**
-
-    Computes the overlaps
-
-    .. math::
-        O_{ij} = \iint dy \, dx \,\, |w(\vec{x})|^2 \cdot
-        \exp\left( i \left[Z_{I_i}(\vec{x}) - Z_{I_j}(\vec{x})\right] \right).
-    """
-    if len(indices) == 0:
-        return [[]]
-    if len(indices) == 1:
-        return [[1]]
-
-    (x_grid, y_grid) = _process_grid(grid)
-
-    # Check if it's a cameraSLM, then default to the SLM.
-    if not hasattr(grid, "source") and hasattr(grid, "slm"):
-        grid = grid.slm
-
-    if hasattr(grid, "source") and "amplitude" in grid.source:
-        source = grid.source["amplitude"]
-    else:
-        source = np.ones_like(x_grid)
-
-
-    result = np.diag(len(indices))
-
-    functions = zernike_sum(
-        grid=grid,
-        indices=indices,
-        weights=result,
-        aperture=aperture,
-        use_mask=use_mask,
-    )
-
-    functions = source.reshape() * np.exp(1j * functions)
-
-    return result
 
 
 def _zernike_cache_plot():
@@ -1272,16 +1224,6 @@ def _zernike_populate_basis_map(indices):
     return c_md, i_md, pxy_m.T
 
 
-try:
-    _zernike_test_kernel = cp.RawKernel(CUDA_KERNELS, 'zernike_test')
-except:
-    _zernike_test_kernel = None
-
-
-# NOTE: the populate_basis CUDA kernel below is not yet wired into zernike_sum.
-# It would only accelerate one-time basis construction (ZernikeBasis.__init__),
-# not repeated synthesis/fitting, which is already a plain matrix product. Kept
-# here for a possible future basis-build fast path.
 def _zernike_test(grid, indices):
     _zernike_test_kernel = cp.RawKernel(_load_cuda(), 'zernike_test')
     _zernike_test_kernel.compile()
@@ -1348,15 +1290,16 @@ def _inverse_cantor_pairing(z):
     if z.ndim != 1:
         raise ValueError("Expected a list of shape (D,)")
 
-    w = np.floor((np.sqrt(8*z + 1) - 1) // 2).astype(int)
+    special = z < 0
+    w = np.floor((np.sqrt(8*np.where(special, 0, z) + 1) - 1) // 2).astype(int)
     t = (w*w + w) // 2
 
     y = z-t
     x = w-y
 
     # Handle negative index case which is used for special indices.
-    y[z < 0] = 0
-    x[z < 0] = z[z < 0]
+    y[special] = 0
+    x[special] = z[special]
 
     return np.vstack((x, y)).T
 

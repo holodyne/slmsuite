@@ -16,7 +16,7 @@ from slmsuite.hardware.cameras.camera import Camera
 
 try:
     import tisgrabber as tis
-except:
+except Exception:
     tis = None
     warnings.warn("tisgrabber not installed. Install to use ImagingSource cameras.")
 

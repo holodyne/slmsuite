@@ -18,7 +18,6 @@ from ctypes.wintypes import HANDLE
 from ctypes.wintypes import LONG
 from ctypes.wintypes import UINT
 from ctypes.wintypes import LPSTR
-from ctypes.wintypes import LPCSTR
 from ctypes.wintypes import LPCWSTR
 from ctypes.wintypes import FILETIME
 

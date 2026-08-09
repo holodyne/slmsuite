@@ -66,7 +66,6 @@ class _Common(_Viewable, _Loggable, ABC):
 
         # Initialize viewer.
         self.viewer = None
-        _Viewable.__init__(self)
 
         # With all the init variables filled in, log the state.
         self.log_state()
@@ -79,7 +78,7 @@ class _Common(_Viewable, _Loggable, ABC):
     def __del__(self):
         try:
             self.close()
-        except:
+        except Exception:
             pass
 
     @property
@@ -120,7 +119,7 @@ class _Common(_Viewable, _Loggable, ABC):
                     test_data
                 ).dtype
             )   # Future: check if cameras change dtype after init.
-        except:
+        except Exception:
             if self.bitdepth <= 0:
                 raise ValueError("Non-positive bitdepth does not make sense.")
             elif self.bitdepth <= 8:
@@ -154,7 +153,7 @@ class _Common(_Viewable, _Loggable, ABC):
                     f"Hardware '{self.name}' bitdepth of {self.bitdepth} does not conform "
                     f"with the image type {self.dtype} with {self.dtype.itemsize} bytes."
                 )
-        except:     # The above sometimes fails for non-numpy datatypes.
+        except Exception:     # The above sometimes fails for non-numpy datatypes.
             pass
 
         return self.dtype

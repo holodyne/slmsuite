@@ -5,7 +5,7 @@ import warnings
 import datetime
 
 from slmsuite import __version__
-from slmsuite.misc.files import generate_path, latest_path, save_h5, load_h5
+from slmsuite.misc.files import generate_path, save_h5
 
 class _Picklable(object):
     """

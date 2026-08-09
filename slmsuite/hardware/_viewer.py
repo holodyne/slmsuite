@@ -133,8 +133,7 @@ class _ViewerObject(object):
             min = 0
         if max is None:
             max = self.parent.bitresolution-1
-        range = [min, max]
-        range = [np.min(range), np.max(range)]
+        range_ = [np.min([min, max]), np.max([min, max])]
 
         # Parse scale
         scale = 2 ** np.round(np.log2(scale))
@@ -162,7 +161,7 @@ class _ViewerObject(object):
         self.state = {
             "backend" : backend,
             "live" : live,
-            "range" : range,
+            "range" : range_,
             "log" : bool(log),
             "cmap" : cmap,
             "scale" : scale,
@@ -309,7 +308,7 @@ class _ViewerObject(object):
         if self.task is not None:
             try:
                 self.task.cancel()
-            except:
+            except Exception:
                 pass
 
         if not state:
@@ -637,7 +636,7 @@ class _ViewerObject(object):
         try:
             self.task.cancel()
             self.task = None
-        except:
+        except Exception:
             pass
 
         for w in self.widgets.values():
@@ -645,5 +644,3 @@ class _ViewerObject(object):
         if self._events is not None:
             self._events.close()
         self.image.close()
-
-        del self

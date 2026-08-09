@@ -467,7 +467,7 @@ class Santec(SLM):
             if option_error.value & option_error_bit:
                 errors.append(slm_funcs.SLM_OPTIONBOARD_ERROR[option_error_bit])
 
-        if raise_error and len(errors) > 0:
+        if len(errors) > 0:
             error = "Santec error: " + ", ".join(["'" + err + "'" for err in errors])
             if raise_error:
                 raise RuntimeError(error)

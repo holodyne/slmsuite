@@ -2,10 +2,6 @@
 Grating phase patterns.
 """
 import numpy as np
-try:
-    import cupy as cp   # type: ignore
-except ImportError:
-    cp = np
 from scipy.special import jn_zeros
 from typing import Tuple, Union, Callable
 from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors

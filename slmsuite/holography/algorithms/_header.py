@@ -31,8 +31,7 @@ except ImportError:
         "cupy is not installed; using numpy. Install cupy for faster GPU-based holography."
     )
 
-# Warm up cupy's cuBLAS handle *before* PyTorch is imported to avoid
-# CUBLAS_STATUS_INVALID_VALUE errors..
+# Warm up cupy's cuBLAS handle before PyTorch is imported, else CUBLAS_STATUS_INVALID_VALUE.
 if cp is not np:
     try:
         _w = cp.zeros((2, 2), dtype=cp.float32)
@@ -43,7 +42,7 @@ if cp is not np:
 
 try:
     import torch
-except:
+except Exception:
     torch = None
 
 # Import helper functions
@@ -58,8 +57,6 @@ from slmsuite.misc.files import save_h5, load_h5
 # Tip: In general, decreasing the feedback exponent (from 1) improves
 #      stability at the cost of slower convergence. The default (0.8)
 #      is an empirically derived value for a reasonable tradeoff.
-# Caution: The order of these algorithms is used in other parts of the code
-#          such as ALGORITHM_INDEX to numerically encode feedback methods.
 ALGORITHM_DEFAULTS = {
     "GS": {"feedback": "computational"},  # No feedback for bare GS, but initializes var.
     "WGS-Leonardo": {"feedback": "computational", "feedback_exponent": 0.8},
@@ -79,7 +76,6 @@ ALGORITHM_DEFAULTS = {
         "loss": None
     }
 }
-ALGORITHM_INDEX = {key : i for i, key in enumerate(ALGORITHM_DEFAULTS.keys())}
 
 # List of feedback options. See the documentation for the feedback keyword in optimize().
 FEEDBACK_OPTIONS = [

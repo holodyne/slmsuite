@@ -53,7 +53,7 @@ BLAZE_LABELS = {
 for prefix, name in zip(["", "mag_"], ["Camera", "Experiment"]):
     for k in LENGTH_FACTORS.keys():
         u = LENGTH_LABELS[k]
-        BLAZE_LABELS[prefix+k] = (f"{name} $x$ [{u}]", f"{name} $y$ [{u}]"),
+        BLAZE_LABELS[prefix+k] = (f"{name} $x$ [{u}]", f"{name} $y$ [{u}]")
         CAMERA_UNITS.append(prefix+k)
 
 BLAZE_UNITS = list(BLAZE_LABELS.keys())
@@ -256,11 +256,13 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     """
     # Parse units.
     if not (from_units in BLAZE_UNITS):
-        raise ValueError(f"From unit '{from_units}' not recognized \
-                         as a valid unit. Options: {BLAZE_UNITS}")
+        raise ValueError(
+            f"From unit '{from_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
+        )
     if not (to_units in BLAZE_UNITS):
-        raise ValueError(f"To unit '{to_units}' not recognized \
-                         as a valid unit. Options: {BLAZE_UNITS}")
+        raise ValueError(
+            f"To unit '{to_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
+        )
 
     # Parse vectors.
     vector_parsed = format_vectors(
@@ -278,9 +280,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     else:
         vector_z = None
 
-    # Determine which hardware was passed (to enable "ij" units and related). A CameraSLM
-    # exposes both an SLM and a Camera; a bare Camera exposes the raw<->cam affine; a bare
-    # SLM is confirmed via set_phase. Duck typing avoids a circular import of the hardware.
+    # Determine which hardware was passed, duck typed to avoid a circular import.
     if hasattr(hardware, "slm") and hasattr(hardware, "cam"):       # CameraSLM
         cameraslm, slm, cam = hardware, hardware.slm, hardware.cam
     elif hasattr(hardware, "_get_ijcam_to_ijraw"):                 # bare Camera
@@ -290,8 +290,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     else:                                                          # None / unknown
         cameraslm, slm, cam = None, None, None
 
-    # When both units are camera units, the kxy round-trip is skipped and only a Camera
-    # (affine + pitch) is needed; otherwise a Fourier-calibrated CameraSLM is required.
+    # Camera-only conversions skip the kxy round-trip and need no CameraSLM.
     camera_only = from_units in CAMERA_UNITS and to_units in CAMERA_UNITS
 
     if from_units in CAMERA_UNITS or to_units in CAMERA_UNITS:
@@ -678,7 +677,7 @@ def window_extent(window, padding_frac=0, padding_pix=0):
         padding_ = int((np.floor(np.diff(limit) * padding_frac / 2) + padding_pix).item())
         limit += np.array([-padding_, padding_])
 
-        # Clip the padding to shape (boolean array only — index-list tuples have no .shape).
+        # Clip the padding to shape.
         if isinstance(window, np.ndarray) and np.ndim(window) == 2:
             limit = np.clip(limit, 0, window.shape[1 - a])
 
@@ -768,7 +767,7 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
         sy = shape[0]
 
         # Use the built-in scipy function to plot a visualization of the windows.
-        fig = voronoi_plot_2d(vor)
+        voronoi_plot_2d(vor)
 
         # Plot a bounding box corresponding to the grid.
         plt.plot(np.array([0, sx, sx, 0, 0]), np.array([0, 0, sy, sy, 0]), "r")
@@ -1384,7 +1383,7 @@ def smallest_distance(vectors, metric="chebyshev"):
 
     if isinstance(metric, str):     # Divide and conquer.
         if not metric in distance._METRIC_ALIAS:
-            raise RuntimeError("Distance metric '{metric}' not recognized by scipy.")
+            raise RuntimeError(f"Distance metric '{metric}' not recognized by scipy.")
 
         axis = 0
         min_div = 200
@@ -1530,7 +1529,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
             sy = shape[0]
 
             # Use the built-in scipy function to plot a visualization of the windows.
-            fig = voronoi_plot_2d(vor)
+            voronoi_plot_2d(vor)
 
             # Plot a bounding box corresponding to the grid.
             plt.plot(np.array([0, sx, sx, 0, 0]), np.array([0, 0, sy, sy, 0]), "r")

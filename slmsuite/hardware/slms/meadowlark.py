@@ -18,7 +18,6 @@ To choose otherwise, pass the path to the desired SDK.
 import os
 import ctypes
 import ctypes.wintypes
-import warnings
 from enum import IntEnum
 from pathlib import Path
 import numpy as np
@@ -32,8 +31,6 @@ logger = make_logger(__name__)
 
 #: str: Default location in which Meadowlark Optics software is installed
 _DEFAULT_MEADOWLARK_PATH = "C:\\Program Files\\Meadowlark Optics\\"
-
-from enum import IntEnum
 
 class _SDK_MODE(IntEnum):
     #: No connection
@@ -102,8 +99,8 @@ class Meadowlark(SLM):
         r"""
         Initializes an instance of a Meadowlark SLM.
 
-        Arguments
-        ---------
+        Parameters
+        ----------
         slm_number : int
             The board number of the SLM to connect to,
             in the case of multiple PCIe SLMs. Defaults to 1.
@@ -224,7 +221,7 @@ class Meadowlark(SLM):
 
     def close(self) -> None:
         """
-        Use :meth:`.SLM.close_sdk` to close the SDK, though this might break
+        Use :meth:`.Meadowlark.close_sdk` to close the SDK, though this might break
         other SLMs on the same SDK. See :meth:`.SLM.close`.
         """
         pass
@@ -833,7 +830,7 @@ class Meadowlark(SLM):
                     raise RuntimeError("SDK call failed.")
 
                 Meadowlark._number_of_boards[mode] = number_of_boards.value
-        except Exception as exc:
+        except Exception:
             logger.error("Failed to construct SDK.")
             raise
 
@@ -864,7 +861,7 @@ class Meadowlark(SLM):
                         trace.append(0)
                     else:
                         trace.append(len(split2.split(",")))
-                except:
+                except Exception:
                     trace = None
                     break
 

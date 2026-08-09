@@ -95,7 +95,9 @@ class Hologram(_HologramStats, _Loggable):
         This often differs from :attr:`slm_shape` due to padding of the **nearfield**.
     phase : numpy.ndarray OR cupy.ndarray
         **nearfield** phase pattern to optimize.
-        Initialized with :meth:`numpy.random.uniform()` by default (``None``).
+        Initialized to a uniform random phase by default (``None``), drawn from
+        :mod:`cupy`'s global generator when :mod:`cupy` is available and :mod:`numpy`'s
+        otherwise.
         This is of shape :attr:`slm_shape`
         and (upon copying to :attr:`nearfield` during optimization)
         padded to shape :attr:`shape`.
@@ -200,7 +202,6 @@ class Hologram(_HologramStats, _Loggable):
         "slm_shape",
         "shape",
         "iter",
-        "method",
         "flags",
         "stats",
     ]
@@ -253,8 +254,8 @@ class Hologram(_HologramStats, _Loggable):
         slm_shape : (int, int) OR slmsuite.hardware.FourierSLM OR slmsuite.hardware.slms.SLM OR None
             The shape of the nearfield of the SLM in :mod:`numpy` `(h, w)` form.
             Optionally, as a quality of life feature, the user can pass a
-            :class:`~slmsuite.hardware.FourierSLM` or
-            :class:`~slmsuite.hardware.slms.SLM` instead,
+            :class:`~slmsuite.hardware.cameraslms.FourierSLM` or
+            :class:`~slmsuite.hardware.slms.slm.SLM` instead,
             and ``slm_shape`` (and ``amp`` if it is ``None``) are populated from this.
             If ``None``, tries to use the shape of ``amp`` or ``phase``, but if these
             are not present, defaults to :attr:`shape` (which is usually determined by ``target``).
@@ -334,14 +335,14 @@ class Hologram(_HologramStats, _Loggable):
                     amp = slm_shape.slm._get_source_amplitude()
                     amp_shape = amp.shape
                 slm_shape = slm_shape.slm.shape
-            except:
+            except Exception:
                 try:  # Check if slm_shape is an SLM
                     if amp is None:
                         amp = slm_shape._get_source_amplitude()
                         amp_shape = amp.shape
                     slm_shape = slm_shape.shape
 
-                except:  # (int, int) case
+                except Exception:  # (int, int) case
                     pass
 
             if len(slm_shape) != 2:
@@ -355,19 +356,19 @@ class Hologram(_HologramStats, _Loggable):
         else:
             self.slm_shape = np.rint(np.nanmean(stack, axis=0)).astype(int)
 
-            if not (amp_shape[0] is np.nan):
+            if not np.isnan(amp_shape[0]):
                 if not np.all(self.slm_shape == np.array(amp_shape)):
                     raise ValueError(
                         "The shape of amplitude (via `amp` or SLM) is not equal to the "
                         "shapes of the provided initial phase (`phase`) or SLM (via `target` or `slm_shape`)"
                     )
-            if not (phase_shape[0] is np.nan):
+            if not np.isnan(phase_shape[0]):
                 if not np.all(self.slm_shape == np.array(phase_shape)):
                     raise ValueError(
                         "The shape of the initial phase (`phase`) is not equal to the "
                         "shapes of the provided amplitude (via `amp` or SLM) or SLM (via `target` or `slm_shape`)"
                     )
-            if not (slm_shape[0] is np.nan):
+            if not np.isnan(slm_shape[0]):
                 if not np.all(self.slm_shape == np.array(slm_shape)):
                     raise ValueError(
                         "The shape of SLM (via `target` or `slm_shape`) is not equal to the "
@@ -447,17 +448,6 @@ class Hologram(_HologramStats, _Loggable):
 
         # Initialize everything else inside reset.
         self.reset(reset_phase=False, reset_flags=False)
-
-        # Custom GPU kernels for speedy weighting.
-        self._update_weights_generic_cuda_kernel = None
-        if np != cp and False:   # Disabled until 0.5.0
-            try:
-                self._update_weights_generic_cuda_kernel = cp.RawKernel(
-                    CUDA_KERNELS,
-                    'update_weights_generic'
-                )
-            except:
-                pass
 
         self.name = name if name is not None else self.__class__.__name__
         _Loggable.__init__(self)
@@ -551,9 +541,6 @@ class Hologram(_HologramStats, _Loggable):
         )
 
     def _get_random_phase(self):
-        # Drawn from the global generator, which numpy.random.seed() sets, so that a
-        # seeded script reproduces its holograms. default_rng() would seed itself
-        # from the operating system and ignore that.
         if cp == np:        # numpy does not support `dtype=`
             return np.random.uniform(-np.pi, np.pi, self.slm_shape).astype(self.dtype)
         else:
@@ -669,7 +656,8 @@ class Hologram(_HologramStats, _Loggable):
         ----------
         slm_shape : (int, int) OR slmsuite.hardware.FourierSLM
             The original shape of the SLM in :mod:`numpy` `(h, w)` form. The user can pass a
-            :class:`~slmsuite.hardware.FourierSLM` or :class:`~slmsuite.hardware.SLM` instead,
+            :class:`~slmsuite.hardware.cameraslms.FourierSLM` or
+            :class:`~slmsuite.hardware.slms.slm.SLM` instead,
             and should pass this when using the ``precision`` parameter.
         padding_order : int
             Scales to the ``padding_order`` th larger power of 2.
@@ -1100,7 +1088,7 @@ class Hologram(_HologramStats, _Loggable):
         verbose=True,
         callback=None,
         feedback=None,
-        stat_groups=[],
+        stat_groups=None,
         **kwargs,
     ):
         r"""
@@ -1416,6 +1404,7 @@ class Hologram(_HologramStats, _Loggable):
             self.flags[flag] = kwargs[flag]
 
         # 1.3) Add in non-defaulted flags, with error checks
+        if stat_groups is None: stat_groups = []
         for group in stat_groups:
             if not (group in FEEDBACK_OPTIONS):
                 raise ValueError(
@@ -1538,17 +1527,14 @@ class Hologram(_HologramStats, _Loggable):
         zero_region = cp.abs(self.target) == 0
         if ("zero_factor" in self.flags and self.flags["zero_factor"] != 0):
             Z = int(cp.sum(zero_region))
-            # Reallocate when absent OR when the zero-region size changed (e.g. the target
-            # was swapped between optimize() calls); a stale-sized buffer would broadcast-fail
-            # against farfield[zero_region] in _gs_farfield_routines.
+            # Reallocate on a resized zero region, else the buffer broadcast-fails.
             if Z > 0 and (not hasattr(self, "zero_weights") or self.zero_weights.shape[0] != Z):
                 self.zero_weights = cp.zeros((Z,), dtype=self.dtype_complex)
 
         signal_region = cp.logical_not(cp.logical_or(noise_region, zero_region))
         mraf_factor = self.flags.get("mraf_factor", None)
-        # if mraf_factor is not None:
-        #     if mraf_factor < 0:
-        #         raise ValueError("mraf_factor={} should not be negative.".format(mraf_factor))
+        if mraf_factor is not None and mraf_factor < 0:
+            raise ValueError(f"mraf_factor={mraf_factor} should not be negative.")
 
         # `where=` functionality is needed for MRAF, but this is a undocumented/new cupy feature.
         # We test whether it is available https://github.com/cupy/cupy/pull/7281
@@ -1556,12 +1542,12 @@ class Hologram(_HologramStats, _Loggable):
             test = cp.arange(10)
             cp.multiply(test, test, where=test > 5)
             where_working = True
-        except:
+        except Exception:
             try:
                 test = cp.arange(10)
                 cp.multiply(test, test, _where=test > 5)
                 where_working = False
-            except:
+            except Exception:
                 raise Exception(
                     "MRAF not supported on this system. Arithmetic `where=` is needed. "
                     "See https://github.com/cupy/cupy/pull/7281."
@@ -1592,8 +1578,7 @@ class Hologram(_HologramStats, _Loggable):
                     if len(stats) == 0:
                         raise ValueError("Must track statistics to fix phase based on efficiency!")
 
-                    # Key off the group that is actually driving the optimization
-                    # (the feedback source) rather than an arbitrary dict-ordered group.
+                    # Key off the group driving the optimization.
                     feedback = self.flags.get("feedback", None)
                     group = {"experimental": "experimental_ij"}.get(feedback, feedback)
                     if group not in stats:
@@ -1735,7 +1720,7 @@ class Hologram(_HologramStats, _Loggable):
         # Create the optimizer.
         try:
             optim_class = getattr(torch.optim, self.flags["optimizer"])
-        except:
+        except Exception:
             raise ValueError(f"'{self.flags['optimizer']}' is not a valid torch optimizer")
 
         self.optimizer = optim_class([phase_torch], **self.flags["optimizer_kwargs"])
@@ -1860,14 +1845,6 @@ class Hologram(_HologramStats, _Loggable):
         numpy.ndarray OR cupy.ndarray
             The updated ``weight_amp``.
         """
-        if self._update_weights_generic_cuda_kernel is None or xp == np:
-            return self._update_weights_generic_cupy(weight_amp, feedback_amp, target_amp, xp, nan_checks)
-        else:
-            return self._update_weights_generic_cuda(weight_amp, feedback_amp, target_amp)
-
-    def _update_weights_generic_cupy(
-            self, weight_amp, feedback_amp, target_amp, xp=cp, nan_checks=True
-        ):
         method = self.flags["method"].lower()
         if method[:4] != "wgs-":
             raise ValueError("Weighting is only for WGS.")
@@ -1923,39 +1900,6 @@ class Hologram(_HologramStats, _Loggable):
 
         # Normalize amp, as methods may have broken conservation.
         weight_amp *= (1 / Hologram._norm(weight_amp, xp=xp))
-
-        return weight_amp
-
-    def _update_weights_generic_cuda(self, weight_amp, feedback_amp, target_amp):
-        N = weight_amp.size
-
-        feedback_amp = cp.array(feedback_amp, copy=(False if np.__version__[0] == '1' else None))
-        feedback_norm = Hologram._norm(feedback_amp, xp=cp)
-
-        method = ALGORITHM_INDEX[self.flags["method"]]
-
-        threads_per_block = int(
-            self._update_weights_generic_cuda_kernel.max_threads_per_block
-        )
-        blocks = N // threads_per_block + 1
-
-        # Call the RawKernel.
-        self._update_weights_generic_cuda_kernel(
-            (blocks,),
-            (threads_per_block,),
-            (
-                weight_amp,
-                feedback_amp,
-                target_amp,
-                N,
-                method,
-                feedback_norm,
-                self.flags.get("feedback_exponent", 1),
-                self.flags.get("feedback_factor", 1)
-            )
-        )
-
-        weight_amp *= (1 / Hologram._norm(weight_amp, xp=cp))
 
         return weight_amp
 

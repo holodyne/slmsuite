@@ -134,20 +134,20 @@ To run tests with real hardware instead of simulated:
 
 ```bash
 # Linux/Mac
-export SLMSUITE_TEST_SLM_CLASS=slmsuite.hardware.slms.thorlabs.ThorlabsSLM
-export SLMSUITE_TEST_SLM_ARGS='{"monitor_id": 1}'
-export SLMSUITE_TEST_CAMERA_CLASS=slmsuite.hardware.cameras.thorlabs.ThorlabsCamera
+export SLMSUITE_TEST_SLM_CLASS=slmsuite.hardware.slms.screenmirrored.ScreenMirrored
+export SLMSUITE_TEST_SLM_ARGS='{"display_number": 1}'
+export SLMSUITE_TEST_CAMERA_CLASS=slmsuite.hardware.cameras.thorlabs.ThorCam
 export SLMSUITE_TEST_CAMERA_ARGS='{"serial": "12345"}'
 pytest
 
 # Windows (PowerShell)
-$env:SLMSUITE_TEST_SLM_CLASS="slmsuite.hardware.slms.thorlabs.ThorlabsSLM"
-$env:SLMSUITE_TEST_SLM_ARGS='{"monitor_id": 1}'
+$env:SLMSUITE_TEST_SLM_CLASS="slmsuite.hardware.slms.screenmirrored.ScreenMirrored"
+$env:SLMSUITE_TEST_SLM_ARGS='{"display_number": 1}'
 pytest
 
 # Windows (CMD)
-set SLMSUITE_TEST_SLM_CLASS=slmsuite.hardware.slms.thorlabs.ThorlabsSLM
-set SLMSUITE_TEST_SLM_ARGS={"monitor_id": 1}
+set SLMSUITE_TEST_SLM_CLASS=slmsuite.hardware.slms.screenmirrored.ScreenMirrored
+set SLMSUITE_TEST_SLM_ARGS={"display_number": 1}
 pytest
 ```
 

@@ -54,7 +54,7 @@ class _WavefrontCalibrationSuperpixel(object):
         aberration and greater possibility of compensation.
 
         Sets :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront"]`.
-        Run :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibration_process`
+        Run :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibration_superpixel_process`
         afterwards to produce the usable calibration which can be written to the SLM.
 
         Note
@@ -884,12 +884,12 @@ class _WavefrontCalibrationSuperpixel(object):
                             image_from_plot = image_from_plot.reshape(
                                 fig.canvas.get_width_height()[::-1] + (3,)
                             )
-                        except:
+                        except Exception:
                             image_from_plot = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
                             image_from_plot = image_from_plot.reshape(
                                 fig.canvas.get_width_height()[::-1] + (4,)
                             )[:,:,:3]
-                    except:
+                    except Exception:
                         self.logger.warning(
                             "Failed to convert figure to image for wavefront_calibrate movie. "
                             "Returning a blank image instead."
@@ -1329,7 +1329,8 @@ class _WavefrontCalibrationSuperpixel(object):
             plot=False,
         ):
         """
-        Old wavefront calibration processing for release 0.0.1.
+        Wavefront calibration processing, in the release 0.0.1 data format.
+        Both branches of the version dispatch route here.
         See docstring for :meth:`wavefront_calibration_superpixel_process`.
 
         Returns
@@ -1418,7 +1419,8 @@ class _WavefrontCalibrationSuperpixel(object):
                 if (np.median(pwr_below_r2) - pwr_min) / np.nanstd(pwr) < .5 and pwr_min < norm_min:
                     self.logger.warning(
                         "remove_background is enabled and a noise floor was detected; "
-                        "removing this background (%s%% of the average normalization).", pwr_min/norm_ave
+                        "removing this background (%.1f%% of the average normalization).",
+                        100 * pwr_min/norm_ave
                     )
                     back[:] = pwr_min
 
@@ -1485,12 +1487,10 @@ class _WavefrontCalibrationSuperpixel(object):
         kx[r2s < r2_threshold] = 0
         ky[r2s < r2_threshold] = 0
         offset[r2s < r2_threshold] = 0
-        phase_maybe = np.zeros_like(offset)
         pathing = 0 * r2s - 100
 
         # Step 3.1: Infer phase for superpixels which do satisfy the R^2 threshold.
-        # For each row...
-        # Go forward and then back along each row.
+        # Go forward and then back along the columns, sweeping each column's rows.
         for nx in list(range(NX)) + list(range(NX - 1, -1, -1)):
             for ny in range(NY):
                 if r2s[ny, nx] >= r2_threshold:

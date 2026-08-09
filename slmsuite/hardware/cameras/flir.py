@@ -443,19 +443,19 @@ class FLIR(Camera):
                             # Try to get value as string
                             try:
                                 value = node.ToString()
-                            except:
+                            except Exception:
                                 value = "N/A"
 
                             # Try to get unit
                             try:
                                 unit = node.GetUnit()
-                            except:
+                            except Exception:
                                 unit = ""
 
                             # Try to get description
                             try:
                                 description = node.GetToolTip()
-                            except:
+                            except Exception:
                                 description = ""
 
                             properties[name] = value

@@ -111,8 +111,7 @@ class _HologramStats(object):
         }
 
         if raw:
-            # Force a host (numpy) array: np.full_like on a cupy target_pwr would return a
-            # cupy array, leaking a device array into the user-facing/saved stats dict.
+            # Force a host array, else a device array leaks into the saved stats.
             ratio_pwr_full = np.full(target_pwr.shape, np.nan)
 
             if xp == np:
@@ -126,10 +125,11 @@ class _HologramStats(object):
 
         return final_stats
 
-    def _calculate_stats_computational(self, stats, stat_groups=[]):
+    def _calculate_stats_computational(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`Hologram._update_stats()`.
         """
+        if stat_groups is None: stat_groups = []
         if "computational" in stat_groups:
             stats["computational"] = self._calculate_stats(
                 self.amp_ff,
@@ -218,7 +218,7 @@ class _HologramStats(object):
 
             self.stats["raw_farfield"][self.iter] = farfield
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         """
         Calculate statistics corresponding to the desired ``stat_groups``.
 
@@ -270,7 +270,6 @@ class _HologramStats(object):
                 "weights",
                 "phase_ff",
                 "iter",
-                "method",
                 "flags",
             ]
             to_save = {}
@@ -388,7 +387,7 @@ class _HologramStats(object):
             try:
                 amp = cp.abs(source).get()
                 phase = cp.angle(source).get()
-            except:
+            except Exception:
                 amp = np.abs(source)
                 phase = np.angle(source)
 
@@ -525,14 +524,14 @@ class _HologramStats(object):
         if isphase:
             try:
                 npsource = source.get()
-            except:
+            except Exception:
                 npsource = source
 
             npsource = np.mod(npsource, 2 * np.pi)
         else:
             try:
                 npsource = cp.abs(source).get()
-            except:
+            except Exception:
                 npsource = np.abs(source)
 
         # Check units
@@ -596,7 +595,7 @@ class _HologramStats(object):
         # Helper function: calculate extent for the given units
         try:
             slm = self.cameraslm
-        except:
+        except Exception:
             slm = None
             units = "knm"
 
@@ -756,7 +755,7 @@ class _HologramStats(object):
 
         return limits
 
-    def plot_stats(self, stats_dict=None, stat_groups=[], ylim=None, show=False):
+    def plot_stats(self, stats_dict=None, stat_groups=None, ylim=None, show=False):
         """
         Plots the statistics contained in the given dictionary.
 
@@ -824,7 +823,7 @@ class _HologramStats(object):
         plt.grid()
         try:  # This fails under all nan or other conditions. Fail elegantly.
             plt.tight_layout()
-        except:
+        except Exception:
             pass
         if ylim is not None:
             ax.set_ylim(ylim)

@@ -258,7 +258,7 @@ class ScreenMirrored(SLM):
             wm = _WindowManager.get_instance()
             self._window_thread = wm.create_window(None, screen, self.name, interop=interop)
             self.window = self._window_thread.window
-        except Exception as e:
+        except Exception:
             self.logger.error("Window creation failed.")
             raise
 

@@ -56,7 +56,7 @@ class FeedbackHologram(Hologram):
             for :meth:`ijcam_to_knmslm()` is not written, but is definitely possible.
         cameraslm : slmsuite.hardware.cameraslms.FourierSLM OR slmsuite.hardware.slms.SLM OR None
             Provides access to experimental feedback.
-            If an :class:`~slmsuite.hardware.slms.SLM` is passed, the attribute is set to ``None``,
+            If an :class:`~slmsuite.hardware.slms.slm.SLM` is passed, the attribute is set to ``None``,
             but the information contained in the SLM is passed to the superclass :class:`.Hologram`.
             See :attr:`cameraslm`.
         null_region : array_like OR None
@@ -80,7 +80,7 @@ class FeedbackHologram(Hologram):
             try:
                 amp = self.cameraslm.slm._get_source_amplitude()
                 slm_shape = self.cameraslm.slm.shape
-            except:
+            except Exception:
                 # See if an SLM was passed.
                 try:
                     amp = self.cameraslm._get_source_amplitude()
@@ -89,7 +89,7 @@ class FeedbackHologram(Hologram):
                     # We don't have access to all the calibration stuff, so don't
                     # confuse the rest of the init/etc.
                     self.cameraslm = None
-                except:
+                except Exception:
                     raise ValueError("Expected a CameraSLM or SLM to be passed to cameraslm.")
 
         else:
@@ -277,9 +277,7 @@ class FeedbackHologram(Hologram):
                     self.img_knm = None
 
     def _nearfield_extract(self):
-        """Phase was just recomputed from the farfield, so the SLM no longer displays
-        the current phase. Invalidate the projection flag so the next non-forced
-        :meth:`_update_slm` / :meth:`measure` re-projects instead of returning a stale frame."""
+        """Invalidate the projection flag; the recomputed phase is not yet on the SLM."""
         super()._nearfield_extract()
         self._updated_slm = False
 
@@ -339,7 +337,7 @@ class FeedbackHologram(Hologram):
         null_region : array_like OR None
             Array of shape :attr:`shape`.
             Where this array is ``True``, ``nan`` entries in the :attr:`target` are replaced with zeros.
-            If ``None``, has no effect. This is useful to bound the
+            If ``None``, has no effect.
         null_region_radius_frac : float OR None
             Helper parameter to set the ``null_region`` to zero for Fourier space radius fractions above
             ``null_region_radius_frac``. This is useful to prevent power being deflected
@@ -425,10 +423,11 @@ class FeedbackHologram(Hologram):
             self.measure("knm")  # Make sure data is there.
             self._update_weights_generic(self.weights, self.img_knm, self.target)
 
-    def _calculate_stats_experimental(self, stats, stat_groups=[]):
+    def _calculate_stats_experimental(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`FeedbackHologram._update_stats()`.
         """
+        if stat_groups is None: stat_groups = []
         if "experimental_knm" in stat_groups:
             self.measure("knm")  # Make sure data is there.
 
@@ -449,7 +448,7 @@ class FeedbackHologram(Hologram):
                 raw="raw_stats" in self.flags and self.flags["raw_stats"],
             )
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         """
         Calculate statistics corresponding to the desired ``stat_groups``.
 

@@ -294,12 +294,6 @@ class Cheetah640(Camera):
         Object to talk with the Xeneth SDK.
     cam : ptr
         Object to talk with the desired camera.
-    profile : {'triggered', 'free'}
-        Current pre-configured operation mode.
-
-        ``'triggered'`` - Captures on external trigger \n
-        ``'free'`` - Continuous capture
-
     frame_size : int
         Size of the frame in bytes for use in grabbing data for the buffer.
     frame_buffer : c_ushort array
@@ -1249,8 +1243,9 @@ class Cheetah640(Camera):
 
         Parameters
         ----------
-        profile
-            See :attr:`profile`.
+        profile : {'triggered', 'free'}
+            ``'triggered'`` captures on external trigger;
+            ``'free'`` captures continuously.
         fpt : int
             Frames per trigger for intput trigger.
         """

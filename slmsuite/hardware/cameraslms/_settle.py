@@ -136,18 +136,16 @@ class _SettleCalibration(object):
         com_time = x0
         settle_time = com_time + relax_time*4
 
-        # Evaluate the fitting function in the interval
-        x_interp = np.linspace(min(times), max(times), 100)
-        g_interp = exponential_jump(x_interp, *guess)
-        y_interp = exponential_jump(x_interp, *params)
-
         if plot:
+            # Evaluate the fitting function in the interval
+            x_interp = np.linspace(min(times), max(times), 100)
+            y_interp = exponential_jump(x_interp, *params)
+
             title = (
                 f"Communication time: {int((1e3*com_time))} ms\n"
                 f"$1/e$ Relaxation time: {int((1e3*relax_time))} ms\n"
                 f"Suggested $1/e^4$ Settle time: {int((1e3*settle_time))} ms"
             )
-            # plt.plot(x_interp, g_interp, "--", linewidth=1, color='g', alpha=.5, label='interpolation')
             plt.plot(x_interp, y_interp, "--", linewidth=2, color='red', label='interpolation')
             plt.plot(times, results, "k.", markersize=7, label='capta')
             plt.xlabel("Time [sec]")

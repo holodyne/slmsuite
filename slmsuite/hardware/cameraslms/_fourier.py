@@ -110,7 +110,7 @@ class _FourierCalibration(object):
         autofocus=False,
         autoexpose=False,
         orientation=None,
-        method="fourier",
+        method="autocorrelation",
         **kwargs
     ):
         """Helper function for Fourier calibration."""
@@ -311,7 +311,7 @@ class _FourierCalibration(object):
                             "window": window if np.any(window) else None,
                             "verbose": False,
                         },
-                        method="autocorrelation", plot=plot, verbose=False,
+                        plot=plot, verbose=False,
                     )
                     break
                 except RuntimeError:
@@ -549,7 +549,7 @@ class _FourierCalibration(object):
         return hologram
 
     def fourier_calibrate_analytic(self, M, b):
-        """
+        r"""
         Sets the Fourier calibration to a user-supplied affine transformation.
 
         ``M`` and ``b`` define the mapping :math:`\vec{y} = M\vec{x} + \vec{b}`
@@ -800,7 +800,7 @@ class _FourierCalibration(object):
                         self.calibrations["wavefront_superpixel"]["__time__"],
                         self.calibrations["fourier"]["__time__"],
                     )
-        except:
+        except Exception:
             pass
 
     def _get_kxyslm_to_ijraw(self):

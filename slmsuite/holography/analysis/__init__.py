@@ -11,6 +11,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import enum
 from scipy.optimize import curve_fit, minimize
 from scipy.ndimage import binary_erosion, maximum_filter
+from scipy.fft import next_fast_len
 
 import warnings
 try:
@@ -202,7 +203,7 @@ def take(
         if clip:  # Set values that were out of range to nan instead of erroring.
             try:  # If the datatype of result is incompatible with nan, set to zero instead.
                 result[:, mask] = np.nan
-            except:
+            except Exception:
                 result[:, mask] = 0
 
         if len(shape) == 2:
@@ -923,18 +924,7 @@ def image_ellipticity_angle(variances):
     m02 = variances[1, :]
     m11 = variances[2, :]
 
-    # Some quick math (see image_ellipticity).
-    half_trace = (m20 + m02) / 2
-    determinant = m20 * m02 - m11 * m11
-
-    eig_plus = half_trace + np.sqrt(np.maximum(np.square(half_trace) - determinant, 0))
-
-    # We know that M * v = eig_plus * v. This yields a system of equations:
-    #   m20 * x + m11 * y = eig_plus * x
-    #   m11 * x + m02 * y = eig_plus * y
-    # We're trying to solve for angle, which is atan(y/x) from the x-axis. The standard
-    # major-axis orientation of the [[m20, m11], [m11, m02]] covariance is
-    #   0.5 * arctan2(2*m11, m20 - m02),
+    # Major-axis orientation of the [[m20, m11], [m11, m02]] covariance.
     return 0.5 * np.arctan2(2 * m11, m20 - m02)
 
 
@@ -1115,9 +1105,7 @@ def _wrapped_gradient(phase_images, xp):
     zero, which folds out :math:`2\pi` phase wraps: where the true phase change
     over two pixels stays within :math:`(-\pi, \pi)` the result equals the true
     (unwrapped) central difference, so it is correct everywhere except across
-    vortices. There is no division by two -- the gradient Zernike basis uses the
-    same raw stencil, so the common factor cancels in the fit. Plain slicing is
-    used (not :func:`numpy.gradient`) to keep this per-iteration call cheap.
+    vortices.
     """
     dx = phase_images[..., :, 2:] - phase_images[..., :, :-2]
     dy = phase_images[..., 2:, :] - phase_images[..., :-2, :]
@@ -1201,8 +1189,7 @@ def image_zernike_fit(
         phase_images = phase_images.reshape((1, *phase_images.shape))
     image_count = phase_images.shape[0]
 
-    # Build (or transparently reuse) the Zernike basis. Passing an explicit
-    # ZernikeBasis still works; otherwise the cache builds/returns one for this grid.
+    # Build the Zernike basis, or reuse a cached one for this grid.
     if isinstance(grid, ZernikeBasis):
         basis = grid
     else:
@@ -1221,14 +1208,8 @@ def image_zernike_fit(
     phase_images = xp.asarray(phase_images)
 
     if gradient:
-        # The gradient basis (and its Gram inverse / index maps) is cached on the
-        # ZernikeBasis, which is now obtained transparently above whether or not the
-        # caller passed an explicit basis.
-        # Wrap-aware phase gradient: equals the true unwrapped gradient
-        # everywhere except at vortices, so no phase unwrapping is needed.
         dx, dy = _wrapped_gradient(phase_images, xp)
-        # Use precomputed integer indexing on the flattened dx/dy to avoid
-        # expensive GPU-CPU synchronizations from boolean masking in CuPy.
+        # Integer indexing avoids GPU-CPU synchronization from boolean masking in cupy.
         dx_flat = dx.reshape(image_count, -1)
         dy_flat = dy.reshape(image_count, -1)
         stacked = xp.concatenate(
@@ -1274,8 +1255,7 @@ def _get_module(matrix):
 
 def image_vortices(phase_image):
     """
-    Find the coordinates of phase vortices inside a phase image by computing the
-    winding number directly. The coordinates are returned as an image.
+    Compute the winding number of a phase image directly, at every pixel.
 
     Parameters
     ----------
@@ -1285,7 +1265,8 @@ def image_vortices(phase_image):
     Returns
     -------
     winding_number
-        Image with the integer winding number at each pixel.
+        Image with the integer winding number at each pixel,
+        negated relative to the conventional right-handed sense.
     """
     xp = _get_module(phase_image)
 
@@ -1377,12 +1358,12 @@ def image_remove_vortices(phase_image, mask=None, return_vortices_negative=False
     return canvas
 
 
-def image_blaze_remove(**kwargs):
+def image_blaze_remove(*args, **kwargs):
     """
     Backwards compatible alias for :meth:`image_remove_blaze()`.
     """
     warnings.warn("image_blaze_remove is deprecated; use image_remove_blaze instead.", DeprecationWarning)
-    return image_remove_blaze(**kwargs)
+    return image_remove_blaze(*args, **kwargs)
 
 
 def image_remove_blaze(phase_image, mask=None, plot=False):
@@ -1601,7 +1582,7 @@ def fit_affine(x, y, guess_affine=None, plot=False):
 
         M = np.array([[p[0], p[1]], [p[2], p[3]]])
         b = format_2vectors([p[4], p[5]])
-    except:     # Fail elegantly (warn the user?).
+    except Exception:     # Fail elegantly (warn the user?).
         M = M_guess
         b = b_guess
 
@@ -1709,7 +1690,7 @@ def blob_detect(
     return blobs, detector
 
 
-def image_lattice_detect(img, method="fourier", plot=False, **kwargs):
+def image_lattice_detect(img, method="autocorrelation", plot=False, **kwargs):
     r"""
     Detect the primitive lattice vectors of a periodic array of spots in an image.
 
@@ -1766,10 +1747,10 @@ def _lattice_autocorrelation(img, spot_size=2, threshold=0.2, plot=False):
         raise RuntimeError(f"Cannot interpret image with shape {np.shape(img)}")
 
     # Autocorrelation by the Wiener-Khinchin theorem, zero displacement centered.
-    # Transformed at a power of two, which is faster than an awkward camera shape and,
-    # padding rather than cropping, leaves the autocorrelation linear not circular.
+    # Transformed at an FFT-friendly size, which is faster than an awkward camera shape
+    # and, padding rather than cropping, leaves the autocorrelation linear not circular.
     img = np.asarray(img, dtype=float)
-    size = [1 << int(np.ceil(np.log2(n))) for n in np.shape(img)]
+    size = [next_fast_len(n, real=True) for n in np.shape(img)]
     correlation = np.fft.fftshift(
         np.fft.ifft2(np.abs(np.fft.fft2(img - img.mean(), s=size)) ** 2).real
     )
@@ -2340,7 +2321,7 @@ def blob_array_detect(
     orientation_check : bool
         If enabled, looks for two missing spots at one corner as a parity check on rotation.
         Used by :meth:`~slmsuite.hardware.cameraslms.FourierSLM.fourier_calibrate()`.
-        See :meth:`~slmsuite.hardware.cameraslms.FourierSLM.make_rectangular_array()`.
+        See :meth:`~slmsuite.holography.algorithms.SpotHologram.make_rectangular_array()`.
     dft_threshold : float in [0, 255]
         Minimum value of peak in blob detect of the DFT of ``img`` when ``orientation`` is ``None``.
         Passed as keyword argument to :meth:`blob_detect` with keyword ``minThreshold``.
@@ -2521,7 +2502,7 @@ def blob_array_detect(
                     M_trial, OrientationTransform.from_code(best[0]).M()
                 )
                 parity_success = True
-            except Exception as e:
+            except Exception:
                 M_fixed = M_trial
                 parity_success = False
         else:

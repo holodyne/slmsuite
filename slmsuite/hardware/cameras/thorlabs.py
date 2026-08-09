@@ -73,7 +73,7 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
     if hasattr(os, "add_dll_directory"):
         try:
             os.add_dll_directory(dll_path)
-        except:
+        except Exception:
             if DEFAULT_DLL_PATH == dll_path:
                 warnings.warn(
                     f"thorlabs_tsi_sdk DLLs not found at default path. "
@@ -140,7 +140,7 @@ class ThorCam(Camera):
             logger.debug("TLCameraSDK initializing...")
             try:
                 ThorCam.sdk = TLCameraSDK()
-            except:
+            except Exception:
                 logger.error("TLCameraSDK initialization failed.")
                 raise RuntimeError(
                     "TLCameraSDK() open failed. "
@@ -219,7 +219,7 @@ class ThorCam(Camera):
         if ThorCam.sdk is None:
             try:
                 ThorCam.sdk = TLCameraSDK()
-            except:
+            except Exception:
                 raise RuntimeError(
                     "TLCameraSDK() open failed. "
                     "Is thorlabs_tsi_sdk installed? "

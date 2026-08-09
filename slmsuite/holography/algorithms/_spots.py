@@ -16,7 +16,6 @@ class _AbstractSpotHologram(FeedbackHologram):
     There are many parts of :class:`SpotHologram` with repetition and bloat that
     can be simplified with more modern features from other parts of :mod:`slmsuite`.
     """
-    pass
     def remove_vortices(self):
         """Spot holograms do not need to consider vortices."""
         pass
@@ -144,10 +143,11 @@ class _AbstractSpotHologram(FeedbackHologram):
 
         return shift_vectors
 
-    def _calculate_stats_experimental_spot(self, stats, stat_groups=[]):
+    def _calculate_stats_experimental_spot(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`._update_stats()`.
         """
+        if stat_groups is None: stat_groups = []
         if "experimental_spot" in stat_groups:
             self.measure(basis="ij")
 
@@ -411,15 +411,6 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 to_units="kxy",
                 hardware=cameraslm
             )
-            try:
-                self.spot_ij = toolbox.convert_vector(
-                    spot_vectors[self.zernike_basis_cartesian, :],  # Crop to the cartesian basis.
-                    from_units="zernike",
-                    to_units="ij",
-                    hardware=cameraslm
-                )
-            except:
-                self.spot_ij = None
         else:
             self.spot_zernike = toolbox.convert_vector(
                 spot_vectors,
@@ -431,12 +422,6 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 spot_vectors,
                 from_units=basis,
                 to_units="kxy",
-                hardware=cameraslm
-            )
-            self.spot_ij = toolbox.convert_vector(
-                spot_vectors,
-                from_units=basis,
-                to_units="ij",
                 hardware=cameraslm
             )
 
@@ -717,14 +702,6 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 return farfield_torch
 
     def _nearfield2farfield_cuda(self, nearfield):
-        # CUDA_KERNELS = _load_cuda()
-        # self._near2far_cuda = cp.RawKernel(
-        #     CUDA_KERNELS,
-        #     'compressed_nearfield2farfield',
-        #     jitify=True,
-        # )
-        # self._near2far_cuda.compile()
-
         # Check if we need to update the kernel.
         if self._check_spot_zernike_change():
             self._spot_zernike_cupy = cp.array(self.spot_zernike.astype(np.float32))
@@ -852,14 +829,6 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             self._nearfield_extract()
 
     def _farfield2nearfield_cuda(self):
-        # CUDA_KERNELS = _load_cuda()
-        # self._far2near_cuda = cp.RawKernel(
-        #     CUDA_KERNELS,
-        #     'compressed_farfield2nearfield',
-        #     jitify=True,
-        # )
-        # self._far2near_cuda.compile()
-
         # Check if we need to update the kernel.
         if self._check_spot_zernike_change():
             self._spot_zernike_cupy = cp.array(self.spot_zernike.astype(np.float32))
@@ -997,10 +966,11 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             nan_checks=True
         )
 
-    def _calculate_stats_computational_spot(self, stats, stat_groups=[]):
+    def _calculate_stats_computational_spot(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`CompressedSpotHologram._update_stats()`.
         """
+        if stat_groups is None: stat_groups = []
         if "computational_spot" in stat_groups:
             stats["computational_spot"] = self._calculate_stats(
                 self.amp_ff,
@@ -1010,7 +980,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                 raw="raw_stats" in self.flags and self.flags["raw_stats"]
             )
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         """
         Calculate statistics corresponding to the desired ``stat_groups``.
 
@@ -1214,12 +1184,11 @@ class SpotHologram(_AbstractSpotHologram):
 
             self.spot_kxy = vectors
 
+            self.spot_ij = None
             if hasattr(cameraslm, "calibrations"):
                 if "fourier" in cameraslm.calibrations:
                     self.spot_ij = cameraslm.kxyslm_to_ijcam(vectors)
                     # This is okay for non-feedback GS, so we don't error.
-            else:
-                self.spot_ij = None
 
             self.spot_knm = toolbox.convert_vector(
                 self.spot_kxy,
@@ -1650,10 +1619,11 @@ class SpotHologram(_AbstractSpotHologram):
                 )
             )
 
-    def _calculate_stats_computational_spot(self, stats, stat_groups=[]):
+    def _calculate_stats_computational_spot(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`SpotHologram._update_stats()`.
         """
+        if stat_groups is None: stat_groups = []
 
         if "computational_spot" in stat_groups:
             if self.shape == self.slm_shape:
@@ -1705,7 +1675,7 @@ class SpotHologram(_AbstractSpotHologram):
                         raw="raw_stats" in self.flags and self.flags["raw_stats"],
                     )
 
-    def _update_stats(self, stat_groups=[]):
+    def _update_stats(self, stat_groups=None):
         """
         Calculate statistics corresponding to the desired ``stat_groups``.
 

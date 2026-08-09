@@ -20,7 +20,6 @@ import scipy.ndimage as ndimage
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-from slmsuite.holography.analysis import _make_8bit
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
@@ -461,7 +460,7 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
     # Check that imageio is there and write the data
     try:
         from imageio import mimsave, imsave
-    except:
+    except Exception:
         raise ValueError("imageio is required for save_image().")
 
     if images.shape[0] == 1:

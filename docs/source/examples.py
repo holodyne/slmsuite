@@ -13,7 +13,8 @@ def get_sphinx_examples():
         The rendered example notebooks.
     """
     examples_rst_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "examples.rst")
-    examples_rst = open(examples_rst_path, "r").read()
+    with open(examples_rst_path, "r") as file_:
+        examples_rst = file_.read()
 
     examples = examples_rst.split("\n\n")[-1].split("\n")
 
@@ -50,8 +51,9 @@ def download_example_notebooks(
                 if file_name[-6:] == ".ipynb" or file_name[-4:] == ".gif":
                     print("Copying", file_name, "from local examples repo")
 
+                    file_path = os.path.join(examples_repo_path, file_name)
+
                     if file_name[-6:] == ".ipynb":
-                        file_path = os.path.join(examples_repo_path, file_name)
                         shutil.copy(file_path, examples_path)
                     elif images_path is not None:
                         image_path = os.path.join(images_path, file_name)

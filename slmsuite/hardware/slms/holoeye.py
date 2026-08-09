@@ -4,7 +4,7 @@ Created for SLM Display SDK (Python) v4.0.0.
 Tested with Holoeye SLM ERIS-NIR-153.
 
 Important
-~~~~
+~~~~~~~~~
 Check that the SLM Display SDK is in the default folder
 ``C:\\Program Files\\HOLOEYE Photonics\\SLM Display SDK`` (Python) v4.0.0
 or otherwise add the installation folder to your python path.
@@ -26,7 +26,7 @@ try:
     importpath_HEDS =  os.path.join(env_path, "examples")
     sys.path.append(importpath_api)
     sys.path.append(importpath_HEDS)
-except:
+except Exception:
     pass
 
 # Load Holoeye's SDK module.
@@ -60,8 +60,8 @@ class Holoeye(SLM):
         r"""
         Initializes an instance of a Holoeye SLM.
 
-        Arguments
-        ---------
+        Parameters
+        ----------
         preselect : str
             Preselect string for the SLM. Examples:
 
@@ -80,7 +80,7 @@ class Holoeye(SLM):
             See :meth:`.SLM.__init__` for permissible options.
 
         Important
-        ~~~~~~~~
+        ~~~~~~~~~
         The Holoeye SLM Display SDK must be installed and the path to the SDK must be added to the python path.
         See :mod:`~slmsuite.hardware.slms.holoeye` for instructions on how to do this.
         """

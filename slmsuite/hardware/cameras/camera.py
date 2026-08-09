@@ -1,7 +1,6 @@
 """
 Abstract camera functionality.
 """
-import asyncio
 import io
 import time
 import warnings
@@ -9,20 +8,14 @@ from abc import ABC, abstractmethod
 
 import matplotlib.pyplot as plt
 import numpy as np
-import PIL
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from scipy.ndimage import zoom
 import logging
 
-import matplotlib.pyplot as plt
 from slmsuite._plotting import _slmsuite_plt_show
-import numpy as np
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.optimize import curve_fit
 
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
-from slmsuite.holography.analysis import image_centroids, image_remove_field
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
@@ -332,7 +325,7 @@ class Camera(_Common, ABC):
         if update_woi:
             try:
                 self.set_woi(old_woi)
-            except:
+            except Exception:
                 pass
 
         # Erase last_image if the shape or WOI changed, since the old image would no longer be valid.
@@ -1841,7 +1834,7 @@ class Camera(_Common, ABC):
         if np.all(np.isnan(counts)):
             try:
                 set_z(z_base)
-            except:
+            except Exception:
                 pass
             raise RuntimeError("Autofocus failed; no valid images captured.")
 

@@ -30,7 +30,7 @@ from slmsuite.hardware.cameras.camera import Camera
 
 try:
     from pylablib.devices.interface.camera import ICamera
-except:
+except Exception:
     ICamera = None
     warnings.warn("pylablib not installed. Install to use PyLabLib cameras.")
 
@@ -164,7 +164,7 @@ class PyLabLib(Camera):
         roi = dict(hstart=x * binx, hend=(x + w) * binx, vstart=y * biny, vend=(y + h) * biny)
         try:
             self.cam.set_roi(**roi, hbin=binx, vbin=biny)
-        except:
+        except Exception:
             # Some pylablib cameras don't support setting binning alongside the ROI.
             self.cam.set_roi(**roi)
 

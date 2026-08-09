@@ -80,7 +80,7 @@ class SegmentedSLM(SLM):
 
             # Handle the case where the window is not rectangular.
             if isinstance(window, np.ndarray):    # Boolean array
-                self.subwindow = window[*self.extent_slice]
+                self.subwindow = window[tuple(self.extent_slice)]
             else:                                 # Lists of indices (y_ind, x_ind)
                 self.subwindow = (
                     window[0] - extent[2],        # y_ind - y_start
@@ -110,7 +110,7 @@ class SegmentedSLM(SLM):
         # Load source data from the parent SLM when available.
         for key in ("amplitude", "phase"):
             if key in self.parent.source:
-                self.source[key] = self.parent.source[key][*self.extent_slice]
+                self.source[key] = self.parent.source[key][tuple(self.extent_slice)]
 
     @property
     def gamma(self):
@@ -163,9 +163,9 @@ class SegmentedSLM(SLM):
         """
         # Update the parent SLM's display data.
         if self.subwindow is None:                  # Rectangular window case
-            self.parent.display[*self.extent_slice] = display
+            self.parent.display[tuple(self.extent_slice)] = display
         else:                                       # Non-rectangular window case
-            self.parent.display[*self.extent_slice][self.subwindow] = display[self.subwindow]
+            self.parent.display[tuple(self.extent_slice)][self.subwindow] = display[self.subwindow]
 
         # Update the parent SLM's hardware if desired.
         if refresh is None:
