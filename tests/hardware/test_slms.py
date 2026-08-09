@@ -1,5 +1,5 @@
 """
-Unit tests for SLM base class.
+Unit tests for the SLM base class and its subclasses.
 """
 import os
 import tempfile
@@ -11,10 +11,21 @@ import matplotlib.pyplot as plt
 
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.hardware.slms.segmented import SegmentedSLM
+from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
+
+
+def _quadratic_gamma(bitresolution):
+    """A monotonic but distinctly non-uniform phase response."""
+    levels = np.arange(bitresolution)
+    return np.square(levels / (bitresolution - 1)) * (bitresolution - 1) / bitresolution
 
 
 class TestSLM:
     """Tests for the SLM base class (via SimulatedSLM)."""
+
+    @staticmethod
+    def _slm(bitdepth=8, gpu=False):
+        return SimulatedSLM(resolution=(32, 32), bitdepth=bitdepth, gpu=gpu)
 
     def test_selftest(self, slm):
         """SLM.test() exercises most methods; it must return True."""
@@ -61,6 +72,36 @@ class TestSLM:
             assert s.bitresolution == 1024
             s.close()
 
+    def test_backend(self, monkeypatch, subtests):
+        """gpu selects the array backend; without cupy, numpy stands in for it."""
+        s = self._slm()
+
+        with subtests.test("gpu=False is numpy"):
+            assert s.xp is np
+            assert isinstance(s.phase, np.ndarray)
+            assert isinstance(s.display, np.ndarray)
+
+        with subtests.test("lut defaults to None"):
+            assert s.lut is None
+
+        s.close()
+
+        import slmsuite.hardware.slms.slm as module
+        monkeypatch.setattr(module, "cp", np)
+        s = self._slm()
+        phase = np.linspace(0, 2 * np.pi, s.shape[0] * s.shape[1]).reshape(s.shape)
+
+        with subtests.test("without cupy the numpy path still runs"):
+            assert np.all(s.set_phase(phase, phase_correct=False) < s.bitresolution)
+            s.plot()
+            plt.close("all")
+
+        with subtests.test("without cupy, gpu=True is refused"):
+            with pytest.raises(ImportError):
+                self._slm(gpu=True)
+
+        s.close()
+
     def test_phase2gray(self, slm, subtests, benchmark):
         """Edge cases for _phase2gray not covered by .test()."""
         with subtests.test("benchmark"):
@@ -72,10 +113,12 @@ class TestSLM:
             gray = slm._phase2gray(phase)
             assert np.all(gray >= 0) and np.all(gray < slm.bitresolution)
 
-        with subtests.test("large phase wraps to valid gray"):
-            phase = np.ones(slm.shape) * 10 * np.pi
-            gray = slm._phase2gray(phase)
-            assert np.all(gray >= 0) and np.all(gray < slm.bitresolution)
+        with subtests.test("large phase gives the same gray as its wrap"):
+            for p in (-1e4, 10 * np.pi, 1e4):
+                np.testing.assert_array_equal(
+                    slm._phase2gray(np.full(slm.shape, p)),
+                    slm._phase2gray(np.full(slm.shape, np.mod(p, 2 * np.pi))),
+                )
 
         with subtests.test("zero phase -> display max (sign convention)"):
             gray = slm._phase2gray(np.zeros(slm.shape))
@@ -87,6 +130,21 @@ class TestSLM:
             gray = s._phase2gray(phase)
             assert np.all(gray >= 0) and np.all(gray < s.bitresolution)
             s.close()
+
+        s = self._slm()
+        phase = np.linspace(-4 * np.pi, 4 * np.pi, s.shape[0] * s.shape[1]).reshape(s.shape)
+        mirror = s._phase2gray(-phase.copy())
+        s._gamma_sign = +1
+
+        with subtests.test("the opposite sign convention mirrors the mapping"):
+            np.testing.assert_array_equal(s._phase2gray(phase.copy()), mirror)
+
+        with subtests.test("that sign is only implemented with a lookup table"):
+            s.wav_design_um = 2 * s.wav_um
+            with pytest.raises(NotImplementedError):
+                s._phase2gray(phase.copy())
+
+        s.close()
 
     def test_set_phase(self, slm, subtests, benchmark):
         """set_phase edge cases beyond what .test() exercises."""
@@ -141,6 +199,208 @@ class TestSLM:
         with subtests.test("set_phase returns display"):
             result = slm.set_phase(np.zeros(slm.shape), phase_correct=False)
             assert result is slm.display
+
+    def test_set_gamma(self, subtests):
+        """The table inverts a measured response; clearing it restores the linear path."""
+        s = self._slm(bitdepth=6)
+        B = s.bitresolution
+        levels = np.arange(B)
+        ideal = levels / B
+        N = s.shape[0] * s.shape[1]
+
+        # Sample a quarter of a level off each level, spanning many cycles of both signs.
+        phase = ((np.arange(N) - N // 2 + 0.25) * (2 * np.pi / B)).reshape(s.shape)
+        linear = s.set_phase(phase.copy(), phase_correct=False).copy()
+
+        with subtests.test("an ideal gamma matches the linear path"):
+            s.set_gamma(ideal)
+            assert s.lut.shape == (1 << 16,)
+            assert s.lut.dtype == s.dtype
+            lut = s.set_phase(phase.copy(), phase_correct=False).copy()
+            # The linear path shifts by one level so that zero phase is the max level.
+            assert np.array_equal((lut.astype(int) - linear.astype(int)) % B, np.ones(s.shape))
+
+        with subtests.test("every level is recovered from the phase it realizes"):
+            swapped = ideal.copy()
+            swapped[[3, 4]] = swapped[[4, 3]]
+            for gamma in (_quadratic_gamma(B), swapped):
+                s.set_gamma(gamma)
+                realized = np.mod(s._gamma_sign * gamma * 2 * np.pi, 2 * np.pi)
+                assert np.array_equal(s.lut[s._phase2lut(realized)], levels.astype(s.dtype))
+
+        with subtests.test("a response spanning more or less than a cycle uses every level"):
+            for gamma in (2.5 * ideal, 0.5 * ideal):
+                s.set_gamma(gamma)
+                assert len(np.unique(s.lut)) == B
+
+        with subtests.test("a response short of a cycle piles up at the nearer endpoint"):
+            s.set_gamma(0.5 * ideal)
+            counts = np.bincount(np.asarray(s.lut).ravel(), minlength=B)
+            assert np.argmax(counts) in (0, B - 1)
+
+        with subtests.test("phase far outside one cycle wraps"):
+            s.set_gamma(ideal)
+            for p in (2.1e5, 1e6, 1e9):
+                np.testing.assert_array_equal(
+                    s._phase2gray(np.full(s.shape, p)),
+                    s._phase2gray(np.full(s.shape, np.mod(p, 2 * np.pi))),
+                )
+
+        with subtests.test("clearing restores the linear path"):
+            s.set_gamma(ideal)
+            assert s.set_gamma(None) is None
+            assert s.gamma is None and s.lut is None
+            assert np.array_equal(s.set_phase(phase.copy(), phase_correct=False), linear)
+
+        with subtests.test("derived data is not pickled"):
+            # The pixel calibration is what persists; the table is rebuilt from it.
+            s.set_gamma(ideal)
+            data = s.pickle(attributes=True, metadata=False)
+            assert "gamma" not in data and "lut" not in data
+
+        with subtests.test("lut_size is honored"):
+            s.set_gamma(ideal, lut_size=1 << 10)
+            assert s.lut.size == 1 << 10
+            assert s._phase_to_lut == pytest.approx((1 << 10) / (2 * np.pi))
+
+        with subtests.test("a bitdepth past eight tabulates 16-bit levels"):
+            wide = self._slm(bitdepth=10)
+            wide_levels = np.arange(wide.bitresolution)
+            wide.set_gamma(wide_levels / wide.bitresolution)
+            assert wide.lut.dtype == np.dtype(np.uint16)
+            realized = np.mod(
+                wide._gamma_sign * (wide_levels / wide.bitresolution) * 2 * np.pi, 2 * np.pi
+            )
+            assert np.array_equal(
+                wide.lut[wide._phase2lut(realized)], wide_levels.astype(wide.dtype)
+            )
+            wide.close()
+
+        with subtests.test("invalid input raises"):
+            with pytest.raises(ValueError):
+                s.set_gamma(ideal, lut_size=1000)
+            for bad in (ideal[:-1], [0.5]):
+                with pytest.raises(ValueError, match="span all"):
+                    s.set_gamma(bad)
+            degenerate = ideal.copy()
+            degenerate[3] = np.nan
+            with pytest.raises(ValueError):
+                s.set_gamma(degenerate)
+
+        s.close()
+
+    def test_interpolate_gamma(self, subtests):
+        """Spreading a sampled response across every level."""
+        s = self._slm()
+        B = s.bitresolution
+        ideal = np.arange(B) / B
+
+        levels = np.arange(32) * (B / 32)
+
+        with subtests.test("a subsampled linear response is recovered at every level"):
+            np.testing.assert_allclose(s.interpolate_gamma(levels / B, levels), ideal)
+
+            # Sampling that starts above zero must close at the bottom as well as the top.
+            edged = np.arange(16, B, 16)
+            np.testing.assert_allclose(s.interpolate_gamma(edged / B, edged), ideal)
+
+        with subtests.test("sample order does not matter"):
+            # A linear response interpolates alike between any pair, so it cannot see the sort.
+            curved = _quadratic_gamma(B)[levels.astype(int)]
+            order = np.random.permutation(len(levels))
+            np.testing.assert_allclose(
+                s.interpolate_gamma(curved[order], levels[order]),
+                s.interpolate_gamma(curved, levels),
+            )
+
+        with subtests.test("non-uniform sampling follows the levels given"):
+            sparse = np.array([0, 3, 9, 40, 150, 251])
+            np.testing.assert_allclose(
+                s.interpolate_gamma(sparse / B, sparse)[sparse], sparse / B
+            )
+
+        with subtests.test("degenerate input raises"):
+            with pytest.raises(ValueError, match="pair with gamma"):
+                s.interpolate_gamma([0, 0.5], [0, 1, 2])
+            with pytest.raises(ValueError, match="two distinct levels"):
+                s.interpolate_gamma([0, 0.5], [3, 3])
+            # Levels spanning the whole range would close onto themselves.
+            with pytest.raises(ValueError, match="span less than"):
+                s.interpolate_gamma([0, 0.3, 1.0], [0, 100, 400])
+
+        s.close()
+
+    def test_gamma_integer_write(self, subtests):
+        """An integer write records the phase that level actually realizes."""
+        s = self._slm(bitdepth=6)
+        B = s.bitresolution
+        gamma = _quadratic_gamma(B)
+        s.set_gamma(gamma)
+
+        levels = (np.arange(s.shape[0] * s.shape[1]) % B).astype(s.dtype).reshape(s.shape)
+        s.set_phase(levels, phase_correct=False)
+
+        with subtests.test("phase follows gamma, not the linear inverse"):
+            expected = np.mod(s._gamma_sign * 2 * np.pi * gamma[levels], 2 * np.pi)
+            np.testing.assert_allclose(s.phase, expected)
+
+        with subtests.test("phase re-quantizes to the levels written"):
+            np.testing.assert_array_equal(s._phase2gray(s.phase.copy()), levels)
+
+        s.close()
+
+    @pytest.mark.gpu
+    def test_gamma_backend_parity(self, subtests):
+        """A GPU-backed SLM must display exactly what a CPU-backed one does."""
+        from slmsuite.holography.toolbox.phase import blaze
+
+        (cpu, gpu) = (self._slm(), self._slm(gpu=True))
+        B = cpu.bitresolution
+
+        with subtests.test("linear path"):
+            phase = blaze(cpu, vector=(.05, .03))
+            got = gpu.set_phase(phase.copy(), phase_correct=False)
+            want = cpu.set_phase(phase.copy(), phase_correct=False)
+            np.testing.assert_array_equal(np.asarray(got.get()), want)
+
+        with subtests.test("lut path"):
+            gamma = _quadratic_gamma(B)
+            cpu.set_gamma(gamma)
+            gpu.set_gamma(gamma)
+            phase = blaze(cpu, vector=(.05, .03))
+            got = gpu.set_phase(phase.copy(), phase_correct=False)
+            want = cpu.set_phase(phase.copy(), phase_correct=False)
+            np.testing.assert_array_equal(np.asarray(got.get()), want)
+
+        (cpu.close(), gpu.close())
+
+    def test_gamma_matches_plm_quantize_lut(self, subtests):
+        """set_gamma generalizes PLM._init_quantize_lut, which it must reproduce exactly."""
+        from slmsuite.hardware.slms.texasinstruments import PLM
+
+        for model in PLM.get_model_list():
+            config = PLM.load_model_config(model)
+
+            # PLM is not instantiable without a display, so borrow its methods.
+            s = self._slm(bitdepth=4)
+            s._gamma_sign = +1
+            s.model_config = config
+            PLM._init_quantize_lut(s)
+
+            B = s.bitresolution
+            reference = s._quantize_lut.copy()
+            s.set_gamma(np.array(config["displacement_ratios"]) * (B - 1) / B)
+
+            with subtests.test(model):
+                assert np.array_equal(reference, s.lut)
+
+            s.close()
+
+        with subtests.test("a PLM has no linear response to clear back to"):
+            s = self._slm(bitdepth=4)
+            with pytest.raises(ValueError, match="requires a lookup table"):
+                PLM.set_gamma(s, None)
+            s.close()
 
     def test_save_load_phase(self, slm, subtests):
         """Round-trip save/load of phase data."""
@@ -250,10 +510,7 @@ class TestSLM:
             assert slm.source_radius > 0
 
         with subtests.test("unification holds for a centered aperture"):
-            # Regression for the resolve double-centering bug: with a non-default
-            # center, slm.grid is already shifted, so a resolved aperture must NOT
-            # re-subtract the center. slm.aperture_mask and Aperture.resolve(slm).mask
-            # must agree (and resolve(slm) returns the SLM's own aperture).
+            # slm.grid is already shifted, so a resolved aperture must not re-subtract.
             from slmsuite.holography.toolbox import Aperture
             cx, cy = slm.shape[1] / 2 + 120, slm.shape[0] / 2 - 80
             slm.set_aperture(radius=0.3, units="frac", center=(cx, cy))
@@ -311,8 +568,6 @@ class TestSLM:
 
     def test_plot(self, slm, subtests):
         """plot() runs without error for common argument combos."""
-        import matplotlib.pyplot as plt
-
         with subtests.test("default"):
             ax = slm.plot()
             assert ax is not None
@@ -336,15 +591,15 @@ class TestSLM:
         slm.set_source_analytic(sim=True)
 
         with subtests.test("measured amplitude & phase"):
-            axs = slm.plot_source(sim=False)
+            slm.plot_source(sim=False)
             plt.show()
 
         with subtests.test("simulated"):
-            axs = slm.plot_source(sim=True)
+            slm.plot_source(sim=True)
             plt.show()
 
         with subtests.test("power mode"):
-            axs = slm.plot_source(power=True)
+            slm.plot_source(power=True)
             plt.show()
 
         with subtests.test("missing sim keys raises"):
@@ -523,3 +778,113 @@ class TestSegmented:
             )
 
         parent.close()
+
+    def test_segment_lut_inherits(self, subtests):
+        """A segment tracks the parent's lut until given one of its own."""
+        parent = SimulatedSLM(resolution=(64, 64))
+        B = parent.bitresolution
+        (first, second) = parent.segment(2)
+
+        with subtests.test("no lut anywhere"):
+            assert first.lut is None
+
+        parent.set_gamma(np.arange(B) / B)
+
+        with subtests.test("segments track the parent"):
+            assert np.array_equal(first.lut, parent.lut)
+            assert first._phase_to_lut == parent._phase_to_lut
+
+        with subtests.test("a segment may carry its own"):
+            second.set_gamma(_quadratic_gamma(B), lut_size=1 << 10)
+            assert not np.array_equal(second.lut, parent.lut)
+            assert second._phase_to_lut == pytest.approx((1 << 10) / (2 * np.pi))
+            assert np.array_equal(first.lut, parent.lut)
+
+        with subtests.test("clearing reverts to the parent"):
+            second.set_gamma(None)
+            assert np.array_equal(second.lut, parent.lut)
+            assert second._phase_to_lut == parent._phase_to_lut
+
+        with subtests.test("gamma tracks the parent alongside the lut"):
+            np.testing.assert_array_equal(first.gamma, parent.gamma)
+            level = np.full(first.shape, 100, dtype=first.dtype)
+            first.set_phase(level, phase_correct=False)
+            expected = np.mod(
+                first._gamma_sign * 2 * np.pi * np.asarray(parent.gamma)[100], 2 * np.pi
+            )
+            np.testing.assert_allclose(first.phase, expected)
+
+        with subtests.test("segments write the parent's mapping into its display"):
+            phase = np.linspace(0, 2 * np.pi, first.shape[0] * first.shape[1])
+            phase = phase.reshape(first.shape)
+            first.set_phase(phase.copy(), phase_correct=False)
+            np.testing.assert_array_equal(
+                parent.display[first.extent_slice],
+                parent._phase2gray(phase.copy(), out=np.zeros(first.shape, dtype=parent.dtype)),
+            )
+
+        parent.close()
+
+
+class TestScreenMirrored:
+    """Tests for ScreenMirrored's RGBA packing, which needs no display."""
+
+    shape = (32, 48)
+
+    @staticmethod
+    def _pack(display, frame):
+        """Run ScreenMirrored._pack against a bare instance."""
+        slm = ScreenMirrored.__new__(ScreenMirrored)
+        slm._display_rgba = None
+        slm._pack(display, frame)
+        return frame
+
+    @classmethod
+    def _blank(cls, xp=np):
+        """An opaque black RGBA frame on the given backend."""
+        frame = xp.zeros(cls.shape + (4,), dtype=xp.uint8)
+        frame[:, :, 3] = 255
+        return frame
+
+    def test_pack(self, subtests):
+        """Grayscale and three-plane data must land in R, G, B with alpha untouched."""
+        gray = np.random.randint(0, 256, self.shape, dtype=np.uint8)
+        planes = np.random.randint(0, 256, (3,) + self.shape, dtype=np.uint8)
+
+        with subtests.test("grayscale fills all three channels"):
+            frame = self._pack(gray, self._blank())
+            for c in range(3):
+                assert np.array_equal(frame[:, :, c], gray)
+
+        with subtests.test("three planes keep index 0 in red"):
+            frame = self._pack(planes, self._blank())
+            for c in range(3):
+                assert np.array_equal(frame[:, :, c], planes[c])
+
+        with subtests.test("alpha is preserved"):
+            assert np.all(self._pack(gray, self._blank())[:, :, 3] == 255)
+
+        with subtests.test("mismatched shape raises"):
+            with pytest.raises(ValueError):
+                self._pack(np.zeros((3, 3), dtype=np.uint8), self._blank())
+
+    @pytest.mark.gpu
+    def test_pack_gpu(self, subtests):
+        """Every combination of host/device display and frame must agree with the host path."""
+        import cupy as cp
+
+        gray = np.random.randint(0, 256, self.shape, dtype=np.uint8)
+        planes = np.random.randint(0, 256, (3,) + self.shape, dtype=np.uint8)
+
+        for name, display in (("grayscale", gray), ("three planes", planes)):
+            reference = self._pack(display, self._blank())
+
+            # A cupy frame stands in for the interop mode, where OpenGL memory is mapped.
+            for label, d, xp in (
+                ("cupy display, host frame", cp.asarray(display), np),
+                ("cupy display, mapped frame", cp.asarray(display), cp),
+                ("numpy display, mapped frame", display, cp),
+            ):
+                with subtests.test("{}: {}".format(name, label)):
+                    frame = self._pack(d, self._blank(xp))
+                    assert np.array_equal(cp.asnumpy(frame), reference)

@@ -86,10 +86,10 @@ class TestPackageLog:
 
     def test_get_log_captures_instance_records(self):
         """Package get_log() must include records from _Loggable instances."""
-        before = len(get_log())
+        # The log is a ring buffer, so its length stops growing once a session has
+        # filled it; that the record is present is the property that matters.
         dev = _Device(name="pkg_log_test")
         dev.logger.info("hello from device")
-        assert len(get_log()) > before
         assert any("hello from device" in r for r in get_log())
 
     def test_package_logger_captured(self):

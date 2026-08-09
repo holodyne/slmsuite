@@ -83,6 +83,49 @@ def test_blaze(simple_grid, subtests, benchmark):
         assert grad_large > grad_small
 
 
+def test_triangle(simple_grid, subtests):
+    """Test triangle() phase pattern generation."""
+    vector = (0.1, 0.05)
+
+    with subtests.test("a bias of one is a blaze, of minus one the opposite blaze"):
+        blazed = np.mod(phase.blaze(simple_grid, vector=vector), 2*np.pi)
+        assert np.allclose(phase.triangle(simple_grid, vector=vector, bias=1), blazed)
+        assert np.allclose(
+            np.exp(1j * phase.triangle(simple_grid, vector=vector, bias=-1)),
+            np.exp(-1j * blazed),
+        )
+        # Bias is clipped, so nothing lies beyond those two gratings.
+        assert np.allclose(phase.triangle(simple_grid, vector=vector, bias=5), blazed)
+
+    with subtests.test("bias sets the rising fraction of each period"):
+        for bias in (-0.5, 0, 0.5):
+            result = phase.triangle(simple_grid, vector=(0.13, 0), bias=bias)
+            rising = np.mean(np.diff(result[0, :]) > 0)
+            assert rising == pytest.approx((bias + 1) / 2, abs=0.1)
+
+    with subtests.test("zero bias is symmetric under reflection"):
+        assert np.allclose(
+            phase.triangle(simple_grid, vector=vector, bias=0),
+            phase.triangle(simple_grid, vector=(-vector[0], -vector[1]), bias=0),
+        )
+
+    with subtests.test("a and b bound the ramp"):
+        (a, b) = (np.pi, np.pi/2)
+        result = phase.triangle(simple_grid, vector=(1, 0), a=a, b=b)
+        assert np.min(result) >= b - 1e-9
+        assert np.max(result) <= a + 1e-9
+        # The peak falls between samples, so the ramp only nearly fills the range.
+        assert np.ptp(result) > 0.75 * (a - b)
+
+    with subtests.test("shift translates the pattern"):
+        shift = np.pi / 2
+        shifted = phase.triangle(simple_grid, vector=(1, 0), shift=shift)
+        translated = phase.triangle(
+            (simple_grid[0] + shift / (2*np.pi), simple_grid[1]), vector=(1, 0)
+        )
+        assert np.allclose(shifted, translated)
+
+
 def test_sinusoid(simple_grid, subtests):
     """Test sinusoid() phase pattern generation."""
     with subtests.test("zero vector gives constant"):
@@ -305,6 +348,7 @@ def test_phase_functions_general(simple_grid, subtests):
     """Test general properties across all phase functions."""
     functions_to_test = [
         (phase.blaze, {"vector": (1, 1)}),
+        (phase.triangle, {"vector": (1, 1)}),
         (phase.sinusoid, {"vector": (1, 1)}),
         (phase.binary, {"vector": (1, 1)}),
         (phase.lens, {"f": (100, 100)}),

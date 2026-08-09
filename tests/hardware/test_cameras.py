@@ -350,19 +350,7 @@ class TestCamera:
             assert np.array_equal(range_z, range_z_copy), "caller's range_z array was mutated"
 
     def test_woi(self, camera, subtests):
-        """
-        WOI (window of interest) test: various sizes and offsets.
-
-        For each candidate WOI the test verifies:
-        - ``camera.woi`` is updated after ``set_woi``
-        - ``camera.shape`` is consistent with the WOI dimensions
-        - ``get_image()`` returns an array whose shape matches ``camera.shape``
-        - The WOI stays within sensor bounds
-        - The snapped WOI offset + size does not exceed the sensor boundary
-
-        Cameras that do not implement ``set_woi`` are skipped.
-        """
-        # Skip if set_woi is not implemented.
+        """A window stays on the sensor, sets the shape, and carries into every capture."""
         try:
             camera.set_woi()
         except NotImplementedError:
@@ -370,91 +358,44 @@ class TestCamera:
 
         orig_woi = camera.woi
         orig_shape = camera.shape
+        (_, w_max, _, h_max) = orig_woi
 
-        x0, w_max, y0, h_max = orig_woi  # full-sensor WOI after reset
-
-        # Determine normal vs rotated orientation once.
-        # default_shape is (height, width) for normal, (width, height) for 90/270 rot.
-        normal_orientation = (camera.shape[0] == h_max)
-
-        def expected_shape(w, h):
-            """Return numpy (rows, cols) shape for a WOI of pixel dims (w, h)."""
-            return (h, w) if normal_orientation else (w, h)
-
-        def check_woi(label, woi_request):
-            """Set WOI, capture an image, and assert consistency."""
-            with subtests.test(label):
-                camera.set_woi(woi_request)
-                x, w, y, h = camera.woi
-
-                # WOI must stay inside sensor.
-                assert x >= 0, f"OffsetX {x} < 0"
-                assert y >= 0, f"OffsetY {y} < 0"
-                assert x + w <= w_max, f"x+w={x+w} exceeds sensor width {w_max}"
-                assert y + h <= h_max, f"y+h={y+h} exceeds sensor height {h_max}"
-                assert w > 0 and h > 0, "WOI dimensions must be positive"
-
-                # camera.shape must be consistent with WOI.
-                exp_shape = expected_shape(w, h)
-                assert camera.shape == exp_shape, (
-                    f"camera.shape {camera.shape} != expected {exp_shape} "
-                    f"for woi=({x},{w},{y},{h})"
-                )
-
-                # Captured image must match camera.shape.
-                img = camera.get_image()
-                assert img.shape == camera.shape, (
-                    f"get_image() shape {img.shape} != camera.shape {camera.shape}"
-                )
+        # default_shape is (h, w) unless a 90/270 rotation swaps the axes.
+        swapped = camera.shape[0] != h_max
+        (sw, sh) = (w_max // 8, h_max // 8)
 
         try:
-            # Full sensor (explicit)
-            check_woi("full sensor", (0, w_max, 0, h_max))
+            for (label, request) in (
+                ("full sensor", (0, w_max, 0, h_max)),
+                ("centred half", (w_max // 4, w_max // 2, h_max // 4, h_max // 2)),
+                ("patch against the far corner", (w_max - sw, sw, h_max - sh, sh)),
+                ("wide thin strip", (0, w_max, h_max * 2 // 5, h_max // 5)),
+                ("odd offsets, which stress the snapping",
+                 (w_max // 10, w_max * 4 // 5, h_max // 10, h_max * 4 // 5)),
+            ):
+                with subtests.test(label):
+                    camera.set_woi(request)
+                    (x, w, y, h) = camera.woi
 
-            # Halves
-            check_woi("left half",   (0, w_max // 2, 0, h_max))
-            check_woi("right half",  (w_max // 2, w_max // 2, 0, h_max))
-            check_woi("top half",    (0, w_max, 0, h_max // 2))
-            check_woi("bottom half", (0, w_max, h_max // 2, h_max // 2))
+                    assert x >= 0 and y >= 0
+                    assert x + w <= w_max and y + h <= h_max
+                    assert w > 0 and h > 0
+                    assert camera.shape == ((w, h) if swapped else (h, w))
+                    assert camera.get_image().shape == camera.shape
 
-            # Quadrant corners
-            check_woi("top-left quarter",     (0,          w_max // 2, 0,          h_max // 2))
-            check_woi("top-right quarter",    (w_max // 2, w_max // 2, 0,          h_max // 2))
-            check_woi("bottom-left quarter",  (0,          w_max // 2, h_max // 2, h_max // 2))
-            check_woi("bottom-right quarter", (w_max // 2, w_max // 2, h_max // 2, h_max // 2))
+            with subtests.test("the window carries into stacked and averaged captures"):
+                camera.set_woi((0, w_max // 2, 0, h_max // 2))
+                assert camera.get_images(3).shape == (3, *camera.shape)
+                assert camera.get_image(averaging=2).shape == camera.shape
 
-            # Centred half-size patch
-            check_woi("centred half", (w_max // 4, w_max // 2, h_max // 4, h_max // 2))
-
-            # Thin strips
-            check_woi("wide strip (centre rows)",  (0, w_max, h_max * 3 // 8, h_max // 4))
-            check_woi("tall strip (centre cols)",  (w_max * 3 // 8, w_max // 4, 0, h_max))
-
-            # Small patch (~1/8 sensor), offset to several positions
-            sw, sh = w_max // 8, h_max // 8
-            check_woi("small patch ; near origin",        (0,               sw, 0,               sh))
-            check_woi("small patch ; top-right corner",   (w_max - sw,      sw, 0,               sh))
-            check_woi("small patch ; bottom-left corner", (0,               sw, h_max - sh,      sh))
-            check_woi("small patch ; bottom-right corner",(w_max - sw,      sw, h_max - sh,      sh))
-            check_woi("small patch ; centre",             (w_max // 2 - sw // 2, sw,
-                                                           h_max // 2 - sh // 2, sh))
-
-            # Asymmetric: very wide but short, and very tall but narrow
-            check_woi("wide thin strip",  (0, w_max, h_max * 2 // 5, h_max // 5))
-            check_woi("narrow tall strip",(w_max * 2 // 5, w_max // 5, 0, h_max))
-
-            # Non-power-of-two offsets (stress-test snapping arithmetic)
-            check_woi("odd offset ; 10% inset",
-                      (w_max // 10, w_max * 4 // 5, h_max // 10, h_max * 4 // 5))
-            check_woi("odd offset ; 30% inset",
-                      (w_max * 3 // 10, w_max * 2 // 5, h_max * 3 // 10, h_max * 2 // 5))
-
+            with subtests.test("None restores the full sensor"):
+                camera.set_woi(None)
+                assert camera.shape == orig_shape
+                assert camera.get_image().shape == orig_shape
         finally:
-            # Always restore original WOI so subsequent tests see the full sensor.
+            # Restore, so that a failure here does not shrink every later test's sensor.
             camera.set_woi(orig_woi)
-            assert camera.shape == orig_shape, (
-                f"Failed to restore original shape {orig_shape}; got {camera.shape}"
-            )
+            assert camera.shape == orig_shape
 
     def test_plot(self, camera, subtests):
         """Camera.plot() renders the correct array shape and applies metadata."""
@@ -570,81 +511,62 @@ class TestCamera:
                 np.testing.assert_allclose(raw_pts_rt, test_pts, atol=1e-9,
                                            err_msg=f"label={label}")
 
-    def test_woi_with_rotation(self, slm, subtests):
+    def test_woi_coordinates(self, slm, subtests):
         """
-        set_woi() + rotation: shape and woi are consistent for a non-square camera.
-
-        WOI coordinates passed to set_woi() are in transformed (rotated/flipped),
-        unbinned pixel coordinates — the orientation the user sees.
+        Window coordinates are transformed and unbinned: the frame the user sees, at
+        full sensor resolution, whatever the camera does underneath.
         """
-        W, H = 200, 100  # non-square
-
-        rot_configs = [
-            ("identity",   dict(rot="0"),   False),   # (label, kwargs, axes_swapped)
-            ("rot90",      dict(rot="90"),  True),
-            ("rot180",     dict(rot="180"), False),
-            ("rot270",     dict(rot="270"), True),
-            ("flip",       dict(fliplr=True), False),
-            ("flip_rot90", dict(rot="90", fliplr=True), True),
-        ]
-
-        for label, kwargs, axes_swapped in rot_configs:
-            cam = SimulatedCamera(slm, resolution=(W, H), **kwargs)
-            cam.close()
-
-            # Full-sensor dims in the transformed (user-visible) frame.
-            full_W_t = H if axes_swapped else W   # width in transformed frame
-            full_H_t = W if axes_swapped else H   # height in transformed frame
-
-            # Request a centred sub-window in the transformed frame (unbinned).
-            sub_w, sub_h = full_W_t // 2, full_H_t // 2
-            x0_t, y0_t  = full_W_t // 4, full_H_t // 4
-            woi_req = (x0_t, sub_w, y0_t, sub_h)
-
-            with subtests.test(f"{label} : set_woi and shape"):
-                cam.set_woi(woi_req)
-
-                # camera.shape is the shape of the image returned by get_image().
-                # It equals (sub_h, sub_w) in the user-visible (transformed) frame.
-                assert cam.shape == (sub_h, sub_w), (
-                    f"{label}: cam.shape={cam.shape} expected ({sub_h},{sub_w})"
-                )
-
-            with subtests.test(f"{label} : get_image shape matches default_shape"):
-                img = cam.get_image()
-                assert img.shape == cam.shape, (
-                    f"{label}: img.shape={img.shape} != default_shape={cam.shape}"
-                )
-
-            with subtests.test(f"{label} : reset to full sensor"):
-                cam.set_woi(None)
-                # shape equals the full-sensor size in the transformed (user-visible) frame.
-                expected_full = cam.transform.transform_shape((H, W))
-                assert cam.shape == expected_full, (
-                    f"{label}: reset failed, shape={cam.shape} expected {expected_full}"
-                )
-
-    def test_woi_clipping(self, slm, subtests):
-        """set_woi() clips out-of-bounds coordinates to the sensor boundaries."""
-        cam = SimulatedCamera(slm, resolution=(200, 100))
+        (W, H) = (200, 100)   # non-square, so a swapped axis cannot hide
+        cam = SimulatedCamera(slm, resolution=(W, H))
         cam.close()
-        W, H = 200, 100
 
-        # WOI that extends past the right and bottom edges.
-        with subtests.test("clips right+bottom overflow"):
-            cam.set_woi((150, 100, 60, 80))   # x0+w=250>W, y0+h=140>H
-            x, w, y, h = cam.woi
-            assert x + w <= W, f"x+w={x+w} exceeds W={W}"
-            assert y + h <= H, f"y+h={y+h} exceeds H={H}"
+        with subtests.test("a window inside the sensor is taken verbatim"):
+            cam.set_woi((10, 80, 5, 40))
+            assert cam.woi == (10, 80, 5, 40)
+            assert cam.get_woi() == cam.woi
+
+        with subtests.test("a window past the edge is clipped onto the sensor"):
+            cam.set_woi((150, 100, 60, 80))
+            (x, w, y, h) = cam.woi
+            assert x + w <= W and y + h <= H
             assert w > 0 and h > 0
 
-        # WOI entirely inside sensor.
-        with subtests.test("no clipping needed"):
-            cam.set_woi((10, 80, 5, 40))
-            x, w, y, h = cam.woi
-            assert (x, w, y, h) == (10, 80, 5, 40), f"woi changed unexpectedly: {cam.woi}"
+        with subtests.test("set_woi(get_woi()) round-trips"):
+            cam.set_woi((10, 40, 20, 30))
+            cam.set_woi(cam.get_woi())
+            assert cam.get_woi() == (10, 40, 20, 30)
 
-        cam.set_woi(None)
+        with subtests.test("coordinates stay unbinned while shape follows the binning"):
+            cam.set_woi((0, 120, 0, 80))
+            cam.set_binning(2)
+            assert cam.woi == (0, 120, 0, 80)
+            assert cam.get_woi() == cam.woi
+            assert cam.shape == (40, 60)
+            cam.set_binning(1)
+            cam.set_woi(None)
+
+        for (label, kwargs, axes_swapped) in (
+            ("identity", dict(rot="0"), False),
+            ("rot90", dict(rot="90"), True),
+            ("rot180", dict(rot="180"), False),
+            ("rot270", dict(rot="270"), True),
+            ("flip", dict(fliplr=True), False),
+            ("flip_rot90", dict(rot="90", fliplr=True), True),
+        ):
+            rotated = SimulatedCamera(slm, resolution=(W, H), **kwargs)
+            rotated.close()
+            (full_w, full_h) = (H, W) if axes_swapped else (W, H)
+
+            with subtests.test(label):
+                assert rotated.get_woi() == (0, full_w, 0, full_h)
+
+                (w, h) = (full_w // 2, full_h // 2)
+                rotated.set_woi((full_w // 4, w, full_h // 4, h))
+                assert rotated.shape == (h, w)
+                assert rotated.get_image().shape == rotated.shape
+
+                rotated.set_woi(None)
+                assert rotated.shape == rotated.transform.transform_shape((H, W))
 
     def test_set_binning_asymmetric_rotated(self, slm, caplog):
         """Asymmetric binning on a 90/270-rotated camera must not log a spurious
@@ -699,101 +621,6 @@ class TestCamera:
         with subtests.test("shape reset after binning=1"):
             cam.set_binning(1)
             assert cam.shape == (100, 200), f"shape={cam.shape}"
-
-    def test_woi_and_binning(self, slm, subtests):
-        """Combined WOI + binning: shape and get_image() shape are correct."""
-        cam = SimulatedCamera(slm, resolution=(200, 100))
-        cam.close()
-
-        # set_woi accepts unbinned (full-resolution) transformed coordinates.
-        # With no rotation: unbinned WOI (0, 120, 0, 80) covers 120×80 pixels.
-        # Then apply 2x2 binning → binned shape = (40, 60).
-        cam.set_woi((0, 120, 0, 80))   # unbinned, transformed
-        cam.set_binning(2)
-
-        with subtests.test("shape with WOI + binning"):
-            assert cam.shape == (40, 60), f"shape={cam.shape}"   # 80//2, 120//2
-
-        with subtests.test("woi reports unbinned coords (binning-invariant)"):
-            # woi is unbinned: the 120×80 window is reported verbatim regardless of
-            # binning. The binned shape (40, 60) is asserted separately above.
-            x, w, y, h = cam.woi
-            assert (x, w, y, h) == (0, 120, 0, 80), f"woi={cam.woi}"
-            assert cam.woi == cam.get_woi(), "woi property must match get_woi()"
-
-        with subtests.test("get_image shape with WOI + binning"):
-            img = cam.get_image()
-            assert img.shape == cam.shape, (
-                f"img.shape={img.shape} != default_shape={cam.shape}"
-            )
-
-        cam.set_binning(1)
-        cam.set_woi(None)
-
-    def test_get_images_woi(self, camera, subtests):
-        """get_images() returns (N, h, w) matching camera.shape after set_woi."""
-        try:
-            camera.set_woi()
-        except NotImplementedError:
-            pytest.skip("set_woi not implemented")
-
-        camera.set_woi((0, camera.shape[1] // 2, 0, camera.shape[0] // 2))
-        N = 3
-
-        with subtests.test("stack shape with WOI"):
-            imgs = camera.get_images(N)
-            assert imgs.shape == (N, *camera.shape), (
-                f"imgs.shape={imgs.shape} expected (N={N}, *{camera.shape})"
-            )
-
-        with subtests.test("individual images match default_shape"):
-            for i, img in enumerate(imgs):
-                assert img.shape == camera.shape, (
-                    f"imgs[{i}].shape={img.shape} != {camera.shape}"
-                )
-
-        camera.set_woi(None)
-
-    def test_averaging_woi(self, camera, subtests):
-        """get_image(averaging=N) returns shape matching default_shape after set_woi."""
-        try:
-            camera.set_woi()
-        except NotImplementedError:
-            pytest.skip("set_woi not implemented")
-
-        camera.set_woi((0, camera.shape[1] // 2, 0, camera.shape[0] // 2))
-
-        with subtests.test("averaging=2 shape with WOI"):
-            img = camera.get_image(averaging=2)
-            assert img.shape == camera.shape, (
-                f"img.shape={img.shape} != default_shape={camera.shape}"
-            )
-
-        with subtests.test("averaging=4 shape with WOI"):
-            img = camera.get_image(averaging=4)
-            assert img.shape == camera.shape
-
-        camera.set_woi(None)
-
-    def test_woi_none_resets_full_sensor(self, camera, subtests):
-        """set_woi(None) restores full sensor shape."""
-        try:
-            camera.set_woi()
-        except NotImplementedError:
-            pytest.skip("set_woi not implemented")
-
-        orig_shape = camera.shape
-
-        with subtests.test("shrink then reset"):
-            camera.set_woi((0, orig_shape[1] // 3, 0, orig_shape[0] // 3))
-            camera.set_woi(None)
-            assert camera.shape == orig_shape, (
-                f"after set_woi(None): shape={camera.shape} != {orig_shape}"
-            )
-
-        with subtests.test("shape after None reset matches get_image"):
-            img = camera.get_image()
-            assert img.shape == camera.shape
 
     def test_software_binning_dtype(self, slm, subtests):
         """
@@ -918,47 +745,3 @@ class TestCamera:
             cam_rot.binning = (2, 4)            # transformed (user-visible) coordinates
             assert cam_rot.binning == (2, 4), f"binning={cam_rot.binning}"
             assert cam_rot.get_binning() == (2, 4)
-
-    def test_get_woi(self, slm, subtests):
-        """get_woi() returns the current WOI in the same coordinates as the woi property."""
-        cam = SimulatedCamera(slm, resolution=(200, 100))
-        cam.close()
-
-        with subtests.test("full sensor at default"):
-            assert cam.get_woi() == (0, 200, 0, 100)
-
-        with subtests.test("matches woi property when binning=1"):
-            # binning=1 → binned == unbinned, so get_woi() and woi agree
-            assert cam.get_woi() == cam.woi
-
-        with subtests.test("set_woi then get_woi round-trips"):
-            cam.set_woi((20, 80, 10, 60))
-            assert cam.get_woi() == (20, 80, 10, 60)
-            cam.set_woi(None)
-
-        with subtests.test("woi and get_woi both return unbinned coords when binning != 1"):
-            cam._software_binning = True
-            cam._binning = (2, 2)
-            # Both report unbinned (full-sensor: 200×100), not binned (100×50);
-            # the binned dimensions are exposed via cam.shape instead.
-            assert cam.get_woi() == (0, 200, 0, 100)
-            assert cam.woi == (0, 200, 0, 100)
-            assert cam.woi == cam.get_woi()
-            assert cam.shape == (50, 100)
-            cam._binning = (1, 1)
-
-        with subtests.test("set_woi(get_woi()) is a valid round-trip"):
-            cam.set_woi((10, 40, 20, 30))
-            cam.set_woi(cam.get_woi())
-            assert cam.get_woi() == (10, 40, 20, 30)
-            cam.set_woi(None)
-
-        with subtests.test("90-degree rotation: get_woi in transformed frame"):
-            cam_rot = SimulatedCamera(slm, resolution=(200, 100), rot="90")
-            cam_rot.close()
-            # Untransformed sensor: W=200, H=100.  After ROT90: W_t=100, H_t=200.
-            # Full-sensor woi in transformed frame: (x=0, w=100, y=0, h=200)
-            assert cam_rot.get_woi() == (0, 100, 0, 200)
-
-        with subtests.test("get_woi equals woi property when binning=1"):
-            assert cam.get_woi() == cam.woi

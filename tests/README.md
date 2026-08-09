@@ -337,11 +337,11 @@ def test_complex_operation(test_logger):
 Plots are **automatically saved** to the current run's directory:
 
 ```bash
-# Enable plot saving (default)
+# Disable plot saving (default)
 pytest
 
-# Disable plot saving
-pytest --no-save-plots
+# Enable plot saving
+pytest --save-plots
 
 # Example output:
 # 📁 Test output directory: tests/output/20250126_143015
