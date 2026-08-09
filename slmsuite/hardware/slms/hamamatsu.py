@@ -1,9 +1,9 @@
 """
-**(Untested)** Hardware control for Hamamatsu SLMs in USB/Trigger mode.
+Hardware control for Hamamatsu SLMs in USB/Trigger mode.
 For DVI mode, reset the SLM to DVI mode externally and
 project information onto the appropriate screen using
 :class:`~slmsuite.hardware.slms.screenmirrored.ScreenMirrored`.
-A previous version was tested with Hamamatsu LCOS-SLM X15213-02.
+Tested with Hamamatsu LCOS-SLM X15213.
 
 Important
 ~~~~~~~~~
@@ -104,26 +104,26 @@ class Hamamatsu(SLM):
 
         if n_dev == 0:
             raise RuntimeError("No Hamamatsu devices found!")
+
+        if verbose: print("success")
+
+        # Read the serial number of the device.
+        if serial_number is None:
+            if verbose: print(f"Looking for SLM...", end="")
         else:
-            if verbose: print("success")
+            if verbose: print(f"Looking for '{serial_number}'...", end="")
 
-            # Read the serial number of the device.
-            if serial_number is None:
-                if verbose: print(f"Looking for SLM...", end="")
+        self.serial_number = self._Check_HeadSerial(board_id=self.board_id)
+
+        # Error if the desired serial number is not found.
+        if serial_number is not None:
+            if serial_number in self.serial_number or self.serial_number in serial_number:
+                pass
             else:
-                if verbose: print(f"Looking for '{serial_number}'...", end="")
+                self._Close_Device(board_ids, bID_size=1)
+                raise RuntimeError(f"Could not find '{serial_number}'. Found '{self.serial_number}'.")
 
-            self.serial_number = self._Check_HeadSerial(board_id=self.board_id)
-
-            # Error if the desired serial number is not found.
-            if serial_number is not None:
-                if serial_number in self.serial_number or self.serial_number in serial_number:
-                    pass
-                else:
-                    self._Close_Device(board_ids, bID_size=1)
-                    raise RuntimeError(f"Could not find '{serial_number}'. Found '{self.serial_number}'.")
-
-            if verbose: print("success")
+        if verbose: print("success")
 
         # Force the SLM to USB/Trigger mode.
         try:
@@ -175,18 +175,17 @@ class Hamamatsu(SLM):
             this variable may be renamed in a future slmsuite release to
             conform with eventual implementation of this feature in other SLMs.
         """
-        array_size = int(self.shape[0] * self.shape[1])
         if hasattr(display, "get"):
             display = display.get()
-        array = display.astype(c_uint8)  # TODO: check if this is necessary
 
+        array_size = int(self.shape[0] * self.shape[1])
         write_fmemarray = Lcoslib.Write_FMemArray
         write_fmemarray.argtypes = [c_uint8, c_uint8*array_size, c_int32, c_uint32, c_uint32, c_uint32]
 
         # TODO: do python ints need to be converted explicitly to c_uint32?
         v = write_fmemarray(
             self.board_id,
-            array.ctypes.data_as(POINTER(c_uint8* array_size)).contents,
+            display.ctypes.data_as(POINTER(c_uint8* array_size)).contents,
             array_size,
             self.shape[1],
             self.shape[0],
@@ -218,8 +217,8 @@ class Hamamatsu(SLM):
         display = np.zeros(self.shape, dtype=np.uint8)
         array_size = int(self.shape[0] * self.shape[1])
 
-        get_display = Lcoslib.Get_Display
-        get_display.argtypes = [c_uint8, c_int32, c_uint32, c_uint32, c_uint8*array_size]
+        get_display = Lcoslib.Check_Disp_IMG
+        get_display.argtyes = [c_uint8, c_int32, c_uint32, c_uint32, c_uint8*array_size]
         v = get_display(
             self.board_id,
             array_size,
@@ -274,14 +273,14 @@ class Hamamatsu(SLM):
             - ``1`` : USB/Trigger mode
         """
         mode_check = Lcoslib.Mode_Check
-        mode_check.argtypes = [c_uint8]
+        mode_check.argtypes = [c_uint8, POINTER(c_uint32)]
         mode = c_uint32(0)
         v = mode_check(board_id, byref(mode))
 
         if v != 1:
             raise RuntimeError("Failed to read Hamamatsu SLM mode.")
 
-        return int(mode)
+        return mode.value
 
     @staticmethod
     def _Reboot(board_id):
@@ -330,6 +329,13 @@ class Hamamatsu(SLM):
         if v != 1:
             raise RuntimeError("Failed to close Hamamatsu device.")
 
+    def close(self) -> None:
+        """
+        Closes the connection to the SLM device.
+        """
+        bID_list = (c_uint8 * len([self.board_id]))(*[self.board_id])
+        self._Close_Device(bID_list=bID_list, bID_size=1)
+
     @staticmethod
     def _Check_HeadSerial(board_id):
         r"""
@@ -376,7 +382,7 @@ class Hamamatsu(SLM):
         if v != 1:
             raise RuntimeError(f"Could not check Hamamatsu temperature (error={v}).")
 
-        return (float(head_temperature), float(controller_temperature))
+        return (head_temperature.value, controller_temperature.value)
 
     def get_led_status(self):
         r"""

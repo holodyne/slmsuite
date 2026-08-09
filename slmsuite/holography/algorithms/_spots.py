@@ -1109,7 +1109,7 @@ class SpotHologram(_AbstractSpotHologram):
         null_region_radius_frac=None,
         **kwargs
     ):
-        """
+        r"""
         Initializes a :class:`SpotHologram` targeting given spots at ``spot_vectors``.
 
         Parameters
@@ -1153,8 +1153,10 @@ class SpotHologram(_AbstractSpotHologram):
         null_region_radius_frac : float OR None
             Helper function to set the ``null_region`` to zero for Fourier space radius fractions above
             ``null_region_radius_frac``. This is useful to prevent power being deflected
-            to very high orders, which are unlikely to be properly represented in
-            practice on a physical SLM.
+            to very high orders, which are unlikely to be properly represented
+            on a physical SLM. If ``None``, defaults to :math:`\sqrt{2}`
+            (circumscribing the square farfield in fractional units)
+            and there is no null region.
         **kwargs
             Passed to :meth:`.FeedbackHologram.__init__()`.
         """

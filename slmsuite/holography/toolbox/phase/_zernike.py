@@ -1582,4 +1582,3 @@ def polynomial(grid, weights, terms=None, pathing=None, out=None):
             raise ValueError(f"Unrecognized terms {(nx, ny)} for index {index}.")
 
     return out
-

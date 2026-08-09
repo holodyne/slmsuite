@@ -65,8 +65,10 @@ class FeedbackHologram(Hologram):
         null_region_radius_frac : float OR None
             Helper parameter to set the ``null_region`` to zero for Fourier space radius fractions above
             ``null_region_radius_frac``. This is useful to prevent power being deflected
-            to very high orders, which are unlikely to be properly represented in
-            practice on a physical SLM.
+            to very high orders, which are unlikely to be properly represented
+            on a physical SLM. If ``None``, defaults to :math:`\sqrt{2}`
+            (circumscribing the square farfield in fractional units)
+            and there is no null region.
         **kwargs
             Passed to :meth:`Hologram.__init__`.
         """
@@ -128,7 +130,7 @@ class FeedbackHologram(Hologram):
 
             # Transform the target, if it is provided.
             if target_ij is not None:
-                self.update_target(
+                self.set_target(
                     target_ij,
                     null_region,
                     null_region_radius_frac,
@@ -324,8 +326,8 @@ class FeedbackHologram(Hologram):
             raise ValueError(f"Unrecognized measurement basis '{basis}'. Options are 'ij' or 'knm'")
 
     # Target update.
-    def update_target(self, new_target_ij, null_region=None, null_region_radius_frac=None, reset_weights=False):
-        """
+    def set_target(self, new_target_ij, null_region=None, null_region_radius_frac=None, reset_weights=False):
+        r"""
         Change the target to something new. This method handles cleaning and normalization.
 
         Parameters
@@ -335,13 +337,16 @@ class FeedbackHologram(Hologram):
             Should be of the same shape as the camera.
             Also updates :attr:`target` using the stored Fourier calibration.
         null_region : array_like OR None
-            Array of shape :attr:`shape`. Where ``True``, sets the background to zero
-            instead of ``nan``. If ``None``, has no effect.
+            Array of shape :attr:`shape`.
+            Where this array is ``True``, ``nan`` entries in the :attr:`target` are replaced with zeros.
+            If ``None``, has no effect. This is useful to bound the
         null_region_radius_frac : float OR None
             Helper parameter to set the ``null_region`` to zero for Fourier space radius fractions above
             ``null_region_radius_frac``. This is useful to prevent power being deflected
-            to very high orders, which are unlikely to be properly represented in
-            practice on a physical SLM. If ``None``, defaults to 1 and there is no null region.
+            to very high orders, which are unlikely to be properly represented
+            on a physical SLM. If ``None``, defaults to :math:`\sqrt{2}`
+            (circumscribing the square farfield in fractional units)
+            and there is no null region.
         reset_weights : bool
             Whether to update the :attr:`weights` to this new :attr:`target`.
         """
@@ -356,8 +361,11 @@ class FeedbackHologram(Hologram):
         if null_region is not None:
             null_region = cp.asarray(null_region, dtype=bool)
 
-        # A radius fraction < 1 additionally nulls everything outside a centered circle.
-        if null_region_radius_frac is not None and null_region_radius_frac < 1:
+        if null_region_radius_frac is None:
+            null_region_radius_frac = np.sqrt(2)
+
+        if null_region_radius_frac < np.sqrt(2):
+            # Build up the null region pattern if we have not already done the transform above.
             if null_region is None:
                 null_region = cp.zeros(self.shape, dtype=bool)
 
@@ -368,11 +376,7 @@ class FeedbackHologram(Hologram):
             mask = cp.square(xg) + cp.square(yg) > null_region_radius_frac**2
             null_region[mask] = True
 
-        if null_region is None:
-            # No null region of any kind: every undefined (nan) pixel becomes a hard zero.
-            self.target[undefined] = 0
-        else:
-            # Honor the null region (passed mask and/or circle) regardless of radius_frac.
+        if not (null_region is None):
             self.target[cp.logical_and(undefined, null_region)] = 0
 
         if reset_weights:

@@ -108,6 +108,15 @@ class Basler(Camera):
         except Exception as e:
             logger.warning("Basler default settings failed: %s", e)
 
+        # Cache whether the camera has ExposureTimeAbs or ExposureTime, for use
+        # in the get/set exposure methods.
+        try:
+            self.cam.ExposureTime.GetValue()
+            self._exposure_time_has_abs = False
+        except:
+            self.cam.ExposureTimeAbs.GetValue()
+            self._exposure_time_has_abs = True
+
         # Initialize the superclass attributes.
         super().__init__(
             (self.cam.SensorWidth(), self.cam.SensorHeight()), #pixels
@@ -255,11 +264,21 @@ class Basler(Camera):
 
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
-        return float(self.cam.ExposureTime.GetValue()) / 1e6   # in seconds
+        if self._exposure_time_has_abs is True:
+            return float(self.cam.ExposureTimeAbs.GetValue()) / 1e6
+        elif self._exposure_time_has_abs is False:
+            return float(self.cam.ExposureTime.GetValue()) / 1e6
+        else:
+            raise RuntimeError("Camera does not have ExposureTime or ExposureTimeAbs property.")
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
-        self.cam.ExposureTime.SetValue(float(1e6 * exposure_s))   # in seconds
+        if self._exposure_time_has_abs is True:
+            self.cam.ExposureTimeAbs.SetValue(float(exposure_s * 1e6))
+        elif self._exposure_time_has_abs is False:
+            self.cam.ExposureTime.SetValue(float(exposure_s * 1e6))
+        else:
+            raise RuntimeError("Camera does not have ExposureTime or ExposureTimeAbs property.")
 
     def _set_woi_hw(self, woi):
         """See :meth:`.Camera._set_woi_hw`."""

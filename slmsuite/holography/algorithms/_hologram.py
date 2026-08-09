@@ -577,7 +577,8 @@ class Hologram(_HologramStats, _Loggable):
         random_phase : float OR None
             Sets the phase to uniformly random phase, scaled to :math:`2\pi`.
             Setting ``random_phase`` to a fraction of 1 likewise scales the randomness.
-            If ``None``, looks for ``"random_phase"`` in :attr:`flags`.
+            If ``None``, looks for ``"random_phase"`` in :attr:`flags` and defaults to
+            ``True`` (full :math:`2\pi`) if ``quadratic_phase`` is ``False``.
             This adds with the ``quadratic_phase`` parameter.
         quadratic_phase : bool OR float OR None
             We can also precondition the phase analytically (with a lens and blaze)
@@ -611,12 +612,12 @@ class Hologram(_HologramStats, _Loggable):
                 else:
                     quadratic_phase = False
 
-            # Parse quadratic_phase
+            # Parse random_phase
             if random_phase is None:
                 if "random_phase" in self.flags:
                     random_phase = self.flags["random_phase"]
                 else:
-                    random_phase = 1
+                    random_phase = not bool(quadratic_phase)
 
             self.phase.fill(0)
 
