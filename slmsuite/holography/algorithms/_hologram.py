@@ -463,7 +463,7 @@ class Hologram(_HologramStats, _Loggable):
         _Loggable.__init__(self)
 
     # Initialization helper functions.
-    def reset(self, reset_phase=True, reset_flags=False):
+    def reset(self, reset_phase=True, reset_flags=False, reset_weights=True):
         r"""
         Resets the hologram to an initial state. Does not restore the preconditioned ``phase``
         that may have been passed to the constructor (as this information is lost upon
@@ -478,13 +478,17 @@ class Hologram(_HologramStats, _Loggable):
             Whether to additionally call :meth:`reset_phase()`.
         reset_flags : bool
             Whether to erase the information (including passed ``kwargs``) stored in :attr:`flags`.
+        reset_weights : bool
+            Whether to additionally call :meth:`reset_weights()`. Pass ``False`` when the
+            caller has already re-derived the weights from the current ``target``.
         """
         # Reset phase to random if needed.
         if self.phase is None or reset_phase:
             self.reset_phase()
 
         # Reset weights.
-        self.reset_weights()
+        if reset_weights:
+            self.reset_weights()
 
         # Reset vars.
         self.iter = 0
@@ -496,10 +500,26 @@ class Hologram(_HologramStats, _Loggable):
         self.amp_ff = None
         self.phase_ff = None
 
-        # Reset complex looping variables.
-        self.nearfield = cp.zeros(self.shape, dtype=self.dtype_complex)
+        # Reset complex looping variables. Reuse the existing buffers when able.
+        # (Note: reset() also runs from __init__, before these first exist.)
+        self.nearfield = Hologram._fill_zeros(
+            getattr(self, "nearfield", None), self.shape, self.dtype_complex)
         if not self.target is None:
-            self.farfield = cp.zeros(self.target.shape, dtype=self.dtype_complex)
+            self.farfield = Hologram._fill_zeros(
+                getattr(self, "farfield", None), self.target.shape, self.dtype_complex)
+
+    @staticmethod
+    def _fill_zeros(array, shape, dtype):
+        """Zeros ``array`` if it already has ``shape`` and ``dtype``.
+        Otherwise, allocate a new one."""
+        if (array is not None
+            and tuple(array.shape) == tuple(shape)
+            and array.dtype == dtype):
+
+            array.fill(0)
+            return array
+
+        return cp.zeros(shape, dtype=dtype)
 
     def _get_target_moments_knm_norm(self):
         """
@@ -637,7 +657,8 @@ class Hologram(_HologramStats, _Loggable):
             self.zero_weights *= 0
 
         # Account for MRAF by setting any noise region to zero by default.
-        cp.nan_to_num(self.weights, copy=False, nan=0)
+        # (Use copyto instead of nan_to_num to avoid unnecessary host-device synchronization.)
+        cp.copyto(self.weights, 0, where=cp.isnan(self.weights))
 
     @staticmethod
     def get_padded_shape(
@@ -971,7 +992,11 @@ class Hologram(_HologramStats, _Loggable):
         Pass a nearfield complex matrix of self.shape shape to avoid memory reallocation.
         """
         self._nearfield2farfield()
-        self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
+
+        # _nearfield2farfield already populates amp_ff except for
+        # MultiplaneHologram, which only calculates the children's amp_ff. 
+        if self.amp_ff is None:
+            self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
         self.phase_ff = cp.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
 
     def _remove_vortices(self, plot=False):
@@ -1016,9 +1041,23 @@ class Hologram(_HologramStats, _Loggable):
             if plot:
                 self.plot_farfield(self.phase_ff, title="phase removal after", limits=limits)
 
+    @property
+    def _unpad_slice(self):
+        """
+        Cached ``(i0, i1, i2, i3)`` slicing the computational :attr:`shape`
+        down to :attr:`slm_shape`. Keyed on the shapes themselves rather than
+        computed once at construction, because subclasses may adjust them
+        afterwards (e.g., :class:`CompressedSpotHologram` does).
+        """
+        key = (tuple(self.shape), tuple(self.slm_shape))
+        if getattr(self, "_unpad_slice_key", None) != key:
+            self._unpad_slice_key = key
+            self._unpad_slice_value = toolbox.unpad(self.shape, self.slm_shape)
+        return self._unpad_slice_value
+
     def _build_nearfield(self, phase_torch=None):
         """Populate nearfield with data from amp and phase."""
-        (i0, i1, i2, i3) = toolbox.unpad(self.shape, self.slm_shape)
+        (i0, i1, i2, i3) = self._unpad_slice
         self.nearfield.fill(0)
 
         if phase_torch is None:
@@ -1044,7 +1083,7 @@ class Hologram(_HologramStats, _Loggable):
 
     def _nearfield_extract(self):
         """Populate phase with data from nearfield."""
-        (i0, i1, i2, i3) = toolbox.unpad(self.shape, self.slm_shape)
+        (i0, i1, i2, i3) = self._unpad_slice
 
         self.phase = cp.arctan2(
             self.nearfield.imag[i0:i1, i2:i3],
@@ -1057,7 +1096,8 @@ class Hologram(_HologramStats, _Loggable):
     def _nearfield2farfield(self, phase_torch=None):
         """
         Maps the nearfield to the farfield by a discrete Fourier transform.
-        This should populate :attr:`farfield`.
+        This should populate :attr:`farfield` and, from it, :attr:`amp_ff`;
+        :meth:`_populate_results` relies on the latter to avoid recomputing it.
         This function is overloaded by subclasses.
         """
         # This may return a torch nearfield if we are in torch mode.
@@ -1456,16 +1496,27 @@ class Hologram(_HologramStats, _Loggable):
 
         Note
         ~~~~
-        Default FFTs are **not** in-place in this algorithm. In both non-:mod:`cupy` and
-        :mod:`cupy` implementations, :mod:`numpy.fft` does not support in-place
-        operations.  However, :mod:`scipy.fft` does in both. In the future, we may move to the scipy
-        implementation. However, neither :mod:`numpy` or :mod:`scipy` ``fftshift`` support
-        in-place movement (for obvious reasons). For even faster computation, algorithms should
-        consider **not shifting** the FFT result, and instead shifting measurement data / etc to
-        this unshifted basis. We might also implement `get_fft_plan
-        <https://docs.cupy.dev/en/stable/reference/generated/cupyx.scipy.fftpack.get_fft_plan.html>`_
-        for even faster FFTing. However, in practice, speed is limited by other
-        peripherals (especially feedback and stats) rather than FFT speed or memory.
+        FFTs here are **not** in-place: neither :mod:`numpy.fft` nor ``fftshift`` support
+        it, so each transform allocates. Below roughly 4 megapixels the
+        ``fftshift``/``fft2``/``fftshift`` sandwich is entirely kernel-launch bound --
+        measured at ~0.15 ms per transform on an RTX 5090, flat from 256\ :sup:`2` through
+        2048\ :sup:`2` -- and above that it becomes memory-bandwidth bound. Two ideas that
+        look attractive here have been measured and rejected:
+
+        -   Replacing the two shifts with the equivalent :math:`(-1)^{m+n}` checkerboard
+            multiplies. This is 1.6-1.7x faster on bare GS below ~2.5 megapixels, but it
+            *inverts* above ~4 megapixels (5-7% slower at 3072\ :sup:`2` and
+            4096\ :sup:`2`), because the checkerboard reads a plane that the roll does not.
+        -   `get_fft_plan
+            <https://docs.cupy.dev/en/stable/reference/generated/cupyx.scipy.fftpack.get_fft_plan.html>`_.
+            :mod:`cupy` already caches cuFFT plans internally, so passing one explicitly is
+            within noise.
+
+        The one remaining idea with real headroom is **not shifting** at all, keeping the
+        farfield in FFT order and moving measurement data into that basis -- but that
+        pushes unshifted indexing into ``target``, ``weights``, stats, and plotting. In
+        practice, speed is limited by other peripherals (especially feedback and stats)
+        rather than FFT speed or memory.
 
         Parameters
         ----------
