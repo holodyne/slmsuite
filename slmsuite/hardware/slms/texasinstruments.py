@@ -1,30 +1,47 @@
 """
 Hardware control for Texas Instruments Phase Light Modulators (PLMs).
 
-This module provides GPU-accelerated control for TI PLMs via direct implementation
-of phase quantization and electrode mapping. Supports both :mod:`cupy` (GPU)
-and :mod:`numpy` (CPU) for maximum performance and compatibility.
+This module provides GPU-accelerated control for TI PLMs via direct
+implementation of phase quantization and electrode mapping. Supports both
+:mod:`cupy` (GPU) and :mod:`numpy` (CPU) for maximum performance and
+compatibility.
 
 .. highlight:: python
 .. code-block:: python
 
     from slmsuite.hardware.slms.texasinstruments import PLM
 
-    # Create PLM instance with automatic USB configuration
-    plm = PLM("p47", display_number=1, configure_usb=True)
+    # Configure USB and open every connected PLM in one step. This discovers
+    # which display each PLM drives, which takes tens of seconds.
+    plms = PLM.open_all("p47")
 
-    # Or without USB (requires prior GUI setup)
+    # Once that mapping is known, pass it to skip discovery and open in seconds.
+    plms = PLM.open_all("p47", display_numbers=[1, 2])
+
+    # Or open a single PLM, finding the display it adds automatically.
+    plm = PLM("p47", configure_usb=True)
+
+    # Or without USB, if the EVM is already running (e.g. set up in TI's GUI).
     plm = PLM("p47", display_number=1)
 
     # Set phase pattern
     phase = np.random.rand(540, 960) * 2 * np.pi
     plm.write(phase)
 
-The USB configuration is accomplished by :class:`DLPC900`,
-a USB HID interface for configuring the DLPC900
-evaluation module (EVM) that drives the PLM. This automates the setup normally done
-through TI's DLPC900 GUI software. For further information, refer to the
-`DLPC900 Programmer's Guide <https://www.ti.com/lit/ug/dlpu018j/dlpu018j.pdf>`_.
+The USB configuration is accomplished by :class:`DLPC900`, a USB HID interface
+for configuring the DLPC900 evaluation module (EVM) that drives the PLM. This
+automates the setup normally done through TI's DLPC900 GUI software. For
+further information, refer to the `DLPC900 Programmer's Guide
+<https://www.ti.com/lit/ug/dlpu018j/dlpu018j.pdf>`_.
+
+Caution
+~~~~~~~
+Displaying phase to a PLM requires its EVM to be in video-pattern mode with its
+pattern sequencer running; the mirrors ignore the video signal otherwise. Only
+:meth:`PLM.open_all` and ``configure_usb=True`` set this up, and
+:meth:`PLM.close` stops the sequencer again. Opening a PLM with neither (the
+last example above) leaves whatever state the EVM was in, so phase written to
+the display can silently fail to reach the mirrors.
 """
 
 import yaml
@@ -33,7 +50,9 @@ import time
 import warnings
 from enum import IntEnum
 import numpy as np
-from slmsuite.hardware._pyglet import _WindowThread
+from slmsuite.hardware._pyglet import ( _WindowThread, _screen_ids,
+                                       _screen_index, _wait_for_new_screen,
+                                       _wait_for_screens_settled)
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
 from slmsuite.hardware.slms.slm import LUT_SIZE
 from slmsuite._logging import make_logger
@@ -103,7 +122,9 @@ class PLM(ScreenMirrored):
     :mod:`cupy` for GPU acceleration, falling back to NumPy if unavailable.
 
     Optionally configures the DLPC900 EVM via USB, replacing the manual setup
-    normally done through TI's GUI software.
+    normally done through TI's GUI software. Use :meth:`open_all` to bring up
+    every connected PLM at once, which is the only way to configure several
+    without them knocking each other out of source lock.
 
     Attributes
     ----------
@@ -123,7 +144,7 @@ class PLM(ScreenMirrored):
     def __init__(
         self,
         model_name,
-        display_number,
+        display_number=None,
         configure_usb=False,
         video_input="displayport",
         pixel_mode=None,
@@ -142,15 +163,19 @@ class PLM(ScreenMirrored):
         model_name : str
             Model identifier from ``texas_instruments.yaml`` (e.g., ``"p47"``, ``"p67"``).
             Available models can be queried with :meth:`get_model_list()`.
-        display_number : int
+        display_number : int OR None
             Monitor number for display.
             Use :func:`ScreenMirrored.info()` to list available displays and their numbers.
-            If ``None`` and ``configure_usb=True``, the display will appear after the USB
-            is configured.
+            If ``None``, ``configure_usb`` must be ``True``, and the display that the EVM
+            adds during configuration is detected and used automatically.
         configure_usb : bool, optional
             If ``True``, automatically configure the DLPC900 EVM via USB before
-            initializing the display. Requires ``hidapi``
-            (see :class:`DLPC900`). Defaults to ``False``.
+            initializing the display, which includes starting the pattern
+            sequencer that the mirrors need in order to display phase at all.
+            Requires ``hidapi`` (see :class:`DLPC900`). Defaults to ``False``,
+            which assumes the EVM was already configured — see the caution in
+            the module documentation. For several PLMs, use :meth:`open_all`
+            rather than ``configure_usb`` on each.
         video_input : str, optional
             Video input source: ``"displayport"`` or ``"hdmi"``.
             Defaults to ``"displayport"``.
@@ -174,7 +199,6 @@ class PLM(ScreenMirrored):
             Additional arguments for :class:`ScreenMirrored`.
         """
         self.dlpc900 = dlpc
-        self.display_number = display_number
 
         # Load model configuration from YAML database
         self.model_config = self.load_model_config(model_name)
@@ -194,7 +218,38 @@ class PLM(ScreenMirrored):
                 product_id=usb_product_id,
                 device_number=usb_device_number
             )
-            PLM._usb_pre_configure(self.dlpc900, video_input, pixel_mode, display_number)
+
+            # Note the currently attached displays to detect the new one 
+            known_ids = _screen_ids()
+
+            PLM._usb_pre_configure(self.dlpc900, video_input, pixel_mode,
+                                   display_number)
+
+            # If display_number isn't provided, find it.
+            if display_number is None:
+                display_id = _wait_for_new_screen(known_ids)
+                if display_id is None:
+                    raise RuntimeError(
+                        "PLM did not add a display during USB configuration. "
+                        "Check the video cable and that the EVM is powered on."
+                    )
+                display_number = _screen_index(display_id)
+
+        # No display number without USB config -> no idea what PLM is
+        # connected to which display. (ID by resolution is not reliable)
+        elif display_number is None:
+            raise ValueError(
+                "display_number is required unless configure_usb=True, "
+                "which detects the added display automatically."
+            )
+        elif dlpc is None:
+            # Nothing here touches USB, so the EVM keeps whatever state it was left in.
+            logger.warning(
+                "PLM opened without USB, so its pattern sequencer is assumed to be "
+                "running already (from PLM.open_all(), configure_usb=True, or TI's GUI). "
+                "If it is not, phase written here will never reach the mirrors. Note "
+                "that close() stops the sequencer, so reopening this way will not work."
+            )
 
         # Compute bitdepth from number of displacement ratios
         n_phases = len(self.model_config["displacement_ratios"])
@@ -339,6 +394,213 @@ class PLM(ScreenMirrored):
         return dlpc
 
     @staticmethod
+    def open_all(
+        model_name,
+        display_numbers=None,
+        video_input=None,
+        pixel_mode=None,
+        names=None,
+        cycle=None,
+        retries=2,
+        **kwargs
+    ):
+        """
+        Configure and open every connected PLM in one step.
+
+        This handles the ordering that makes multi-PLM setups awkward to bring
+        up by hand. Each EVM's video receiver is powered up one at a time, so
+        the display that it adds can be identified unambiguously. Only once
+        *all* displays are attached is each EVM locked to its video source and
+        its pattern sequence started: attaching a display retrains the other
+        DisplayPort links, so configuring an EVM fully before the next one's
+        display appears knocks the first back out of source lock. This is why
+        doing this by hand requires running the configuration twice.
+
+        Note
+        ~~~~
+        Discovering the display-to-EVM mapping requires detaching and reattaching
+        the displays, which takes tens of seconds. Once it is known, pass it as
+        ``display_numbers`` to skip discovery and open in a few seconds instead.
+        A PLM must still be opened through this method (or with
+        ``configure_usb=True``) rather than by :meth:`__init__` alone: without
+        USB, the EVM's pattern sequencer is never started, so phase written to
+        the display never reaches the mirrors.
+
+        Parameters
+        ----------
+        model_name : str
+            Model identifier from ``texas_instruments.yaml`` (e.g. ``"p47"``,
+            ``"p67"``), applied to every PLM. See :meth:`get_model_list`.
+        display_numbers : list of int OR None
+            Display number driven by each EVM, in device order. When given, the
+            displays are assumed to be attached already and the mapping is used
+            as-is, skipping the (slow) discovery described above. Defaults to
+            ``None``, which discovers the mapping.
+        video_input : str OR None
+            Video input source: ``"displayport"`` or ``"hdmi"``.
+            Defaults to ``"displayport"``.
+        pixel_mode : str OR None
+            Pixel clock mode: ``"single"`` (30 Hz) or ``"dual"`` (60 Hz).
+            If ``None``, defaults to ``"dual"`` for DisplayPort or ``"single"``
+            for HDMI.
+        names : list of str OR None
+            :attr:`~slmsuite.hardware.slms.slm.SLM.name` for each PLM, in
+            device order.
+            Defaults to ``"{model_name}_{i}"`` when several PLMs are connected.
+        cycle : bool OR None
+            Whether to power the video receivers down before bringing them back
+            up one at a time. This is what makes the display-to-EVM mapping
+            unambiguous, at the cost of a few seconds of display churn.
+            Defaults to ``None``, which cycles only when more than one PLM is
+            connected (with one PLM there is nothing to disambiguate).
+            Unused when ``display_numbers`` is given.
+        retries : int
+            How many times to attempt each EVM's display bring-up before giving
+            up. Unused when ``display_numbers`` is given.
+        **kwargs
+            Additional arguments for :meth:`__init__`, applied to every PLM.
+
+        Returns
+        -------
+        list of PLM
+            One :class:`PLM` per connected EVM, ordered by USB device number.
+            Use :meth:`DLPC900.info` to map device numbers to physical USB
+            ports.
+        """
+        devices = DLPC900._enumerate()
+
+        if not devices:
+            raise RuntimeError(
+                "No DLPC900 USB device found. "
+                "Check that the EVM(s) are powered on and connected via USB."
+            )
+
+        if names is None:
+            names = [
+                f"{model_name}_{i}" if len(devices) > 1 else model_name
+                for i in range(len(devices))
+            ]
+        elif len(names) != len(devices):
+            raise ValueError(
+                f"Got {len(names)} names for {len(devices)} connected PLM(s)."
+            )
+
+        if display_numbers is not None and len(display_numbers) != len(devices):
+            raise ValueError(
+                f"Got {len(display_numbers)} display numbers for "
+                f"{len(devices)} connected PLM(s)."
+            )
+
+        if cycle is None:
+            cycle = len(devices) > 1
+
+        dlpcs = [DLPC900(device_number=i) for i in range(len(devices))]
+        plms = []
+
+        try:
+            if display_numbers is None:
+                display_numbers = PLM._discover_displays(
+                    dlpcs, video_input, pixel_mode, cycle, retries
+                )
+            else:
+                # The displays are already attached; just put the EVMs in video mode.
+                for dlpc, display_number in zip(dlpcs, display_numbers):
+                    PLM._usb_pre_configure(
+                        dlpc, video_input, pixel_mode, display_number
+                    )
+
+            for dlpc, display_number, name in zip(dlpcs, display_numbers, names):
+                plms.append(
+                    PLM(model_name, display_number, dlpc=dlpc, name=name, **kwargs)
+                )
+
+            # Lock and start the sequencers only now that no more displays will appear.
+            for plm in plms:
+                PLM._usb_post_configure(plm.dlpc900, video_input, pixel_mode)
+        except Exception:
+            # PLM.close() also releases its DLPC900.
+            for opened in plms + dlpcs:      
+                try:
+                    opened.close()
+                except Exception:
+                    pass
+            raise
+
+        return plms
+
+    @staticmethod
+    def _discover_displays(dlpcs, video_input, pixel_mode, cycle, retries):
+        """
+        Find which display each EVM drives, by bringing them up one at a time.
+
+        Parameters
+        ----------
+        dlpcs : list of DLPC900
+            Open USB connections to the EVMs.
+        video_input, pixel_mode : str OR None
+            See :meth:`open_all`.
+        cycle : bool
+            Whether to detach the displays first, so that every EVM's display is
+            genuinely new and can therefore be attributed to it.
+        retries : int
+            How many times to attempt each EVM's display bring-up.
+
+        Returns
+        -------
+        list of int
+            Display number driven by each EVM, in the order of ``dlpcs``.
+        """
+        # Start from a known state: no PLM displays attached. Without this, an
+        # already-attached display cannot be matched to the EVM driving it.
+        if cycle:
+            logger.debug("Powering down %s DLPC900 video receiver(s)...", len(dlpcs))
+            for dlpc in dlpcs:
+                dlpc.standby()
+            _wait_for_screens_settled()
+
+        # Bring the EVMs up one at a time, claiming the display that each one adds.
+        known_ids = _screen_ids()
+        display_ids = []
+
+        for index, dlpc in enumerate(dlpcs):
+            for attempt in range(retries):
+                PLM._usb_pre_configure(dlpc, video_input, pixel_mode, None)
+                display_id = _wait_for_new_screen(known_ids)
+                if display_id is not None:
+                    break
+                logger.warning(
+                    "PLM %s did not add a display (attempt %s of %s).",
+                    index, attempt + 1, retries
+                )
+            else:
+                raise RuntimeError(
+                    f"PLM {index} did not add a display after {retries} attempts. Its "
+                    "display may already be attached (pass its display_numbers, or "
+                    "cycle=True to power the receivers down and rediscover), or check "
+                    "the video cable and that the EVM is powered on."
+                )
+
+            logger.debug("PLM %s added display '%s'.", index, display_id)
+            known_ids.add(display_id)
+            display_ids.append(display_id)
+
+        # Every display is attached, so the display numbering has settled and it is
+        # finally safe to resolve identifiers to numbers.
+        display_numbers = []
+
+        for display_id in display_ids:
+            display_number = _screen_index(display_id)
+            if display_number is None:
+                raise RuntimeError(
+                    f"Display '{display_id}' detached during PLM configuration."
+                )
+            display_numbers.append(display_number)
+
+        logger.debug("Discovered display numbers %s.", display_numbers)
+
+        return display_numbers
+
+    @staticmethod
     def _usb_pre_configure(dlpc, video_input, pixel_mode, display_number):
         """
         USB setup steps that must happen before the pyglet window is created.
@@ -389,14 +651,25 @@ class PLM(ScreenMirrored):
         to video-pattern mode, configures the pattern LUT, and starts the
         pattern sequence.
         """
-        # Resolve pixel mode default
+        # Resolve video_input and pixel mode defaults
+        if video_input is None:
+            video_input = "displayport"
         if pixel_mode is None:
             pixel_mode = "dual" if video_input == "displayport" else "single"
 
-        # Wait for external source lock
-        DLPC900._poll_until(
-            lambda: dlpc.get_main_status()["source_locked"],
-            error_msg=("DLPC900: Video source failed to lock. "))
+        # Wait for external source lock, re-asserting video mode once if it
+        # does not come up: attaching another display retrains the DisplayPort
+        # links and can leave an already-configured EVM unlocked.
+        try:
+            DLPC900._poll_until(lambda: dlpc.get_main_status()["source_locked"])
+        except RuntimeError:
+            logger.warning("DLPC900: video source not locked; re-asserting video mode.")
+            dlpc.set_it6535_power(video_input)
+            dlpc.set_display_mode("video")
+            DLPC900._poll_until(
+                lambda: dlpc.get_main_status()["source_locked"],
+                error_msg="DLPC900: Video source failed to lock.",
+            )
 
         logger.debug("DLPC900 source locked, switching to video-pattern mode...")
 
@@ -443,12 +716,28 @@ class PLM(ScreenMirrored):
 
         logger.debug("DLPC900 configured successfully - pattern sequence running")
 
-    def close(self, close_usb=True):
-        """Close the PLM, stopping the pattern sequence and releasing USB."""
-        if close_usb and self.dlpc900 is not None:
+    def close(self, power_down=False):
+        """
+        Close the PLM, stopping the pattern sequence and releasing USB.
+
+        Stopping the pattern sequence parks the mirrors, so the PLM will ignore its
+        video signal until an EVM is configured over USB again — reopen with
+        :meth:`open_all` or ``configure_usb=True``, not with :meth:`__init__` alone.
+
+        Parameters
+        ----------
+        power_down : bool
+            Whether to also power down the EVM's IT6535 video receiver. This
+            detaches the PLM's display from the OS, so the display has to be
+            brought back up and re-identified the next time the PLM is opened.
+            Defaults to ``False``, which leaves the display attached and makes
+            reopening fast.
+        """
+        if self.dlpc900 is not None:
             try:
                 self.dlpc900.stop_pattern()
-                self.dlpc900.standby()
+                if power_down:
+                    self.dlpc900.standby()
                 self.dlpc900.close()
             except Exception:
                 pass
@@ -724,28 +1013,15 @@ class DLPC900:
         RuntimeError
             If the DLPC900 USB device is not found.
         """
-        if not HID_AVAILABLE:
-            raise ImportError(
-                "hidapi is required for DLPC900 USB control. "
-                "Install with: pip install hidapi"
-            )
-
         vid = vendor_id if vendor_id is not None else DLPC900_VENDOR_ID
         pid = product_id if product_id is not None else DLPC900_PRODUCT_ID
 
-        devices = [d for d in _hid.enumerate(vid, pid)]
+        devices = DLPC900._enumerate(vid, pid)
 
         if not devices:
             raise RuntimeError(
                 f"No DLPC900 USB device found (VID=0x{vid:04X}, PID=0x{pid:04X}). "
                 "Check that the EVM is powered on and connected via USB."
-            )
-        # Each PLM exposes two HID interfaces; pick the one with product_string "DLPC900".
-        devices = [d for d in devices if d.get("product_string") == "DLPC900"]
-        if not devices:
-            raise RuntimeError(
-                f"No DLPC900 HID interface found (VID=0x{vid:04X}, PID=0x{pid:04X}). "
-                "Enumerated devices did not report product_string 'DLPC900'."
             )
         if device_number >= len(devices):
             raise RuntimeError(
@@ -753,11 +1029,10 @@ class DLPC900:
                 f"{len(devices)} DLPC900 PLM(s) found."
             )
         self._device_info = devices[device_number]
-        # Debug info (enable explicitly if needed):
-        # print(
-        #     f"DLPC900 device {device_number}/{len(devices)}: "
-        #     f"path={self._device_info['path'].decode()}"
-        # )
+        logger.debug(
+            "DLPC900 device %s/%s: path=%s",
+            device_number, len(devices), self._device_info["path"].decode()
+        )
         self._dev = _hid.device()
         try:
             self._dev.open_path(self._device_info["path"])
@@ -768,6 +1043,81 @@ class DLPC900:
             ) from e
 
         self._seq = 0
+
+    @staticmethod
+    def _enumerate(vendor_id=None, product_id=None):
+        """
+        List the connected DLPC900 EVMs.
+
+        Each EVM exposes two USB HID interfaces; only the one reporting the product string
+        ``"DLPC900"`` accepts the commands implemented here.
+
+        Parameters
+        ----------
+        vendor_id, product_id : int OR None
+            USB identifiers. Default to Texas Instruments' DLPC900 EVM.
+
+        Returns
+        -------
+        list of dict
+            :mod:`hid` device dictionaries, in :mod:`hid` enumeration order.
+
+        Raises
+        ------
+        ImportError
+            If the ``hidapi`` package is not installed.
+        """
+        if not HID_AVAILABLE:
+            raise ImportError(
+                "hidapi is required for DLPC900 USB control. "
+                "Install with: pip install hidapi"
+            )
+
+        vid = vendor_id if vendor_id is not None else DLPC900_VENDOR_ID
+        pid = product_id if product_id is not None else DLPC900_PRODUCT_ID
+
+        return [
+            device for device in _hid.enumerate(vid, pid)
+            if device.get("product_string") == "DLPC900"
+        ]
+
+    @staticmethod
+    def info(verbose=True, vendor_id=None, product_id=None):
+        """
+        Get information about the connected DLPC900 EVMs and their device numbers.
+
+        A device's USB path is tied to the physical USB port it is plugged into, so it is
+        a stable way to tell several otherwise-identical PLMs apart.
+
+        Parameters
+        ----------
+        verbose : bool
+            Whether or not to print device information.
+        vendor_id, product_id : int OR None
+            USB identifiers. Default to Texas Instruments' DLPC900 EVM.
+
+        Returns
+        -------
+        list of (int, str) tuples
+            The device number and USB path of each EVM.
+        """
+        devices = DLPC900._enumerate(vendor_id, product_id)
+
+        if verbose:
+            print("DLPC900 Devices:")
+            print("#,  Path")
+
+        device_list = []
+
+        for device_number, device in enumerate(devices):
+            path = device["path"].decode()
+
+            if verbose:
+                print(f"{device_number},  {path}")
+
+            device_list.append((device_number, path))
+
+        return device_list
 
     def _send(self, mode, cmd, payload=None):
         """

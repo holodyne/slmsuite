@@ -130,6 +130,8 @@ class ScreenMirrored(SLM):
     ----------
     window : _Window
         Fullscreen window used to send information to the SLM.
+    display_number : int
+        Number of the display that this SLM is mirrored onto.
     display_shape : (int, int)
         Shape of the mirrored display in pixels, as (height, width).
     """
@@ -224,6 +226,7 @@ class ScreenMirrored(SLM):
         logger.debug("Creating window...")
 
         screen = screens[display_number]
+        self.display_number = display_number
         # Store as (height, width) for consistency with shape convention.
         self.display_shape = (screen.height, screen.width)
 
@@ -273,6 +276,10 @@ class ScreenMirrored(SLM):
 
         # Staging array for expanding a GPU display to RGBA before a single transfer.
         self._display_rgba = None
+        
+    def _log_detail(self):
+        """Identify which display this SLM is mirrored onto. See :meth:`._Loggable._log_detail`."""
+        return "on display {}".format(self.display_number)
 
     def _set_phase_hw(self, display, execute=True, block=True):
         """
@@ -363,8 +370,11 @@ class ScreenMirrored(SLM):
 
         Returns
         -------
-        list of (int, (int, int, int, int), bool, bool) tuples
-            The number, geometry of each display.
+        list of (int, (int, int, int, int), bool, bool, str) tuples
+            The number and geometry of each display, whether it is the main or
+            a mirrored display, and a stable identifier for the display
+            (related to the physical connection port) which (unlike the number)
+            survives other displays being attached or detached.
         """
         if pyglet is None:
             raise ImportError("pyglet not installed. Install to use ScreenMirrored SLMs.")

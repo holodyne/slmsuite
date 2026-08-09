@@ -267,7 +267,22 @@ class _Loggable(_Picklable):
             },
         )
 
-        self.logger.info(f"Initialized {cls}.")
+        detail = self._log_detail()
+        self.logger.info(f"Initialized {cls}." if detail is None else f"Initialized {cls} {detail}.")
+
+    def _log_detail(self):
+        """
+        Extra phrase for the ``"Initialized ..."`` message, e.g. ``"on display 1"``.
+
+        Override to identify which piece of hardware an instance is attached to.
+        Any attribute used here must be set before :meth:`_Loggable.__init__` runs.
+
+        Returns
+        -------
+        str OR None
+            Phrase to append, or ``None`` for the bare message.
+        """
+        return None
 
     # def _log_setattr(self, enabled=True):
     #     """Activates or deactivates automatic logging of tracked attributes on assignment.
