@@ -276,12 +276,17 @@ def save_h5(file_path, data, mode="w"):
                 group[key] = False
                 group[key].attrs["__none__"] = True
             else:
+                # numpy cannot read GPU memory, so bring such data down first.
+                value = data[key]
+                if hasattr(value, "__cuda_array_interface__"):
+                    import cupy
+                    value = cupy.asnumpy(value)
                 try:
-                    array = np.array(data[key])
+                    array = np.array(value)
                 except ValueError as e:
                     raise ValueError(
                         "save_h5() does not support saving staggered arrays such as {}. "
-                        "Arrays must be uniform. {}".format(str(data[key]), str(e))
+                        "Arrays must be uniform. {}".format(str(value), str(e))
                     )
                 except Exception as e:
                     raise e
@@ -391,11 +396,12 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
             cm = cmap
 
         if hasattr(cm, "colors"):
-            c = cm.colors
+            c = np.asarray(cm.colors)
         else:
             c = cm(np.arange(0, cm.N))
+        c = (255 * c).astype(np.uint8)
 
-        images = 255 * c[images]
+        images = c[images]
         if hasnan:
             images[nanmask, 3] = 0
 

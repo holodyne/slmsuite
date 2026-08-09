@@ -4,8 +4,16 @@ import numpy as np
 from scipy.ndimage import zoom
 import PIL
 import io
-from slmsuite.holography.analysis import image_centroids, image_remove_field
+from slmsuite.holography.analysis import _center, image_centroids, image_remove_field
 from slmsuite.holography.analysis.files import _gray2rgb
+
+_CROSSHAIR_OPTIONS = [
+    ("None", "none"),
+    ("Center", "center"),
+    ("Centroid", "centroid"),
+    ("Center+Centroid", "center+centroid"),
+]
+
 
 class _Viewable(object):
 
@@ -102,21 +110,21 @@ class _ViewerObject(object):
     Hidden class for live viewing enabled by ipython widgets.
     """
     def __init__(
-            self,
-            parent,
-            widgets,
-            backend="ipython",
-            live=False,
-            min=None,
-            max=None,
-            log=False,
-            cmap=True,
-            scale=1,
-            border=None,
-            cmap_options=None,
-            crosshair=False,
-            centroid=False,
-        ):
+        self,
+        parent,
+        widgets,
+        backend="ipython",
+        live=False,
+        min=None,
+        max=None,
+        log=False,
+        cmap=True,
+        scale=1,
+        border=None,
+        cmap_options=None,
+        center_crosshair=False,
+        centroid_crosshair=False,
+    ):
         self.parent = parent
         self.backend = backend
 
@@ -144,6 +152,13 @@ class _ViewerObject(object):
         if cmap is True: cmap = cmap_options[0]
         if cmap is False: cmap = "gray"
 
+        # Parse crosshairs into the "+"-delimited form used by the dropdown.
+        crosshair = "+".join(
+            name for name, enabled
+            in (("center", center_crosshair), ("centroid", centroid_crosshair))
+            if enabled
+        ) or "none"
+
         self.state = {
             "backend" : backend,
             "live" : live,
@@ -153,8 +168,7 @@ class _ViewerObject(object):
             "scale" : scale,
             "border" : border,
             "cmap_options" : cmap_options,
-            "center_crosshair" : crosshair,
-            "centroid_crosshair" : centroid,
+            "crosshair" : crosshair,
         }
 
         self.task = None
@@ -204,21 +218,23 @@ class _ViewerObject(object):
         else:
             img = np.copy(src)
 
-        if is_cam and self.state["centroid_crosshair"]:
-            img_median_subtract = image_remove_field([img], deviations=None)
-            cx, cy = np.rint(
-                np.squeeze(image_centroids(img_median_subtract)) + np.flip(img.shape) / 2
-            ).astype(int)
+        crosshairs = self.state["crosshair"].split("+") if is_cam else []
 
-        # Scale intensity of image
-        r = np.array(self.state["range"]).astype(img.dtype)
-        img = np.clip(img, r[0], r[1])
-        img -= r[0]
-        d = float(r[1]) - float(r[0])
+        if "centroid" in crosshairs:
+            gray = img if len(img.shape) == 2 else np.mean(img, axis=-1)
+            centroid = np.squeeze(image_centroids(image_remove_field([gray], deviations=None)))
+
+        # Window the image to the display range, which is in units of the full well.
+        full = self.parent.bitresolution - 1
+        r = np.array(self.state["range"], dtype=float)
+        d = max(r[1] - r[0], 1)
+        img = np.clip(img, r[0] / full, r[1] / full) * (full / d) - r[0] / d
 
         if is_cam and self.state["log"]:
-            # clip to avoid log(0)
-            img = (np.log10(np.clip(img, 1, np.inf)) / np.log10(d+1))
+            img = np.log10(1 + img * d) / np.log10(1 + d)
+
+        # Quantize to the levels of the colormap built below.
+        img = np.rint(img * d).astype(int)
 
         # Make image color
         rgb = _gray2rgb(
@@ -229,21 +245,39 @@ class _ViewerObject(object):
             border=self.state["border"]
         )
 
-        # Add crosshair at the median-subtracted centroid (center of mass) position.
-        if is_cam and self.state["centroid_crosshair"]:
-            rgb[:, :, cx, :3] = 255 - rgb[:, :, cx, :3]
-            rgb[:, cy, :, :3] = 255 - rgb[:, cy, :, :3]
-
-        # Finally, add crosshair in the center.
-        if is_cam and self.state["center_crosshair"]:
-            rgb[:, :, int(rgb.shape[2]/2), :3] = 127 - rgb[:, :, int(rgb.shape[2]/2), :3]
-            rgb[:, int(rgb.shape[1]/2), :, :3] = 127 - rgb[:, int(rgb.shape[1]/2), :, :3]
+        # Add crosshairs: solid at the sensor center, dashed at the median-subtracted centroid.
+        if "center" in crosshairs:
+            self._crosshair(
+                rgb,
+                (_center(W) - x0 + .5) * rgb.shape[-2] / (x1 - x0) - .5,
+                (_center(H) - y0 + .5) * rgb.shape[-3] / (y1 - y0) - .5,
+            )
+        if "centroid" in crosshairs:
+            self._crosshair(
+                rgb,
+                _center(rgb.shape[-2]) + centroid[0],
+                _center(rgb.shape[-3]) + centroid[1],
+                dashed=True,
+            )
 
         buff = io.BytesIO()
         rgb = PIL.Image.fromarray(rgb[0])
         rgb.save(buff, format="png")
 
         return buff.getvalue()
+
+    @staticmethod
+    def _crosshair(rgb, x, y, dashed=False):
+        """Invert a horizontal and vertical line through the displayed pixel ``(x, y)``."""
+        H, W = rgb.shape[-3], rgb.shape[-2]
+        cx, cy = int(np.floor(x + .5)), int(np.floor(y + .5))   # Round half up.
+        dash = slice(None, None, 2 if dashed else None)
+
+        # Each line is drawn only if it falls within the view.
+        if 0 <= cx < W:
+            rgb[..., dash, cx, :3] = 255 - rgb[..., dash, cx, :3]
+        if 0 <= cy < H:
+            rgb[..., cy, dash, :3] = 255 - rgb[..., cy, dash, :3]
 
     def render(self, img=None):
         try:
@@ -414,8 +448,10 @@ class _ViewerObject(object):
 
     def autorange(self, event):
         if self.prev_img is not None:
-            range = [np.min(self.prev_img), np.max(self.prev_img)]
-            self.state["range"] = self.widgets["range"].value = range
+            # The slider is in raw counts; the image is in units of the full well.
+            range = np.array([np.min(self.prev_img), np.max(self.prev_img)])
+            range = np.rint(range * (self.parent.bitresolution - 1)).astype(int)
+            self.state["range"] = self.widgets["range"].value = [int(r) for r in range]
 
         self.render()
 
@@ -423,7 +459,7 @@ class _ViewerObject(object):
         from ipywidgets import Image
         from IPython.display import display, HTML
 
-        self.prev_img = np.zeros(self.parent.shape, dtype=self.parent.dtype)
+        self.prev_img = np.zeros(self.parent.shape)
 
         self.image = Image(
             value=self.prev_img,
@@ -516,20 +552,18 @@ class _ViewerObject(object):
                     tooltip="Toggle logarithmic scaling of the current plot.",
                     layout=item_layout,
                 ),
-                "center_crosshair" : Checkbox(
-                    value=self.state["center_crosshair"],
-                    description="Center Crosshair",
-                    tooltip="Toggle a crosshair centered on the image.",
-                    layout=item_layout,
-                ),
-                "centroid_crosshair" : Checkbox(
-                    value=self.state["centroid_crosshair"],
-                    description="Centroid Crosshair",
-                    tooltip="Toggle a crosshair at the median-subtracted centroid (center of mass) of the image.",
+                "crosshair" : Dropdown(
+                    options=_CROSSHAIR_OPTIONS,
+                    value=self.state["crosshair"],
+                    description="Crosshairs",
+                    tooltip=(
+                        "Overlay a solid crosshair on the center of the view and/or a dashed "
+                        "crosshair on the median-subtracted centroid (center of mass) of the view."
+                    ),
                     layout=item_layout,
                 ),
             })
-            self.state_keys += ["live", "range", "log", "center_crosshair", "centroid_crosshair"]
+            self.state_keys += ["live", "range", "log", "crosshair"]
 
         for k, w in self.widgets.items():
             if k == "autorange":
@@ -577,8 +611,7 @@ class _ViewerObject(object):
                         HBox([
                             self.widgets["cmap"],
                             self.widgets["log"],
-                            self.widgets["center_crosshair"],
-                            self.widgets["centroid_crosshair"],
+                            self.widgets["crosshair"],
                         ]),
                         HBox([
                             self.widgets["range"],
