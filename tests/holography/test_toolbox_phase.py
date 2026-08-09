@@ -1046,6 +1046,26 @@ def test_hermite_gaussian(simple_grid, subtests):
         assert len(unique) == 2
 
 
+def test_structured_mode_scale(subtests):
+    """The LG/HG sign changes sit on the analytic zeros of the mode polynomials."""
+    x = np.linspace(-100, 100, 801)
+    (X, Y) = np.meshgrid(x, x)
+    w = 40.0
+    tolerance = 2 * (x[1] - x[0])
+
+    with subtests.test("hermite_gaussian n=2 nodes at |x| = w/2"):
+        row = phase.hermite_gaussian((X, Y), n=2, m=0, w=w)[len(x) // 2, :]
+        nodes = np.abs(x[:-1][np.abs(np.diff(row)) > 0.1])
+        assert len(nodes) == 2
+        assert np.allclose(nodes, w / 2, atol=tolerance)
+
+    with subtests.test("laguerre_gaussian p=1 ring at r = w/sqrt(2)"):
+        row = phase.laguerre_gaussian((X, Y), l=0, p=1, w=w)[len(x) // 2, :]
+        nodes = np.abs(x[:-1][np.abs(np.diff(row)) > 0.1])
+        assert len(nodes) == 2
+        assert np.allclose(nodes, w / np.sqrt(2), atol=tolerance)
+
+
 def test_ince_gaussian(simple_grid, subtests):
     """Test ince_gaussian() structured light generation."""
     from slmsuite.holography.toolbox.phase import _ince_polynomial

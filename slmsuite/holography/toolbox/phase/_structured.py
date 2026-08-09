@@ -2,21 +2,10 @@
 Structured light.
 """
 import os
-import warnings
-import time
 import numpy as np
-try:
-    import cupy as cp   # type: ignore
-except ImportError:
-    cp = np
 from scipy import special
-from math import factorial
-import matplotlib.pyplot as plt
-from typing import Tuple, Union, Callable
 
-
-from slmsuite.misc.math import REAL_TYPES
-from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
+from slmsuite.holography.toolbox import _process_grid
 from slmsuite.holography.toolbox.phase._misc import _determine_source_radius
 
 
@@ -54,6 +43,7 @@ def laguerre_gaussian(grid, l, p=0, w=None):
     p : int
         The radial wavenumber. Should be non-negative.
     w : float OR None
+        The source :math:`1/e` field-amplitude (:math:`1/e^2` intensity) radius.
         See :meth:`~slmsuite.holography.toolbox._determine_source_radius()`.
 
     Returns
@@ -73,7 +63,7 @@ def laguerre_gaussian(grid, l, p=0, w=None):
     if l != 0:
         canvas += l * theta_grid
     if p != 0:
-        canvas += np.pi * np.heaviside(-special.genlaguerre(p, np.abs(l))(16 * rr_grid / w / w), 0)
+        canvas += np.pi * np.heaviside(-special.genlaguerre(p, np.abs(l))(2 * rr_grid / w / w), 0)
 
     return canvas
 
@@ -95,6 +85,7 @@ def hermite_gaussian(grid, n, m, w=None):
         The horizontal ``n`` and vertical ``m`` wavenumbers. ``n = m = 0`` yields a flat
         phase and a Gaussian beam.
     w : float
+        The source :math:`1/e` field-amplitude (:math:`1/e^2` intensity) radius.
         See :meth:`~slmsuite.holography.toolbox._determine_source_radius()`.
 
     Returns
@@ -105,8 +96,7 @@ def hermite_gaussian(grid, n, m, w=None):
     (x_grid, y_grid) = _process_grid(grid)
     w = _determine_source_radius(grid, w)
 
-    # factor = np.sqrt(2) / w
-    factor = 4 / w
+    factor = np.sqrt(2) / w
 
     # Generate the amplitude of a Hermite-Gaussian mode.
     phase = special.hermite(n)(factor * x_grid) * special.hermite(m)(factor * y_grid)
@@ -338,13 +328,8 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
     # IG beam at the waist:
     # IG^e_{p,m} ~ C_p^m(i*xi, eps) * C_p^m(eta, eps) * exp(-r^2/w^2)
     # IG^o_{p,m} ~ S_p^m(i*xi, eps) * S_p^m(eta, eps) * exp(-r^2/w^2)
-    # For a phase-only pattern, extract the phase of the transverse mode
-    # (the Gaussian envelope is real and positive, so it doesn't affect phase).
-    #
-    # Note: C_p^m(i*xi) is always real (cosine series → cosh terms).
-    # S_p^m(i*xi) is always purely imaginary (sine series → i*sinh terms).
-    # For the radial part of odd modes, we use the real amplitude
-    # S_p^m(i*xi) / i to ensure proper helical combination.
+    # The Gaussian envelope is real and positive, so the transverse mode sets the phase.
+    # S_p^m(i*xi) is purely imaginary, so the odd radial part is taken as S_p^m(i*xi) / i.
     if parity == 1:  # Even
         angular = _ince_polynomial(p, m, 1, ellipticity, eta)
         radial = _ince_polynomial(p, m, 1, ellipticity, 1j * xi)
@@ -431,7 +416,8 @@ def airy(grid, f=(np.inf, np.inf), w=None):
     Returns the cubic phase farfield for an
     `Airy <http://dx.doi.org/10.1103/PhysRevLett.99.213901>`_ beam.
 
-    Applies a cubic phase ramp :math:`\phi(x,y) = (x/f_x)^3 + (y/f_y)^3`
+    Applies a cubic phase ramp
+    :math:`\phi(x,y) = \left(\frac{x}{f_xw}\right)^3 + \left(\frac{y}{f_yw}\right)^3`
     which, after propagation, produces a non-diffracting accelerating Airy beam.
     The cubic phase is scaled by the source radius to match the beam size.
 

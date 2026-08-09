@@ -42,7 +42,7 @@ class SLM(_Common, ABC):
     Abstract class for SLMs.
 
     Attributes
-    ------
+    ----------
     name : str
         Name of the SLM.
     shape : (int, int)
@@ -716,7 +716,7 @@ class SLM(_Common, ABC):
                 xp.mod(phase, self.bitresolution * self.phase_scaling, out=phase)
                 phase += self.bitresolution * (1 - self.phase_scaling)
 
-                # Set values still out of range to zero.
+                # Set values still out of range to the maximum.
                 if self.phase_scaling > 1:
                     phase[phase < 0] = self.bitresolution - 1
             else:
@@ -1403,9 +1403,9 @@ class SLM(_Common, ABC):
         r"""
         Fits the SLM's :attr:`aperture` to the measured source amplitude distribution in
         :attr:`source` ``["amplitude"]`` (analyzed via ``"moments"`` or least-squares
-        ``"fit"``). This sets a circular aperture whose source amplitude radius (:math:`1/e`)
-        matches the radial standard deviation of the amplitude, and (if ``recenter``)
-        whose center matches the amplitude centroid.
+        ``"fit"``). This sets a circular aperture whose source radius is the :math:`1/e`
+        field-amplitude radius (:math:`1/e^2` in intensity) of the measured amplitude, and
+        (if ``recenter``) whose center matches the amplitude centroid.
 
         If no source amplitude has been measured, the aperture is set to a circular
         aperture of source radius equal to a quarter of the smallest SLM extent.
@@ -1440,12 +1440,12 @@ class SLM(_Common, ABC):
 
         if method == "fit":
             result = analysis.image_fit(amp, plot=False)
-            std = np.array([result[0, 5], result[0, 6]])
+            radius = np.sqrt(2) * np.array([result[0, 5], result[0, 6]])
             center = np.array([result[0, 1], result[0, 2]])
         elif method == "moments":
             # Do moments in power-space, not amplitude.
             center = analysis.image_positions(np.square(amp))
-            std = np.sqrt(2 * analysis.image_variances(np.square(amp), centers=center)[:2])
+            radius = np.sqrt(4 * analysis.image_variances(np.square(amp), centers=center)[:2])
             center = np.squeeze(center)
         else:
             raise ValueError(f"method '{method}' not recognized; use 'moments' or 'fit'.")
@@ -1455,7 +1455,7 @@ class SLM(_Common, ABC):
         # _center_pix_to_norm). Use the same convention to recover absolute pixels.
         center_pix = np.squeeze(center) + (np.flip(self.shape) - 1) / 2.0
 
-        radius_norm = np.mean(self.pitch * np.squeeze(std))
+        radius_norm = np.mean(self.pitch * np.squeeze(radius))
         spec = 1.0 / (2.0 * radius_norm)
 
         center_norm = self.aperture.center
