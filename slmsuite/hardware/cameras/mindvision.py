@@ -54,6 +54,7 @@ class MindVision(Camera):
         if MindVision.sdk is None:
             logger.debug("mvsdk initializing...")
             _mvsdk._Init()
+            MindVision.sdk = _mvsdk
 
         # Grab the list of cameras.
         logger.debug("Looking for cameras...")
@@ -147,6 +148,10 @@ class MindVision(Camera):
         """
         if _mvsdk is None:
             raise ImportError("mvsdk not installed. Copy mvsdk.py from dddomodossola/nastroprint to use Mindvision cameras.")
+
+        if MindVision.sdk is None:
+            _mvsdk._Init()
+            MindVision.sdk = _mvsdk
 
         camera_list = _mvsdk.CameraEnumerateDevice()
         serial_list = [cam.GetSn() for cam in camera_list]

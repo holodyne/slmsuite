@@ -387,22 +387,24 @@ class SimulatedCamera(Camera):
 
         img = img * (self.exposure_s * self.gain)
 
+        frame_bitresolution = 2 ** self.bitdepth
+
         # Basic noise sources.
         if self.noise is not None:
             for key in self.noise.keys():
                 if key == 'dark':
                     # Background/dark current - exposure dependent
-                    dark = self.noise['dark'](np.ones_like(img) * self.bitresolution) * self.exposure_s
+                    dark = self.noise['dark'](np.ones_like(img) * frame_bitresolution) * self.exposure_s
                     img = img + dark
                 elif key == 'read':
                     # Readout noise - exposure independent
-                    read = self.noise['read'](np.ones_like(img) * self.bitresolution)
+                    read = self.noise['read'](np.ones_like(img) * frame_bitresolution)
                     img = img + read
                 else:
                     raise RuntimeError('Unknown noise source %s specified!'%(key))
 
         # Truncate to maximum readout value
-        img[img > self.bitresolution-1] = self.bitresolution-1
+        img[img > frame_bitresolution-1] = frame_bitresolution-1
 
         # Quantize: all power in one pixel (img=1) -> maximum readout value at base exposure=1
         # img = np.rint(img)

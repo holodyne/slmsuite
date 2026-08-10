@@ -50,11 +50,12 @@ class SimulatedSLM(SLM):
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
         """
-        super().__init__(resolution, pitch_um=pitch_um, settle_time_s=0, **kwargs)
+        kwargs.setdefault("settle_time_s", 0)
+        super().__init__(resolution, pitch_um=pitch_um, **kwargs)
 
         self.gamma_sim = gamma_sim
 
-        if source is None:
+        if not source:
             self.source["amplitude_sim"] = np.ones_like(self.grid[0])
             self.source["phase_sim"] = np.zeros_like(self.grid[0])
         else:
@@ -64,6 +65,12 @@ class SimulatedSLM(SLM):
 
             # Handle case where `source` only has real values from experiment
             if "amplitude_sim" not in source.keys():
+                missing = [k for k in ("amplitude", "phase") if k not in self.source]
+                if missing:
+                    raise ValueError(
+                        f"source must contain 'amplitude_sim' and 'phase_sim', or {missing} "
+                        f"to derive them from."
+                    )
                 self.source["amplitude_sim"] = self.source["amplitude"]
                 self.source["phase_sim"] = -self.source["phase"]
 

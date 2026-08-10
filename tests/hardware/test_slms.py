@@ -9,9 +9,12 @@ import pytest
 import numpy as np
 import matplotlib.pyplot as plt
 
+from slmsuite.hardware.slms.slm import SLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.hardware.slms.segmented import SegmentedSLM
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
+
+from conftest import driver_classes
 
 
 def _quadratic_gamma(bitresolution):
@@ -50,6 +53,13 @@ class TestSLM:
             assert len(slm.grid) == 2
             for g in slm.grid:
                 assert g.shape == slm.shape
+
+        with subtests.test("grid and phase are float32"):
+            assert all(g.dtype == np.float32 for g in slm.grid)
+            assert slm.phase.dtype == np.float32
+            slm.set_aperture(radius=0.3, units="frac", center=(100, 100))
+            assert all(g.dtype == np.float32 for g in slm.grid)
+            slm.set_aperture("cropped")
 
         with subtests.test("custom wav_design_um"):
             s = SimulatedSLM(resolution=(128, 128), wav_um=0.78, wav_design_um=1.064)
@@ -185,6 +195,7 @@ class TestSLM:
             int_data = np.full(slm.shape, slm.bitresolution // 2, dtype=slm.dtype)
             slm.set_phase(int_data, phase_correct=False)
             np.testing.assert_array_equal(slm.display, int_data)
+            assert slm.phase.dtype == np.float32
 
         with subtests.test("test integer overflow"):
             int_data = np.full(slm.shape, 2 * slm.bitresolution, dtype=np.int64)
@@ -199,6 +210,31 @@ class TestSLM:
         with subtests.test("set_phase returns display"):
             result = slm.set_phase(np.zeros(slm.shape), phase_correct=False)
             assert result is slm.display
+
+        with subtests.test("execute and block reach the hardware"):
+            class Recording(SimulatedSLM):
+                """An SLM advertising execute and block, recording what it is given."""
+                calls = []
+
+                def _set_phase_hw(self, display, execute=True, block=True):
+                    self.calls.append((execute, block))
+
+            s = Recording(resolution=(32, 32))
+            for kwargs, expected in (
+                ({}, [(True, True)]),
+                ({"execute": False}, [(False, True)]),
+                ({"execute": False, "block": False}, [(False, False)]),
+                ({"execute": True, "block": False}, [(True, False)]),
+            ):
+                s.calls.clear()
+                s.set_phase(np.zeros(s.shape), phase_correct=False, **kwargs)
+                assert s.calls == expected
+            s.close()
+
+        with subtests.test("hardware without execute or block refuses them"):
+            for kwarg in ("execute", "block"):
+                with pytest.raises(ValueError, match=kwarg):
+                    slm.set_phase(np.zeros(slm.shape), **{kwarg: False})
 
     def test_set_gamma(self, subtests):
         """The table inverts a measured response; clearing it restores the linear path."""
@@ -572,17 +608,58 @@ class TestSLM:
             ax = slm.plot()
             assert ax is not None
 
-        with subtests.test("scalar limits"):
-            ax = slm.plot(limits=0.5)
-            assert ax is not None
+        phase = np.linspace(-4 * np.pi, 6 * np.pi, slm.shape[0] * slm.shape[1])
+        phase = phase.reshape(slm.shape).astype(np.float32)
 
-        with subtests.test("2x2 limits"):
-            ax = slm.plot(limits=[[0, 100], [0, 100]])
-            assert ax is not None
+        with subtests.test("phase is rendered wrapped, in units of pi"):
+            ax = slm.plot(phase=phase)
+            im = ax.get_images()[0]
+            np.testing.assert_allclose(
+                np.asarray(im.get_array()), np.mod(phase, 2 * np.pi) / np.pi
+            )
+            assert im.get_cmap().name == "twilight"
+            assert im.get_interpolation() == "none"
+            np.testing.assert_allclose(im.get_clim(), (0, 2))
+            plt.close("all")
 
-        with subtests.test("bad limits raises"):
-            with pytest.raises(ValueError, match="not recognized"):
-                slm.plot(limits=[1, 2, 3])
+        with subtests.test("colorbar drawn only when requested, labeled in pi"):
+            ax = slm.plot(phase=phase, cbar=True)
+            axes = ax.get_figure().axes
+            assert len(axes) == 2
+            assert [t.get_text() for t in axes[1].get_yticklabels()] == [
+                "$0\\pi$", "$1\\pi$", "$2\\pi$"
+            ]
+            plt.close("all")
+            ax = slm.plot(phase=phase, cbar=False)
+            assert len(ax.get_figure().axes) == 1
+            plt.close("all")
+
+        with subtests.test("labels and title applied only when the phase fills the SLM"):
+            ax = slm.plot(phase=phase, title="MyTitle")
+            assert ax.get_title() == "MyTitle"
+            assert ax.get_xlabel() == "SLM $n$ [pix]"
+            assert ax.get_ylabel() == "SLM $m$ [pix]"
+            plt.close("all")
+            ax = slm.plot(phase=phase[::2, ::2])
+            assert ax.get_xlabel() == "" and ax.get_ylabel() == ""
+            plt.close("all")
+
+        with subtests.test("aperture overlaid only when it crops and is requested"):
+            ax = slm.plot(phase=phase, aperture=True)
+            assert len(ax.collections) == 0
+            plt.close("all")
+
+            slm.set_aperture(radius=0.3, units="frac", center=(100, 100))
+            ax = slm.plot(phase=phase, aperture=True)
+            assert len(ax.collections) == 1
+            plt.close("all")
+            ax = slm.plot(phase=phase, aperture=False)
+            assert len(ax.collections) == 0
+            plt.close("all")
+            ax = slm.plot(phase=phase[::2, ::2], aperture=True)
+            assert len(ax.collections) == 0
+            plt.close("all")
+            slm.set_aperture("cropped")
 
     def test_plot_source(self, slm, subtests):
         """plot_source for measured and simulated distributions."""
@@ -888,3 +965,14 @@ class TestScreenMirrored:
                 with subtests.test("{}: {}".format(name, label)):
                     frame = self._pack(d, self._blank(xp))
                     assert np.array_equal(cp.asnumpy(frame), reference)
+
+
+@pytest.mark.parametrize(
+    "driver", driver_classes(SLM), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]
+)
+def test_slm_driver_is_concrete(driver):
+    """Every shipped SLM driver implements the whole abstract interface."""
+    assert not driver.__abstractmethods__, (
+        f"{driver.__module__}.{driver.__name__} leaves "
+        f"{sorted(driver.__abstractmethods__)} abstract, so it cannot be instantiated."
+    )

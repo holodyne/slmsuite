@@ -630,8 +630,9 @@ class Cheetah640(Camera):
     def _set_woi_hw(self, woi):
         """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
         # Xenics WoiSX/WoiEX/WoiSY/WoiEY are physical (unbinned) sensor pixel coordinates.
-        # Binning is not supported on the Cheetah640; _binning is always (1, 1).
+        binx, biny = self._binning
         x, w, y, h = [int(v) for v in woi]
+        x, w, y, h = x * binx, w * binx, y * biny, h * biny
 
         if self.is_capturing():
             self.stop_capture()
@@ -661,7 +662,8 @@ class Cheetah640(Camera):
 
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
-        # Returns physical (unbinned) sensor pixel coordinates converted from start/end to (x, w, y, h).
+        # Physical (unbinned) start/end coordinates; divide by binning to get binned coords.
+        binx, biny = self._binning
         woi_props = [b"WoiSX(0)", b"WoiEX(0)", b"WoiSY(0)", b"WoiEY(0)"]
         vals = []
         for prop in woi_props:
@@ -669,7 +671,7 @@ class Cheetah640(Camera):
             self.xeneth.XC_GetPropertyValueL(self.cam, prop, byref(v))
             vals.append(v.value)
         x, x_end, y, y_end = vals
-        return (x, x_end - x + 1, y, y_end - y + 1)
+        return (x // binx, (x_end - x + 1) // binx, y // biny, (y_end - y + 1) // biny)
 
     def set_framerate(self, framerate):
         """
@@ -1302,7 +1304,7 @@ class Cheetah640(Camera):
             if err != I_OK:
                 self.logger.warning("Problem while fetching frame, errorCode %d", err)
             else:
-                im = np.frombuffer(self.frame_buffer, c_ushort).reshape(self.shape)
+                im = np.frombuffer(self.frame_buffer, c_ushort).reshape(self._hw_image_shape)
                 self.logger.info("Stopping capture...")
                 err = self.xeneth.XC_StopCapture(self.cam)
                 if err != I_OK:

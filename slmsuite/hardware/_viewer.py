@@ -267,12 +267,11 @@ class _ViewerObject:
             gray = img if len(img.shape) == 2 else np.mean(img, axis=-1)
             centroid = np.squeeze(image_centroids(image_remove_field([gray], deviations=None)))
 
-        # Window the image to the display range, which is in units of the full well.
+        # Window the raw counts to the display range.
         # The scalars are plain floats so that they do not promote img back to double.
-        full = float(self.parent.bitresolution - 1)
         r = [float(v) for v in self.state["range"]]
         d = max(r[1] - r[0], 1.)
-        img = np.clip(img, r[0] / full, r[1] / full) * (full / d) - r[0] / d
+        img = np.clip(img, r[0], r[1]) * (1. / d) - r[0] / d
 
         if is_cam and self.state["log"]:
             img = np.log10(1 + img * d) / np.log10(1 + d)
@@ -512,9 +511,9 @@ class _ViewerObject:
 
     def autorange(self, event):
         if self.prev_img is not None:
-            # The slider is in raw counts; the image is in units of the full well.
+            # Both the slider and the image are in raw counts.
             range = np.array([np.min(self.prev_img), np.max(self.prev_img)])
-            range = np.rint(range * (self.parent.bitresolution - 1)).astype(int)
+            range = np.clip(np.rint(range), 0, self.parent.bitresolution - 1).astype(int)
             self.state["range"] = self.widgets["range"].value = [int(r) for r in range]
 
         self.render()

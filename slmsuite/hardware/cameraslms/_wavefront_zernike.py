@@ -124,7 +124,7 @@ class _WavefrontCalibrationZernike(object):
             at the beginning of the calibration. Defaults to 10 iterations.
             If integer, then uses this number as the number of iterations to optimize the weights.
             Must be at least 1.
-        plot : int or bool
+        plot : int OR bool
             Whether to provide visual feedback, options are:
 
             - ``-1`` : No plots or tqdm prints.
@@ -216,13 +216,13 @@ class _WavefrontCalibrationZernike(object):
             x = np.clip(x, np.min(sweep), np.max(sweep))
             railed = np.sum(np.logical_or(x == np.min(sweep), x == np.max(sweep))) / float(len(x))
 
-            if plot > 0:
-                result -= np.min(result, axis=0, keepdims=True)
-                result /= np.max(result, axis=0, keepdims=True)
+            if plot >= 1:
+                result_plot = result - np.min(result, axis=0, keepdims=True)
+                result_plot /= np.max(result_plot, axis=0, keepdims=True)
                 plt.imshow(
-                    result,
+                    result_plot,
                     interpolation="none",
-                    extent=[-.5, result.shape[1]-.5, np.max(sweep), np.min(sweep)]
+                    extent=[-.5, result_plot.shape[1]-.5, np.max(sweep), np.min(sweep)]
                 )
                 cbar = plt.colorbar()
                 plt.scatter(
@@ -254,7 +254,6 @@ class _WavefrontCalibrationZernike(object):
         # Parse calibration_points and zernike_indices
         calibration_points_ij = None
         metric_stats = []
-        position_stats = []
         weights = None
         spot_integration_width_ij = None
 
@@ -298,11 +297,6 @@ class _WavefrontCalibrationZernike(object):
                 else:
                     metric_stats = []
 
-                if "position_stats" in dat:
-                    position_stats = list(copy.copy(dat["position_stats"]))
-                else:
-                    position_stats = []
-
                 if "weights" in dat:
                     weights = dat["weights"]
                 else:
@@ -311,8 +305,15 @@ class _WavefrontCalibrationZernike(object):
                 calibration_points = 100
 
         if np.isscalar(calibration_points):
+            requested = int(calibration_points)
             pitch = np.sqrt(np.prod(self.cam.shape) / calibration_points)
-            calibration_points = self.wavefront_calibration_points(pitch, plot=True)
+            calibration_points = self.wavefront_calibration_points(pitch, plot=plot)
+            if np.shape(calibration_points)[1] < 2:
+                raise ValueError(
+                    f"Requesting {requested} calibration points produced "
+                    f"{np.shape(calibration_points)[1]}; at least two are required. "
+                    f"Increase calibration_points or pass explicit points."
+                )
             # wavefront_calibration_points returns "ij"; convert to "zernike" basis.
             calibration_points = convert_vector(
                 calibration_points, from_units="ij", to_units="zernike", hardware=self
@@ -443,7 +444,7 @@ class _WavefrontCalibrationZernike(object):
             self.cam.flush()
             img = self.cam.get_image()
 
-            if plot:
+            if plot >= 1:
                 take = analysis.take(
                     img,
                     hologram.spot_ij,
@@ -481,7 +482,7 @@ class _WavefrontCalibrationZernike(object):
 
         # Refine hologram position.
         if optimize_position:
-            self.slm.set_phase(tick())
+            self.slm.set_phase(tick(), settle=True, phase_correct=False)
             hologram.refine_offset(img=None, basis="kxy", force_affine=global_correction, plot=plot)
 
         # Calibration loop.
@@ -507,6 +508,12 @@ class _WavefrontCalibrationZernike(object):
             # Analyze the results by fitting each to a parabola.
             correction, correction_error, railed = fit_term(perturbation, result, i, calibration_points[j, :])
 
+            if railed > 0:
+                self.logger.warning(
+                    "Zernike Z_%d: %.0f%% of fitted optima hit the perturbation edge; "
+                    "consider widening `perturbation`.", i, 100 * railed
+                )
+
             # Apply the correction to the spots (globally if desired).
             if global_correction:
                 correction = np.mean(correction)
@@ -516,7 +523,6 @@ class _WavefrontCalibrationZernike(object):
         pattern = tick()
         self.slm.set_phase(pattern, settle=True, phase_correct=False)
         metric_stats.append(callback())
-        # position_stats.append(calibration_points)
 
         self.calibrations["wavefront_zernike"] = {
             "initial_points": initial_points,
@@ -526,7 +532,6 @@ class _WavefrontCalibrationZernike(object):
             "calibration_points_ij" : calibration_points_ij,
             "spot_integration_width_ij" : spot_integration_width_ij,
             "metric_stats" : metric_stats,
-            # "position_stats" : position_stats,
             "weights" : hologram.get_weights(),
         }
         self.calibrations["wavefront_zernike"].update(self._get_calibration_metadata())
@@ -575,7 +580,7 @@ class _WavefrontCalibrationZernike(object):
         smoothing=0.25,
         smoothing_xy=0.25,
         smoothing_z=None,
-        plot=False,
+        plot=0,
     ):
         """
         For a 2D array of Zernike-corrected spots, produces a smoothed version of the
@@ -600,7 +605,7 @@ class _WavefrontCalibrationZernike(object):
             Not yet implemented. Would behave similarly to ``smoothing_xy`` for the
             focus term. If ``None``, focus would be treated the same as the higher order
             terms.
-        plot : bool
+        plot : int OR bool
             Whether to enable debug plots.
         """
         # Parse inputs.
@@ -650,7 +655,7 @@ class _WavefrontCalibrationZernike(object):
         ])
 
         # Average spot coordinates.
-        if plot:
+        if plot >= 1:
             plt.scatter(*points_ij[:2], c="r", zorder=10)
 
         for i in range(points_ij.shape[1]):
@@ -662,7 +667,7 @@ class _WavefrontCalibrationZernike(object):
 
             neighbors.discard(i)
 
-            if plot:
+            if plot >= 1:
                 for n in neighbors:
                     plt.plot(
                         [points_ij[0, n], points_ij[0, i]],
@@ -685,7 +690,7 @@ class _WavefrontCalibrationZernike(object):
             for n in neighbors:
                 final[to_smooth, i] += smoothing * vectors[to_smooth, n] / len(neighbors)
 
-        if plot:
+        if plot >= 1:
             plt.gca().invert_yaxis()
             plt.title("Nearest Neighbor Smoothing")
 

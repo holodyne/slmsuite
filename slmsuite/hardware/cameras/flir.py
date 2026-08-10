@@ -158,7 +158,7 @@ class FLIR(Camera):
                     self.cam.GammaEnable.SetValue(False)
                 else:
                     logger.warning("GammaEnable is not writable; could not disable.")
-            except PySpin.SpinnakerException as ex:
+            except PySpin.SpinnakerException:
                 try:
                     if self.cam.Gamma.GetAccessMode() == PySpin.RW:
                         self.cam.Gamma.SetValue(1.0)
@@ -212,14 +212,15 @@ class FLIR(Camera):
             **kwargs
         )
 
-        # Cache exposure bounds (must be after super().__init__ which sets to None)
-        try:
-            self.exposure_bounds_s = (
-                self.cam.ExposureTime.GetMin() / 1e6,
-                self.cam.ExposureTime.GetMax() / 1e6,
-            )
-        except PySpin.SpinnakerException:
-            pass
+        # Cache exposure bounds from hardware, unless the user supplied them.
+        if self.exposure_bounds_s is None:
+            try:
+                self.exposure_bounds_s = (
+                    self.cam.ExposureTime.GetMin() / 1e6,
+                    self.cam.ExposureTime.GetMax() / 1e6,
+                )
+            except PySpin.SpinnakerException:
+                pass
 
         self.logger.debug("Successfully initialized FLIR cam %s.", serial)
 

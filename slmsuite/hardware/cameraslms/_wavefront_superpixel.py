@@ -149,7 +149,7 @@ class _WavefrontCalibrationSuperpixel(object):
             If ``False``, the power in the uncorrected target beam
             is used as the source of amplitude measurement.
             If ``True``, adds another step to measure the power of the corrected target beam.
-        plot : int or bool
+        plot : int OR bool
             Whether to provide visual feedback, options are:
 
             - ``-1`` : No plots or tqdm prints.
@@ -206,6 +206,8 @@ class _WavefrontCalibrationSuperpixel(object):
             return image
 
         # Parse exclude_superpixels
+        if exclude_superpixels is None:
+            exclude_superpixels = (0, 0)
         exclude_superpixels = np.array(exclude_superpixels)
 
         if exclude_superpixels.shape == slm_supershape:
@@ -288,12 +290,15 @@ class _WavefrontCalibrationSuperpixel(object):
         index_image = np.reshape(np.arange(num_superpixels, dtype=int), slm_supershape)
         active_superpixels = index_image[np.logical_not(exclude_superpixels)].ravel()
 
+        # The schedule offset indexes the active list, so use the reference's rank there.
+        reference_rank = np.searchsorted(active_superpixels, reference_superpixels)
+
         # The base schedule cycles through all indices apart from the base reference index.
         scheduling = np.zeros((num_points, num_measurements), dtype=int)
 
         scheduling[:, :(num_active_superpixels-1)] = np.mod(
             np.repeat(np.arange(num_active_superpixels-1, dtype=int)[np.newaxis, :] + 1, num_points, axis=0) +
-            np.repeat(reference_superpixels[:, np.newaxis], num_active_superpixels-1, axis=1),
+            np.repeat(reference_rank[:, np.newaxis], num_active_superpixels-1, axis=1),
             num_active_superpixels
         )
 
@@ -333,6 +338,9 @@ class _WavefrontCalibrationSuperpixel(object):
                                 scheduling[i, k] == -1
                                 and not np.any(scheduling[:, k] == reference_index)
                                 and not np.any(scheduling[:, k] == displaced_index)
+                                and not np.any(np.logical_and(
+                                    reference_superpixels == displaced_index, scheduling[:, k] != -1
+                                ))
                             ):
                                 scheduling[i, k] = displaced_index
                                 break
@@ -1132,7 +1140,7 @@ class _WavefrontCalibrationSuperpixel(object):
             return result
 
         measurements = range(num_measurements)
-        if plot > -1:
+        if plot >= 0:
             measurements = tqdm(measurements, position=1, leave=True, desc="calibration")
 
         # Proceed with all of the superpixels.
@@ -1195,7 +1203,7 @@ class _WavefrontCalibrationSuperpixel(object):
         remove_blaze=True,
         remove_background=True,
         apply=True,
-        plot=False
+        plot=0
     ):
         """
         Processes :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations` ``["wavefront"]``
@@ -1237,7 +1245,7 @@ class _WavefrontCalibrationSuperpixel(object):
             Whether to apply the processed calibration to the associated SLM.
             Otherwise, this function only returns and maybe
             plots these results. Defaults to ``True``.
-        plot : bool
+        plot : int OR bool
             Whether to enable debug plots.
 
         Returns
@@ -1289,6 +1297,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 "superpixel_size": data["superpixel_size"],
                 "interference_point": data["calibration_points"][:, index],
                 "interference_size": data["interference_size"],
+                "previous_phase_correction": data.get("previous_phase_correction", False),
             }
 
             keys = [

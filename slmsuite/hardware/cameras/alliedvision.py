@@ -173,14 +173,15 @@ class AlliedVision(Camera):
             **kwargs,
         )
 
-    def close(self, close_sdk=True):
+    def close(self, close_sdk=False):
         """
         See :meth:`.Camera.close`
 
         Parameters
         ----------
         close_sdk : bool
-            Whether or not to close the :mod:`vmbpy` instance.
+            Whether or not to close the :mod:`vmbpy` instance,
+            which is shared by every open :class:`.AlliedVision`.
         """
         self.cam.__exit__(None, None, None)
 

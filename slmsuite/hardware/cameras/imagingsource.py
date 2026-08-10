@@ -176,7 +176,7 @@ class ImagingSource(Camera):
 
     def close(self):
         """See :meth:`.Camera.close`."""
-        ImagingSource.safe_call(ImagingSource.sdk.IC_ReleaseGrabber, self.cam)
+        ImagingSource.sdk.IC_ReleaseGrabber(self.cam)
         del self.cam
 
     @staticmethod

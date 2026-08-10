@@ -16,7 +16,7 @@ class _SettleCalibration(object):
     ### Settle Time Calibration ###
 
     def settle_calibrate(
-        self, vector=(.005, .005), size=None, times=None, settle_time_s=1
+        self, vector=(.005, .005), size=None, times=None, settle_time_s=1, plot=0
     ):
         """
         Approximates the :math:`1/e` settle time of the SLM.
@@ -39,6 +39,9 @@ class _SettleCalibration(object):
         settle_time_s : float OR None
             Time between measurements to allow the SLM to re-settle. If ``None``, uses the
             current default in the SLM.
+        plot : int OR bool
+            If ``>= 1``, shows a debug plot with the exponential fit.
+            If ``< 0``, also suppresses the progress bar.
         """
         # Parse vector.
         point = self.kxyslm_to_ijcam(vector)
@@ -67,10 +70,7 @@ class _SettleCalibration(object):
 
         results = []
 
-        verbose = True
-        iterations = times
-        if verbose:
-            iterations = tqdm(times)
+        iterations = tqdm(times) if plot >= 0 else times
 
         # Collect data
         for t in iterations:
@@ -85,7 +85,9 @@ class _SettleCalibration(object):
             time.sleep(t)
 
             image = self.cam.get_image()
-            results.append(analysis.take(image, point, size, centered=True, integrate=True))
+            results.append(float(np.nansum(analysis.take(
+                image, point, size, centered=True, clip=True
+            ))))
 
         self.calibrations["settle"] = {
             "times" : times,
@@ -93,18 +95,18 @@ class _SettleCalibration(object):
         }
         self.calibrations["settle"].update(self._get_calibration_metadata())
 
-        self.settle_calibration_process(plot=False)
+        self.settle_calibration_process(plot=plot)
 
         return self.calibrations["settle"]
 
-    def settle_calibration_process(self, plot=True):
+    def settle_calibration_process(self, plot=0):
         """
         Fits an exponential to the measured data to
         approximate the :math:`1/e` settle time of the SLM.
 
         Parameters
         ----------
-        plot : bool
+        plot : int OR bool
             Whether to show a debug plot with the exponential fit.
 
         Returns
@@ -115,31 +117,46 @@ class _SettleCalibration(object):
         times = self.calibrations["settle"]["times"]
         results = np.ravel(self.calibrations["settle"]["data"])
 
-        # Function to interpolate
-        def exponential_jump(x, x0, a, b, c):
-            return (c - a*np.exp(-(x-x0) / b)) * np.heaviside(x - x0, 0)
+        # Estimate the step location from the data.
+        plateau = np.median(results[results > .5 * np.max(results)])
+        on = np.flatnonzero(results > .05 * plateau)
+        if len(on) == 0:
+            raise RuntimeError("Settle calibration measured no signal.")
+        x0 = times[on[0] - 1] if on[0] > 0 else times[0]
 
-        guess = (np.max(times)/2, np.max(results), np.max(times), np.max(results))
+        # Function to interpolate, with only the smooth parameters free.
+        def exponential(x, a, b, c):
+            return c - a*np.exp(-(x-x0) / b)
 
-        # Fit the date with the function
+        mask = times >= x0
+
+        # Fit the data with the function
         params, _ = optimize.curve_fit(
-            exponential_jump,
-            times,
-            results,
-            p0=guess,
+            exponential,
+            times[mask],
+            results[mask],
+            p0=(plateau, np.ptp(times)/10, plateau),
+            bounds=((0, 1e-6, 0), (np.inf, np.ptp(times), np.inf)),
             maxfev=10000
         )
-        x0, a, b, c = params
+        a, b, c = params
         self.logger.debug("settle fit params: %s", params)
 
         relax_time = b
         com_time = x0
         settle_time = com_time + relax_time*4
 
-        if plot:
+        if settle_time < 0 or settle_time > np.max(times):
+            self.logger.warning(
+                "Fitted settle time %.3g s is outside the swept range [0, %.3g] s; "
+                "the response is likely unresolved at this sampling.",
+                settle_time, np.max(times)
+            )
+
+        if plot >= 1:
             # Evaluate the fitting function in the interval
             x_interp = np.linspace(min(times), max(times), 100)
-            y_interp = exponential_jump(x_interp, *params)
+            y_interp = np.where(x_interp >= x0, exponential(x_interp, *params), 0)
 
             title = (
                 f"Communication time: {int((1e3*com_time))} ms\n"

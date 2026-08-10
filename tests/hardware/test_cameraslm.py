@@ -34,17 +34,17 @@ from conftest import (
 
 # Cases where fourier_calibrate with default-style arguments currently recovers the
 # correct affine. The remaining cases silently produce a *wrong* calibration (or
-# raise) --- this is the motivation for fourier_calibrate_meta().
+# raise) --- this is the motivation for fourier_calibrate_auto().
 DEFAULT_CALIBRATION_OK = {"identity", "matched", "fov_much_larger", "fov_larger"}
 
-# Geometries that fourier_calibrate_meta() cannot yet handle, and why. Keyed by case
+# Geometries that fourier_calibrate_auto() cannot yet handle, and why. Keyed by case
 # name, or by (case, source) where only one illumination is affected. All but the last
 # refuse rather than returning a calibration, so the failure is loud.
 # Enough geometry to exercise the simulator: a contained farfield with aperture
 # edges in view, a cropped one, rotation, and a 0th order steered off the sensor.
 GEOMETRY_CASES = ("matched", "fov_much_larger", "rotated", "zeroth_outside")
 
-META_LIMITATIONS = {
+AUTO_LIMITATIONS = {
     "zeroth_outside": (
         "With the 0th order off-camera the array can only be placed relative to the "
         "lit region, and every array that fits there is fitted wrongly (measured 100, "
@@ -60,7 +60,7 @@ META_LIMITATIONS = {
         "anchor then refuses (the fit lands 113 px out while its own spots line up); "
         "the same noise on a uniform source calibrates"
     ),
-    ("zeroth_corner", "gaussian2d"): (  # TODO: fourier_calibrate_meta should be able to move the center of the array.
+    ("zeroth_corner", "gaussian2d"): (  # TODO: fourier_calibrate_auto should be able to move the center of the array.
         "A 0th order 2% of the way across the sensor leaves no room to place an array "
         "around it, so most of it falls off the camera and too few spots remain to fit"
     ),
@@ -102,14 +102,14 @@ def calibration_summary(test_output_dir, request):
 
 
 @pytest.fixture(scope="module")
-def meta_summary(test_output_dir, request):
-    """As :func:`calibration_summary`, for ``fourier_calibrate_meta()``."""
+def auto_summary(test_output_dir, request):
+    """As :func:`calibration_summary`, for ``fourier_calibrate_auto()``."""
     results = {}
     yield results
     _write_summary(
         results, test_output_dir, request,
-        "fourier_calibrate_meta_summary.png",
-        "fourier_calibrate_meta() vs ground truth",
+        "fourier_calibrate_auto_summary.png",
+        "fourier_calibrate_auto() vs ground truth",
     )
 
 
@@ -187,12 +187,12 @@ def _run_calibration(fs, name, source, calibrate, summary, label):
         )))
 
     # The array that the calibration settled on, for the diagnostic overlays.
-    meta = fs.calibrations.get("fourier", {}).get("meta", {})
+    array = fs.calibrations.get("fourier", {}).get("array", {})
     spots_kxy = array_kxy(
         fs,
-        meta.get("array_shape", BATTERY_ARRAY_SHAPE),
-        meta.get("array_pitch", BATTERY_ARRAY_PITCH),
-        meta.get("array_center"),
+        array.get("array_shape", BATTERY_ARRAY_SHAPE),
+        array.get("array_pitch", BATTERY_ARRAY_PITCH),
+        array.get("array_center"),
     )
 
     note = (
@@ -215,6 +215,16 @@ def _run_calibration(fs, name, source, calibrate, summary, label):
     }
 
     return (error, tolerance, note, failure)
+
+
+def _phase_deviation(phase, reference):
+    """
+    Largest deviation of ``phase - reference`` from its own circular mean, in radians.
+    A wavefront correction is only defined up to a global piston, so the mean is free.
+    """
+    delta = np.exp(1j * (np.asarray(phase) - np.asarray(reference)))
+    piston = np.mean(delta)
+    return float(np.max(np.abs(np.angle(delta * np.conj(piston) / np.abs(piston)))))
 
 
 class TestFourierSLM:
@@ -804,6 +814,83 @@ class TestFourierSLM:
             assert "scheduling" in cal
             assert "slm_supershape" in cal
 
+    def test_wavefront_superpixel_schedule_is_conflict_free(self, simulated_system_factory):
+        """
+        No calibration point measures at a superpixel that another point is using as its
+        reference, in any measurement where that other point is also measuring.
+        """
+        fs = simulated_system_factory(
+            "matched", slm_resolution=(128, 128), cam_resolution=(256, 256)
+        )
+        install_ground_truth_calibration(fs)
+        fs.wavefront_calibrate_superpixel(
+            calibration_points=np.array([[60, 190, 128], [60, 60, 190]]),
+            superpixel_size=32,
+            phase_steps=1,
+            reference_superpixels=np.array([[3, 1, 3], [0, 1, 1]]),
+            plot=-1,
+        )
+        cal = fs.calibrations["wavefront_superpixel"]
+        (scheduling, references) = (cal["scheduling"], np.ravel(cal["reference_superpixels"]))
+
+        conflicts = [
+            (measurement, writer, reader, int(references[reader]))
+            for measurement in range(scheduling.shape[1])
+            for writer in range(len(references))
+            for reader in range(len(references))
+            if scheduling[writer, measurement] == references[reader]
+            and scheduling[reader, measurement] != -1
+        ]
+        assert not conflicts, (
+            f"(measurement, writer, reader, superpixel) hijacks: {conflicts}\n{scheduling}"
+        )
+
+    def test_wavefront_superpixel_interpolates_a_ramp(self, simulated_system_factory, subtests):
+        """
+        Superpixels below the r2 threshold are filled in from their neighbours, so a pure
+        diagonal ramp comes back out of the processor exactly. Only a lever arm carried
+        along both axes at once separates a correct interpolation from a plausible one.
+        """
+        (NX, NY, superpixel_size) = (8, 8, 16)
+        fs = simulated_system_factory(
+            "matched", slm_resolution=(NX * superpixel_size, NY * superpixel_size)
+        )
+        holes = ((2, 3), (5, 2), (3, 5), (6, 6), (1, 6))
+
+        def ramp_data(vector):
+            """The processor's input for a pure ramp, with ``holes`` below threshold."""
+            r2 = np.ones((NY, NX))
+            for (hx, hy) in holes:
+                r2[hy, hx] = 0
+            return {
+                "NX": NX, "NY": NY, "nxref": NX // 2, "nyref": NY // 2,
+                "superpixel_size": superpixel_size,
+                "r2_fit": r2,
+                "power": np.ones((NY, NX)),
+                "normalization": 2 * np.ones((NY, NX)),
+                "background": np.zeros((NY, NX)),
+                "kx": np.full((NY, NX), vector[0]),
+                "ky": np.full((NY, NX), vector[1]),
+                "phase": np.zeros((NY, NX)),
+            }
+
+        (x_grid, y_grid) = fs.slm.grid
+        for vector in ((0.013, 0.021), (0.005, 0.009), (0.041, 0.033)):
+            with subtests.test(f"kxy={vector}"):
+                truth = 2 * np.pi * (
+                    vector[0] * np.asarray(x_grid) + vector[1] * np.asarray(y_grid)
+                )
+                fs.calibrations["wavefront_superpixel"] = ramp_data(vector)
+                phase = fs.wavefront_calibration_superpixel_process(
+                    smooth=False,
+                    r2_threshold=.5,
+                    remove_blaze=False,
+                    remove_background=False,
+                    apply=False,
+                    plot=0,
+                )["phase"]
+                assert _phase_deviation(phase, truth) < 1e-3
+
     @pytest.mark.slow
     def test_wavefront_calibrate_zernike(self, fourierslm_calibrated, subtests):
         """Test FourierSLM.wavefront_calibrate_zernike."""
@@ -934,7 +1021,7 @@ class TestFourierSLM:
 
     def test_farfield_calibrate_blind(self, simulated_system_factory, subtests):
         """Test blind farfield calibration (no Fourier calibration): measures the
-        farfield support directly, which is what fourier_calibrate_meta() bootstraps
+        farfield support directly, which is what fourier_calibrate_auto() bootstraps
         from."""
         from slmsuite._plotting import _slmsuite_plt_show
 
@@ -956,7 +1043,7 @@ class TestFourierSLM:
                 iou = (support & expected).sum() / (support | expected).sum()
 
                 # Plot the blind measurement against ground truth: this support is
-                # what fourier_calibrate_meta() will bootstrap from.
+                # what fourier_calibrate_auto() will bootstrap from.
                 (fig, axs) = plt.subplots(1, 4, figsize=(20, 5))
                 axs[0].imshow(fs.calibrations["farfield"]["zeroth"])
                 axs[0].set_title("0th order (flat phase)")
@@ -1251,7 +1338,7 @@ class TestFourierSLM:
                 assert np.allclose(data, np.array([np.roll(data[0], k) for k in range(8)]))
 
         with subtests.test("gamma recovers the linear phase response"):
-            gamma = fs.pixel_calibration_process_gamma(plot=False)
+            gamma = fs.pixel_calibration_process(plot=False)
             expected = cal["levels"] / fs.slm.bitresolution
             assert np.allclose(gamma, expected - np.min(expected), atol=.02)
             # The fit is seeded with the linear response, so agreement alone proves
@@ -1267,7 +1354,7 @@ class TestFourierSLM:
 
         with subtests.test("apply=False leaves the SLM alone"):
             fs.slm.set_gamma(None)
-            fs.pixel_calibration_process_gamma(plot=False, apply=False)
+            fs.pixel_calibration_process(plot=False, apply=False)
             assert fs.slm.gamma is None and fs.slm.lut is None
 
         with subtests.test("loading the calibration restores the response"):
@@ -1298,7 +1385,7 @@ class TestFourierSLM:
         with subtests.test("gamma refuses signal-free data"):
             fs.calibrations["pixel"]["data"][:] = 0
             with pytest.raises(RuntimeError, match="no signal"):
-                fs.pixel_calibration_process_gamma(plot=False)
+                fs.pixel_calibration_process(plot=False)
 
         with subtests.test("test_index booleans"):
             # True tests every point of the sweep; False is not a test at all.
@@ -1335,6 +1422,51 @@ class TestFourierSLM:
             with pytest.raises(ValueError, match="were measured"):
                 fs.pixel_calibration_plot(orders=[99])
 
+    def test_pixel_calibrate_sampling_density(self, simulated_system_factory, caplog, subtests):
+        """A gamma sweep warns when its levels are too few to resolve the phase range."""
+        fs = simulated_system_factory("fov_much_smaller")
+        install_ground_truth_calibration(fs)
+
+        def sampling_warnings(levels):
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                fs.pixel_calibrate(
+                    levels=levels, periods=1, orders=1, directions="x",
+                    test_index=0, plot=False,
+                )
+            return [r.getMessage() for r in caplog.records if "cycles" in r.getMessage()]
+
+        with subtests.test("silent when densely sampled"):
+            assert not sampling_warnings(32)
+
+        with subtests.test("warns when starved"):
+            assert sampling_warnings(8)
+
+    def test_settle_calibration_process_planted(self, fourierslm, subtests):
+        """The settle fit returns positive, in-range times matching a planted response."""
+        times = np.linspace(0, .2, 201)
+
+        for (communication, relaxation) in ((.03, .02), (.01, .005), (.05, .01)):
+            with subtests.test(f"communication={communication} relaxation={relaxation}"):
+                fourierslm.calibrations["settle"] = {
+                    "times": times,
+                    "data": np.where(
+                        times >= communication,
+                        1 - np.exp(-(times - communication) / relaxation),
+                        0,
+                    ),
+                }
+                result = fourierslm.settle_calibration_process(plot=0)
+
+                assert 0 < result["settle_time"] <= np.max(times)
+                assert result["communication_time"] == pytest.approx(
+                    communication, abs=2 * np.diff(times)[0]
+                )
+                assert result["relax_time"] == pytest.approx(relaxation, rel=.02)
+                assert result["settle_time"] == pytest.approx(
+                    communication + 4 * relaxation, rel=.02
+                )
+
     def test_pixel_calibrate_gamma_sim(self, simulated_system_factory, subtests):
         """A simulated non-linear response is measured, then corrected by the table."""
 
@@ -1346,7 +1478,7 @@ class TestFourierSLM:
         fs.slm.gamma_sim = truth
 
         fs.pixel_calibrate(levels=16, periods=2, orders=1, directions="x", plot=False)
-        gamma = fs.pixel_calibration_process_gamma(plot=False)
+        gamma = fs.pixel_calibration_process(plot=False)
 
         with subtests.test("the sweep measures the simulated response"):
             levels = fs.calibrations["pixel"]["levels"].astype(int)
@@ -1373,7 +1505,7 @@ class TestFourierSLM:
             truth = 2.4 * np.arange(B) / B
             fs.slm.gamma_sim = truth
             fs.pixel_calibrate(levels=16, periods=2, orders=1, directions="x", plot=False)
-            gamma = fs.pixel_calibration_process_gamma(plot=False)
+            gamma = fs.pixel_calibration_process(plot=False)
 
             levels = fs.calibrations["pixel"]["levels"].astype(int)
             assert np.max(gamma) > 1                      # More than one cycle recovered.
@@ -1487,7 +1619,7 @@ class TestFourierSLM:
         if simulated_system_name not in DEFAULT_CALIBRATION_OK:
             pytest.xfail(
                 f"Fixed array_shape/array_pitch produce a wrong or failed calibration "
-                f"for this geometry ({note}); fourier_calibrate_meta() handles it."
+                f"for this geometry ({note}); fourier_calibrate_auto() handles it."
             )
 
         if failure is not None:
@@ -1497,20 +1629,20 @@ class TestFourierSLM:
             f"(tolerance {tolerance:.2f})."
         )
 
-    def test_fourier_calibrate_meta(
+    def test_fourier_calibrate_auto(
         self, simulated_system, simulated_system_name, simulated_system_source,
-        meta_summary, calibration_plot_level,
+        auto_summary, calibration_plot_level,
     ):
         fs = simulated_system
         (error, tolerance, note, failure) = _run_calibration(
             fs, simulated_system_name, simulated_system_source,
-            lambda system: system._fourier_calibrate_meta(plot=calibration_plot_level),
-            meta_summary, "meta_",
+            lambda system: system._fourier_calibrate_auto(plot=calibration_plot_level),
+            auto_summary, "auto_",
         )
 
-        limitation = META_LIMITATIONS.get(
+        limitation = AUTO_LIMITATIONS.get(
             (simulated_system_name, simulated_system_source),
-            META_LIMITATIONS.get(simulated_system_name),
+            AUTO_LIMITATIONS.get(simulated_system_name),
         )
         if limitation is not None:
             pytest.xfail(f"{limitation} ({note})")
@@ -1518,7 +1650,7 @@ class TestFourierSLM:
         if failure is not None:
             raise failure
         assert error < tolerance, (
-            f"fourier_calibrate_meta is {error:.2f} px off ground truth "
+            f"fourier_calibrate_auto is {error:.2f} px off ground truth "
             f"(tolerance {tolerance:.2f})."
         )
 
@@ -1539,7 +1671,7 @@ class TestFourierSLM:
         fs.slm.source["amplitude_sim"] = np.zeros_like(fs.slm.source["amplitude_sim"])
 
         with pytest.raises(RuntimeError):
-            fs._fourier_calibrate_meta()
+            fs._fourier_calibrate_auto()
         assert np.array_equal(fs.calibrations["fourier"]["M"], existing), (
             "A failed calibration discarded the previous one."
         )
@@ -1548,7 +1680,7 @@ class TestFourierSLM:
         fs = simulated_system_factory("matched")
 
         with pytest.raises(RuntimeError):
-            fs._fourier_calibrate_meta(tolerance=-1)
+            fs._fourier_calibrate_auto(tolerance=-1)
         assert "fourier" not in fs.calibrations, (
             "A calibration that failed verification was installed anyway."
         )
@@ -1559,7 +1691,7 @@ class TestFourierSLM:
         existing = np.array(fs.calibrations["fourier"]["M"])
 
         with pytest.raises(RuntimeError):
-            fs._fourier_calibrate_meta(tolerance=-1)
+            fs._fourier_calibrate_auto(tolerance=-1)
         assert np.array_equal(fs.calibrations["fourier"]["M"], existing), (
             "Failing verification discarded the previous calibration."
         )
@@ -1575,7 +1707,7 @@ class TestFourierSLM:
         fs.get_farfield_zeroth = raise_unexpected
 
         with pytest.raises(ValueError):
-            fs._fourier_calibrate_meta()
+            fs._fourier_calibrate_auto()
         assert np.array_equal(fs.calibrations["fourier"]["M"], existing), (
             "An unexpected failure discarded the previous calibration."
         )
@@ -1593,7 +1725,7 @@ class TestFourierSLM:
         monkeypatch.setattr(analysis, "_score_array_orientation", raise_after_install)
 
         with pytest.raises(ValueError):
-            fs._fourier_calibrate_meta()
+            fs._fourier_calibrate_auto()
         assert np.array_equal(fs.calibrations["fourier"]["M"], existing), (
             "An unverified calibration replaced the previous one."
         )
@@ -1648,7 +1780,7 @@ MARGINAL_CASES = (
 
 @pytest.mark.parametrize("seed", range(4))
 @pytest.mark.parametrize("name", MARGINAL_CASES)
-def test_fourier_calibrate_meta_survives_any_draw(
+def test_fourier_calibrate_auto_survives_any_draw(
     simulated_system_factory, simulated_system_source, name, seed
 ):
     """
@@ -1665,7 +1797,7 @@ def test_fourier_calibrate_meta_survives_any_draw(
         pass
 
     try:
-        fs._fourier_calibrate_meta()
+        fs._fourier_calibrate_auto()
     except RuntimeError:
         return
 
@@ -1677,5 +1809,5 @@ def test_fourier_calibrate_meta_survives_any_draw(
     assert error < tolerance, (
         f"seed {seed}: accepted a calibration {error:.1f} px off ground truth "
         f"(tolerance {tolerance:.1f}), reporting "
-        f"{fs.calibrations['fourier']['meta']['residual']:.2f} px residual."
+        f"{fs.calibrations['fourier']['array']['residual']:.2f} px residual."
     )

@@ -18,6 +18,7 @@ class _FarfieldCalibration(object):
         self,
         averaging=10,
         exposures=None,
+        plot=0,
     ):
         """
         Calibrates the diffraction efficiency (including aperture cropping),
@@ -30,6 +31,8 @@ class _FarfieldCalibration(object):
         exposures : int OR (int, int) OR None
             High dynamic range (HDR) exposures to use for the farfield image, see
             :meth:`~slmsuite.hardware.cameras.camera.Camera.get_image_hdr()`.
+        plot : int OR bool
+            If ``>= 1``, plots the processed efficiency map.
 
         Returns
         -------
@@ -114,6 +117,9 @@ class _FarfieldCalibration(object):
         self.calibrations["farfield"].update(self._get_calibration_metadata())
 
         self.farfield_calibration_process()
+
+        if plot >= 1:
+            self.get_farfield_efficiency(plot=plot)
 
         return self.calibrations["farfield"]
 
@@ -211,7 +217,7 @@ class _FarfieldCalibration(object):
         fourier_crop=True,
         efficiency_threshold=None,
         zeroth_threshold=None,
-        plot=False
+        plot=0
     ):
         """
         Returns the **measured** efficiency of the farfield **in the coordinates of the camera**:
@@ -231,8 +237,8 @@ class _FarfieldCalibration(object):
         zeroth_threshold : float OR None
             If not ``None``, zeros the returned efficiency data or mask
             where the zeroth order is above this threshold.
-        plot : bool
-            If ``True``, plots the efficiency map and the thresholded support.
+        plot : int OR bool
+            If ``>= 1``, plots the efficiency map and the thresholded support.
 
         Returns
         -------
@@ -259,7 +265,7 @@ class _FarfieldCalibration(object):
         else:
             mask = efficiency
 
-        if plot:
+        if plot >= 1:
             plt.figure()
             plt.imshow(efficiency)
 

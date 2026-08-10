@@ -11,6 +11,8 @@ from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.hardware.cameraslms import FourierSLM
 from slmsuite.holography.toolbox.phase import zernike
 
+from conftest import driver_classes
+
 
 class TestCamera:
     """Tests for the Camera base class via SimulatedCamera."""
@@ -19,6 +21,36 @@ class TestCamera:
         """camera.test() covers core properties, dtype, exposure, capture,
         averaging, HDR, WOI, and info."""
         assert camera.test() is True
+
+        with subtests.test("a failing test() still restores the capture settings"):
+            camera.averaging = 7
+            camera.hdr = 3
+            camera.info = lambda verbose=True: "not a list"
+
+            try:
+                with pytest.raises(AssertionError):
+                    camera.test()
+            finally:
+                del camera.info
+
+            assert (camera.averaging, camera.hdr) == (7, 3)
+
+    @pytest.mark.parametrize(
+        "binning, geometry",
+        [
+            (2, {}),
+            (None, dict(rot="90")),
+            ((2, 4), dict(rot="270", fliplr=True)),
+        ],
+        ids=["binned", "rotated", "rotated_binned"],
+    )
+    def test_selftest_under_geometry(self, slm, binning, geometry):
+        """camera.test() holds under software binning and on a rotated non-square camera."""
+        cam = SimulatedCamera(slm, resolution=(200, 100), **geometry)
+        if binning is not None:
+            cam.set_binning(binning)
+            assert cam._software_binning, "SimulatedCamera must bin in software."
+        assert cam.test() is True
 
     def test_init(self, slm, subtests):
         """Verify constructor sets shape, pitch, bitdepth, and resolution convention."""
@@ -57,6 +89,29 @@ class TestCamera:
             assert cam_rot.shape == (200, 100)
             img = cam_rot.get_image()
             assert img.shape == cam_rot.shape
+
+        with subtests.test("the dtype probe runs exactly once and types the camera"):
+            calls = []
+
+            def spy(self, timeout_s):
+                calls.append(timeout_s)
+                return np.zeros(self._shape, dtype=np.int16)
+
+            original = SimulatedCamera._get_image_hw
+            SimulatedCamera._get_image_hw = spy
+            try:
+                probed = SimulatedCamera(slm=slm, resolution=(256, 256), bitdepth=12)
+            finally:
+                SimulatedCamera._get_image_hw = original
+
+            assert len(calls) == 1, f"probe called {len(calls)} times"
+            assert probed.dtype == np.dtype(np.int16)
+            probed.close()
+
+        with subtests.test("bitdepth above 16 constructs and widens the dtype"):
+            cam24 = SimulatedCamera(slm=slm, resolution=(256, 256), bitdepth=24)
+            assert cam24.dtype == np.dtype(np.uint32)
+            cam24.close()
 
         cam.close()
 
@@ -153,7 +208,22 @@ class TestCamera:
             assert imgs.shape == out.shape
             assert imgs.dtype == camera.dtype
 
-    def test_get_dtype(self, camera, subtests):
+        # get_images() applies neither averaging nor HDR, so its dtype ignores both.
+        for hdr in (None, 3):
+            for averaging in (None, 4):
+                for binning in (1, 2):
+                    with subtests.test(f"out buffer: {hdr=}, {averaging=}, {binning=}"):
+                        camera.hdr = hdr
+                        camera.averaging = averaging
+                        camera.set_binning(binning)
+
+                        dtype = np.dtype(camera.get_dtype(averaging=1, hdr=False))
+                        assert camera.get_images(count).dtype == dtype
+
+                        out = np.empty((count, *camera.shape), dtype=dtype)
+                        assert camera.get_images(count, out=out) is out
+
+    def test__get_dtype(self, camera, subtests):
         """_get_dtype infers dtype from various get_image callables."""
         orig_dtype = camera.dtype
         orig_bitdepth = camera.bitdepth
@@ -185,7 +255,34 @@ class TestCamera:
                     dtype = camera._get_dtype(fake_get_image)
                     assert dtype is solution_dtype
                     assert dtype is camera.dtype
+
+            camera.bitdepth = 12
+
+            with subtests.test("the probe supplies timeout_s and adopts the hardware dtype"):
+                seen = []
+                camera._get_image_hw = lambda timeout_s: (
+                    seen.append(timeout_s) or np.zeros((4, 4), dtype=np.int16)
+                )
+                assert camera._get_dtype() == np.dtype(np.int16)
+                assert seen == [1]
+
+            with subtests.test("a probe that raises falls back on bitdepth inference"):
+                def raising(timeout_s):
+                    raise RuntimeError("no hardware")
+
+                camera._get_image_hw = raising
+                assert camera._get_dtype() == np.dtype(np.uint16)
+
+            with subtests.test("an unusable probe result falls back on bitdepth inference"):
+                camera._get_image_hw = lambda timeout_s: None
+                assert camera._get_dtype() == np.dtype(np.uint16)
+
+            with subtests.test("a dtype too narrow for the bitdepth warns"):
+                camera._get_image_hw = lambda timeout_s: np.zeros((4, 4), dtype=np.uint8)
+                with pytest.warns(UserWarning, match="does not conform"):
+                    camera._get_dtype()
         finally:
+            camera.__dict__.pop("_get_image_hw", None)
             camera.dtype = orig_dtype
             camera.bitdepth = orig_bitdepth
 
@@ -419,6 +516,71 @@ class TestCamera:
             assert ax.get_images()[0].get_array().shape == stored_shape
             plt.close("all")
 
+        img = np.zeros(camera.shape, dtype=camera.dtype)
+
+        with subtests.test("colorbar drawn only when requested"):
+            ax = camera.plot(image=img, cbar=True)
+            assert len(ax.get_figure().axes) == 2
+            plt.close("all")
+            ax = camera.plot(image=img, cbar=False)
+            assert len(ax.get_figure().axes) == 1
+            plt.close("all")
+
+        with subtests.test("supplied ax is drawn upon without a colorbar"):
+            (fig, given) = plt.subplots()
+            ax = camera.plot(image=img, ax=given, cbar=True)
+            assert ax is given
+            assert len(fig.axes) == 1
+            plt.close("all")
+
+        with subtests.test("scalar limits zoom about the center"):
+            ax = camera.plot(image=img)
+            (xlim, ylim) = (ax.get_xlim(), ax.get_ylim())
+            plt.close("all")
+            ax = camera.plot(image=img, limits=0.5)
+            for (lim, zoomed) in zip((xlim, ylim), (ax.get_xlim(), ax.get_ylim())):
+                center = np.mean(lim)
+                np.testing.assert_allclose(
+                    zoomed, center + np.subtract(lim, center) / 2
+                )
+            plt.close("all")
+
+        with subtests.test("2x2 limits are applied directly"):
+            ax = camera.plot(image=img, limits=[[10, 50], [20, 40]])
+            np.testing.assert_allclose(ax.get_xlim(), (10, 50))
+            np.testing.assert_allclose(ax.get_ylim(), (20, 40))
+            plt.close("all")
+
+        with subtests.test("limits=1 leaves the view untouched"):
+            ax = camera.plot(image=img)
+            (xlim, ylim) = (ax.get_xlim(), ax.get_ylim())
+            plt.close("all")
+            ax = camera.plot(image=img, limits=1)
+            np.testing.assert_allclose(ax.get_xlim(), xlim)
+            np.testing.assert_allclose(ax.get_ylim(), ylim)
+            plt.close("all")
+
+        with subtests.test("bad limits raises"):
+            with pytest.raises(ValueError, match="not recognized"):
+                camera.plot(image=img, limits=[1, 2, 3])
+            plt.close("all")
+
+        with subtests.test("labels applied only when the image fills the camera"):
+            ax = camera.plot(image=img)
+            assert ax.get_xlabel() == "Camera $i$ [pix]"
+            assert ax.get_ylabel() == "Camera $j$ [pix]"
+            plt.close("all")
+            ax = camera.plot(image=img[::2, ::2])
+            assert ax.get_xlabel() == "" and ax.get_ylabel() == ""
+            plt.close("all")
+
+        with subtests.test("image is rendered with default scaling"):
+            ax = camera.plot(image=np.arange(img.size).reshape(img.shape) % 251)
+            im = ax.get_images()[0]
+            assert im.get_cmap().name == plt.rcParams["image.cmap"]
+            np.testing.assert_allclose(im.get_clim(), (0, 250))
+            plt.close("all")
+
     # ------------------------------------------------------------------
     # WOI / binning coordinate-system tests
     # ------------------------------------------------------------------
@@ -456,7 +618,6 @@ class TestCamera:
 
         for label, kwargs, expected_origin_cam in rot_configs:
             cam = SimulatedCamera(slm, resolution=(W, H), **kwargs)
-            cam.close()
 
             # Apply WOI and binning directly to the private attributes so we
             # can test the transform without going through hardware I/O.
@@ -518,7 +679,6 @@ class TestCamera:
         """
         (W, H) = (200, 100)   # non-square, so a swapped axis cannot hide
         cam = SimulatedCamera(slm, resolution=(W, H))
-        cam.close()
 
         with subtests.test("a window inside the sensor is taken verbatim"):
             cam.set_woi((10, 80, 5, 40))
@@ -574,7 +734,6 @@ class TestCamera:
         transformed ``self.binning`` against the untransformed local ``binning``, which
         differ for asymmetric binning whenever the transform swaps axes."""
         cam = SimulatedCamera(slm, resolution=(200, 100), rot="90")
-        cam.close()
 
         with caplog.at_level(logging.WARNING, logger="slmsuite"):
             cam.set_binning((2, 4))
@@ -592,7 +751,6 @@ class TestCamera:
         return an untransformed-shaped frame rather than raising a broadcast error from
         allocating the HDR stack with the transformed ``self.shape``."""
         cam = SimulatedCamera(slm, resolution=(200, 100), rot="90")
-        cam.close()
 
         single = cam.get_image(hdr=False, transform=False)
         stacked = cam.get_image(hdr=2, transform=False)
@@ -604,7 +762,6 @@ class TestCamera:
     def test_binning_shape(self, slm, subtests):
         """set_binning() halves camera.shape and updates woi correctly."""
         cam = SimulatedCamera(slm, resolution=(200, 100))
-        cam.close()
 
         with subtests.test("shape after 2x2 binning"):
             cam.set_binning(2)
@@ -634,7 +791,6 @@ class TestCamera:
         # Use a camera with software WOI + software binning (base Camera with no hw overrides).
         # SimulatedCamera has hardware binning, so we test software binning by patching flags.
         cam = SimulatedCamera(slm, resolution=(64, 64), bitdepth=8)
-        cam.close()
 
         # Force software binning by overriding the flag (without real hardware).
         cam._software_binning = True
@@ -705,10 +861,21 @@ class TestCamera:
                     err_msg=f"get_images frame {i} binned values do not equal raw block sum"
                 )
 
+        with subtests.test("the binned dtype is set by the block sum, not by hdr"):
+            # A 12-bit block sum of 2×2 still fits uint16, whatever hdr is set to.
+            cam3 = SimulatedCamera(slm, resolution=(64, 64), bitdepth=12)
+            cam3._software_binning = True
+            cam3._software_woi = True
+            cam3._binning = (2, 2)
+
+            cam3.hdr = None
+            assert cam3.get_images(2).dtype == np.uint16
+            cam3.hdr = 3
+            assert cam3.get_images(2).dtype == np.uint16
+
     def test_get_binning(self, slm, subtests):
         """get_binning() returns current binning in transformed coordinates."""
         cam = SimulatedCamera(slm, resolution=(200, 100))
-        cam.close()
 
         with subtests.test("default is (1, 1)"):
             assert cam.get_binning() == (1, 1)
@@ -745,3 +912,14 @@ class TestCamera:
             cam_rot.binning = (2, 4)            # transformed (user-visible) coordinates
             assert cam_rot.binning == (2, 4), f"binning={cam_rot.binning}"
             assert cam_rot.get_binning() == (2, 4)
+
+
+@pytest.mark.parametrize(
+    "driver", driver_classes(Camera), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]
+)
+def test_camera_driver_is_concrete(driver):
+    """Every shipped camera driver implements the whole abstract interface."""
+    assert not driver.__abstractmethods__, (
+        f"{driver.__module__}.{driver.__name__} leaves "
+        f"{sorted(driver.__abstractmethods__)} abstract, so it cannot be instantiated."
+    )

@@ -998,13 +998,12 @@ class _Window(__Window):
             # main_bool is True if this screen is the default (main) display.
             main_bool = False
             # window_bool is True if this screen has a window mirrored on it.
-            window_bool = False
+            window_bool = screen_str in window_strs
 
             if screen_str == default_str:
                 main_bool = True
                 screen_str += ' (main)'
-            if screen_str in window_strs:
-                window_bool = True
+            if window_bool:
                 screen_str += ' (has ScreenMirrored)'
 
             if verbose:

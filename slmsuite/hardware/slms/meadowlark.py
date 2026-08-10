@@ -261,6 +261,9 @@ class Meadowlark(SLM):
                 raise OSError(f"Failed to unload DLL {Meadowlark._sdk_path[self.sdk_mode]}; "
                               f"error_code: {ctypes.get_last_error()}.")
             del Meadowlark._slm_lib[self.sdk_mode]
+            del Meadowlark._slm_lib_trace[self.sdk_mode]
+            del Meadowlark._sdk_path[self.sdk_mode]
+            del Meadowlark._number_of_boards[self.sdk_mode]
 
     # General SDK inspection methods.
     @staticmethod
@@ -616,6 +619,7 @@ class Meadowlark(SLM):
             Whether to actually send the image to the SLM. See :meth:`.SLM._set_phase_hw`.
         block : bool
             Whether to block the thread until the image is fully written.
+            HDMI writes are synchronous, so this has no effect in HDMI mode.
             See :meth:`.SLM._set_phase_hw`.
         timeout_s : float
             Timeout for SLM trigger.
@@ -625,17 +629,18 @@ class Meadowlark(SLM):
 
         slm_number = ctypes.c_uint(self.slm_number)
         if self.sdk_mode == _SDK_MODE.HDMI:
-            if Meadowlark._slm_lib_trace[_SDK_MODE.HDMI][1] == 2:       # 2 arguments
-                Meadowlark._slm_lib[self.sdk_mode].Write_image(
-                    display.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
-                    ctypes.c_uint(self.bitdepth == 8),  # Is 8-bit
-                )
-            elif Meadowlark._slm_lib_trace[_SDK_MODE.HDMI][1] == 3:     # 3 arguments
-                Meadowlark._slm_lib[self.sdk_mode].Write_image(
-                    slm_number,
-                    display.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
-                    ctypes.c_uint(self.bitdepth == 8),  # Is 8-bit
-                )
+            if execute:
+                if Meadowlark._slm_lib_trace[_SDK_MODE.HDMI][1] == 2:       # 2 arguments
+                    Meadowlark._slm_lib[self.sdk_mode].Write_image(
+                        display.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
+                        ctypes.c_uint(self.bitdepth == 8),  # Is 8-bit
+                    )
+                elif Meadowlark._slm_lib_trace[_SDK_MODE.HDMI][1] == 3:     # 3 arguments
+                    Meadowlark._slm_lib[self.sdk_mode].Write_image(
+                        slm_number,
+                        display.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
+                        ctypes.c_uint(self.bitdepth == 8),  # Is 8-bit
+                    )
         elif self.sdk_mode.is_pcie:
             wait_for_trigger = ctypes.c_bool(self._wait_for_trigger)
             # WARN: Do not change this, as doing so will loses the guarantee that
@@ -949,7 +954,9 @@ class Meadowlark(SLM):
         # Finally, actually load the LUT file
         try:
             if self.sdk_mode == _SDK_MODE.HDMI:
-                Meadowlark._slm_lib[self.sdk_mode].Load_lut(lut_path)
+                success = Meadowlark._slm_lib[self.sdk_mode].Load_lut(lut_path)
+                if success != 1:
+                    logger.warning(f"Failed to load LUT file: '{lut_path}'")
             elif self.sdk_mode.is_pcie:
                 success = Meadowlark._slm_lib[self.sdk_mode].Load_LUT_file(
                     ctypes.c_int(self.slm_number), lut_path.encode("utf-8")

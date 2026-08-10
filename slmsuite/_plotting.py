@@ -1,7 +1,6 @@
 """Matplotlib plot interception for headless and programmatic use."""
 import pathlib
 
-_save_dir = None
 _current_handler = None # set by configure_plotting(); None means call real plt.show()
 
 
@@ -73,7 +72,7 @@ def configure_plotting(
         except Exception:
             matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
-    global _save_dir, _current_handler
+    global _current_handler
 
     if headless:
         plt.ioff()
@@ -88,7 +87,7 @@ def configure_plotting(
     elif mode == "save":
         if save_dir is None:
             raise ValueError("save_dir is required for mode='save'")
-        _save_dir = pathlib.Path(save_dir)
+        save_dir = pathlib.Path(save_dir)
         merged = {"dpi": 150, "bbox_inches": "tight", **(savefig_kwargs or {})}
 
         def _save(name=None, **kwargs):
@@ -99,7 +98,7 @@ def configure_plotting(
             figs = [plt.figure(n) for n in plt.get_fignums()]
             for n, fig in enumerate(figs):
                 ctx_ = ctx if len(figs) == 1 else f"{ctx}_{n}"
-                path = generate_path(_save_dir, ctx_, extension=extension)
+                path = generate_path(save_dir, ctx_, extension=extension)
                 fig.savefig(path, **merged)
                 logger.debug("Saved plot: %s", path)
             plt.close("all")

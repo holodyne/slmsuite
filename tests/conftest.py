@@ -128,6 +128,26 @@ def _get_class_from_string(class_path):
     return getattr(module, class_name)
 
 
+def driver_classes(base):
+    """
+    Every subclass of ``base`` shipped alongside it, imported from the filesystem so that
+    a newly added driver is covered without registering it here.
+    """
+    package = base.__module__.rsplit(".", 1)[0]
+    directory = Path(__file__).resolve().parents[1].joinpath(*package.split("."))
+    for path in sorted(directory.glob("*.py")):
+        # Drivers guard their optional vendor SDK; private shims may not, and are not drivers.
+        if not path.stem.startswith("_"):
+            importlib.import_module(f"{package}.{path.stem}")
+
+    def descendants(cls):
+        for subclass in cls.__subclasses__():
+            yield subclass
+            yield from descendants(subclass)
+
+    return sorted(set(descendants(base)), key=lambda cls: (cls.__module__, cls.__name__))
+
+
 @pytest.fixture
 def slm_class():
     """

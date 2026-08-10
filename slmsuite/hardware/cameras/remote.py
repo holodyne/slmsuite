@@ -43,7 +43,7 @@ class RemoteCamera(_Client, Camera):
         :param port:
             Port number of the server. Defaults to ``5025`` (commonly used for instrument control).
         :param timeout:
-            Timeout in seconds for the connection. Defaults to ``1.0``.
+            Timeout in seconds for the connection. Defaults to ``5``.
         :param \*\*kwargs:
             See :meth:`.Camera.__init__` for permissible options, except for
             ``resolution``, ``bitdepth``, and ``pitch_um`` which are set by the server.
@@ -64,8 +64,9 @@ class RemoteCamera(_Client, Camera):
             **kwargs
         )
 
-        self._software_woi = pickled.get("_software_woi", self._software_woi)
-        self._software_binning = pickled.get("_software_binning", self._software_binning)
+        # The server, not this class' forwarding hooks, decides where WOI and binning happen.
+        self._software_woi = pickled.get("_software_woi", True)
+        self._software_binning = pickled.get("_software_binning", True)
 
     def close(self):
         pass
@@ -98,7 +99,9 @@ class RemoteCamera(_Client, Camera):
 
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`."""
-        return self._com(command="_get_woi_hw")
+        if self.server_attributes["__meta__"].get("_software_woi", True):
+            return self._woi        # The server crops in software; it has no hardware WOI.
+        return tuple(self._com(command="_get_woi_hw"))
 
     def _set_binning_hw(self, binning):
         """See :meth:`.Camera._set_binning_hw`."""
@@ -106,7 +109,9 @@ class RemoteCamera(_Client, Camera):
 
     def _get_binning_hw(self):
         """See :meth:`.Camera._get_binning_hw`."""
-        return self._com(command="_get_binning_hw")
+        if self.server_attributes["__meta__"].get("_software_binning", True):
+            return self._binning    # The server bins in software; it has no hardware binning.
+        return tuple(self._com(command="_get_binning_hw"))
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""

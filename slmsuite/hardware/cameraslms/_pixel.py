@@ -7,12 +7,16 @@ from slmsuite.holography import analysis
 from slmsuite.holography import toolbox
 from slmsuite.holography.toolbox.phase import binary
 
+
 class _PixelCalibration(object):
     """
     Hidden superclass with pixel calibration methods
     (gamma and crosstalk correction).
     """
     ### Pixel Crosstalk and Gamma Calibration ###
+
+    # Phase range, in cycles, that a gamma sweep ought to resolve.
+    _PIXEL_CAL_EXPECTED_CYCLES = 4
 
     def pixel_calibrate(
         self,
@@ -24,7 +28,7 @@ class _PixelCalibration(object):
         window=None,
         field_period=10,
         autoexpose=False,
-        plot=False,
+        plot=0,
     ):
         r"""
         Measure the phase response (gamma) and pixel crosstalk (blurring) of the SLM.
@@ -79,6 +83,8 @@ class _PixelCalibration(object):
             two, and this number of bitlevels are sampled.
             Also truncates to the bitresolution of the SLM if necessary (warns the user).
             Defaults to 32 levels.
+            The response is resolved only up to half a cycle per sample interval, so too
+            few levels alias the phase response.
         periods : int OR array_like of int
             List of periods (in pixels) of the binary gratings that we will apply.
             Must be even integers.
@@ -112,11 +118,11 @@ class _PixelCalibration(object):
             If ``True``, then the camera exposure is automatically
             adjusted at the start of the sweep, or adjusted to not overexpose the given test indices.
             ``autoexpose=True`` and ``test_index=True`` is recommended to autoexpose the sweep.
-        plot : bool OR int
-            If ``False``, then no plots are made.
-            If ``True`` or greater than or equal to ``1``, then the camera image is plotted at the first measurement,
+        plot : int OR bool
+            If ``0``, then no plots are made.
+            If ``>= 1``, then the camera image is plotted at the first measurement,
             or for every test index measurement, if test indices are given.
-            If greater than or equal to ``2``, then the order integration masks are additionally plotted.
+            If ``>= 2``, then the order integration masks are additionally plotted.
         """
         # Parse levels by forcing range and datatype.
         if np.isscalar(levels):
@@ -146,6 +152,14 @@ class _PixelCalibration(object):
 
         if N == 0:
             raise ValueError("No valid levels specified.")
+
+        # The fit is unwrapped, resolving at most half a cycle between sampled levels.
+        cycles = (N - 1) / 2
+        if cycles < self._PIXEL_CAL_EXPECTED_CYCLES / self.slm.phase_scaling:
+            self.logger.warning(
+                "%s levels resolve a phase range of only %.1f cycles; an SLM with a "
+                "mis-set phase table can span more. Sample more levels.", N, cycles,
+            )
 
         # Parse directions.
         if directions is None:
@@ -358,7 +372,7 @@ class _PixelCalibration(object):
                 raise ValueError("test_index selected no points of the sweep.")
 
             # Otherwise a full-sweep test would plot thousands of figures.
-            plot = plot and len(test_index) <= 8
+            if len(test_index) > 8: plot = 0
 
             results = []
             autoexposure_results = []
@@ -447,7 +461,7 @@ class _PixelCalibration(object):
                         index += 1
 
                         # (3b) Maybe plot the results for this point.
-                        if plot:
+                        if plot >= 1:
                             self.cam.plot(
                                 title=(
                                     f"Pixel Calibrate index {index} "
@@ -459,7 +473,7 @@ class _PixelCalibration(object):
 
                             # Turn plotting off after the first test index.
                             if test_index is None:
-                                plot = False
+                                plot = 0
 
                         # (3c) Handle test index results collection and maybe autoexpose adjustment.
                         if test_index is not None:
@@ -609,14 +623,14 @@ class _PixelCalibration(object):
 
             _slmsuite_plt_show(name="pixel_calibration_plot")
 
-    def pixel_calibration_process_gamma(self, plot=False, apply=True):
+    def pixel_calibration_process(self, plot=0, apply=True):
         r"""
         Process the pixel calibration data to extract the phase response curve (gamma).
 
         Parameters
         ----------
-        plot : bool
-            If ``True``, then the extracted gamma curve is plotted, as well as the fit of the
+        plot : int OR bool
+            If ``>= 1``, then the extracted gamma curve is plotted, as well as the fit of the
             model to the data.
         apply : bool
             If ``True``, load the result onto the SLM with
@@ -676,10 +690,10 @@ class _PixelCalibration(object):
         if not r_squared >= 0.9:
             self.logger.warning("Low R^2 value of %.3f for gamma fit. Fit may be inaccurate.", r_squared)
 
-        if plot:
+        if plot >= 1:
             plt.plot(levels, gamma, "o-", label="calibrated")
             plt.title(f"Gamma fit R^2: {r_squared:.3f}")
-            _slmsuite_plt_show(name="pixel_calibration_process_gamma_fit")
+            _slmsuite_plt_show(name="pixel_calibration_process_fit")
 
             fig, axs = plt.subplots(1, 3, figsize=(10, 5))
             data_fit = model(None, *popt).reshape(data_summed.shape)
@@ -688,7 +702,7 @@ class _PixelCalibration(object):
             axs[0].imshow(data_summed)
             axs[1].imshow(data_fit)
             axs[2].imshow(data_resid, cmap="bwr", vmin=-M, vmax=M)
-            _slmsuite_plt_show(name="pixel_calibration_process_gamma_residuals")
+            _slmsuite_plt_show(name="pixel_calibration_process_residuals")
 
         self.calibrations["pixel"]["gamma"] = gamma
         self.calibrations["pixel"]["gamma_r2"] = r_squared
@@ -717,14 +731,6 @@ class _PixelCalibration(object):
                 measured, bitresolution,
             )
             return
-
-        # Half a cycle between sampled levels is the most the fit can resolve.
-        step = np.max(np.abs(np.diff(cal["gamma"])))
-        if step > .25:
-            self.logger.warning(
-                "Gamma steps by up to %.2f of a cycle between sampled levels, nearing "
-                "the half cycle this measurement resolves. Sample more levels.", step,
-            )
 
         self.slm.set_gamma(
             self.slm.interpolate_gamma(cal["gamma"], cal["levels"])
@@ -784,7 +790,7 @@ class _PixelCalibration(object):
     _pixel_kernel_reach = 32
 
     @classmethod
-    def _pixel_crosstalk_simulate(cls, phase, supersample=16, plot=False, **kwargs):
+    def _pixel_crosstalk_simulate(cls, phase, supersample=16, plot=0, **kwargs):
         r"""
         Diffraction orders of one period of a pixelated phase pattern subject to pixel
         crosstalk, after `Moser et al. <https://doi.org/10.1364/OE.27.025046>`_.
@@ -808,7 +814,7 @@ class _PixelCalibration(object):
             One period of the commanded phase in radians, one value per SLM pixel.
         supersample : int
             Subpixel samples per SLM pixel.
-        plot : bool
+        plot : int OR bool
             Whether to plot the blurred phase and the resulting orders.
         **kwargs
             Passed to :meth:`pixel_kernel`. Each may be a scalar or a
@@ -845,7 +851,7 @@ class _PixelCalibration(object):
 
         orders = np.square(np.abs(np.fft.fft(np.exp(1j * blurred)) / N))
 
-        if plot:
+        if plot >= 1:
             (fig, axs) = plt.subplots(1, 2, figsize=(10, 4))
 
             # A normalized kernel preserves the mean; anchor there to compare levels.

@@ -79,6 +79,8 @@ class Basler(Camera):
         self.cam.Attach(device)
         self.cam.Open()
 
+        self.GrabStrategy = pylon.GrabStrategy_LatestImages
+
         # Apply default settings.
         try:
             self.cam.CenterX=False
@@ -98,7 +100,6 @@ class Basler(Camera):
             self.cam.TriggerActivation.SetValue('RisingEdge')
             self.cam.TriggerSource.SetValue('Software')
 
-            self.GrabStrategy = pylon.GrabStrategy_LatestImages
             self.cam.RegisterConfiguration(
                 pylon.SoftwareTriggerConfiguration(),
                 pylon.RegistrationMode_ReplaceAll,

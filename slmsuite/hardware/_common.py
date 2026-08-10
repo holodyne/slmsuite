@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 
+import matplotlib.pyplot as plt
 import numpy as np
 import warnings
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from slmsuite.hardware._viewer import _Viewable
 from slmsuite._logging import _Loggable
@@ -105,55 +107,104 @@ class _Common(_Viewable, _Loggable, ABC):
         """
         # One quiet attempt: hardware that cannot yet capture falls back on bitdepth below.
         if test_data is None and hasattr(self, "_get_image_hw"):
-            test_data = self._get_image_hw
+            test_data = lambda: self._get_image_hw(timeout_s=1)
 
-        try:
-            if test_data is None:
-                raise ValueError("No test data provided for dtype inference.")
+        dtype = None
 
-            if callable(test_data):
-                test_data = test_data()
+        if test_data is not None:
+            try:
+                if callable(test_data):
+                    test_data = test_data()
 
-            self.dtype = np.dtype(
-                np.array(
-                    test_data
-                ).dtype
-            )   # Future: check if cameras change dtype after init.
-        except Exception:
+                probed = np.dtype(np.array(test_data).dtype)
+                if probed.kind in "iuf":   # else a non-numeric probe would mistype the hardware.
+                    dtype = probed
+            except Exception as error:
+                self.logger.debug("Could not probe '%s' for a dtype: %s", self.name, error)
+
+        if dtype is None:
             if self.bitdepth <= 0:
                 raise ValueError("Non-positive bitdepth does not make sense.")
             elif self.bitdepth <= 8:
-                self.dtype = np.dtype(np.uint8)
+                dtype = np.dtype(np.uint8)
             elif self.bitdepth <= 16:
-                self.dtype = np.dtype(np.uint16)
+                dtype = np.dtype(np.uint16)
             elif self.bitdepth <= 32:
-                self.dtype = np.dtype(np.uint32)
+                dtype = np.dtype(np.uint32)
             elif self.bitdepth <= 64:
-                self.dtype = np.dtype(np.uint64)
+                dtype = np.dtype(np.uint64)
             else:
-                self.dtype = np.dtype(float)
+                dtype = np.dtype(float)
 
             if self.bitdepth > 16:
                 self.logger.warning("Bitdepth %s is unusually high.", self.bitdepth)
 
-        try:
-            # Determine the bitdepth of the datatype.
-            if self.dtype.kind == "i" or self.dtype.kind == "u":
-                dtype_bitdepth = self.dtype(0).nbytes * 8
-                if self.dtype.kind == "i":
-                    dtype_bitdepth -= 1
-            elif self.dtype.kind == "f":
-                dtype_bitdepth = np.inf
-            else:
-                dtype_bitdepth = np.inf   # Non-numeric dtype: nothing to compare against.
+        self.dtype = dtype
 
-            # Warn the user if something is wrong.
+        # Warn the user if the image type cannot represent the full bitdepth.
+        if dtype.kind == "i" or dtype.kind == "u":
+            dtype_bitdepth = dtype.itemsize * 8
+            if dtype.kind == "i":
+                dtype_bitdepth -= 1
+
             if dtype_bitdepth < self.bitdepth:
                 warnings.warn(
                     f"Hardware '{self.name}' bitdepth of {self.bitdepth} does not conform "
-                    f"with the image type {self.dtype} with {self.dtype.itemsize} bytes."
+                    f"with the image type {dtype} with {dtype.itemsize} bytes."
                 )
-        except Exception:     # The above sometimes fails for non-numpy datatypes.
-            pass
 
         return self.dtype
+
+    def _plot(self, data, limits, title, *, ax, cbar, labels, **kwargs):
+        """
+        Plots ``data`` on a pixel axis, passing ``kwargs`` to ``imshow`` and applying
+        ``labels`` only when ``data`` fills the hardware.
+
+        Returns
+        -------
+        (matplotlib.pyplot.axis, matplotlib.pyplot.axis OR None, bool)
+            Data axis, colorbar axis, and whether a new figure awaits display.
+        """
+        should_show = False
+        if ax is None:
+            if len(plt.get_fignums()) > 0:
+                fig = plt.gcf()
+            else:
+                fig = plt.figure(figsize=(20,8))
+                should_show = True
+        else:
+            fig = None
+            plt.sca(ax)
+
+        im = plt.imshow(data, **kwargs)
+        ax = plt.gca()
+
+        cax = None
+        if cbar and fig is not None:
+            cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
+            fig.colorbar(im, cax=cax, orientation="vertical")
+            plt.sca(ax)
+
+        ax.set_title(title)
+
+        if limits is not None and limits != 1:
+            if np.isscalar(limits):
+                axlim = [ax.get_xlim(), ax.get_ylim()]
+
+                centers = np.mean(axlim, axis=1)
+                deltas = np.squeeze(np.diff(axlim, axis=1)) * limits / 2
+
+                limits = np.vstack((centers - deltas, centers + deltas)).T
+            elif np.shape(limits) == (2,2):
+                pass
+            else:
+                raise ValueError(f"limits format {limits} not recognized; provide a scalar or limits.")
+
+            ax.set_xlim(limits[0])
+            ax.set_ylim(limits[1])
+
+        if data.shape == self.shape:
+            ax.set_xlabel(labels[0])
+            ax.set_ylabel(labels[1])
+
+        return (ax, cax, should_show)

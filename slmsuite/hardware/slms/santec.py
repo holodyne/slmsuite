@@ -18,6 +18,7 @@ Santec provides base wavefront correction accounting for the curvature of the SL
 Consider loading these files via :meth:`.SLM.load_vendor_phase_correction()`
 """
 import os
+import time
 import ctypes
 import numpy as np
 import cv2
@@ -132,15 +133,13 @@ class Santec(SLM):
 
         try:
             # Wait for the SLM to no longer be busy.
-            while True:
+            attempt = 1
+            status = slm_funcs.SLM_Ctrl_ReadSU(self.slm_number)
+            while status == 2 and attempt < 100:    # SLM_BS (busy)
+                time.sleep(.1)
                 status = slm_funcs.SLM_Ctrl_ReadSU(self.slm_number)
-
-                if status == 0:
-                    break  # SLM_OK (proceed)
-                elif status == 2:
-                    continue  # SLM_BS (busy)
-                else:
-                    Santec._parse_status(status)
+                attempt += 1
+            Santec._parse_status(status)
 
             # Check to see if the device or option boards have an error.
             self.get_error(raise_error=True)
@@ -360,8 +359,16 @@ class Santec(SLM):
         try:
             # Load from .csv, skipping the first row and column
             # (corresponding to X and Y coordinates).
-            map = np.loadtxt(file_path, skiprows=1, dtype=int, delimiter=",")[:, 1:]
-            phase = (-2 * np.pi / self.bitresolution) * map.astype(float)
+            grayscale = np.loadtxt(file_path, skiprows=1, dtype=int, delimiter=",")[:, 1:]
+
+            if grayscale.shape != tuple(self.shape):
+                raise ValueError(
+                    "Correction shape {} does not match SLM shape {}.".format(
+                        grayscale.shape, self.shape
+                    )
+                )
+
+            phase = (-2 * np.pi / self.bitresolution) * grayscale.astype(float)
 
             # Smooth the map
             if smooth:
@@ -379,14 +386,14 @@ class Santec(SLM):
                 self.source["phase"] = phase
 
             return phase
-        except BaseException as e:
+        except Exception as e:
             logger.warning("Error while loading phase correction.\n{}".format(e))
             return self.source.get("phase")
 
     def close(self):
         """See :meth:`.SLM.close`."""
-        slm_funcs.SLM_Disp_Close(self.display_number)
-        slm_funcs.SLM_Ctrl_Close(self.slm_number)
+        Santec._parse_status(slm_funcs.SLM_Disp_Close(self.display_number))
+        Santec._parse_status(slm_funcs.SLM_Ctrl_Close(self.slm_number))
 
     def _set_phase_hw(self, display):
         """

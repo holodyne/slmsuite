@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 
 import matplotlib.pyplot as plt
 import numpy as np
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 import logging
 
 from slmsuite._plotting import _slmsuite_plt_show
@@ -43,8 +42,8 @@ class Camera(_Common, ABC):
         Returns ``(2**bitdepth) * averaging``. The action of averaging here is a sum
         rather than a mean, so the effective bitresolution increases accordingly.
     dtype : np.dtype
-        Stores the type returned by :meth:`._get_image_hw()`.
-        This value is cached upon initialization.
+        Type returned by :meth:`._get_image_hw()`, probed and cached upon initialization.
+        Falls back to the narrowest type fitting :attr:`bitdepth` if the probe fails.
     pitch_um : (float, float) OR None
         Pixel pitch in microns.
         This is a property that updates with binning.
@@ -224,10 +223,6 @@ class Camera(_Common, ABC):
         self.get_woi()
 
         self.color_channel = color_channel
-
-        # Set datatype variables.
-        self.bitdepth = int(bitdepth)
-        self.dtype = self._get_dtype()
 
         # Frame averaging variables.
         self.averaging = self._parse_averaging(averaging, preserve_none=True)
@@ -802,18 +797,19 @@ class Camera(_Common, ABC):
         # Hardware binning: return the WOI size after binning.
         return (h_woi // self._binning[1], w_woi // self._binning[0])
 
-    def _get_out(self, image_count, out=None):
-        # Preallocate memory if necessary
-        hw_shape = self._hw_image_shape
-        out_shape = (int(image_count), hw_shape[0], hw_shape[1])
+    def _get_out(self, shape, out=None, dtype=None):
+        """
+        Allocate a buffer of ``shape`` and ``dtype``, or check that ``out`` is one.
+        Defaults to the raw sensor :attr:`dtype`; software binning widens it.
+        """
+        shape = tuple(int(s) for s in shape)
+        dtype = np.dtype(self.dtype if dtype is None else dtype)
         if out is None:
-            out = np.empty(out_shape, dtype=self.dtype)
-        else:
-            if out.shape != out_shape:
-                raise ValueError(f"Expected out to be of shape {out_shape}. Found {out.shape}.")
-            if out.dtype != self.dtype:
-                raise ValueError(f"Expected out to be of type {self.dtype}. Found {out.dtype}.")
-            out = np.array(out, copy=False, dtype=self.dtype)
+            return np.empty(shape, dtype=dtype)
+        if out.shape != shape:
+            raise ValueError(f"Expected out to be of shape {shape}. Found {out.shape}.")
+        if out.dtype != dtype:
+            raise ValueError(f"Expected out to be of type {dtype}. Found {out.dtype}.")
 
         return out
 
@@ -831,18 +827,21 @@ class Camera(_Common, ABC):
         if self._software_binning:
             binx, biny = self._binning
             if biny != 1 or binx != 1:
-                # Promote so the block-sum cannot overflow the raw dtype. Use
-                # promote_types (never narrows) so an already-wide float input from
-                # get_image's HDR/averaging path is preserved.
-                img = img.astype(np.promote_types(img.dtype, self.get_dtype(averaging=1)))
+                # Promote so the block-sum cannot overflow the raw dtype, never narrowing.
+                img = img.astype(np.promote_types(img.dtype, self.get_dtype(averaging=1, hdr=False)))
+                # Sum into the promoted type; sum() otherwise re-promotes to uint64.
                 if img.ndim == 2:
                     H, W = img.shape
                     Ht, Wt = (H // biny) * biny, (W // binx) * binx
-                    img = img[:Ht, :Wt].reshape(Ht // biny, biny, Wt // binx, binx).sum(axis=(1, 3))
+                    img = img[:Ht, :Wt].reshape(
+                        Ht // biny, biny, Wt // binx, binx
+                    ).sum(axis=(1, 3), dtype=img.dtype)
                 else:   # (N, H, W) stack
                     N, H, W = img.shape
                     Ht, Wt = (H // biny) * biny, (W // binx) * binx
-                    img = img[:, :Ht, :Wt].reshape(N, Ht // biny, biny, Wt // binx, binx).sum(axis=(2, 4))
+                    img = img[:, :Ht, :Wt].reshape(
+                        N, Ht // biny, biny, Wt // binx, binx
+                    ).sum(axis=(2, 4), dtype=img.dtype)
 
         return img
 
@@ -879,7 +878,8 @@ class Camera(_Common, ABC):
         timeout_s : float
             The time in seconds to wait for **each** frame to be fetched.
         out : None OR numpy.ndarray
-            Preallocated memory for in-place operations, if applicable.
+            Preallocated memory of shape ``(image_count, *_hw_image_shape)``
+            to fill in place, if applicable.
 
         Returns
         -------
@@ -889,7 +889,7 @@ class Camera(_Common, ABC):
             :meth:`.get_images()`.
         """
         # Preallocate memory if necessary
-        out = self._get_out(image_count, out)
+        out = self._get_out((image_count,) + tuple(self._hw_image_shape), out)
 
         for i in range(image_count):
             out[i, :, :] = self._get_image_hw_tolerant(timeout_s)
@@ -996,7 +996,7 @@ class Camera(_Common, ABC):
 
         for _ in range(self.capture_attempts):
             try:
-                imgs = np.array(self._get_images_hw(*args, **kwargs))
+                imgs = np.asarray(self._get_images_hw(*args, **kwargs))
 
                 if imgs.ndim == 4:      # Stack of color images; reduce to grayscale.
                     imgs = self._parse_color_image(imgs)
@@ -1095,16 +1095,12 @@ class Camera(_Common, ABC):
 
             try:
                 # Using the camera-specific batch method if available
-                imgs = np.array(self._get_images_hw(
+                imgs = self._get_images_hw_tolerant(
                     averaging, timeout_s=timeout_s + self.exposure_s
-                ))
+                )
 
-                # Reduce color stacks to grayscale before summing.
-                if imgs.ndim == 4:
-                    imgs = self._parse_color_image(imgs)
-
-                # Cast as the proper type so we can sum.
-                img = np.sum(imgs.astype(averaging_dtype), axis=0)
+                # Sum into the declared type; np.sum otherwise promotes to uint64.
+                img = np.sum(imgs, axis=0, dtype=averaging_dtype)
             except NotImplementedError:
                 # Brute-force collection as a backup
                 img = np.zeros(self._hw_image_shape, dtype=averaging_dtype)
@@ -1131,7 +1127,7 @@ class Camera(_Common, ABC):
 
         # Push to viewer if active.
         if self.viewer is not None:
-            self.viewer.render(img / (2 ** self.bitdepth * averaging - 1))
+            self.viewer.render(img)
 
         return img
 
@@ -1153,7 +1149,13 @@ class Camera(_Common, ABC):
             The frame exposure time is **added** to this timeout
             such that there is always enough time to expose.
         out : None OR numpy.ndarray
-            If not ``None``, output data in this memory. Useful to avoid excessive allocation.
+            If not ``None``, output data in this memory. Must match the returned array:
+            shape ``(image_count, *shape)`` sized from :attr:`shape` after
+            :attr:`transform` (or before it, if ``transform=False``), and dtype
+            ``get_dtype(averaging=1, hdr=False)``, as this method applies neither.
+            The capture lands in this buffer directly---avoiding
+            any allocation---unless software windowing, binning, or color reduction has
+            to reshape the frames on the way out.
         transform : bool
             Whether or not to transform the output image according to
             :attr:`~slmsuite.hardware.cameras.camera.Camera.transform`.
@@ -1170,16 +1172,27 @@ class Camera(_Common, ABC):
         if flush:
             self.flush()
 
+        # `shape` is the stack this returns; `raw_shape` is the same stack before transform.
+        raw_shape = tuple(self.transform.inverse.transform_shape(self.shape))
+        shape = tuple(self.shape) if transform else raw_shape
+        if out is not None:
+            out = self._get_out(
+                (image_count,) + shape, out, dtype=self.get_dtype(averaging=1, hdr=False)
+            )
+
+        # Hand the hardware a view of the caller's buffer, unless the frames change shape.
+        if out is None or raw_shape != tuple(self._hw_image_shape):
+            out_hw = None
+        else:
+            out_hw = self.transform.inverse(out) if transform else out
+
         # Grab images (no transformation)
-        imgs = np.array(self._get_images_hw_tolerant(
+        imgs = self._get_images_hw_tolerant(
             image_count,
             timeout_s=timeout_s + self.exposure_s,
-            out=out
-        ))
-
-        # Reduce color stacks to grayscale.
-        if imgs.ndim == 4:
-            imgs = self._parse_color_image(imgs)
+            out=out_hw,
+        )
+        filled = out_hw is not None and imgs is out_hw
 
         # Software WOI crop and/or binning (unused when handled by hardware).
         imgs = self._crop_to_woi(imgs)
@@ -1188,12 +1201,18 @@ class Camera(_Common, ABC):
         if transform:
             imgs = self.transform(imgs)
 
+        # Fill the caller's buffer, unless the hardware already wrote into it.
+        if out is not None:
+            if not filled:
+                np.copyto(out, imgs)
+            imgs = out
+
         # Store the result locally.
         self.last_image = imgs[-1]
 
         # Push to viewer if active.
         if self.viewer is not None:
-            self.viewer.render(imgs[-1] / (2 ** self.bitdepth - 1))
+            self.viewer.render(imgs[-1])
 
         return imgs
 
@@ -1287,6 +1306,9 @@ class Camera(_Common, ABC):
 
             # Terminate the loop if our image is entirely overexposed.
             if np.all(imgs[i, :, :] > overexposure_threshold):
+                # Drop the unexposed tail so the stack only holds measured frames.
+                imgs = imgs[:i+1, :, :]
+                exposure_times = exposure_times[:i+1]
                 break
 
         # Reset exposure.
@@ -1397,90 +1419,95 @@ class Camera(_Common, ABC):
         self.hdr = None
         self.last_image = None
 
-        # Test basic image capture
-        print("    Testing get_image...")
-        image = self.get_image(timeout_s=2)
-        assert isinstance(image, np.ndarray)
-        assert image.shape == self.shape
-        assert image.dtype == self.dtype or np.issubdtype(image.dtype, np.floating)
-
-        # Test that last_image is updated
-        assert self.last_image is not None
-        if np.issubdtype(image.dtype, np.floating) or np.issubdtype(self.last_image.dtype, np.floating):
-            assert np.allclose(self.last_image, image)
-        else:
-            assert np.array_equal(self.last_image, image)
-
-        # Test get_image with transform=False
-        image_no_transform = self.get_image(transform=False, timeout_s=2)
-        assert isinstance(image_no_transform, np.ndarray)
-
-        # Test averaging
-        print("    Testing averaging...")
-        image_avg = self.get_image(averaging=2, timeout_s=5)
-        assert isinstance(image_avg, np.ndarray)
-        assert image_avg.shape == self.shape
-
-        # Test get_images
-        print("    Testing get_images...")
-        image_count = 3
-        images = self.get_images(image_count, timeout_s=2)
-        assert isinstance(images, np.ndarray)
-        assert images.shape == (image_count, self.shape[0], self.shape[1])
-        assert images.dtype == self.dtype
-
-        # Test get_images with preallocated output
-        out = np.empty((image_count, self.shape[0], self.shape[1]), dtype=self.dtype)
-        images_out = self.get_images(image_count, timeout_s=2, out=out)
-        assert images_out.shape == out.shape
-        assert images_out.dtype == out.dtype
-
-        # Test flush method
-        print("    Testing flush...")
-        self.flush(timeout_s=2)
-
-        # Test HDR imaging
         try:
-            print("    Testing get_image_hdr...")
-            hdr_image = self.get_image_hdr(exposures=2, return_raw=False, timeout_s=3)
-            assert isinstance(hdr_image, np.ndarray)
-            assert hdr_image.shape == self.shape
-            assert np.issubdtype(hdr_image.dtype, np.floating)
+            # Test basic image capture
+            print("    Testing get_image...")
+            image = self.get_image(timeout_s=2)
+            assert isinstance(image, np.ndarray)
+            assert image.shape == self.shape
+            assert image.dtype == self.get_dtype()
 
-            # Test HDR with return_raw=True
-            hdr_raw, exposure_times = self.get_image_hdr(exposures=2, return_raw=True, timeout_s=3)
-            assert isinstance(hdr_raw, np.ndarray)
-            assert isinstance(exposure_times, np.ndarray)
-            assert hdr_raw.shape[0] == 2
-            assert hdr_raw.shape[1:] == self.shape
-            assert len(exposure_times) == 2
+            # Test that last_image is updated
+            assert self.last_image is not None
+            if np.issubdtype(image.dtype, np.floating) or np.issubdtype(self.last_image.dtype, np.floating):
+                assert np.allclose(self.last_image, image)
+            else:
+                assert np.array_equal(self.last_image, image)
 
-        except Exception as e:
-            print(f"      HDR testing skipped: {e}")
+            # Test get_image with transform=False
+            image_no_transform = self.get_image(transform=False, timeout_s=2)
+            assert isinstance(image_no_transform, np.ndarray)
 
-        # Test 3: WOI and binning (hardware only)
-        if not self._software_woi:
-            print("  Testing get_woi / set_woi...")
-            orig_woi = self.get_woi()
-            self.set_woi()                          # reset to full sensor
-            half_woi = (0, self.shape[1] // 2, 0, self.shape[0] // 2)
-            self.set_woi(half_woi)
-            assert self.get_image().shape == self.shape, "shape mismatch after set_woi"
-            self.set_woi(orig_woi)
-            assert self.get_woi() == orig_woi, "get_woi did not round-trip"
+            # Test averaging
+            print("    Testing averaging...")
+            image_avg = self.get_image(averaging=2, timeout_s=5)
+            assert isinstance(image_avg, np.ndarray)
+            assert image_avg.shape == self.shape
 
-        if not self._software_binning:
-            print("  Testing get_binning / set_binning...")
-            orig_binning = self.get_binning()
-            self.set_binning(1)
-            assert self.get_binning() == (1, 1), "get_binning mismatch after set_binning(1)"
-            assert self.get_image().shape == self.shape, "shape mismatch after set_binning"
-            self.set_binning(orig_binning)
+            # Test get_images
+            print("    Testing get_images...")
+            image_count = 3
+            images = self.get_images(image_count, timeout_s=2)
+            assert isinstance(images, np.ndarray)
+            assert images.shape == (image_count, self.shape[0], self.shape[1])
+            assert images.dtype == self.get_dtype()
 
-        # Test 4: Info method
-        print("  Testing info...")
-        result = self.info(verbose=False)
-        assert isinstance(result, list)
+            # Test get_images with preallocated output
+            out = np.empty((image_count, self.shape[0], self.shape[1]), dtype=self.get_dtype())
+            images_out = self.get_images(image_count, timeout_s=2, out=out)
+            assert images_out.shape == out.shape
+            assert images_out.dtype == out.dtype
+
+            # Test flush method
+            print("    Testing flush...")
+            self.flush(timeout_s=2)
+
+            # Test HDR imaging
+            try:
+                print("    Testing get_image_hdr...")
+                hdr_image = self.get_image_hdr(exposures=2, return_raw=False, timeout_s=3)
+                assert isinstance(hdr_image, np.ndarray)
+                assert hdr_image.shape == self.shape
+                assert np.issubdtype(hdr_image.dtype, np.floating)
+
+                # Test HDR with return_raw=True
+                hdr_raw, exposure_times = self.get_image_hdr(exposures=2, return_raw=True, timeout_s=3)
+                assert isinstance(hdr_raw, np.ndarray)
+                assert isinstance(exposure_times, np.ndarray)
+                assert hdr_raw.shape[0] == 2
+                assert hdr_raw.shape[1:] == self.shape
+                assert len(exposure_times) == 2
+
+            except Exception as e:
+                print(f"      HDR testing skipped: {e}")
+
+            # Test 3: WOI and binning (hardware only)
+            if not self._software_woi:
+                print("  Testing get_woi / set_woi...")
+                orig_woi = self.get_woi()
+                self.set_woi()                          # reset to full sensor
+                half_woi = (0, self.shape[1] // 2, 0, self.shape[0] // 2)
+                self.set_woi(half_woi)
+                assert self.get_image().shape == self.shape, "shape mismatch after set_woi"
+                self.set_woi(orig_woi)
+                assert self.get_woi() == orig_woi, "get_woi did not round-trip"
+
+            if not self._software_binning:
+                print("  Testing get_binning / set_binning...")
+                orig_binning = self.get_binning()
+                self.set_binning(1)
+                assert self.get_binning() == (1, 1), "get_binning mismatch after set_binning(1)"
+                assert self.get_image().shape == self.shape, "shape mismatch after set_binning"
+                self.set_binning(orig_binning)
+
+            # Test 4: Info method
+            print("  Testing info...")
+            result = self.info(verbose=False)
+            assert isinstance(result, list)
+        finally:
+            # Restore the user's capture settings.
+            self.averaging = orig_averaging
+            self.hdr = orig_hdr
 
         print("Camera test completed successfully!")
 
@@ -1519,48 +1546,9 @@ class Camera(_Common, ABC):
             image = self.last_image
         image = np.array(image, copy=(False if np.__version__[0] == '1' else None))
 
-        should_show = False
-        if ax is None:
-            if len(plt.get_fignums()) > 0:
-                fig = plt.gcf()
-            else:
-                fig = plt.figure(figsize=(20,8))
-                should_show = True
-        else:
-            fig = None
-            plt.sca(ax)
-
-        im = plt.imshow(image)
-        ax = plt.gca()
-
-        if cbar and fig is not None:
-            cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
-            fig.colorbar(im, cax=cax, orientation="vertical")
-
-        ax.set_title(title)
-
-        if limits is not None and limits != 1:
-            if np.isscalar(limits):
-                axlim = [ax.get_xlim(), ax.get_ylim()]
-
-                centers = np.mean(axlim, axis=1)
-                deltas = np.squeeze(np.diff(axlim, axis=1)) * limits / 2
-
-                limits = np.vstack((centers - deltas, centers + deltas)).T
-            elif np.shape(limits) == (2,2):
-                pass
-            else:
-                raise ValueError(f"limits format {limits} not recognized; provide a scalar or limits.")
-
-            ax.set_xlim(limits[0])
-            ax.set_ylim(limits[1])
-
-        if image.shape == self.shape:
-            ax.set_xlabel(BLAZE_LABELS["ij"][0])
-            ax.set_ylabel(BLAZE_LABELS["ij"][1])
-
-        plt.sca(ax)
-
+        (ax, _, should_show) = self._plot(
+            image, limits, title, ax=ax, cbar=cbar, labels=BLAZE_LABELS["ij"]
+        )
 
         if should_show:
             _slmsuite_plt_show(name="camera_plot")
@@ -1714,7 +1702,7 @@ class Camera(_Common, ABC):
         dft_norm = dft_amp / np.amax(dft_amp)
         fom = np.sum(dft_norm)
 
-        if plot:
+        if plot >= 1:
             _, axs = plt.subplots(1, 2)
 
             axs[0].imshow(img)
@@ -1761,8 +1749,8 @@ class Camera(_Common, ABC):
             sharpness of the images (implemented as the Fourier contrast of the image,
             the sum of the normalized Fourier amplitudes). The sharper the image, the
             higher the FoM.
-        plot : bool
-            Whether to provide illustrative plots.
+        plot : int OR bool
+            Whether to provide illustrative plots, at ``1`` and above.
         verbose : bool
             If ``True``, progress is logged at ``INFO``; otherwise at ``DEBUG`` (default).
             Visibility is ultimately governed by :func:`slmsuite.configure_logging`.
@@ -1873,7 +1861,7 @@ class Camera(_Common, ABC):
         set_z(z_opt)
 
         # Show result if desired
-        if plot:
+        if plot >= 1:
             plt.scatter(z_list, counts, color="k", label="Data")
             plt.xlabel(r"$z$")
             plt.ylabel("Figure of Merit")

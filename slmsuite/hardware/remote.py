@@ -46,6 +46,8 @@ The server hosts a simulated SLM and camera:
         port=5025,
     )
 
+    server.listen()     # Blocks; call server.stop() from another thread to exit.
+
 The client connects to this hardware:
 
 .. highlight:: python
@@ -73,6 +75,7 @@ The client connects to this hardware:
 """
 import base64
 import json
+import re
 import socket
 import time
 import traceback
@@ -157,15 +160,13 @@ class _NpEncoder(json.JSONEncoder):
 def _recv(sock, timeout):
     recv_buffer = 4096 * 64
     buffer = ""
-    t = time.time()
     closed = False
 
-    # Pull data into the buffer until we hit timeout or deliminator.
+    # Pull data into the buffer until the peer idles past timeout or we hit the deliminator.
     old_timeout = sock.gettimeout()
     sock.settimeout(timeout)
     try:
-        # Pull data into the buffer until we hit timeout or deliminator.
-        while time.time() - t < timeout:
+        while True:
             try:
                 data = sock.recv(recv_buffer).decode()
             except socket.timeout:
@@ -190,7 +191,7 @@ def _recv(sock, timeout):
     # caller distinguishes failure with isinstance(message, dict).
     if closed:
         return False, f"Connection closed by peer after {len(buffer)} bytes received."
-    return False, f"Timeout: only {len(buffer)} bytes received before {timeout}s elapsed."
+    return False, f"Timeout: only {len(buffer)} bytes received before {timeout}s of silence."
 
 # Server which hosts slmsuite hardware.
 class Server(object):
@@ -221,9 +222,9 @@ class Server(object):
             Timeout in seconds for the server to wait (poll) for a client connection.
             Kept small so the server stays responsive to shutdown.
         :param recv_timeout:
-            Timeout in seconds to receive a full request once a client has connected.
-            Must be large enough to receive megapixel phase masks / camera images over
-            the network, so this is decoupled from (and larger than) ``timeout``.
+            Timeout in seconds that a connected client is allowed to idle mid-request.
+            Must be large enough to cover network stalls while megapixel phase masks /
+            camera images stream in, so this is decoupled from (and larger than) ``timeout``.
             Defaults to ``DEFAULT_TIMEOUT``.
         :param allowlist:
             List of IP addresses to allow to connect. Defaults to ``None`` (allow all).
@@ -256,6 +257,7 @@ class Server(object):
         self.port = port
         self.timeout = timeout
         self.recv_timeout = recv_timeout
+        self._listening = False
 
         # Only allow clients in the allowlist to connect.
         self.allowlist = allowlist
@@ -287,6 +289,7 @@ class Server(object):
     def listen(self):
         """
         Blocking command to listen for client commands and process them once they are
+        received. Returns upon :meth:`stop` or ``KeyboardInterrupt``.
         """
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -296,8 +299,10 @@ class Server(object):
 
         logger.info("Hosting on port %s with hardware %s", self.port, list(self.hardware.keys()))
 
+        self._listening = True
+
         try:
-            while True:
+            while self._listening:
                 connection = None
                 try:
                     # This blocks for self.timeout unless a client connects.
@@ -341,8 +346,17 @@ class Server(object):
                             pass
         except KeyboardInterrupt:
             # Standard way to kill the thread.
+            pass
+        finally:
             logger.info("Closing server! Goodbye!")
+            self._listening = False
             sock.close()
+
+    def stop(self):
+        """
+        Requests a :meth:`listen` loop to exit, which it does within ``timeout``.
+        """
+        self._listening = False
 
     def _handle(
         self,
@@ -372,6 +386,10 @@ class Server(object):
             if name not in self.hardware:
                 return False, f"Did not recognize hardware '{name}'. Options: {list(self.hardware.keys())}."
 
+            # A client-supplied list of attribute names would make pickle an arbitrary read.
+            if command == "pickle":
+                kwargs["attributes"] = bool(kwargs.get("attributes", True))
+
             if command in self.allowcommands and hasattr(self.hardware[name], command):
                 attribute = getattr(self.hardware[name], command)
                 if callable(attribute):
@@ -380,8 +398,17 @@ class Server(object):
                     return False, f"{instrument} is not callable."
             else:
                 return False, f"{instrument} not present."
-        except Exception:
-            return False, traceback.format_exc()
+        except Exception as e:
+            # A traceback would name filesystem paths and frames to an unauthenticated peer.
+            logger.error("Error handling %s:\n%s", client_addr, traceback.format_exc())
+
+            # A keyword rejected by the signature pushes no frame, so it names only the API.
+            if isinstance(e, TypeError) and e.__traceback__.tb_next is None:
+                unsupported = re.search(r"unexpected keyword argument '(\w+)'", str(e))
+                if unsupported is not None:
+                    return False, f"{instrument} does not support the argument '{unsupported.group(1)}'."
+
+            return False, "Server error. See the server log for details."
 
 # Abstract client which connects to a server.
 class _Client(_Picklable):

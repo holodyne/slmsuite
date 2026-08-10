@@ -22,7 +22,7 @@ class _FourierCalibration(object):
         array_shape=None,
         array_pitch=None,
         array_center=None,
-        plot=False,
+        plot=0,
         autofocus=False,
         autoexpose=False,
         **kwargs,
@@ -59,12 +59,12 @@ class _FourierCalibration(object):
             **in the** ``"knm"`` **basis.**  ``array_center`` is not passed directly, and is
             processed as being relative to the center of ``"knm"`` space, the position
             of the 0th order. If ``None`` the array is centered.
-        plot : bool OR int
-            Enables debug plots:
+        plot : int OR bool
+            Whether to provide visual feedback, options are:
 
-            - 0 is no plots,
-            - 1 is only the final fit plot, unless there is an error,
-            - 2 is all plots.
+            - ``0``, ``False`` : No plots.
+            - ``1``, ``True`` : Only the final fit plot, unless there is an error.
+            - ``2`` : Plots on everything.
         autofocus : bool OR dict
             Brings the calibration grid into focus by adjusting
             the focus term of the SLM's wavefront calibration.
@@ -84,7 +84,7 @@ class _FourierCalibration(object):
             :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["fourier"]`
         """
         if array_shape is None or array_pitch is None:
-            return self._fourier_calibrate_meta(
+            return self._fourier_calibrate_auto(
                 plot=plot,
                 autofocus=autofocus,
                 autoexpose=autoexpose,
@@ -142,7 +142,7 @@ class _FourierCalibration(object):
         # of the last two points.
         array_center = np.mean(hologram.spot_kxy_rounded[:, 2:], axis=1)
 
-        if plot > 1:
+        if plot >= 2:
             hologram.plot_farfield()
             hologram.plot_nearfield()
 
@@ -194,7 +194,7 @@ class _FourierCalibration(object):
         # kxyslm -> ijcam -> ijraw
         kxyslm_to_ijraw = self.cam._get_ijcam_to_ijraw() @ kxyslm_to_ijcam
         self.calibrations["fourier"] = kxyslm_to_ijraw.to_dict()
-        self.calibrations["fourier"]["meta"] = {
+        self.calibrations["fourier"]["array"] = {
             "array_shape" : array_shape,
             "array_pitch" : array_pitch,
             "array_center" : array_center,
@@ -205,19 +205,19 @@ class _FourierCalibration(object):
 
         return self.calibrations["fourier"]
 
-    ### Automatic ("meta") Fourier Calibration ###
+    ### Automatic Fourier Calibration ###
 
     # Fraction of peak efficiency which counts as farfield the SLM can address.
-    _FOURIER_CAL_META_EFF_THRESH = 0.1
+    _FOURIER_CAL_AUTO_EFF_THRESH = 0.1
 
     # Dynamic range to aim a projected array at; above one blooms sub-pixel spots.
-    _FOURIER_CAL_META_OVEREXPOSE = 8.0
+    _FOURIER_CAL_AUTO_OVEREXPOSE = 8.0
 
-    def _fourier_calibrate_meta(
+    def _fourier_calibrate_auto(
         self,
         tolerance=None,
         max_attempts=6,
-        plot=False,
+        plot=0,
         **kwargs,
     ):
         """
@@ -249,7 +249,7 @@ class _FourierCalibration(object):
                 self.farfield_calibrate()
             support = self.get_farfield_efficiency(
                 fourier_crop=False,
-                efficiency_threshold=self._FOURIER_CAL_META_EFF_THRESH
+                efficiency_threshold=self._FOURIER_CAL_AUTO_EFF_THRESH
             )
 
             zeroth = self.get_farfield_zeroth()
@@ -301,13 +301,13 @@ class _FourierCalibration(object):
                     # wherever the zeroth exceeds what one spot of the array will hold.
                     window = self.get_farfield_efficiency(
                         fourier_crop=False,
-                        efficiency_threshold=self._FOURIER_CAL_META_EFF_THRESH,
+                        efficiency_threshold=self._FOURIER_CAL_AUTO_EFF_THRESH,
                         zeroth_threshold=array_shape ** 2,
                     )
                     self._fourier_calibrate_single(
                         array_shape=array_shape, array_pitch=pitch,
                         autoexpose={
-                            "set_fraction": self._FOURIER_CAL_META_OVEREXPOSE,
+                            "set_fraction": self._FOURIER_CAL_AUTO_OVEREXPOSE,
                             "window": window if np.any(window) else None,
                             "verbose": False,
                         },
@@ -383,12 +383,12 @@ class _FourierCalibration(object):
                         )
                     except Exception as e:
                         self.logger.info(
-                            "fourier_calibrate_meta attempt %d failed: %s", attempt, e
+                            "fourier_calibrate_auto attempt %d failed: %s", attempt, e
                         )
                         continue
 
                 # Verify at a normal exposure, where the gaps between spots survive the bloom.
-                self.cam.set_exposure(exposure / self._FOURIER_CAL_META_OVEREXPOSE)
+                self.cam.set_exposure(exposure / self._FOURIER_CAL_AUTO_OVEREXPOSE)
                 self.cam.flush()
                 img = analysis.image_remove_field(self.cam.get_image(), deviations=None)
                 middle = np.array(design["array_center"])
@@ -432,7 +432,7 @@ class _FourierCalibration(object):
                         error = residual
 
                 self.logger.info(
-                    "fourier_calibrate_meta attempt %d: %.2f px residual.", attempt, error
+                    "fourier_calibrate_auto attempt %d: %.2f px residual.", attempt, error
                 )
 
                 if best is None or error < best[0]:
@@ -443,7 +443,7 @@ class _FourierCalibration(object):
             if best is None or best[0] > tolerance:
                 self.calibrations.pop("fourier", None)
                 raise RuntimeError(
-                    f"fourier_calibrate_meta left a "
+                    f"fourier_calibrate_auto left a "
                     f"{np.inf if best is None else best[0]:.2f} px residual against a "
                     f"{tolerance:.2f} px tolerance. Inspect the farfield with plot=2: "
                     f"the array may be too dim, or the camera may see too little of "
@@ -452,7 +452,7 @@ class _FourierCalibration(object):
 
             # The loop may have ended on a worse attempt than the best.
             self.calibrations["fourier"] = best[1]
-            self.calibrations["fourier"]["meta"].update({
+            self.calibrations["fourier"]["array"].update({
                 "support": support, "residual": best[0],
             })
 

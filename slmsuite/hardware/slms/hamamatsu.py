@@ -311,7 +311,7 @@ class Hamamatsu(SLM):
         open_dev.restype = c_int
         array =c_uint8*bID_size
         ID_list = array(0)
-        conn_dev = open_dev(byref(ID_list), bID_size)
+        conn_dev = open_dev(ID_list, bID_size)
 
         return conn_dev, ID_list
 
@@ -324,7 +324,7 @@ class Hamamatsu(SLM):
         close_dev.argtypes = [c_uint8*bID_size, c_int32]
         close_dev.restype = c_int
 
-        v = close_dev(byref(bID_list), bID_size)
+        v = close_dev(bID_list, bID_size)
 
         if v != 1:
             raise RuntimeError("Failed to close Hamamatsu device.")
@@ -345,7 +345,7 @@ class Hamamatsu(SLM):
         check_serial.argtypes = [c_uint8, c_char*11, c_int32]
         hs = c_char*11
         head_serial = hs(0)
-        v = check_serial(board_id, byref(head_serial), 11)
+        v = check_serial(board_id, head_serial, 11)
 
         if v != 1:
             raise RuntimeError("Failed to read Hamamatsu serial number.")
@@ -375,7 +375,7 @@ class Hamamatsu(SLM):
         check_temp = Lcoslib.Check_Temp
         head_temperature = c_double(0)
         controller_temperature = c_double(0)
-        check_temp.argtypes = [c_uint8,c_double,c_double]
+        check_temp.argtypes = [c_uint8, POINTER(c_double), POINTER(c_double)]
 
         v = check_temp(self.board_id, byref(head_temperature), byref(controller_temperature))
 
@@ -397,7 +397,7 @@ class Hamamatsu(SLM):
         ls = c_uint32 * 10
         led_status = ls(0)
         check_led.argtypes = [c_uint8, c_uint32*10]
-        v = check_led(self.board_id, byref(led_status))
+        v = check_led(self.board_id, led_status)
 
         if v != 1:
             raise RuntimeError(f"Could not check Hamamatsu LED status (error={v}).")

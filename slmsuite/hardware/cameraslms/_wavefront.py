@@ -111,7 +111,7 @@ class _WavefrontCalibration(
         avoid_points=None,
         avoid_mirrors=True,
         avoid_nyquist=True,
-        plot=False,
+        plot=0,
     ):
         """
         Generates a grid of points to perform wavefront calibration at.
@@ -154,6 +154,8 @@ class _WavefrontCalibration(
             the 1st orders of the grid of calibration points.
         avoid_nyquist : bool
             If ``True``, omits points that are outside the first Nyquist zone.
+        plot : int OR bool
+            If ``>= 1``, plots the chosen points against the avoided ones.
 
         Returns
         -------
@@ -246,9 +248,9 @@ class _WavefrontCalibration(
             )
 
             # Plot bad points.
-            if plot: plt.scatter(point[0], point[1], c="r")
+            if plot >= 1: plt.scatter(point[0], point[1], c="r")
 
-        if plot:
+        if plot >= 1:
             # Points
             plt.scatter(
                 calibration_points[0,:],

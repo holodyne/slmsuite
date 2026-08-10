@@ -225,7 +225,7 @@ class SLM(_Common, ABC):
             )
 
         # Phase and display caches for user reference.
-        self.phase = self.xp.zeros(self.shape)
+        self.phase = self.xp.zeros(self.shape, dtype=np.float32)
         self.display = self.xp.zeros(self.shape, dtype=self.dtype)
 
         # By default, target wavelength is the design wavelength
@@ -246,7 +246,10 @@ class SLM(_Common, ABC):
         height, width = self.shape
         xpix = (width  - 1) * np.linspace(-0.5, 0.5, width)
         ypix = (height - 1) * np.linspace(-0.5, 0.5, height)
-        self._grid_base = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
+        self._grid_base = [
+            g.astype(np.float32)
+            for g in np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix)
+        ]
         self._grid = None            # cache for the aperture-centered working grid
         self._grid_center = None     # aperture center the cache was built for
 
@@ -279,7 +282,10 @@ class SLM(_Common, ABC):
         coordinate frame that analytic phase functions (lenses, gratings, Zernike, ...)
         are generated in.
         """
-        center = None if self.aperture.center is None else tuple(self.aperture.center)
+        center = (
+            None if self.aperture.center is None
+            else tuple(float(c) for c in self.aperture.center)
+        )
         if self._grid is None or self._grid_center != center:
             if center is None:
                 self._grid = self._grid_base
@@ -441,53 +447,19 @@ class SLM(_Common, ABC):
         phase = np.array(phase, copy=(False if np.__version__[0] == '1' else None))
         phase = np.mod(phase, 2*np.pi) / np.pi
 
-        should_show = False
-        if ax is None:
-            if len(plt.get_fignums()) > 0:
-                fig = plt.gcf()
-            else:
-                fig = plt.figure(figsize=(20,8))
-                should_show = True
-        else:
-            fig = None
-            plt.sca(ax)
+        (ax, cax, should_show) = self._plot(
+            phase, limits, title, ax=ax, cbar=cbar,
+            labels=("SLM $n$ [pix]", "SLM $m$ [pix]"),
+            clim=[0, 2], cmap="twilight", interpolation="none",
+        )
 
-        im = plt.imshow(phase, clim=[0, 2], cmap="twilight", interpolation="none")
-        ax = plt.gca()
-
-        if cbar and fig is not None:
-            cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
-            fig.colorbar(im, cax=cax, orientation="vertical")
+        if cax is not None:
             ticks = [0,1,2]
-            cax.set_yticks([0,1,2])
+            cax.set_yticks(ticks)
             cax.set_yticklabels([f"${t}\\pi$" for t in ticks])
 
-        ax.set_title(title)
-
-        if limits is not None and limits != 1:
-            if np.isscalar(limits):
-                axlim = [ax.get_xlim(), ax.get_ylim()]
-
-                centers = np.mean(axlim, axis=1)
-                deltas = np.squeeze(np.diff(axlim, axis=1)) * limits / 2
-
-                limits = np.vstack((centers - deltas, centers + deltas)).T
-            elif np.shape(limits) == (2,2):
-                pass
-            else:
-                raise ValueError(f"limits format {limits} not recognized; provide a scalar or limits.")
-
-            ax.set_xlim(limits[0])
-            ax.set_ylim(limits[1])
-
-        if phase.shape == self.shape:
-            ax.set_xlabel("SLM $n$ [pix]")
-            ax.set_ylabel("SLM $m$ [pix]")
-
-            if aperture:
-                self._plot_aperture(ax)
-
-        plt.sca(ax)
+        if aperture and phase.shape == self.shape:
+            self._plot_aperture(ax)
 
         if should_show:
             _slmsuite_plt_show(name="slm_plot")
@@ -555,7 +527,7 @@ class SLM(_Common, ABC):
         Sets :attr:`lut`, the lookup table mapping a desired phase onto the grayscale
         level which best realizes it, from a measured phase response ``gamma``.
         Measure ``gamma`` with
-        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibration_process_gamma`.
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibration_process`.
         Its sweep projects grayscale levels directly, so a previously-set :attr:`lut`
         does not disturb the measurement.
 
@@ -936,9 +908,7 @@ class SLM(_Common, ABC):
             SLM shape, etc).
         """
         # Parse execute and block arguments.
-        if execute is None:
-            execute = True
-        else:
+        if execute is not None:
             if self._set_phase_hw_execute:
                 kwargs["execute"] = bool(execute)
             else:
@@ -998,13 +968,11 @@ class SLM(_Common, ABC):
 
             # Update the phase variable with the integer data that we displayed.
             if self.gamma is None:
-                self.phase = xp.mod(
-                    phase * (self._gamma_sign * 2 * np.pi
-                             / self.phase_scaling / self.bitresolution),
-                    2 * np.pi,
-                )
+                realized = phase * (self._gamma_sign * 2 * np.pi
+                                    / self.phase_scaling / self.bitresolution)
             else:
-                self.phase = xp.mod(self._gamma_sign * 2 * np.pi * self.gamma[phase], 2 * np.pi)
+                realized = self._gamma_sign * 2 * np.pi * self.gamma[phase]
+            xp.copyto(self.phase, xp.mod(realized, 2 * np.pi))
         else:
             # If float data was passed (or the None case).
             # Unpad if necessary.
@@ -1026,19 +994,16 @@ class SLM(_Common, ABC):
             self.display = self._format_phase_hw(self.phase)
 
         # Write!
-        if execute:
-            self._set_phase_hw(self.display, **kwargs)
+        self._set_phase_hw(self.display, **kwargs)
 
-            # For accurate settle, reset the time to be after the data has actually been sent to the SLM.
-            t0 = time.perf_counter()
+        # For accurate settle, reset the time to be after the data has actually been sent to the SLM.
+        t0 = time.perf_counter()
 
-            # Maybe some of that time will be spent rendering the data in the viewer...
-            if self.viewer is not None:
-                phase = self.phase if self.xp is np else self.phase.get()
-                factor = (self.phase_scaling * self.bitresolution / (2 * np.pi))
-                self.viewer.render(
-                    (phase * factor).astype(self.dtype) / (self.bitresolution - 1)
-                )
+        # Maybe some of that time will be spent rendering the data in the viewer...
+        if self.viewer is not None:
+            phase = self.phase if self.xp is np else self.phase.get()
+            factor = (self.phase_scaling * self.bitresolution / (2 * np.pi))
+            self.viewer.render((phase * factor).astype(self.dtype))
 
         # Optional delay.
         if settle is None:
@@ -1143,7 +1108,7 @@ class SLM(_Common, ABC):
         data = load_h5(file_path)
 
         display = self.xp.asarray(data["display"])
-        self.phase = self.xp.asarray(data["phase"])
+        self.phase = self.xp.asarray(data["phase"], dtype=np.float32)
 
         self._set_phase_hw(display)
 
@@ -1456,6 +1421,11 @@ class SLM(_Common, ABC):
         center_pix = np.squeeze(center) + (np.flip(self.shape) - 1) / 2.0
 
         radius_norm = np.mean(self.pitch * np.squeeze(radius))
+        if not np.isfinite(radius_norm) or radius_norm <= 0:
+            raise RuntimeError(
+                f"fit_aperture found a degenerate source radius ({radius_norm}) with "
+                f"method '{method}'; the measured source amplitude carries no usable signal."
+            )
         spec = 1.0 / (2.0 * radius_norm)
 
         center_norm = self.aperture.center

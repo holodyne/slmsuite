@@ -174,7 +174,7 @@ class ThorCam(Camera):
             resolution=(self.cam.image_width_pixels, self.cam.image_height_pixels),
             bitdepth=self.cam.bit_depth,
             pitch_um=(self.cam.sensor_pixel_width_um, self.cam.sensor_pixel_height_um),
-            name=serial,
+            name=kwargs.pop("name", serial),
             **kwargs
         )
         self.logger.debug("ThorCam initialized.")
