@@ -368,6 +368,23 @@ def test_image_remove_field(subtests):
         assert result is out
         assert np.max(out) > 0
 
+    with subtests.test("integer out raises"):
+        image = np.full((1, 8, 8), 10, dtype=np.uint8)
+        with pytest.raises(ValueError, match="floating point"):
+            analysis.image_remove_field(image, deviations=None, out=image)
+
+    with subtests.test("integer images without out are fine"):
+        image = np.full((1, 8, 8), 10, dtype=np.uint8)
+        image[0, 0, 0] = 2
+        image[0, 3:5, 3:5] = 200
+
+        result = analysis.image_remove_field(image, deviations=None)
+
+        expected = np.zeros((1, 8, 8))
+        expected[0, 3:5, 3:5] = 190
+        np.testing.assert_array_equal(result, expected)
+        assert np.issubdtype(result.dtype, np.floating)
+
 
 def test_image_relative_strehl(subtests):
     """Test image_relative_strehl() for concentrated spot."""
@@ -557,6 +574,13 @@ def test_image_zernike_fit(subtests):
         assert coeffs.shape == (len(indices), 1)
         assert np.allclose(coeffs[:, 0], weights, atol=1e-6)
 
+    with subtests.test("grid defaults to a unit-pitch grid over the images"):
+        phase_2d = 0.5 * X_small + 0.3 * Y_small
+        np.testing.assert_allclose(
+            analysis.image_zernike_fit(phase_2d, order=3),
+            analysis.image_zernike_fit(phase_2d, None, order=3),
+        )
+
     with subtests.test("scalar order omits piston"):
         phase_2d = 0.5 * X_small + 0.3 * Y_small
         coeffs = analysis.image_zernike_fit(phase_2d, grid_small, order=3)
@@ -566,11 +590,18 @@ def test_image_zernike_fit(subtests):
     with subtests.test("leastsquares=False does a per-mode projection"):
         phase_2d = 0.5 * X_small + 0.3 * Y_small
         coeffs = analysis.image_zernike_fit(
-            phase_2d, grid_small, order=3, leastsquares=False
+            phase_2d, grid_small, order=3, leastsquares=False, gradient=False
         )
         expected = (3 + 1) * (3 + 2) // 2 - 1
         assert coeffs.shape == (expected, 1)
-        assert np.any(np.abs(coeffs[:, 0]) > 0.01)
+        # The grid's circumscribing aperture has radius sqrt(2), which scales the tilt.
+        assert np.allclose(coeffs[:2, 0], np.sqrt(2) * np.array([0.3, 0.5]), atol=1e-6)
+
+    with subtests.test("leastsquares=False is rejected against the gradient basis"):
+        with pytest.raises(ValueError):
+            analysis.image_zernike_fit(
+                0.5 * X_small, grid_small, order=3, leastsquares=False, gradient=True
+            )
 
     with subtests.test("accepts a prebuilt ZernikeBasis without rebuilding"):
         indices = [1, 2, 4]
@@ -831,8 +862,9 @@ def test_take(subtests, benchmark, caplog):
 
     with subtests.test("out-of-range index without clip raises IndexError"):
         image = np.random.rand(50, 50)
-        with pytest.raises(IndexError):
-            analysis.take(image, vectors=[100, 100], size=10, centered=True, clip=False)
+        for vector in ([-1, 25], [25, -1], [54, 25], [25, 54], [100, 100]):
+            with pytest.raises(IndexError):
+                analysis.take(image, vectors=vector, size=10, centered=True, clip=False)
 
     with subtests.test("4D images raises RuntimeError"):
         image = np.random.rand(2, 3, 50, 50)

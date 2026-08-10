@@ -148,7 +148,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     -  ``"ij"``
         Camera sensor pixel units, the coordinates of the image array returned by 
-        :meth:`~slmsuite.hardware.cameras.Camera.get_image()` using numpy ``img[y, x]`` convention.
+        :meth:`~slmsuite.hardware.cameras.camera.Camera.get_image()` using numpy ``img[y, x]`` convention.
         When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
         unless converting only between camera units (see ``"ijraw"``), in which case a
@@ -376,9 +376,9 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
             zernike_scale = 2 * np.pi * np.reciprocal(slm.aperture._isotropic_scale())
 
     if "ijraw" in (from_units, to_units):
-        # Camera affine and isotropic raw/binned pixel-size ratio for "ijraw".
+        # Camera affine for "ijraw" xy; depth uses the arithmetic mean of the binning.
         ijcam_to_ijraw = cam._get_ijcam_to_ijraw()
-        ijraw_z_scale = np.sqrt(np.abs(ijcam_to_ijraw.det()))
+        ijraw_z_scale = np.mean(cam.binning)
 
     # XY
 
@@ -716,8 +716,9 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
     radius : float
         Cells on the edge of the set of cells might be very large. This parameter bounds
         the cells with a boolean and to the aperture of the given ``radius``.
-    plot : bool
-        Whether to plot the resulting Voronoi diagram with :meth:`scipy.spatial.voronoi_plot_2d()`.
+    plot : int OR bool
+        Whether to plot the resulting Voronoi diagram with
+        :meth:`scipy.spatial.voronoi_plot_2d()`, at ``1`` and above.
 
     Returns
     -------
@@ -762,7 +763,7 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
 
     vor = Voronoi(vectors_voronoi, furthest_site=False)
 
-    if plot:
+    if plot >= 1:
         sx = shape[1]
         sy = shape[0]
 
@@ -916,6 +917,18 @@ def imprint(
     # Get slices for the window in the matrix.
     shape = matrix.shape if clip else None
     slice_ = window_slice(window, shape=shape, centered=centered, circular=circular)
+
+    if not clip and window is not None and isinstance(slice_, tuple):
+        for (index, limit) in zip(slice_, matrix.shape):
+            if isinstance(index, slice):
+                out_of_range = index.start < 0 or index.stop > limit
+            else:
+                out_of_range = np.any(index < 0) or np.any(index >= limit)
+            if out_of_range:
+                raise ValueError(
+                    "Imprint window extends past the matrix of shape {}. "
+                    "Pass clip=True to crop the window.".format(matrix.shape)
+                )
 
     # Decide whether to treat function as a float.
     is_float = isinstance(function, REAL_TYPES)
@@ -1362,7 +1375,7 @@ def smallest_distance(vectors, metric="chebyshev"):
             d = min(d1, d2)
 
             # Leave if we don't need to merge.
-            if (v[M - 1, axis] - v[M, axis]) > d:
+            if d == 0 or (v[M - 1, axis] - v[M, axis]) > d:
                 return d
 
             # Merge around average x0 across the partition boundary.
@@ -1431,8 +1444,8 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
         See :meth:`~slmsuite.holography.toolbox.voronoi_windows()`.
     iterations : int
         Number of iterations to apply Lloyd's Algorithm.
-    plot : bool
-        Whether to plot each iteration of the algorithm.
+    plot : int OR bool
+        Whether to plot each iteration of the algorithm, at ``1`` and above.
 
     Returns
     -------
@@ -1524,7 +1537,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
         # Recomputing this each time isn't too inefficient.
         vor = Voronoi(vectors_ext)
 
-        if plot:
+        if plot >= 1:
             sx = shape[1]
             sy = shape[0]
 
@@ -1577,8 +1590,8 @@ def lloyds_points(grid, n_points, iterations=10, plot=False):
         Number of points to generate inside a space.
     iterations : int
         Number of iterations to apply Lloyd's Algorithm.
-    plot : bool
-        Whether to plot each iteration of the algorithm.
+    plot : int OR bool
+        Whether to plot each iteration of the algorithm, at ``1`` and above.
 
     Returns
     -------
@@ -1727,6 +1740,9 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
     """
     # Parse grid.
     (x_grid, y_grid) = _process_grid(grid)
+
+    if direction not in ("fwd", "rev"):
+        raise ValueError(f"Expected direction to be 'fwd' or 'rev'. Received '{direction}'.")
 
     # Parse transform.
     if transform is None:

@@ -2,6 +2,7 @@
 Zernike polynomials and related functions.
 """
 import os
+import threading
 import warnings
 import weakref
 from collections import OrderedDict
@@ -13,7 +14,7 @@ try:
     import cupy as cp  # type: ignore
 except ImportError:
     cp = np
-from math import factorial
+from math import comb, factorial
 
 import matplotlib.pyplot as plt
 from scipy import special
@@ -42,6 +43,7 @@ except Exception:
 
 ZERNIKE_INDEXING_DIMENSION = {"ansi" : 1, "noll" : 1, "fringe" : 1, "wyant" : 1, "radial" : 2}
 ZERNIKE_INDEXING = ZERNIKE_INDEXING_DIMENSION.keys()
+ZERNIKE_INDEX_UNDEFINED = np.iinfo(int).min
 ZERNIKE_NAMES = [
     # Oth order
     "Piston",
@@ -133,6 +135,8 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
     -  ``"fringe"``
         1-dimensional (1-indexed) `Fringe indices
         <https://en.wikipedia.org/wiki/Zernike_polynomials#Fringe/University_of_Arizona_indices>`_.
+        Defined only for the canonical 37-term set, where the last term
+        :math:`Z_{37} = Z_{12}^0` breaks the pattern of the first 36.
 
     -  ``"wyant"``
         1-dimensional (0-indexed) `Wyant indices
@@ -146,15 +150,15 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
         (1, apart from ``"radial"`` indexing which has a dimension of 2).
     from_index, to_index : str
         Zernike index convention. Must be supported.
-        Only ``"ansi"`` and ``"radial"`` are supported as ``from_index``;
-        conversion out of ``"noll"``, ``"fringe"``, or ``"wyant"``
-        raises :class:`NotImplementedError`.
 
     Returns
     -------
     indices_converted : numpy.ndarray
         List of indices of shape ``(N, D)`` where ``D`` is the dimension of the indexing
         (1, apart from ``"radial"`` indexing which has a dimension of 2).
+        A polynomial outside the 37-term Fringe/Wyant set has no index in these conventions
+        and is reported as :data:`ZERNIKE_INDEX_UNDEFINED`, which every further conversion
+        propagates unchanged.
 
     Raises
     ------
@@ -185,13 +189,23 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
     if from_index == to_index:
         return indices
 
+    # Undefined indices are carried through rather than converted.
+    undefined = indices == ZERNIKE_INDEX_UNDEFINED
+    if np.any(undefined):
+        result = zernike_convert_index(np.where(undefined, 0, indices), from_index, to_index)
+        result[np.any(np.reshape(undefined, (-1, dimension)), axis=1), ...] = ZERNIKE_INDEX_UNDEFINED
+        return result
+
     # Convert all cases to radial indices n, l.
     if from_index == "radial":
         n = indices[:,0]
         l = indices[:,1]
     elif from_index == "noll" or from_index == "fringe" or from_index == "wyant":
-        # Inverse functions have not been implemented.
-        raise NotImplementedError(f"from_index '{from_index}' is not supported currently.")
+        ansi = _zernike_index_inverse(indices, from_index)
+        unmapped = ansi == ZERNIKE_INDEX_UNDEFINED
+        result = zernike_convert_index(np.where(unmapped, 0, ansi), "ansi", to_index)
+        result[unmapped, ...] = ZERNIKE_INDEX_UNDEFINED
+        return result
     elif from_index == "ansi":
         n = np.floor(.5 * np.sqrt(8*indices + 1) - .5).astype(int)
         l = 2*indices - n*(n+2)
@@ -212,15 +226,44 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
         result += np.logical_and(l >= 0, np.mod(n, 4) > 1)
         result += np.logical_and(l <= 0, np.mod(n, 4) <= 1)
     elif to_index == "wyant" or to_index == "fringe":
-        result = (
-            np.square(1 + (n + np.abs(l)) / 2).astype(int)
-            - 2 * np.abs(l) + (l < 0)
-            - (to_index == "wyant")
+        is_wyant = int(to_index == "wyant")
+        index = np.square(1 + (n + np.abs(l)) / 2).astype(int) - 2 * np.abs(l) + (l < 0)
+        piston37 = np.logical_and(n == 12, l == 0)
+        # Terms beyond the 37-term set have no equivalent.
+        result = np.where(
+            piston37,
+            37 - is_wyant,
+            np.where(index >= 37, ZERNIKE_INDEX_UNDEFINED, index - is_wyant),
         )
     elif to_index == "ansi":
         result = (n * (n + 2) + l) // 2
 
     return result
+
+
+# Lazy inverses of the 1D conventions. {convention : (built_to, {index : ansi})}
+_zernike_inverse_cache = {}
+
+
+def _zernike_index_inverse(indices, from_index):
+    """
+    ANSI indices for a 1-dimensional Zernike convention, inverted by table lookup
+    over the range where the forward map is defined.
+    Unmapped indices return :data:`ZERNIKE_INDEX_UNDEFINED`.
+    """
+    # The Fringe/Wyant piston term Z_37 requires ANSI indices through radial order 12.
+    D = max(int(np.max(indices, initial=0)) + 1, zernike_order_number(12))
+    (built_to, table) = _zernike_inverse_cache.get(from_index, (0, {}))
+
+    if built_to < D:
+        ansi = np.arange(D)
+        forward = np.ravel(zernike_convert_index(ansi, "ansi", from_index))
+        table = {int(f): int(a) for (a, f) in zip(ansi, forward) if f >= 0}
+        _zernike_inverse_cache[from_index] = (D, table)
+
+    return np.array(
+        [table.get(int(i), ZERNIKE_INDEX_UNDEFINED) for i in np.ravel(indices)], dtype=int
+    )
 
 
 def zernike(grid, index, weight=1, **kwargs):
@@ -554,6 +597,12 @@ class ZernikeBasis:
     @cached_property
     def grad_gram_inv(self):
         """Inverse of the gradient Gram matrix."""
+        if np.any(np.atleast_1d(self.indices) == 0):
+            raise ValueError(
+                "The gradient Gram matrix is singular because the basis contains the "
+                "piston term (Zernike ANSI index 0), whose gradient is identically zero. "
+                "Omit piston from the basis."
+            )
         return self._xp.linalg.inv(self.grad_gram)
 
     @cached_property
@@ -603,6 +652,8 @@ def _zernike_sum_from_basis(basis, weights, out=None):
     result = weights.T @ basis.basis_flat
 
     if out is not None:
+        if not xp.issubdtype(out.dtype, xp.inexact):
+            raise ValueError(f"out must be a floating-point or complex buffer, got {out.dtype}.")
         # Normalize a possibly-flattened out buffer to (N, h, w).
         out = out.reshape((N,) + basis.grid_shape)
         out[...] = result.reshape((N,) + basis.grid_shape)
@@ -616,6 +667,7 @@ def _zernike_sum_from_basis(basis, weights, out=None):
 # Transparent ZernikeBasis cache, keyed on grid + indices + aperture.
 _ZERNIKE_BASIS_CACHE = OrderedDict()     # key -> ZernikeBasis
 _ZERNIKE_BASIS_CACHE_MAX = 32            # LRU cap
+_ZERNIKE_BASIS_CACHE_LOCK = threading.Lock()
 
 
 def clear_zernike_basis_cache():
@@ -641,45 +693,51 @@ def _zernike_get_basis(grid, indices, aperture=None, use_mask=True):
     """
     Return a (cached) :class:`ZernikeBasis` for ``grid``, ``indices``, ``aperture``,
     and ``use_mask``, building and caching it on a miss. The cache is keyed on the
-    identity of the grid array (plus its shape), so distinct grids -- e.g. two SLMs --
-    map to separate entries and coexist. Entries are evicted least-recently-used once
-    the cache exceeds ``_ZERNIKE_BASIS_CACHE_MAX``.
+    identity of the grid array (plus its shape and both grids' corner values), so
+    distinct grids -- e.g. two SLMs -- map to separate entries and coexist. Access is
+    serialized by a lock, and entries are evicted least-recently-used once the cache
+    exceeds ``_ZERNIKE_BASIS_CACHE_MAX``.
     """
-    (x_grid, _) = _process_grid(grid)
+    (x_grid, y_grid) = _process_grid(grid)
     indices = np.ravel(_zernike_indices_parse(indices))
     aperture = Aperture.resolve(grid, aperture)
 
     key = (
         id(x_grid),
         tuple(x_grid.shape),
+        (
+            x_grid[0, 0].item(), x_grid[-1, -1].item(),
+            y_grid[0, 0].item(), y_grid[-1, -1].item(),
+        ),
         tuple(int(i) for i in indices),
         _aperture_key(aperture),
         bool(use_mask),
     )
 
-    basis = _ZERNIKE_BASIS_CACHE.get(key)
-    if basis is not None:
-        _ZERNIKE_BASIS_CACHE.move_to_end(key)
+    with _ZERNIKE_BASIS_CACHE_LOCK:
+        basis = _ZERNIKE_BASIS_CACHE.get(key)
+        if basis is not None:
+            _ZERNIKE_BASIS_CACHE.move_to_end(key)
+            return basis
+
+        basis = ZernikeBasis(grid, indices, aperture=aperture, use_mask=use_mask)
+        _ZERNIKE_BASIS_CACHE[key] = basis
+
+        # Drop the entry when the grid array dies; guards against id() reuse after GC.
+        # The weakref must be kept alive for its callback to fire, so stash it on the
+        # cached basis -- its lifetime is then exactly that of the cache entry.
+        try:
+            basis._grid_ref = weakref.ref(
+                x_grid, lambda _ref, k=key: _ZERNIKE_BASIS_CACHE.pop(k, None)
+            )
+        except TypeError:
+            pass    # Array type does not support weakref; rely on the LRU cap below.
+
+        # Trim oldest entries beyond the cap.
+        while len(_ZERNIKE_BASIS_CACHE) > _ZERNIKE_BASIS_CACHE_MAX:
+            _ZERNIKE_BASIS_CACHE.popitem(last=False)
+
         return basis
-
-    basis = ZernikeBasis(grid, indices, aperture=aperture, use_mask=use_mask)
-    _ZERNIKE_BASIS_CACHE[key] = basis
-
-    # Drop the entry when the grid array dies; guards against id() reuse after GC.
-    # The weakref must be kept alive for its callback to fire, so stash it on the
-    # cached basis -- its lifetime is then exactly that of the cache entry.
-    try:
-        basis._grid_ref = weakref.ref(
-            x_grid, lambda _ref, k=key: _ZERNIKE_BASIS_CACHE.pop(k, None)
-        )
-    except TypeError:
-        pass    # Array type does not support weakref; rely on the LRU cap below.
-
-    # Trim oldest entries beyond the cap.
-    while len(_ZERNIKE_BASIS_CACHE) > _ZERNIKE_BASIS_CACHE_MAX:
-        _ZERNIKE_BASIS_CACHE.popitem(last=False)
-
-    return basis
 
 
 def _zernike_parse_weights_indices(indices, weights):
@@ -1068,7 +1126,11 @@ def _zernike_cache_plot():
 _zernike_cache = {}
 
 # New style matrix.         N x M, N: ANSI Zernike, M: cantor polynomial.
-_zernike_cache_vectorized = np.array([[]], dtype=int)
+_zernike_cache_vectorized = np.array([[]], dtype=float)
+
+# Radial order above which float64 monomial evaluation is untrustworthy.
+_ZERNIKE_ORDER_PRECISION = 38
+_zernike_precision_warned = False
 
 
 def _zernike_build_order(n):
@@ -1085,7 +1147,7 @@ def _zernike_build_indices(indices):
 
 
 def _zernike_coefficients(index):
-    """
+    r"""
     Returns the coefficients for the :math:`x^ay^b` terms of the real Zernike polynomial
     of ANSI index ``i``. This is returned as a dictionary of form ``{(a,b) : coefficient}``.
     Uses `this algorithm <https://doi.org/10.1117/12.294412>`_.
@@ -1098,6 +1160,14 @@ def _zernike_coefficients(index):
 
         (n, l) = zernike_convert_index(index, to_index="radial")[0]
         l = -l
+
+        global _zernike_precision_warned
+        if n >= _ZERNIKE_ORDER_PRECISION and not _zernike_precision_warned:
+            _zernike_precision_warned = True
+            warnings.warn(
+                f"Zernike radial order {n} exceeds the float64 precision of the monomial "
+                "representation; the evaluated polynomial will be inaccurate."
+            )
 
         # Define helper variables.
         if l % 2:   # If odd
@@ -1116,10 +1186,6 @@ def _zernike_coefficients(index):
         l = abs(l)
         m = int((n-l)/2)
 
-        # Helper function
-        def comb(n, k):
-            return factorial(n) / (factorial(k) * factorial(n-k))
-
         # Finding the coefficients is a summed combinatorial search.
         # This is why we cache: so we don't have to do this many times,
         # especially for higher order polynomials and the corresponding cubic scaling.
@@ -1130,8 +1196,8 @@ def _zernike_coefficients(index):
                     factor *= comb(l, 2 * i + p)
                     factor *= comb(m - j, k)
                     factor *= (
-                        float(factorial(n - j))
-                        / (factorial(j) * factorial(m - j) * factorial(n - m - j))
+                        factorial(n - j)
+                        // (factorial(j) * factorial(m - j) * factorial(n - m - j))
                     )
 
                     power_key = (int(n - 2*(i + j + k) - p), int(2 * (i + k) + p))
@@ -1139,12 +1205,12 @@ def _zernike_coefficients(index):
                     # Add this coefficient to the element in the dictionary
                     # corresponding to the right power.
                     if power_key in zernike_this:
-                        zernike_this[power_key] += int(factor)
+                        zernike_this[power_key] += factor
                     else:
-                        zernike_this[power_key] = int(factor)
+                        zernike_this[power_key] = factor
 
-        # Update the cache. Remove all factors that have cancelled out (== 0).
-        _zernike_cache[index] = {
+        # Remove all factors that have cancelled out (== 0).
+        coefficients = {
             power_key: factor
             for power_key, factor in zernike_this.items()
             if factor != 0
@@ -1164,10 +1230,12 @@ def _zernike_coefficients(index):
                 constant_values=0
             )
 
-        # Update the vectorized dict.
-        for power_key, factor in _zernike_cache[index].items():
+        # Update the vectorized dict, then publish to the dictionary cache.
+        for power_key, factor in coefficients.items():
             cantor_index = _cantor_pairing(power_key)
             _zernike_cache_vectorized[index, cantor_index] = factor
+
+        _zernike_cache[index] = coefficients
 
     return _zernike_cache[index]
 

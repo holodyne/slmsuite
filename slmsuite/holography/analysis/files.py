@@ -205,8 +205,9 @@ def load_h5(file_path, decode_bytes=True):
             if isinstance(group[key], h5py.Group):
                 data[key] = recurse(group[key])
             elif group[key].attrs.get("__none__", False):
-                # Placeholder written by save_h5 for a None value.
-                data[key] = None
+                # Placeholder written by save_h5 for a None value, scalar or a sequence.
+                shape = group[key].shape
+                data[key] = None if len(shape) == 0 else np.full(shape, None).tolist()
             else:
                 data_ = group[key][()]
                 if decode_bytes:
@@ -243,8 +244,8 @@ def save_h5(file_path, data, mode="w"):
     Supported types:
 
     - Nested dictionaries which are written as h5 group hierarchy,
-    - ``None`` (stored as a placeholder dataset tagged with a ``__none__`` attribute so
-      it round-trips back to ``None`` on load),
+    - ``None``, alone or as an all-``None`` sequence (stored as a placeholder dataset
+      tagged with a ``__none__`` attribute so it round-trips on load),
     - Uniform arrays of numeric or string data.
 
     Example unsupported types:
@@ -289,6 +290,14 @@ def save_h5(file_path, data, mode="w"):
                     )
                 except Exception as e:
                     raise e
+
+                if array.dtype == object and array.size and all(
+                    v is None for v in array.ravel()
+                ):
+                    # An all-None sequence stores the scalar None placeholder, with shape.
+                    group[key] = np.zeros(array.shape, dtype=bool)
+                    group[key].attrs["__none__"] = True
+                    continue
 
                 if array.dtype.char == "U":
                     array = np.char.encode(array, "utf-8")

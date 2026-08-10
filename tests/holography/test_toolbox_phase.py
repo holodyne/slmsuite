@@ -1,6 +1,8 @@
 """
 Unit tests for slmsuite.holography.toolbox.phase module.
 """
+import warnings
+
 import pytest
 import numpy as np
 
@@ -624,18 +626,113 @@ def test_zernike_convert_index(subtests):
         with pytest.raises(ValueError):
             phase.zernike_convert_index([0], "ansi", "bogus")
 
-    with subtests.test("noll from_index raises NotImplementedError"):
-        with pytest.raises(NotImplementedError):
-            phase.zernike_convert_index([1], "noll", "ansi")
-
-    with subtests.test("wyant from_index raises NotImplementedError"):
-        with pytest.raises(NotImplementedError):
-            phase.zernike_convert_index([0], "wyant", "ansi")
-
     with subtests.test("same index is identity"):
         indices = np.arange(5)
         result = phase.zernike_convert_index(indices, "ansi", "ansi")
         np.testing.assert_array_equal(result.ravel(), indices)
+
+    # The full matrix of conventions, over a range every convention can express.
+    schemes = ["ansi", "noll", "fringe", "wyant", "radial"]
+    source = {s: phase.zernike_convert_index(np.arange(15), "ansi", s) for s in schemes}
+
+    with subtests.test("every from_index x to_index pair converts"):
+        for a in schemes:
+            for b in schemes:
+                result = phase.zernike_convert_index(source[a], a, b)
+                np.testing.assert_array_equal(
+                    result, np.reshape(source[b], result.shape), f"{a} -> {b}"
+                )
+
+    with subtests.test("round trips A -> B -> A are the identity"):
+        for a in schemes:
+            for b in schemes:
+                there = phase.zernike_convert_index(source[a], a, b)
+                back = phase.zernike_convert_index(there, b, a)
+                np.testing.assert_array_equal(
+                    back, np.reshape(source[a], back.shape), f"{a} -> {b} -> {a}"
+                )
+
+    with subtests.test("conversion is transitive: A -> B -> C == A -> C"):
+        for a in schemes:
+            for b in schemes:
+                for c in schemes:
+                    via = phase.zernike_convert_index(
+                        phase.zernike_convert_index(source[a], a, b), b, c
+                    )
+                    direct = phase.zernike_convert_index(source[a], a, c)
+                    np.testing.assert_array_equal(
+                        via.ravel(), direct.ravel(), f"{a} -> {b} -> {c}"
+                    )
+
+    with subtests.test("Fringe 37 (Wyant 36) is R_12^0, ANSI 84"):
+        np.testing.assert_array_equal(
+            phase.zernike_convert_index([37], "fringe", "radial"), [[12, 0]]
+        )
+        assert phase.zernike_convert_index([37], "fringe", "ansi").ravel()[0] == 84
+        assert phase.zernike_convert_index([36], "wyant", "ansi").ravel()[0] == 84
+        assert phase.zernike_convert_index([84], "ansi", "fringe").ravel()[0] == 37
+        assert phase.zernike_convert_index([84], "ansi", "wyant").ravel()[0] == 36
+
+    undefined = phase.ZERNIKE_INDEX_UNDEFINED
+
+    with subtests.test("indices outside the 37-term set are undefined, not a dead batch"):
+        # ANSI 21 = (n=6, l=-6) is an ordinary term with no Fringe equivalent.
+        batch = phase.zernike_convert_index(np.arange(22), "ansi", "fringe").ravel()
+        assert np.issubdtype(batch.dtype, np.integer)
+        assert batch[21] == undefined
+        np.testing.assert_array_equal(
+            batch[:21],
+            phase.zernike_convert_index(np.arange(21), "ansi", "fringe").ravel(),
+        )
+        # And the same in the inverse direction.
+        np.testing.assert_array_equal(
+            phase.zernike_convert_index([1, 100, 2], "fringe", "ansi").ravel(), [0, undefined, 2]
+        )
+
+    with subtests.test("an empty batch converts to an empty batch"):
+        for a in schemes:
+            empty = np.empty((0, 2), int) if a == "radial" else np.array([], int)
+            for b in schemes:
+                assert np.size(phase.zernike_convert_index(empty, a, b)) == 0, f"{a} -> {b}"
+
+    with subtests.test("the undefined sentinel survives every conversion"):
+        # ANSI -1 is the vortex waveplate; Wyant is 0-indexed; Fringe and Noll are 1-indexed.
+        assert undefined < -1
+        for a in schemes:
+            source_a = [[undefined, undefined]] if a == "radial" else [undefined]
+            for b in schemes:
+                result = phase.zernike_convert_index(source_a, a, b)
+                np.testing.assert_array_equal(
+                    result, np.full_like(result, undefined), f"{a} -> {b}"
+                )
+
+    with subtests.test("a round trip through Fringe/Wyant cannot fabricate an ANSI index"):
+        # ANSI 21 = (n=6, l=-6) has no Fringe/Wyant index and must not come back as one.
+        for scheme in ["fringe", "wyant"]:
+            there = phase.zernike_convert_index(np.arange(22), "ansi", scheme).ravel()
+            back = phase.zernike_convert_index(there, scheme, "ansi").ravel()
+            np.testing.assert_array_equal(back[:21], np.arange(21), scheme)
+            assert back[21] == undefined, scheme
+            assert back[21] != -1, scheme       # Not the vortex.
+            assert back[21] < 0, scheme         # Not any ANSI polynomial.
+
+    with subtests.test("ANSI -> Noll matches Noll (1976)"):
+        np.testing.assert_array_equal(
+            phase.zernike_convert_index(np.arange(15), "ansi", "noll").ravel(),
+            [1, 3, 2, 5, 4, 6, 9, 7, 8, 10, 15, 13, 11, 12, 14],
+        )
+
+    with subtests.test("ANSI -> Fringe matches the published table; Wyant is Fringe - 1"):
+        ansi = np.arange(phase.zernike_order_number(12))
+        fringe = phase.zernike_convert_index(ansi, "ansi", "fringe").ravel()
+        wyant = phase.zernike_convert_index(ansi, "ansi", "wyant").ravel()
+        np.testing.assert_array_equal(
+            fringe[:15], [1, 3, 2, 6, 4, 5, 11, 8, 7, 10, 18, 13, 9, 12, 17]
+        )
+        mapped = fringe != undefined
+        assert np.count_nonzero(mapped) == 37
+        np.testing.assert_array_equal(wyant[mapped], fringe[mapped] - 1)
+        np.testing.assert_array_equal(wyant[~mapped], undefined)
 
 
 def test_zernike_sum(normalized_grid, subtests, benchmark):
@@ -1536,6 +1633,44 @@ def test_zernike_build_and_coefficients(subtests):
         coeffs = _zernike_coefficients(0)
         assert (0, 0) in coeffs
         assert coeffs[(0, 0)] == 1
+
+    with subtests.test("coefficients are exact: R_n^m(1) = 1 through order 44"):
+        # Along theta=0 the y-free monomials sum to R_n^m(1), which is 1 for the
+        # cosine terms (l >= 0) and 0 for the sine terms (l < 0).
+        for index in [0, 4, 12, 65, 100, 300, 500, 703, 840, 900, 1012, 1034]:
+            (n, l) = phase.zernike_convert_index(index, to_index="radial")[0]
+            total = sum(w for (a, b), w in _zernike_coefficients(index).items() if b == 0)
+            assert total == (1 if l >= 0 else 0), f"ANSI {index} (n={n}, l={l}): {total}"
+
+    with subtests.test("order 40 coefficients are exact integers"):
+        assert _zernike_coefficients(840)[(26, 0)] == -44431862428800
+
+    with subtests.test("order 44 generates and stays within the unit pupil"):
+        x = np.linspace(-1, 1, 65)
+        grid = np.meshgrid(x, x)
+        assert len(_zernike_coefficients(1012)) > 0
+        out = phase.zernike_sum(grid, [1012], [1.0], aperture="circular")
+        assert np.nanmax(np.abs(out)) < 1.01
+
+    with subtests.test("high radial order warns once about float64 precision"):
+        from slmsuite.holography.toolbox.phase import _zernike as Z
+
+        warned = Z._zernike_precision_warned
+        cached = Z._zernike_cache.pop(1012, None)
+        try:
+            Z._zernike_precision_warned = False
+            with pytest.warns(UserWarning, match="float64 precision"):
+                _zernike_coefficients(1012)
+            Z._zernike_cache.pop(1012, None)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                _zernike_coefficients(1012)
+        finally:
+            Z._zernike_precision_warned = warned
+            if cached is None:
+                Z._zernike_cache.pop(1012, None)
+            else:
+                Z._zernike_cache[1012] = cached
 
 
 def test_zernike_populate_basis_map(subtests):

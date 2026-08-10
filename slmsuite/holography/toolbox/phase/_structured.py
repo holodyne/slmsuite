@@ -44,7 +44,7 @@ def laguerre_gaussian(grid, l, p=0, w=None):
         The radial wavenumber. Should be non-negative.
     w : float OR None
         The source :math:`1/e` field-amplitude (:math:`1/e^2` intensity) radius.
-        See :meth:`~slmsuite.holography.toolbox._determine_source_radius()`.
+        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
 
     Returns
     -------
@@ -58,7 +58,7 @@ def laguerre_gaussian(grid, l, p=0, w=None):
     theta_grid = np.arctan2(y_grid, x_grid)
     rr_grid = y_grid * y_grid + x_grid * x_grid
 
-    canvas = 0
+    canvas = np.zeros_like(x_grid)
 
     if l != 0:
         canvas += l * theta_grid
@@ -86,7 +86,7 @@ def hermite_gaussian(grid, n, m, w=None):
         phase and a Gaussian beam.
     w : float
         The source :math:`1/e` field-amplitude (:math:`1/e^2` intensity) radius.
-        See :meth:`~slmsuite.holography.toolbox._determine_source_radius()`.
+        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
 
     Returns
     -------
@@ -165,7 +165,7 @@ def _ince_polynomial(p, m, parity, ellipticity, z):
 
         else:
             # DLMF 28.31.7: expansion sum_{l=0}^{(p-1)/2} A_{2l+1} cos((2l+1)z)
-            # Row 0: (1 + eps/2)*A_1 + (p/2+3/2)*eps*A_3 = eta*A_1
+            # Row 0: (1 + (1+p)*eps/2)*A_1 + (p/2+3/2)*eps*A_3 = eta*A_1
             # Row l>=1: (p/2-l+1/2)*eps*A_{2l-1} + (2l+1)^2*A_{2l+1} + (p/2+l+3/2)*eps*A_{2l+3} = eta*A_{2l+1}
             N = (p + 1) // 2
             idx = m // 2
@@ -173,7 +173,7 @@ def _ince_polynomial(p, m, parity, ellipticity, z):
             A = np.zeros((N, N), dtype=float)
             for l in range(N):
                 A[l, l] = (2 * l + 1) ** 2
-            A[0, 0] += eps / 2.0
+            A[0, 0] += (1 + p) * eps / 2.0
             if N > 1:
                 A[0, 1] = (p / 2.0 + 3 / 2.0) * eps
             for l in range(1, N):
@@ -199,7 +199,7 @@ def _ince_polynomial(p, m, parity, ellipticity, z):
 
         else:
             # DLMF 28.31.8: expansion sum_{l=0}^{(p-1)/2} B_{2l+1} sin((2l+1)z)
-            # Row 0: (1 - eps/2)*B_1 + (p/2+3/2)*eps*B_3 = eta*B_1
+            # Row 0: (1 - (1+p)*eps/2)*B_1 + (p/2+3/2)*eps*B_3 = eta*B_1
             # Row l>=1: (p/2-l+1/2)*eps*B_{2l-1} + (2l+1)^2*B_{2l+1} + (p/2+l+3/2)*eps*B_{2l+3} = eta*B_{2l+1}
             N = (p + 1) // 2
             idx = (m - 1) // 2
@@ -207,7 +207,7 @@ def _ince_polynomial(p, m, parity, ellipticity, z):
             A = np.zeros((N, N), dtype=float)
             for l in range(N):
                 A[l, l] = (2 * l + 1) ** 2
-            A[0, 0] -= eps / 2.0
+            A[0, 0] -= (1 + p) * eps / 2.0
             if N > 1:
                 A[0, 1] = (p / 2.0 + 3 / 2.0) * eps
             for l in range(1, N):
@@ -294,7 +294,7 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
         Ellipticity of the beam. The semifocal distance is equal to ``ellipticity * w``,
         where the foci are the points which define the elliptical coordinate system.
     w : float
-        See :meth:`~slmsuite.holography.toolbox._determine_source_radius()`.
+        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
 
     Returns
     -------
@@ -371,7 +371,7 @@ def mathieu_gaussian(grid, r, q, w=None):
         ``q = 0`` gives circular symmetry (Bessel beams).
         The semifocal distance is :math:`h = w\sqrt{q/2}`.
     w : float
-        See :meth:`~slmsuite.holography.toolbox._determine_source_radius()`.
+        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
 
     Returns
     -------
@@ -381,30 +381,38 @@ def mathieu_gaussian(grid, r, q, w=None):
     (x_grid, y_grid) = _process_grid(grid)
     w = _determine_source_radius(grid, w)
 
-    # Semifocal distance: h = w * sqrt(q/2)
-    # This is analogous to the IG beam where f0 = w*sqrt(eps/2).
-    h = w * np.sqrt(np.abs(q) / 2) if q != 0 else 1.0
-
-    # Elliptic coordinates from x + iy = h * cosh(mu + i*nu)
-    complex_grid = x_grid + 1j * y_grid
-    elliptic = np.arccosh(complex_grid / h) if q != 0 else (
-        np.sqrt(x_grid**2 + y_grid**2) / w + 1j * np.arctan2(y_grid, x_grid)
-    )
-    mu = np.abs(elliptic.real)     # radial coordinate (>= 0)
-    nu = elliptic.imag             # angular coordinate
-
-    # Convert angular coordinate to degrees for scipy's mathieu functions.
-    nu_deg = np.degrees(nu)
-
-    if r >= 0:
-        # Even Mathieu-Gaussian: ce_r(nu, q) * Je_r(mu, q)
-        angular_vals, _ = special.mathieu_cem(r, q, nu_deg)
-        radial_vals, _ = special.mathieu_modcem1(r, q, mu)
-    else:
-        # Odd Mathieu-Gaussian: se_{|r|}(nu, q) * Jo_{|r|}(mu, q)
+    if q == 0:
+        # Circular limit: the elliptic coordinates degenerate to polar, and the Mathieu
+        # functions reduce to ce_r -> cos(r nu), se_r -> sin(r nu), Je_r/Jo_r -> J_r.
+        mu = np.sqrt(np.square(x_grid) + np.square(y_grid)) / w
+        nu = np.arctan2(y_grid, x_grid)
         order = abs(r)
-        angular_vals, _ = special.mathieu_sem(order, q, nu_deg)
-        radial_vals, _ = special.mathieu_modsem1(order, q, mu)
+
+        radial_vals = special.jv(order, mu)
+        angular_vals = np.cos(order * nu) if r >= 0 else np.sin(order * nu)
+    else:
+        # Semifocal distance: h = w * sqrt(q/2)
+        # This is analogous to the IG beam where f0 = w*sqrt(eps/2).
+        h = w * np.sqrt(np.abs(q) / 2)
+
+        # Elliptic coordinates from x + iy = h * cosh(mu + i*nu)
+        complex_grid = x_grid + 1j * y_grid
+        elliptic = np.arccosh(complex_grid / h)
+        mu = np.abs(elliptic.real)     # radial coordinate (>= 0)
+        nu = elliptic.imag             # angular coordinate
+
+        # Convert angular coordinate to degrees for scipy's mathieu functions.
+        nu_deg = np.degrees(nu)
+
+        if r >= 0:
+            # Even Mathieu-Gaussian: ce_r(nu, q) * Je_r(mu, q)
+            angular_vals, _ = special.mathieu_cem(r, q, nu_deg)
+            radial_vals, _ = special.mathieu_modcem1(r, q, mu)
+        else:
+            # Odd Mathieu-Gaussian: se_{|r|}(nu, q) * Jo_{|r|}(mu, q)
+            order = abs(r)
+            angular_vals, _ = special.mathieu_sem(order, q, nu_deg)
+            radial_vals, _ = special.mathieu_modsem1(order, q, mu)
 
     amplitude = angular_vals * radial_vals
 
@@ -433,7 +441,7 @@ def airy(grid, f=(np.inf, np.inf), w=None):
         Larger values produce weaker cubic phase (more gradual acceleration).
         ``np.inf`` disables the cubic phase in that direction.
     w : float
-        See :meth:`~slmsuite.holography.toolbox._determine_source_radius()`.
+        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
 
 
     Returns

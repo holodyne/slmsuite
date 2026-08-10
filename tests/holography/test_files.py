@@ -506,7 +506,6 @@ def test_save_image(subtests):
             assert os.path.exists(path)
 
     with subtests.test("imageio not available raises ValueError"):
-        import sys
         img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "test.png")

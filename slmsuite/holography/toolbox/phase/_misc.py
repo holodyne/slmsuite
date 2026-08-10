@@ -40,4 +40,5 @@ def _determine_source_radius(grid, w=None):
         return grid.source_radius
 
     (x_grid, y_grid) = _process_grid(grid)
-    return np.min([np.amax(x_grid), np.amax(y_grid)]) / 4
+    # Reduce on the device.
+    return float(min(x_grid.max(), y_grid.max())) / 4

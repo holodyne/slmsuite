@@ -342,6 +342,21 @@ def test_imprint(slm, subtests, benchmark):
         # Total filled pixels should be less than full 20x20 window
         assert 0 < np.sum(mat) < 20 * 20
 
+    with subtests.test("clip=False rejects out-of-bounds windows"):
+        for kwargs in ({}, {"circular": True}):
+            mat = np.zeros((H, W))
+            with pytest.raises(ValueError, match="extends past"):
+                imprint(mat, [1, 10, 1, 10], 1.0, centered=True, clip=False, **kwargs)
+            np.testing.assert_array_equal(mat, 0)
+
+    with subtests.test("a matrix beyond 2D is rejected rather than silently skipped"):
+        # The window slices the leading axes, so a stack would otherwise imprint nothing.
+        for clip in (True, False):
+            mat = np.zeros((3, H, W))
+            with pytest.raises(ValueError):
+                imprint(mat, [2, 5, 3, 4], 1.0, clip=clip)
+            np.testing.assert_array_equal(mat, 0)
+
     with subtests.test("centered window"):
         mat = np.zeros((H, W))
         # centered: (cx, w, cy, h) — center at (20, 10) size 6×4
@@ -1227,3 +1242,24 @@ def test_voronoi_windows(subtests):
         windows = voronoi_windows(shape, center)
         assert len(windows) == 1
         assert np.all(windows[0])
+
+def test_aperture_crops_tracks_center(subtests):
+    xs = np.linspace(-1.0, 1.0, 32)
+    grid = np.meshgrid(xs, xs)
+
+    with subtests.test("centered 'cropped' masks nothing"):
+        aperture = Aperture(grid, "cropped")
+        assert not aperture.crops
+        assert np.all(aperture.mask)
+
+    with subtests.test("off-center 'cropped' does crop"):
+        aperture = Aperture(grid, "cropped", center=(0.3, 0.2))
+        assert aperture.crops
+        assert not np.all(aperture.mask)
+
+    with subtests.test("crops is never False while the mask excludes pixels"):
+        for spec in ("cropped", "circular", 2.0):
+            for center in (None, (0.0, 0.0), (0.3, 0.0)):
+                aperture = Aperture(grid, spec, center=center)
+                if not np.all(aperture.mask):
+                    assert aperture.crops

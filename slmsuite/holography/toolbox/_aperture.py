@@ -138,11 +138,11 @@ class Aperture:
     def crops(self):
         """
         Whether the aperture actually crops the grid (masks any pixels off). ``False``
-        for the default ``"cropped"`` spec, which circumscribes the whole grid and so
-        masks nothing; ``True`` otherwise. Lets callers skip masking work in the common
-        no-aperture case without materializing :attr:`mask`.
+        only for the default centered ``"cropped"`` spec, which circumscribes the whole
+        grid and so masks nothing; ``True`` otherwise. Lets callers skip masking work in
+        the common no-aperture case without materializing :attr:`mask`.
         """
-        return self._spec != "cropped"
+        return self._spec != "cropped" or self._center is not None
 
     @cached_property
     def scale(self):

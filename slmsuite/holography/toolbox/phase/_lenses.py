@@ -92,7 +92,7 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
         Scalars are interpreted as a non-cylindrical isotropic axicon.
         Defaults to infinity (no axicon).
     w : float OR None
-        See :meth:`~slmsuite.holography.toolbox._determine_source_radius()`.
+        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
 
     Returns
     -------
@@ -113,5 +113,13 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
     elif angle[1] == 0:
         return (2 * np.pi * angle[0]) * np.abs(x_grid)
     else:
-        return (2 * np.pi) * np.sqrt(np.square(x_grid * angle[0]) + np.square(y_grid * angle[1]))
+        if angle[0] * angle[1] < 0:
+            raise ValueError(
+                "A cylindrical axicon cannot converge on one axis and diverge on the other. "
+                "Found {}.".format(f)
+            )
+        # sqrt discards the sign of f, so reapply it; a diverging axicon is f < 0.
+        return (2 * np.pi * np.sign(angle[0])) * np.sqrt(
+            np.square(x_grid * angle[0]) + np.square(y_grid * angle[1])
+        )
 
