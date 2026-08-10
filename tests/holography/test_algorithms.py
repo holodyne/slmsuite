@@ -5,12 +5,16 @@ import pytest
 import numpy as np
 import logging
 from types import SimpleNamespace
+from scipy import ndimage
 
 from slmsuite.holography.algorithms import (
-    Hologram, SpotHologram, MultiplaneHologram, FeedbackHologram
+    Hologram, SpotHologram, CompressedSpotHologram, MultiplaneHologram, FeedbackHologram
 )
 from slmsuite.holography.algorithms._header import cp_affine_transform
 from slmsuite.holography.analysis import Affine
+from slmsuite.holography.analysis.files import load_h5
+
+from conftest import seed_for, install_ground_truth_calibration, spot_size_ij, view_kxy_grid
 
 try:
     import cupy as cp
@@ -37,6 +41,41 @@ class TestHologram:
             h = Hologram(target=np.zeros((64, 64), dtype=np.float64), dtype=np.float64)
             assert h.dtype == np.float64
             assert h.dtype_complex == np.complex128
+
+        with subtests.test("accepts every spelling of a float dtype"):
+            for spelling in (np.float32, "float32", np.dtype("float32")):
+                assert Hologram((16, 16), dtype=spelling).dtype == np.float32
+            assert Hologram((16, 16), dtype=float).dtype == np.float64
+
+        with subtests.test("rejects non-float dtypes"):
+            for spelling in (np.complex64, np.int32):
+                with pytest.raises(ValueError):
+                    Hologram((16, 16), dtype=spelling)
+
+        with subtests.test("get_farfield keeps the hologram's precision"):
+            assert Hologram((64, 64)).get_farfield().dtype == np.complex64
+
+    def test_uniform_amp_stays_scalar(self, subtests):
+        """A uniform nearfield costs a scalar, not an `slm_shape` array."""
+        with subtests.test("default amp"):
+            h = Hologram((64, 48))
+            assert np.ndim(h.amp) == 0
+            assert h.amp.dtype == h.dtype
+            assert h.amp == pytest.approx(1 / np.sqrt(64 * 48))
+
+        with subtests.test("scalar amp is normalized over the SLM"):
+            h = Hologram((64, 48), amp=1.0)
+            assert np.ndim(h.amp) == 0
+            assert h.amp == pytest.approx(1 / np.sqrt(64 * 48))
+
+        with subtests.test("a hologram's own amp is a valid amp"):
+            h = Hologram((64, 64))
+            assert Hologram((64, 64), amp=h.amp).amp == h.amp
+
+        with subtests.test("an array amp is kept and normalized"):
+            h = Hologram((64, 48), amp=np.ones((64, 48)))
+            assert h.amp.shape == (64, 48)
+            assert h.amp.dtype == h.dtype
 
     def test_shape(self, subtests):
         with subtests.test("slm_shape defaults to computational shape"):
@@ -166,6 +205,29 @@ class TestHologram:
             assert all(np.isfinite(v) for v in comp["uniformity"])
             assert all(np.isfinite(v) for v in comp["std_err"])
 
+        with subtests.test("experimental basis groups are valid stat_groups"):
+            h = Hologram(target=np.zeros((32, 32)))
+            h._update_flags(
+                "GS", None, ["experimental_knm", "experimental_ij"]
+            )
+
+        with subtests.test("but are not valid feedback"):
+            with pytest.raises(ValueError):
+                Hologram(target=np.zeros((32, 32)))._update_flags(
+                    "GS", "experimental_knm", []
+                )
+
+    def test_save_stats_round_trips_unset_flags(self, tmp_path):
+        """A WGS method leaves `fix_phase_efficiency` None, which h5 must still carry."""
+        target = np.zeros((32, 32))
+        target[8, 8] = 1.0
+        h = Hologram(target=target)
+        h.optimize(method="WGS-Kim", maxiter=3, verbose=False, stat_groups=["computational"])
+
+        path = str(tmp_path / "stats.h5")
+        h.save_stats(path)
+        assert load_h5(path)["flags"]["fix_phase_efficiency"] is None
+
     def test_gs_convergence(self, subtests):
         with subtests.test("single spot efficiency > 0.9"):
             target = np.zeros((64, 64))
@@ -205,6 +267,7 @@ class TestHologram:
 
     @pytest.mark.parametrize("method", ["WGS-Leonardo", "WGS-Kim", "WGS-Nogrette"])
     def test_wgs_uniformity_improves_over_wgs_iterations(self, method):
+        seed_for(f"wgs_uniformity-{method}")     # The initial phase decides the outcome.
         target = np.zeros((64, 64))
         for r, c in [(13, 17), (30, 44), (50, 10), (10, 50), (32, 32)]:
             target[r, c] = 1.0
@@ -307,6 +370,14 @@ class TestSpotHologram:
             assert np.allclose(pixel_powers, pixel_powers[0], rtol=1e-4), \
                 f"Uniform spot amplitudes should give equal target pixel powers: {pixel_powers}"
 
+        with subtests.test("external_spot_amp defaults to a copy of spot_amp"):
+            shape = (64, 64)
+            spots = np.array([[10.0, 20.0, 30.0, 40.0], [10.0, 20.0, 30.0, 40.0]])
+            spot_amp = np.array([1.0, 2.0, 3.0, 4.0])
+            h = SpotHologram(shape=shape, spot_vectors=spots, basis="knm", spot_amp=spot_amp)
+            assert np.allclose(h.external_spot_amp, h.spot_amp)
+            assert h.external_spot_amp is not h.spot_amp
+
         with subtests.test("spot out of bounds raises"):
             shape = (64, 64)
             spots = np.array([[100.0], [100.0]])
@@ -322,7 +393,75 @@ class TestSpotHologram:
             assert eff > 0.5, f"SpotHologram GS efficiency {eff:.3f} should exceed 0.5"
 
 
+class TestCompressedSpotHologram:
+
+    def test_zernike_sum_kernel_optimizes(self, simulated_system_factory):
+        """The ``cuda=False`` path, which builds its kernel through ``zernike_sum``."""
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+
+        h = CompressedSpotHologram(
+            view_kxy_grid(fs, count=3, frac=0.5), basis="kxy", cameraslm=fs, cuda=False
+        )
+        assert len(h) == 9
+
+        h.optimize(
+            method="WGS-Kim", maxiter=10, verbose=False, stat_groups=["computational_spot"]
+        )
+
+        assert h.stats["stats"]["computational_spot"]["uniformity"][-1] > 0.5
+
+    def test_external_spot_amp_defaults(self, simulated_system_factory):
+        """The default matches `SpotHologram`: a copy of `spot_amp`."""
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+
+        spot_amp = np.array([1.0, 2.0, 3.0, 4.0])
+        h = CompressedSpotHologram(
+            view_kxy_grid(fs, count=2, frac=0.4), basis="kxy", spot_amp=spot_amp,
+            cameraslm=fs, cuda=False,
+        )
+        assert np.allclose(h.external_spot_amp, h.spot_amp)
+        assert h.external_spot_amp is not h.spot_amp
+
+    def test_refine_offset(self, simulated_system_factory, subtests):
+        """Camera frames are integers, and spots can sit against the sensor edge."""
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+
+        h = CompressedSpotHologram(
+            view_kxy_grid(fs, count=2, frac=0.4), basis="kxy", cameraslm=fs, cuda=False
+        )
+        h.optimize(method="WGS-Kim", maxiter=3, verbose=False)
+        img = fs.cam.get_image()
+        assert not np.issubdtype(img.dtype, np.floating)
+
+        bound = spot_size_ij(fs)[:, np.newaxis]
+
+        with subtests.test("integer camera frame"):
+            shift = h.refine_offset(img=img, basis=None)
+            assert np.all(np.abs(shift) < bound)
+
+        with subtests.test("spot against the sensor edge"):
+            h.spot_ij[:, 0] = [1.0, 1.0]    # As a previous refine_offset(basis="ij") could.
+            shift = h.refine_offset(img=img, basis=None)
+            assert np.all(np.isfinite(shift[:, 0]))
+            assert np.all(np.abs(shift[:, 1:]) < bound)
+
+
 class TestMultiplaneHologram:
+
+    def test_optimizes_default_amplitude_children(self):
+        """Children built without an explicit `amp` share the parent's uniform nearfield."""
+        target = np.zeros((64, 64))
+        target[8, 8] = 1.0
+        mph = MultiplaneHologram([Hologram(target.copy()), Hologram(target.copy())])
+        mph.optimize(maxiter=3, verbose=False)
+
+        uniform = 1 / np.sqrt(np.prod(mph.slm_shape))
+        for child in mph.holograms:
+            assert np.ndim(child.amp) == 0
+            assert child.amp == pytest.approx(uniform)
 
     def test_multiplane_directs_power_to_all_child_targets(self, subtests):
         """
@@ -733,7 +872,7 @@ class TestTransparentCaches:
             )
             n = len(_IJCAM_TO_KNMSLM_CACHE)
             for _ in range(3):
-                h.update_target(canvas)
+                h.set_target(canvas)
             assert len(_IJCAM_TO_KNMSLM_CACHE) == n
 
         with subtests.test("evicts past capacity"):
@@ -875,9 +1014,9 @@ class TestTargetROI:
 
     def test_tight_roi_clips_only_the_border(self):
         """
-        An ROI cropped tight to the signal loses at most the outer rim relative to the
-        canvas, and never disagrees on an interior sample. This is the documented
-        caveat, pinned so it stays a rim effect rather than growing into the interior.
+        An ROI cropped tight to the signal drops at most the outer rim relative to the
+        canvas: it invents no sample, leaves nothing undefined away from the canvas's own
+        undefined region, and carries every interior sample at identical relative weight.
         """
         roi = (24, 34)
         canvas, patch = self._canvas_and_patch(roi=roi, patch_shape=(12, 12))
@@ -891,7 +1030,7 @@ class TestTargetROI:
         )
 
         (a, b) = (_np(full.target), _np(sub.target))
-        defined_in_both = (a != 0) & (b != 0)
+        defined_in_both = np.isfinite(a) & np.isfinite(b) & (a != 0) & (b != 0)
         assert np.count_nonzero(defined_in_both) > 50, "nothing left to compare"
 
         # `ijcam_to_knmslm` normalizes, and the two have different support, so they agree
@@ -901,10 +1040,14 @@ class TestTargetROI:
         assert np.allclose(ratio, np.median(ratio), rtol=1e-5)
 
         # The ROI may only ever drop samples, never invent them.
-        assert np.all((b != 0) <= (a != 0))
+        assert np.all((np.isfinite(b) & (b != 0)) <= (np.isfinite(a) & (a != 0)))
 
-    def test_update_target_agrees_with_construction(self):
-        """`update_target(roi=...)` is the hot path; it must land where the constructor does."""
+        # Every sample the ROI leaves undefined borders one the canvas leaves undefined.
+        rim = ndimage.binary_dilation(np.isnan(a), np.ones((3, 3), bool))
+        assert np.all(np.isnan(b) <= rim)
+
+    def test_set_target_agrees_with_construction(self):
+        """`set_target(roi=...)` is the hot path; it must land where the constructor does."""
         canvas, patch = self._canvas_and_patch()
 
         full = FeedbackHologram(
@@ -916,8 +1059,8 @@ class TestTargetROI:
         )
 
         (canvas2, patch2) = self._canvas_and_patch(seed=11)
-        full.update_target(canvas2, reset_weights=True)
-        sub.update_target(patch2, reset_weights=True, roi=self.ROI)
+        full.set_target(canvas2, reset_weights=True)
+        sub.set_target(patch2, reset_weights=True, roi=self.ROI)
 
         assert np.allclose(_np(full.target), _np(sub.target), equal_nan=True)
         assert np.allclose(_np(full.weights), _np(sub.weights), equal_nan=True)
@@ -941,7 +1084,7 @@ class TestTargetROI:
         `affine_transform` tests bounds against the sub-image alone, with no camera-frame
         intersection, so an ROI hanging off the frame silently resamples samples no camera
         could supply. The check has to live at the `_ijcam_to_knmslm_resampler` choke
-        point, not only in `update_target`: `ijcam_to_knmslm` reaches it directly.
+        point, not only in `set_target`: `ijcam_to_knmslm` reaches it directly.
         """
         canvas, patch = self._canvas_and_patch()
         h = FeedbackHologram(
@@ -952,11 +1095,11 @@ class TestTargetROI:
             h.ijcam_to_knmslm(patch, order=0, roi=roi)
 
         with pytest.raises(ValueError, match="camera frame"):
-            h.update_target(patch, roi=roi)
+            h.set_target(patch, roi=roi)
 
     def test_roi_without_a_calibration_is_rejected(self):
         """
-        Without a Fourier calibration the constructor's update_target() never runs, so a
+        Without a Fourier calibration the constructor's set_target() never runs, so a
         roi would be dropped while target_ij stays a sub-image -- leaving the two
         silently inconsistent.
         """
@@ -974,7 +1117,7 @@ class TestTargetROI:
         pixel-for-pixel and every feedback statistic is computed against a shifted image.
         The ROI path exists only to skip uploading the rest of the frame.
 
-        Agreement is *exact* at order=0, the order `update_target` uses. At the cubic
+        Agreement is *exact* at order=0, the order `set_target` uses. At the cubic
         default that `measure` uses it is approximate: spline prefiltering is an IIR
         recursion over the whole input array, so cropping the input perturbs the
         coefficients everywhere, not just at the edge, and `measure`'s square root then

@@ -51,8 +51,8 @@ class _AbstractSpotHologram(FeedbackHologram):
             Whether to force the offset refinement to behave as an affine transformation
             between the original and refined coordinate system. This helps to tame
             outliers. Defaults to ``True``.
-        plot : bool
-            Enables debug plots.
+        plot : int OR bool
+            Enables debug plots at ``1`` and above.
 
         Returns
         -------
@@ -70,12 +70,17 @@ class _AbstractSpotHologram(FeedbackHologram):
 
         # Take regions around each point from the given image.
         regions = analysis.take(
-            img, self.spot_ij, self.spot_integration_width_ij, centered=True, integrate=False
+            img,
+            self.spot_ij,
+            self.spot_integration_width_ij,
+            centered=True,
+            integrate=False,
+            clip=True,
         )
 
         # Fast version; have to iterate for accuracy.
-        regions = analysis.image_remove_field(regions, deviations=None, out=regions)
-        shift_vectors = analysis.image_positions(regions)
+        regions = analysis.image_remove_field(regions, deviations=None)
+        shift_vectors = analysis.image_positions(regions, nansum=True)
 
         # Store the shift vector before we force_affine.
         sv1 = self.spot_ij[[0,1]] + shift_vectors
@@ -88,13 +93,14 @@ class _AbstractSpotHologram(FeedbackHologram):
         sv2 = self.spot_ij[[0,1]] + shift_vectors
 
         # Plot the above if desired.
-        if plot:
+        if plot >= 1:
             masked = analysis.take(
                 img,
                 self.spot_ij,
                 self.spot_integration_width_ij,
                 centered=True,
                 integrate=False,
+                clip=True,
                 return_mask=2,
             )
 
@@ -212,8 +218,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         When using ``"external_spot"`` feedback or the ``"external_spot"`` stat group,
         the user must supply external data. This data is transferred through this
         attribute. For iterative feedback, have the ``callback()`` function set
-        :attr:`external_spot_amp` dynamically. By default, this variable is set to even
-        distribution of amplitude.
+        :attr:`external_spot_amp` dynamically. By default, this variable is set to a
+        copy of :attr:`spot_amp`.
     spot_integration_width_ij : int
         For spot-specific feedback methods, better SNR is achieved when integrating over
         many camera pixels. This variable stores the width of the integration region
@@ -362,7 +368,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
         # Parse spot_amp.
         if spot_amp is not None:
-            self.spot_amp = np.array(spot_amp, copy=(False if np.__version__[0] == '1' else None))
+            self.spot_amp = np.array(spot_amp, copy=True)
             if self.spot_amp.size != N:
                 raise ValueError(
                     f"spot_amp (length {self.spot_amp.size}) must "
@@ -490,7 +496,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         self.reset()
 
         # Set the external amp variable to be perfect by default.
-        self.external_spot_amp = np.ones(self.target.shape)
+        self.external_spot_amp = np.copy(self.spot_amp)
 
         # Default helper variables.
         self._cupy_kernel = None
@@ -1040,8 +1046,8 @@ class SpotHologram(_AbstractSpotHologram):
         When using ``"external_spot"`` feedback or the ``"external_spot"`` stat group,
         the user must supply external data. This data is transferred through this
         attribute. For iterative feedback, have the ``callback()`` function set
-        :attr:`external_spot_amp` dynamically. By default, this variable is set to even
-        distribution of amplitude.
+        :attr:`external_spot_amp` dynamically. By default, this variable is set to a
+        copy of :attr:`spot_amp`.
     spot_integration_width_knm : int
         For spot-specific feedback methods, better SNR is achieved when integrating over
         many farfield pixels. This variable stores the width of the integration region
@@ -1136,7 +1142,7 @@ class SpotHologram(_AbstractSpotHologram):
 
         # Parse spot_amp.
         if spot_amp is not None:
-            self.spot_amp = np.ravel(spot_amp)
+            self.spot_amp = np.array(spot_amp, copy=True).ravel()
             if len(self.spot_amp) != N:
                 raise ValueError("spot_amp must have the same length as the provided spots.")
         else:

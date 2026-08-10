@@ -49,8 +49,8 @@ class _HologramStats(object):
             if total is not None:
                 total = float(total)
 
-        feedback_amp = xp.array(feedback_amp, copy=(False if np.__version__[0] == '1' else None))
-        target_amp = xp.array(target_amp, copy=(False if np.__version__[0] == '1' else None))
+        feedback_amp = xp.array(feedback_amp, copy=True)
+        target_amp = xp.array(target_amp, copy=True)
 
         feedback_pwr = xp.square(feedback_amp)
         target_pwr = xp.square(target_amp)
@@ -311,15 +311,30 @@ class _HologramStats(object):
                 )
 
             is_cupy = ["phase", "amp", "target", "weights", "phase_ff"]
+            is_shape = ["shape", "slm_shape"]
             for key in from_save.keys():
                 if key != "stats":
                     if key in is_cupy:
                         setattr(self, key, cp.array(from_save[key], dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None)))
+                    elif key in is_shape:
+                        setattr(self, key, tuple(int(i) for i in from_save[key]))
                     else:
                         setattr(self, key, from_save[key])
 
-        # Overwrite stats
-        self.stats = from_save["stats"]
+        # Overwrite stats, restoring the lists which the update path appends to.
+        stats = from_save["stats"]
+
+        stats["method"] = np.asarray(stats["method"]).tolist()
+        for key, value in stats["flags"].items():
+            stats["flags"][key] = np.asarray(value).tolist()
+        for group in stats["stats"].values():
+            # Only the outer axis is a list; raw stats hold an array per iteration.
+            for key, value in group.items():
+                group[key] = list(value)
+        if "raw_farfield" in stats:
+            stats["raw_farfield"] = list(stats["raw_farfield"])
+
+        self.stats = stats
 
     # Visualization helper functions.
     @staticmethod
@@ -547,10 +562,9 @@ class _HologramStats(object):
         if limits is None:
             limits = self._compute_limits(npsource, limit_padding=limit_padding)
         # Check the limits in case the user provided them.
-        for a in [0, 1]:
-            limits[a] = np.clip(np.array(limits[a], dtype=int), 0, npsource.shape[1-a]-1)
-            if np.diff(limits[a])[0] == 0:
-                raise ValueError("Clipped limit has zero length.")
+        limits = [np.clip(np.array(limits[a], dtype=int), 0, npsource.shape[1-a]-1) for a in [0, 1]]
+        if any(np.diff(limit)[0] == 0 for limit in limits):
+            raise ValueError("Clipped limit has zero length.")
 
         # Start making the plot
         if axs is None:
@@ -747,7 +761,7 @@ class _HologramStats(object):
         # Add colorbar if desired
         if cbar:
             cax = make_axes_locatable(axs[1]).append_axes("right", size="5%", pad=0.05)
-            fig.colorbar(zoom, cax=cax, orientation="vertical")
+            axs[1].get_figure().colorbar(zoom, cax=cax, orientation="vertical")
 
         if _show:
             plt.tight_layout()

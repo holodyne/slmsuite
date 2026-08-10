@@ -523,7 +523,7 @@ class MultiplaneHologram(Hologram):
             self._batched_nearfield.fill(0)
 
         _nearfield_build(
-            self.amp[None, :, :],
+            self.amp if np.ndim(self.amp) == 0 else self.amp[None, :, :],
             self.phase[None, :, :],
             self._batched_kernel_phasor,
             self._batched_nearfield[:, i0:i1, i2:i3])

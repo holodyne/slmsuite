@@ -315,10 +315,10 @@ class Hologram(_HologramStats, _Loggable):
         # prepare for a vote (next section).
 
         # Option a
-        if amp is None:
+        if amp is None or np.ndim(amp) != 2:  # Only a 2D amp carries a shape.
             amp_shape = (np.nan, np.nan)
         else:
-            amp_shape = amp.shape
+            amp_shape = np.shape(amp)
 
         # Option b
         if phase is None:
@@ -410,21 +410,22 @@ class Hologram(_HologramStats, _Loggable):
 
         # 2) Initialize variables.
         # Save the data type.
-        if dtype(0).nbytes == 4:
+        dtype = np.dtype(dtype)
+        if dtype == np.float32:
             self.dtype = np.float32
             self.dtype_complex = np.complex64
-        elif dtype(0).nbytes == 8:
+        elif dtype == np.float64:
             self.dtype = np.float64
             self.dtype_complex = np.complex128
         else:
-            raise ValueError(f"Data type {dtype} not supported.")
+            raise ValueError(f"Data type {dtype} not supported; use float32 or float64.")
 
         # Initialize and normalize nearfield amplitude.
-        if amp is None:  # Uniform amplitude by default (scalar).
-            self.amp = 1 / np.sqrt(np.prod(self.slm_shape))
-        else:               # Otherwise, initialize and normalize.
-            self.amp = cp.array(amp, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
-            self.amp *= 1 / Hologram._norm(self.amp)
+        if amp is None or np.ndim(amp) == 0:    # Uniform amplitude by default (scalar).
+            self.amp = self.dtype(1 / np.sqrt(np.prod(self.slm_shape)))
+        else:                                   # Otherwise, initialize and normalize.
+            amp = cp.array(amp, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
+            self.amp = amp * (1 / Hologram._norm(amp))
 
         # Check propagation_kernel.
         if propagation_kernel is None:
@@ -537,11 +538,13 @@ class Hologram(_HologramStats, _Loggable):
         """
         Analytically guesses a phase pattern (lens, blaze) that will overlap with the target.
         """
-        if hasattr(self.amp, "get"):
+        slm_shape = np.flip(self.slm_shape).astype(float)
+        if np.ndim(self.amp) == 0:  # A scalar amp fills the SLM uniformly.
+            std_amp = slm_shape / np.sqrt(12)
+        elif hasattr(self.amp, "get"):
             std_amp = np.sqrt(analysis.image_variances(self.amp.get())[:2, 0])
         else:
             std_amp = np.sqrt(analysis.image_variances(self.amp)[:2, 0])
-        slm_shape = np.flip(self.slm_shape).astype(float)
         std_amp /= slm_shape
 
         center_knm_norm, std_knm_norm = self._get_target_moments_knm_norm()
@@ -590,7 +593,7 @@ class Hologram(_HologramStats, _Loggable):
         quadratic_phase : bool OR float OR None
             We can also precondition the phase analytically (with a lens and blaze)
             to roughly the size of the target hologram, according to the first and
-            second order :meth:`~slmsuite.holography.analysis.image_moments()`.
+            second order :meth:`~slmsuite.holography.analysis.image_moment()`.
             This quadratic preconditioning is
             `thought to help reduce the formation of optical vortices or speckle
             <https://doi.org/10.1364/OE.16.002176>`_
@@ -1012,12 +1015,12 @@ class Hologram(_HologramStats, _Loggable):
 
         Parameters
         ----------
-        plot : bool
-            Enable debug plots.
+        plot : int OR bool
+            Enables debug plots at ``1`` and above.
         """
         if self.phase_ff is not None:
 
-            if plot:
+            if plot >= 1:
                 limits = self.plot_farfield(self.target)
                 self.plot_farfield(self.phase_ff, title="phase original", limits=limits)
                 self.plot_farfield(analysis.image_vortices(self.phase_ff), title="vortices coords", limits=limits)
@@ -1027,7 +1030,7 @@ class Hologram(_HologramStats, _Loggable):
 
             analysis.image_remove_vortices(self.phase_ff, self.target > 0)
 
-            if plot:
+            if plot >= 1:
                 self.plot_farfield(self.phase_ff, title="phase removal after", limits=limits)
 
     @property
@@ -1446,10 +1449,10 @@ class Hologram(_HologramStats, _Loggable):
         # 1.3) Add in non-defaulted flags, with error checks
         if stat_groups is None: stat_groups = []
         for group in stat_groups:
-            if not (group in FEEDBACK_OPTIONS):
+            if not (group in STAT_GROUP_OPTIONS):
                 raise ValueError(
-                    "Statistics group '{}' not recognized as a feedback option.\n"
-                    "Valid options: {}".format(group, FEEDBACK_OPTIONS)
+                    "Statistics group '{}' not recognized.\n"
+                    "Valid options: {}".format(group, STAT_GROUP_OPTIONS)
                 )
         self.flags["stat_groups"] = stat_groups
 
@@ -1471,7 +1474,7 @@ class Hologram(_HologramStats, _Loggable):
 
     # GS- or WGS-type optimization.
     def optimize_gs(self, iterations, callback):
-        """
+        r"""
         GPU-accelerated Gerchberg-Saxton (GS) iterative phase retrieval.
 
         Solves the "phase problem": approximates the nearfield phase that
@@ -1487,20 +1490,17 @@ class Hologram(_HologramStats, _Loggable):
         Note
         ~~~~
         FFTs here are **not** in-place: neither :mod:`numpy.fft` nor ``fftshift`` support
-        it, so each transform allocates. Below roughly 4 megapixels the
-        ``fftshift``/``fft2``/``fftshift`` sandwich is entirely kernel-launch bound --
-        measured at ~0.15 ms per transform on an RTX 5090, flat from 256\ :sup:`2` through
-        2048\ :sup:`2` -- and above that it becomes memory-bandwidth bound. Two ideas that
-        look attractive here have been measured and rejected:
+        it, so each transform allocates. Per-iteration cost is dominated by the
+        ``fftshift``/``fft2``/``fftshift`` sandwich, which is kernel-launch bound for small
+        farfields and memory-bandwidth bound for large ones. Two ideas that look attractive
+        here are not improvements:
 
         -   Replacing the two shifts with the equivalent :math:`(-1)^{m+n}` checkerboard
-            multiplies. This is 1.6-1.7x faster on bare GS below ~2.5 megapixels, but it
-            *inverts* above ~4 megapixels (5-7% slower at 3072\ :sup:`2` and
-            4096\ :sup:`2`), because the checkerboard reads a plane that the roll does not.
+            multiplies, which is faster only for small farfields and slower for large ones,
+            because the checkerboard reads a plane that the roll does not.
         -   `get_fft_plan
-            <https://docs.cupy.dev/en/stable/reference/generated/cupyx.scipy.fftpack.get_fft_plan.html>`_.
-            :mod:`cupy` already caches cuFFT plans internally, so passing one explicitly is
-            within noise.
+            <https://docs.cupy.dev/en/stable/reference/generated/cupyx.scipy.fftpack.get_fft_plan.html>`_,
+            as :mod:`cupy` already caches cuFFT plans internally.
 
         The one remaining idea with real headroom is **not shifting** at all, keeping the
         farfield in FFT order and moving measurement data into that basis -- but that

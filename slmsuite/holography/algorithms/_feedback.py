@@ -5,7 +5,7 @@ from slmsuite.holography.algorithms._hologram import Hologram
 # Transparent cache of the ``"ij"`` -> ``"knm"`` transformation, keyed on
 # everything it depends on: the hologram shape, the Fourier calibration
 # contents, the SLM pitch/shape, and the ROI origin. All are fixed across the
-# repeated calls made by update_target() and measure(), which would otherwise
+# repeated calls made by set_target() and measure(), which would otherwise
 # redo the host-side composition and its upload every time. Keyed on
 # calibration *contents* rather than identity, because `fourier_affine` builds
 # a fresh object on every access; that also means recalibrating invalidates
@@ -174,7 +174,7 @@ class FeedbackHologram(Hologram):
         else:
             self._cam_points = None
 
-            # Without a Fourier calibration the update_target() above never
+            # Without a Fourier calibration the set_target() above never
             # runs, so a target_ij_roi would be dropped on the floor while
             # target_ij stays a sub-image -- silently leaving the two
             # inconsistent.
@@ -345,7 +345,7 @@ class FeedbackHologram(Hologram):
             inward. Size the ROI with a pixel of margin around the signal and
             the difference does not arise.
 
-            At ``order=0`` -- what :meth:`update_target` uses -- the result is
+            At ``order=0`` -- what :meth:`set_target` uses -- the result is
             otherwise identical to transforming the same sub-image embedded in
             a full frame. Above ``order=0`` it is identical only to within the
             spline prefilter, which is an IIR recursion over the whole input:
@@ -378,7 +378,7 @@ class FeedbackHologram(Hologram):
             img = sp_gaussian_filter(img, (blur_ij, blur_ij), truncate=2)
 
         # The composite transformation is pure geometry, so it is derived once and
-        # cached across the repeated calls made by update_target() and measure().
+        # cached across the repeated calls made by set_target() and measure().
         (matrix, fresh) = self._ijcam_to_knmslm_resampler(np.shape(img), roi)
 
         cp_img = cp.array(img, dtype=self.dtype)
@@ -429,12 +429,12 @@ class FeedbackHologram(Hologram):
         if not self._updated_slm or force:   # If we have not already updated the SLM.
             # Parse the current feedback and stats to see if an update is needed.
             should_update = False
-            feedback = self.flags["feedback"]
+            feedback = self.flags.get("feedback", "")
 
             if "experimental" in feedback or "external" in feedback:
                 should_update = True
 
-            for group in self.flags["stat_groups"]:
+            for group in self.flags.get("stat_groups", []):
                 if "experimental" in group or "external" in group:
                     should_update = True
 
@@ -471,6 +471,12 @@ class FeedbackHologram(Hologram):
             This is useful to avoid (expensive) transformation from the ``"ij"`` to the
             ``"knm"`` basis if :attr:`img_knm` is not needed.
         """
+        if self.cameraslm is None and self.img_ij is None:
+            raise RuntimeError(
+                "measure() requires a cameraslm to grab an image from; "
+                "construct this hologram with cameraslm=... or set img_ij directly."
+            )
+
         # Make sure the SLM is updated before measurement (usually, the SLM should already be updated.
         self._update_slm()
 
@@ -517,7 +523,7 @@ class FeedbackHologram(Hologram):
         reset_weights=False,
         roi=None,
     ):
-        """
+        r"""
         Change the target to something new. This method handles cleaning and normalization.
 
         Parameters

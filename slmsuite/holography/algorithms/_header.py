@@ -87,6 +87,9 @@ FEEDBACK_OPTIONS = [
     "external_spot",
 ]
 
+# List of statistics groups. See the documentation for the stat_groups keyword in optimize().
+STAT_GROUP_OPTIONS = FEEDBACK_OPTIONS + ["experimental_ij", "experimental_knm"]
+
 
 class LRUCache:
     """
