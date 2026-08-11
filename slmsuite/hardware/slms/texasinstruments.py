@@ -151,7 +151,7 @@ class PLM(ScreenMirrored):
         usb_vendor_id=None,
         usb_product_id=None,
         usb_device_number=0,
-        dlpc = None,
+        dlpc=None,
         gpu=None,
         **kwargs
     ):

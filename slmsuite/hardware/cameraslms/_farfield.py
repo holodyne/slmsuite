@@ -123,7 +123,7 @@ class _FarfieldCalibration(object):
 
         return self.calibrations["farfield"]
 
-    def farfield_calibration_process(self, size_blur=True):
+    def farfield_calibration_process(self, size_blur=True, background_subtract=True):
         """
         Processes raw :meth:`farfield_calibrate()` data into a usable efficiency map.
         Averages and blurs the speckle of the raw data, less the background taken as the
@@ -174,17 +174,18 @@ class _FarfieldCalibration(object):
 
         # Process the raw farfield data, less the floor that is not diffracted light.
         raw = np.asarray(self.calibrations["farfield"]["efficiency_raw"], dtype=float)
-        speckle = blur(np.mean(raw, axis=0))
-        signal = np.maximum(speckle - background, 0)
+        signal = blur(np.mean(raw, axis=0))
+        if background_subtract:
+            signal = np.maximum(signal - background, 0)
 
         # Neither pixels the camera railed on nor the zeroth order, which outshines the
         # pattern it is measuring, say anything about the farfield's brightest spot.
-        zeroth = np.asarray(self.calibrations["farfield"]["zeroth"], dtype=float) * (
+        zeroth = blur(np.asarray(self.calibrations["farfield"]["zeroth"], dtype=float) * (
             self.calibrations["farfield"]["exposure_raw"] /
             self.calibrations["farfield"]["exposure_zeroth"]
-        )
+        ))
         unusable = (
-            np.any(raw >= self.calibrations["farfield"]["saturation"], axis=0) | (zeroth > speckle)
+            np.any(raw >= self.calibrations["farfield"]["saturation"], axis=0) | (zeroth > signal)
         )
 
         if size_blur:   # The blur spreads unusable power onto its neighbors.

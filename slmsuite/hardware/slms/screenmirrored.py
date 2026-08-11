@@ -143,7 +143,7 @@ class ScreenMirrored(SLM):
         wav_um=1,
         pitch_um=(8,8),
         slm_resolution=None,
-        interop=None,
+        gpu=None,
         **kwargs
     ):
         """

@@ -229,7 +229,10 @@ class _ViewerObject:
         is_cam = not self.parent.is_slm
 
         if img is not None:
-            self.last_image = img
+            if hasattr(img, "get"):
+                self.last_image = img.get()
+            else:
+                self.last_image = img
         if self.last_image is None:
             return  # Nothing to render.
 
