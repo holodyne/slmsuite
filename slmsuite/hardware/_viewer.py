@@ -1,6 +1,11 @@
 
 import asyncio
+import html
 import io
+import os
+import struct
+import sys
+import tempfile
 
 import cv2
 import matplotlib.pyplot as plt
@@ -8,6 +13,7 @@ import numpy as np
 import PIL
 
 from slmsuite.holography.analysis import _center, image_centroids, image_remove_field
+from slmsuite.misc.files import generate_path, save_h5
 
 _CROSSHAIR_OPTIONS = [
     ("None", "none"),
@@ -15,6 +21,14 @@ _CROSSHAIR_OPTIONS = [
     ("Centroid", "centroid"),
     ("Center+Centroid", "center+centroid"),
 ]
+
+# ipyevents always suppresses the page scroll for a watched wheel event, so "wheel"
+# is only appended to this list while zoom is enabled.
+_MOUSE_EVENTS = ["mousedown", "mousemove", "mouseup", "mouseleave", "click", "dblclick"]
+
+# Mouse events are throttled to this period, roughly the rate at which frames can be
+# drawn: a megapixel frame takes tens of milliseconds to encode.
+_RENDER_PERIOD_S = .033
 
 # Frames are encoded as 8-bit palette PNGs: the colormap is sent once as a palette
 # and each pixel is a single index, instead of four RGBA bytes. This is ~12x faster
@@ -59,6 +73,60 @@ def _viewer_palette(cmap):
     return _palette_cache[key]
 
 
+def _save_dialog(file_path):
+    """Ask the user where to save, defaulting to ``file_path``. Empty if cancelled."""
+    if sys.platform != "win32":
+        raise NotImplementedError(f"No save dialog is implemented for '{sys.platform}'.")
+
+    import win32con     # pywin32
+    import win32gui
+
+    try:
+        return win32gui.GetSaveFileNameW(
+            InitialDir=os.path.dirname(file_path),
+            File=os.path.basename(file_path),
+            DefExt="png",
+            Title="Save view",
+            Filter="PNG image\0*.png\0HDF5 raw data\0*.h5\0All files\0*.*\0",
+            Flags=win32con.OFN_OVERWRITEPROMPT,
+        )[0]
+    except Exception:
+        return ""       # The dialog raises rather than returns when cancelled.
+
+
+def _clipboard_image(png, name):
+    """Copy ``png`` bytes to the system clipboard as an image named ``name``."""
+    if sys.platform != "win32":
+        raise NotImplementedError(f"No clipboard copy is implemented for '{sys.platform}'.")
+
+    import win32clipboard      # pywin32
+
+    # The clipboard's device-independent bitmap is a BMP without its 14-byte header.
+    bmp = io.BytesIO()
+    PIL.Image.open(io.BytesIO(png)).convert("RGB").save(bmp, format="bmp")
+    png_format = win32clipboard.RegisterClipboardFormat("PNG")
+
+    # A file drop names a file rather than carrying data, so the image is staged in
+    # the temp directory under a fixed name that later copies overwrite.
+    file_path = os.path.join(tempfile.gettempdir(), name + ".png")
+    with open(file_path, "wb") as f:
+        f.write(png)
+    drop = (
+        struct.pack("<IiiII", 20, 0, 0, 0, 1)   # DROPFILES: wide paths at offset 20.
+        + (file_path + "\0\0").encode("utf-16-le")
+    )
+
+    win32clipboard.OpenClipboard()
+    try:
+        # Each format is offered: applications take whichever they prefer.
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp.getvalue()[14:])
+        win32clipboard.SetClipboardData(png_format, png)
+        win32clipboard.SetClipboardData(win32clipboard.CF_HDROP, drop)
+    finally:
+        win32clipboard.CloseClipboard()
+
+
 class _Viewable:
 
     def live(self, activate=None, widgets=True, backend="ipython", **kwargs):
@@ -77,7 +145,9 @@ class _Viewable:
         a series of `IPython widgets
         <https://ipywidgets.readthedocs.io/en/latest/examples/Widget%20List.html>`_
         in the form of sliders and buttons
-        for controlling the color scale, colormap, viewer scale, and live viewing.
+        for controlling the color scale, colormap, viewer scale, and live viewing,
+        along with buttons to copy the current view to the clipboard or save it to a
+        file, either as a ``.png`` of the view or an ``.h5`` of the raw data.
         By toggling the ``Live`` widget button, a loop is created that continuously
         polls the camera for new images.
         This viewer can be used as a realtime camera monitor within the jupyter notebook.
@@ -87,11 +157,12 @@ class _Viewable:
         execution.
         ``Live`` mode is ignored for SLMs.
 
-        The viewer also supports zooming into a region of interest: scroll the mouse
-        wheel to zoom in/out toward the cursor, click-drag to pan, and double-click
-        (or press the ``Reset View`` button) to restore the full image. Clicking
-        prints the source-image pixel coordinate under the cursor. These mouse
-        interactions require the optional :mod:`ipyevents` package
+        The viewer also supports zooming into a region of interest. With the ``Zoom``
+        widget enabled, scroll the mouse wheel to zoom in/out toward the cursor,
+        click-drag to pan, and double-click to restore the full image; disabling
+        ``Zoom`` also restores the full image. Clicking prints the source-image pixel
+        coordinate under the cursor. These mouse interactions require the optional
+        :mod:`ipyevents` package
         (``pip install ipyevents``); without it the viewer still functions normally.
 
         This limitation is imposed by the
@@ -166,6 +237,7 @@ class _ViewerObject:
         cmap_options=None,
         center_crosshair=False,
         centroid_crosshair=False,
+        zoom=False,
     ):
         self.parent = parent
         self.backend = backend
@@ -210,6 +282,7 @@ class _ViewerObject:
             "border" : border,
             "cmap_options" : cmap_options,
             "crosshair" : crosshair,
+            "zoom" : bool(zoom),
         }
 
         self.task = None
@@ -333,34 +406,42 @@ class _ViewerObject:
         if 0 <= cy < H:
             index[cy, dash] = np.where(is_dark[index[cy, dash]], _LIGHT, _DARK)
 
+    def _print(self, message):
+        """
+        Show a message in the viewer's output area, replacing whatever was there.
+
+        Only the latest message is kept: a fault that recurs on every mouse event
+        would otherwise grow the output area without bound, slowing the frontend.
+        """
+        if "output" in self.widgets:
+            self.widgets["output"].value = html.escape(str(message))
+        else:
+            print("slmsuite viewer:", message)
+
     def render(self, img=None):
         try:
             self.image.value = self.parse(img)
         except Exception as e:
-            # Only the latest error is kept. A fault that recurs on every mouse
-            # event would otherwise grow the output widget without bound, which
-            # slows the whole notebook frontend long after the drag has ended.
-            if "output" in self.widgets:
-                with self.widgets["output"]:
-                    self.widgets["output"].clear_output(wait=True)
-                    print(str(e))
-            else:
-                print("slmsuite viewer render error:", str(e))
+            self._print(str(e))
 
     def update(self, event):
-        with self.widgets["output"]:
-            self.widgets["output"].clear_output(wait=True)
-        for key in self.state_keys:
-            self.state[key] = self.widgets[key].value
+        # A widget callback that raises is swallowed by ipywidgets, so a fault here
+        # would silently stop the viewer from responding at all.
+        try:
+            for key in self.state_keys:
+                self.state[key] = self.widgets[key].value
 
-        self._resize_display()
-        self.render()
+            self._resize_display()
+            self.render()
+        except Exception as e:
+            self._print(str(e))
 
     def live(self, event=None):
         if self.parent.is_slm:
             raise ValueError("Live viewing is not supported for SLMs.")
 
         state = self.state["live"] = self.widgets["live"].value
+        self.widgets["live"].button_style = "success" if state else ""
 
         loop = asyncio.get_running_loop()
 
@@ -436,18 +517,29 @@ class _ViewerObject:
 
     def _reset_roi(self, event=None):
         """Reset the ROI to show the full image."""
-        H, W = self.last_image.shape[0], self.last_image.shape[1]
+        H, W = self.parent.shape[0], self.parent.shape[1]
         self.state["roi"] = [0.0, 0.0, float(W), float(H)]
         self._drag = None
         self.render()
+
+    def _set_zoom(self, event=None):
+        """Enable or disable mouse zoom and pan, restoring the full image."""
+        if "zoom" in self.widgets:
+            self.state["zoom"] = self.widgets["zoom"].value
+        if self._events is not None:
+            self._events.watched_events = (
+                _MOUSE_EVENTS + ["wheel"] if self.state["zoom"] else list(_MOUSE_EVENTS)
+            )
+        self._reset_roi()
 
     def _on_dom_event(self, event):
         """Dispatch ipyevents DOM events for scroll-zoom, drag-pan, and coordinate readout."""
         try:
             etype = event.get("type")
-            if etype == "wheel":
+            zoom = self.state["zoom"]
+            if zoom and etype == "wheel":
                 self._zoom(event)
-            elif etype == "mousedown":
+            elif zoom and etype == "mousedown":
                 sx, sy = self._event_to_source(event)
                 self._drag = {"pointer": (sx, sy), "roi": list(self.state["roi"])}
                 self._dragged = False
@@ -456,58 +548,68 @@ class _ViewerObject:
                     self._pan(event)
             elif etype in ("mouseup", "mouseleave"):
                 self._drag = None
-            elif etype == "dblclick":
+            elif zoom and etype == "dblclick":
                 self._reset_roi()
             elif etype == "click" and not self._dragged:
                 sx, sy = self._event_to_source(event)
-                coord = np.round([sx, sy]).astype(int)
-                if "output" in self.widgets:
-                    with self.widgets["output"]:
-                        self.widgets["output"].clear_output(wait=True)
-                        print(coord)
+                self._print(np.round([sx, sy]).astype(int))
         except Exception as e:
-            if "output" in self.widgets:
-                with self.widgets["output"]:
-                    self.widgets["output"].clear_output(wait=True)
-                    print(str(e))
+            self._print(str(e))
 
     def _resize_display(self):
         """Fix the display box size so ROI zoom changes content, not widget size."""
-        from ipywidgets import Layout
         H, W = self.parent.shape[0], self.parent.shape[1]
         s = self.state["scale"]
-        self.image.layout = Layout(
-            width=f"{int(W * s)}px",
-            height=f"{int(H * s)}px",
-        )
+        # The existing layout is edited rather than replaced, else every update
+        # orphans a widget model in the frontend.
+        self.image.layout.width = f"{int(W * s)}px"
+        self.image.layout.height = f"{int(H * s)}px"
 
     def _attach_events(self):
         """Attach ipyevents mouse handlers to the image widget, if available."""
         try:
             from ipyevents import Event
         except ImportError:
-            if "output" in self.widgets:
-                with self.widgets["output"]:
-                    print(
-                        "Install 'ipyevents' (pip install ipyevents) to enable "
-                        "scroll-wheel zoom and click-drag pan in the viewer."
-                    )
+            self._print(
+                "Install 'ipyevents' (pip install ipyevents) to enable "
+                "scroll-wheel zoom and click-drag pan in the viewer."
+            )
             return
 
-        # Events are throttled to roughly the rate at which frames can be drawn.
-        # Faster than that and mousemove events queue up in the kernel, so a drag
-        # falls further and further behind the cursor the longer it lasts.
+        # Events are throttled to the rate at which frames can be drawn, else a drag
+        # queues up in the kernel and falls further behind the cursor as it lasts.
         self._events = Event(
             source=self.image,
-            watched_events=[
-                "wheel", "mousedown", "mousemove", "mouseup",
-                "mouseleave", "click", "dblclick",
-            ],
             prevent_default_action=True,
             throttle_or_debounce="throttle",
-            wait=33,
+            wait=int(1e3 * _RENDER_PERIOD_S),
         )
         self._events.on_dom_event(self._on_dom_event)
+        self._set_zoom()
+
+    def save(self, event=None):
+        """Save the view as a ``.png``, or the raw data and metadata as an ``.h5``."""
+        try:
+            file_path = _save_dialog(
+                generate_path(".", self.parent.name + "-view", extension="png")
+            )
+            if file_path:
+                if os.path.splitext(file_path)[1] == ".h5":
+                    save_h5(file_path, self.parent.pickle())
+                else:
+                    with open(file_path, "wb") as f:
+                        f.write(self.image.value)
+                self._print(file_path)
+        except Exception as e:
+            self._print(str(e))
+
+    def copy(self, event=None):
+        """Copy the current view to the system clipboard."""
+        try:
+            _clipboard_image(self.image.value, self.parent.name + "-view")
+            self._print("Copied to clipboard.")
+        except Exception as e:
+            self._print(str(e))
 
     def autorange(self, event):
         if self.last_image is not None:
@@ -546,6 +648,9 @@ class _ViewerObject:
         self._attach_events()
         display(self.image)
 
+        if "output" in self.widgets:
+            display(self.widgets["output"])
+
     def init_widgets(self):
         from ipywidgets import (
             HTML,
@@ -555,12 +660,11 @@ class _ViewerObject:
             FloatLogSlider,
             IntRangeSlider,
             Layout,
-            Output,
             ToggleButton,
         )
 
         item_layout = Layout(width="auto")
-        range_layout = Layout(width="70%")
+        grow_layout = Layout(width="auto", flex="1 1 auto")  # Absorbs the leftover row width.
 
         self.widgets = {
             "name" : HTML(
@@ -584,18 +688,38 @@ class _ViewerObject:
                 step=1,
                 description="Scale",
                 tooltip="Scale the image by powers of two.",
-                layout=(Layout(width="30%") if self.parent.is_slm else item_layout),
+                layout=Layout(width="300px"),
                 continuous_update=False,
             ),
-            "reset" : Button(
-                description="Reset View",
-                tooltip="Reset zoom and pan to show the full image.",
+            "zoom" : Checkbox(
+                value=self.state["zoom"],
+                description="Zoom",
+                tooltip=(
+                    "Enable scroll-wheel zoom and click-drag pan; double-click restores "
+                    "the full image. Disable to scroll the notebook over the viewer."
+                ),
                 layout=item_layout,
+                indent=False,   # Else a description-width gutter pads the box.
             ),
-            "output": Output()
+            "save" : Button(
+                description="Save",
+                tooltip="Save the view as a .png, or the raw data as an .h5.",
+                layout=(Layout(width="100px") if self.parent.is_slm else Layout(width="50%")),
+            ),
+            "copy" : Button(
+                description="Copy",
+                tooltip="Copy the current view to the system clipboard.",
+                layout=(Layout(width="100px") if self.parent.is_slm else Layout(width="50%")),
+            ),
+            # An Output widget would be the natural home for these messages, but it
+            # does not reliably render inside a container in every frontend.
+            "output": HTML(
+                value="",
+                tooltip="Clicked coordinates, saved file paths, and viewer errors.",
+            )
         }
 
-        self.state_keys = ["cmap", "scale"]
+        self.state_keys = ["cmap", "scale", "zoom"]
 
         # Extra widgets for cameras, not relevant for SLMs.
         if not self.parent.is_slm:
@@ -605,6 +729,7 @@ class _ViewerObject:
                     description="Live",
                     tooltip="Toggle an asyncio loop to poll images from the hardware.",
                     layout=item_layout,
+                    button_style=("success" if self.state["live"] else ""),
                     disabled=self.parent.is_slm
                 ),
                 "range" : IntRangeSlider(
@@ -614,8 +739,7 @@ class _ViewerObject:
                     step=1,
                     description="Range",
                     tooltip="Color scale of the plot.",
-                    layout=range_layout,
-                    continuous_update=False,
+                    layout=grow_layout,
                 ),
                 "autorange" : Button(
                     description="AutoRange",
@@ -627,6 +751,7 @@ class _ViewerObject:
                     description="Logarithmic",
                     tooltip="Toggle logarithmic scaling of the current plot.",
                     layout=item_layout,
+                    indent=False,
                 ),
                 "crosshair" : Dropdown(
                     options=_CROSSHAIR_OPTIONS,
@@ -644,11 +769,17 @@ class _ViewerObject:
         for k, w in self.widgets.items():
             if k == "autorange":
                 w.on_click(self.autorange)
-            elif k == "reset":
-                w.on_click(self._reset_roi)
+            elif k == "save":
+                w.on_click(self.save)
+            elif k == "copy":
+                w.on_click(self.copy)
             elif k == "live":
                 w.observe(self.live, "value")
-            else:
+            elif k == "zoom":
+                w.observe(self._set_zoom, "value")
+            # Only the state-bearing widgets drive a redraw; the name and message
+            # areas carry a value trait of their own that must not trigger one.
+            elif k in self.state_keys:
                 w.observe(self.update, "value")
 
         from IPython.display import display
@@ -660,22 +791,27 @@ class _ViewerObject:
                     self.widgets["name"],
                     self.widgets["cmap"],
                     self.widgets["scale"],
-                    self.widgets["reset"],
+                    self.widgets["zoom"],
+                    self.widgets["save"],
+                    self.widgets["copy"],
                 ]),
-                self.widgets["output"],
+                # self.widgets["output"],
             ])
         else:
+            # The controls on the right are sized to their text; the rest of the width
+            # goes to the left, where the sliders need the room to be usable.
             box_layout1 = Layout(
                 display="flex",
                 flex_flow="auto",
                 align_items="stretch",
-                width="70%"
+                flex="1 1 auto",
             )
             box_layout2 = Layout(
                 display="flex",
                 flex_flow="auto",
                 align_items="stretch",
-                width="30%"
+                flex="0 0 auto",
+                width="200px",
             )
 
             self.widgets["layout"] = HBox([
@@ -683,6 +819,8 @@ class _ViewerObject:
                     [
                         HBox([
                             self.widgets["name"],
+                            self.widgets["scale"],
+                            self.widgets["zoom"],
                         ]),
                         HBox([
                             self.widgets["cmap"],
@@ -692,16 +830,15 @@ class _ViewerObject:
                         HBox([
                             self.widgets["range"],
                         ]),
-                        self.widgets["output"],
+                        # self.widgets["output"],
                     ],
                     layout=box_layout1,
                 ),
                 VBox(
                     [
                         self.widgets["live"],
-                        self.widgets["scale"],
+                        HBox([self.widgets["save"], self.widgets["copy"]]),
                         self.widgets["autorange"],
-                        self.widgets["reset"],
                     ],
                     layout=box_layout2,
                 )
