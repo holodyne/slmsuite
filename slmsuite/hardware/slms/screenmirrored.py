@@ -192,10 +192,11 @@ class ScreenMirrored(SLM):
             different shape than the display. Note that different SLM and
             screen resolutions are not generally supported unless explicitly
             implemented in the associated SLM class.
-        interop : bool or None
-            Whether to render directly from ``CUDA``-mapped device memory, avoiding all host
-            transfers. Defaults to ``None``, which uses it when available. Set ``False`` to
-            force host memory.
+        gpu : bool or None
+            Whether to store and process data with :mod:`cupy` (see :attr:`xp`).
+            ``None`` uses :mod:`cupy` if it is installed. Defaults to ``False``.
+            If this feature is enabled, the SLM will attempt to use 
+            :mod:`cupy`-OpenGL interop if available.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
         """
@@ -247,22 +248,24 @@ class ScreenMirrored(SLM):
             bitdepth=bitdepth,
             wav_um=wav_um,
             pitch_um=pitch_um,
+            gpu=gpu,
             **kwargs
         )
+        gpu = self.xp is cp
 
         # Create the window on a dedicated background thread.
-        # The _WindowThread handles window creation, OpenGL context setup,
-        # and continuous event dispatch on the same thread.
         try:
             time.sleep(0.2) # Short delay
             wm = _WindowManager.get_instance()
-            self._window_thread = wm.create_window(None, screen, self.name, interop=interop)
+            self._window_thread = wm.create_window(None, screen, self.name, interop=gpu)
             self.window = self._window_thread.window
         except Exception:
             self.logger.error("Window creation failed.")
             raise
 
-        self.logger.debug("Window creation successful.")
+        self.logger.debug("Window creation successful. Mode='%s'.", self.window.mode)
+        if self.window.mode != "interop":
+            self.logger.info("Mode is '%s'; cupy-GL interop not available.", self.window.mode)
 
         # Warn the user if wav_um > wav_design_um
         if self.phase_scaling > 1:

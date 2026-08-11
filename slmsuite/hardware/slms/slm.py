@@ -170,26 +170,26 @@ class SLM(_Common, ABC):
 
         Parameters
         ----------
-        resolution
+        resolution : (int, int)
             The width and height of the SLM in ``(width, height)`` form.
 
             Important
             ~~~~~~~~~
             This is the opposite of the numpy ``(height, width)``
             convention stored in :attr:`shape`.
-        bitdepth
+        bitdepth : int
             See :attr:`bitdepth`. Defaults to 8.
-        name
+        name : str
             See :attr:`name`.
-        wav_um
+        wav_um : float
             See :attr:`wav_um`.
-        wav_design_um
+        wav_design_um : float or None
             See :attr:`wav_design_um`.
-        pitch_um
+        pitch_um : float OR (float, float)
             See :attr:`pitch_um`. Defaults to 8 micron square pixels.
-        settle_time_s
+        settle_time_s : float
             See :attr:`settle_time_s`.
-        gpu
+        gpu : bool or None
             Whether to store and process data with :mod:`cupy` (see :attr:`xp`).
             ``None`` uses :mod:`cupy` if it is installed. Defaults to ``False``.
         """

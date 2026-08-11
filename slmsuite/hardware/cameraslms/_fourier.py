@@ -166,7 +166,7 @@ class _FourierCalibration(object):
         # Get orientation of projected array
         try:
             orientation = analysis.blob_array_detect(
-                img, array_shape, orientation=orientation, method=method, plot=plot
+                img, array_shape, orientation=orientation, method=method, plot=plot>=2
             )
         except Exception as e:
             self.logger.error("fourier_calibrate failed during array detection and fitting.")

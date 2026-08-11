@@ -683,7 +683,7 @@ class _Window(__Window):
             self.frame[:, :, 3] = 255  # Opaque alpha
             self.cframe = (gl.GLubyte * int(shape[0] * shape[1] * B)).from_buffer(self.frame)
 
-        logger.info("Frame: '%s'.", self.mode)
+        logger.debug("Frame: '%s'.", self.mode)
 
     def _release_frame(self):
         """Free the frame. Must run on the window thread."""
@@ -1089,6 +1089,7 @@ class _WindowThread(object):
         self._ready = threading.Event()
         self._error = None
         self._manager = manager
+
         # Store creation params; the device is sampled here, on the thread that writes frames.
         self._init_args = (shape, screen, caption)
         self._init_kwargs = kwargs
@@ -1096,7 +1097,7 @@ class _WindowThread(object):
             try:
                 self._init_kwargs["device"] = cp.cuda.runtime.getDevice()
             except Exception:
-                pass  # No usable device; the frame ladder degrades on its own.
+                pass  # No usable GPU.
         self._start()
 
     def _start(self):

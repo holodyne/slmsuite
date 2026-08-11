@@ -690,19 +690,36 @@ class _PixelCalibration(object):
         if not r_squared >= 0.9:
             self.logger.warning("Low R^2 value of %.3f for gamma fit. Fit may be inaccurate.", r_squared)
 
-        if plot >= 1:
-            plt.plot(levels, gamma, "o-", label="calibrated")
-            plt.title(f"Gamma fit R^2: {r_squared:.3f}")
-            _slmsuite_plt_show(name="pixel_calibration_process_fit")
-
-            fig, axs = plt.subplots(1, 3, figsize=(10, 5))
+        if plot >= 2:
+            fig, axs = plt.subplots(1, 3, figsize=(12, 4))
             data_fit = model(None, *popt).reshape(data_summed.shape)
             data_resid = data_summed - data_fit
             M = np.max(np.abs(data_resid))
             axs[0].imshow(data_summed)
             axs[1].imshow(data_fit)
             axs[2].imshow(data_resid, cmap="bwr", vmin=-M, vmax=M)
+
+            for ax, title in zip(axs, ["Data", "Fit", "Residuals"]):
+                ax.set_title(title)
+                if title == "Data":
+                    ax.set_ylabel("SLM Level $a$")
+                ax.set_xlabel("SLM Level $b$")
+
+            fig.suptitle("Diffraction Order Intensity versus Binary Grating Levels ($a$, $b$)")
+            plt.tight_layout()
+
             _slmsuite_plt_show(name="pixel_calibration_process_residuals")
+        if plot >= 1:
+            fig, ax = plt.subplots(1, 1)
+            ax.plot(levels, gamma, "o-", label="calibrated")
+            ax.set_title(f"Pixel Calibration Gamma (R^2: {r_squared:.3f})")
+            ax.set_xlabel("SLM Level $i$")
+            ax.set_ylabel("SLM Response")
+            tick_labels = [0, .5, 1]
+            ax.set_yticks(tick_labels)
+            ax.set_yticklabels([f"${int(y*2)}\pi$" for y in tick_labels])
+            _slmsuite_plt_show(name="pixel_calibration_process_fit")
+
 
         self.calibrations["pixel"]["gamma"] = gamma
         self.calibrations["pixel"]["gamma_r2"] = r_squared
