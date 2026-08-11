@@ -229,18 +229,18 @@ class _ViewerObject:
         is_cam = not self.parent.is_slm
 
         if img is not None:
-            self.prev_img = img
-        if self.prev_img is None:
+            self.last_image = img
+        if self.last_image is None:
             return  # Nothing to render.
 
         # Crop to the current region of interest (ROI).
-        H, W = self.prev_img.shape[0], self.prev_img.shape[1]
+        H, W = self.last_image.shape[0], self.last_image.shape[1]
         x0, y0, x1, y1 = np.rint(self.state["roi"]).astype(int)
         x0, x1 = np.clip([x0, x1], 0, W)
         y0, y1 = np.clip([y0, y1], 0, H)
         if x1 - x0 < 1: x1 = min(W, x0 + 1)
         if y1 - y0 < 1: y1 = min(H, y0 + 1)
-        src = self.prev_img[y0:y1, x0:x1]
+        src = self.last_image[y0:y1, x0:x1]
 
         # Downsample only if the crop has more pixels than the display box can
         # show; otherwise show the exact, full-resolution source pixels. The raw
@@ -393,7 +393,7 @@ class _ViewerObject:
         if not delta:
             return
 
-        H, W = self.prev_img.shape[0], self.prev_img.shape[1]
+        H, W = self.last_image.shape[0], self.last_image.shape[1]
         x0, y0, x1, y1 = self.state["roi"]
         w, h = x1 - x0, y1 - y0
         fx = event["relativeX"] / event["boundingRectWidth"]
@@ -422,7 +422,7 @@ class _ViewerObject:
         gx, gy = self._drag["pointer"]
         w, h = x1d - x0d, y1d - y0d
 
-        H, W = self.prev_img.shape[0], self.prev_img.shape[1]
+        H, W = self.last_image.shape[0], self.last_image.shape[1]
         fx = event["relativeX"] / event["boundingRectWidth"]
         fy = event["relativeY"] / event["boundingRectHeight"]
         x0 = float(np.clip(gx - fx * w, 0, W - w))
@@ -436,7 +436,7 @@ class _ViewerObject:
 
     def _reset_roi(self, event=None):
         """Reset the ROI to show the full image."""
-        H, W = self.prev_img.shape[0], self.prev_img.shape[1]
+        H, W = self.last_image.shape[0], self.last_image.shape[1]
         self.state["roi"] = [0.0, 0.0, float(W), float(H)]
         self._drag = None
         self.render()
@@ -510,9 +510,9 @@ class _ViewerObject:
         self._events.on_dom_event(self._on_dom_event)
 
     def autorange(self, event):
-        if self.prev_img is not None:
+        if self.last_image is not None:
             # Both the slider and the image are in raw counts.
-            range = np.array([np.min(self.prev_img), np.max(self.prev_img)])
+            range = np.array([np.min(self.last_image), np.max(self.last_image)])
             range = np.clip(np.rint(range), 0, self.parent.bitresolution - 1).astype(int)
             self.state["range"] = self.widgets["range"].value = [int(r) for r in range]
 
@@ -522,10 +522,13 @@ class _ViewerObject:
         from IPython.display import HTML, display
         from ipywidgets import Image
 
-        self.prev_img = np.zeros(self.parent.shape)
+        if self.parent.is_slm:
+            self.last_image = self.parent.phase
+        else:
+            self.last_image = self.parent.last_image
 
         self.image = Image(
-            value=self.prev_img,
+            value=self.parse(self.last_image),
             format="png"
         )
         # Render the image with nearest-neighbor upscaling so that, when zoomed in,
