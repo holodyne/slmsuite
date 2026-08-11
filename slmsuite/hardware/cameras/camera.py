@@ -206,9 +206,6 @@ class Camera(_Common, ABC):
         if self.capture_attempts <= 0:
             raise ValueError("capture_attempts must be positive.")
 
-        # Variable for storing the last capture.
-        self.last_image = None
-
         # Set exposure information.
         self.exposure_bounds_s = (
             (np.min(exposure_bounds_s), np.max(exposure_bounds_s))
@@ -238,6 +235,10 @@ class Camera(_Common, ABC):
             pitch_um=pitch_um,
             is_slm=False,
         )
+
+        # Variable for storing the last capture.
+        # self.last_image = np.zeros(self.shape, dtype=self.get_dtype(averaging=1, hdr=False))
+        self.last_image = np.zeros(self.shape, dtype=self.dtype)
 
     @property
     def bitresolution(self) -> int:
