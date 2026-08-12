@@ -232,6 +232,12 @@ class SimulatedCamera(Camera):
             display = display.get()
         phase = self._slm._display2phase(display)
 
+        # The source may live on the device (a numpy `phase` plus a cupy `phase_sim` is
+        # not a legal mix), so bring it to the host alongside `display`.
+        phase_sim = self._slm.source["phase_sim"]
+        if hasattr(phase_sim, "get"):
+            phase_sim = phase_sim.get()
+
         # Suppress power of 2 warning from Hologram.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=Warning)
@@ -239,7 +245,7 @@ class SimulatedCamera(Camera):
             self._hologram = Hologram(
                 self.shape_padded,
                 amp=self._slm.source["amplitude_sim"],
-                phase=phase - phase.min() + self._slm.source["phase_sim"],
+                phase=phase - phase.min() + phase_sim,
                 slm_shape=self._slm,
             )
 
@@ -330,14 +336,54 @@ class SimulatedCamera(Camera):
 
     # Future: use WOI with Zoom FFT?
 
-    def _get_image_hw(self, timeout_s):
+    def _bind_source_amplitude(self):
         """
-        See :meth:`.Camera._get_image_hw`. Computes and samples the affine-transformed SLM far-field.
+        Point the internal hologram's amplitude at the SLM's simulated source.
+
+        When the SLM already stores ``"amplitude_sim"`` on the backend the hologram
+        computes on, this binds by *reference*: no copy is made at all, and later edits
+        to ``slm.source["amplitude_sim"]`` are picked up automatically because it is the
+        same object. :class:`~slmsuite.holography.algorithms.Hologram` only ever reads
+        :attr:`~slmsuite.holography.algorithms.Hologram.amp`, so sharing is safe.
+
+        Otherwise the array must be transferred, and it is transferred every frame. A
+        cache keyed on the source array's identity would be wrong: the amplitude is
+        routinely modified *in place* (``source["amplitude_sim"] *= aperture_mask``),
+        which leaves the identity unchanged while the contents differ, so the cache would
+        silently serve a stale illumination profile. Users who want to avoid the
+        per-frame transfer should keep the source on the device instead.
+        """
+        amp = self._slm.source["amplitude_sim"]
+        dtype = self._hologram.dtype
+
+        on_compute_backend = cp is np or isinstance(amp, cp.ndarray)
+
+        if on_compute_backend and amp.dtype == dtype:
+            self._hologram.amp = amp
+        else:
+            self._hologram.amp = cp.array(amp, dtype=dtype)
+
+    def _render(self, display):
+        """
+        Compute the far-field intensity of a given SLM display, on the compute backend.
+
+        This is the optical core of :meth:`_get_image_hw()`, factored out so that callers
+        which need to render a *particular* frame -- rather than whatever happens to be
+        in ``slm.display`` at the instant of the call -- can reuse it without duplicating
+        the far-field computation. Sensor effects are applied separately by
+        :meth:`_apply_response()`.
+
+        Parameters
+        ----------
+        display : numpy.ndarray OR cupy.ndarray
+            Integer display data, as held by
+            :attr:`~slmsuite.hardware.slms.slm.SLM.display`.
 
         Returns
         -------
-        numpy.ndarray
-            Array of shape :attr:`shape`
+        numpy.ndarray OR cupy.ndarray
+            Far-field intensity of shape :attr:`shape`, left on the compute backend
+            (i.e. still on the GPU when :mod:`cupy` is present).
         """
         if not hasattr(self, "_hologram"):
             raise RuntimeError(
@@ -352,8 +398,8 @@ class SimulatedCamera(Camera):
         # self._hologram.reset_phase(self._slm.phase + self._slm.source["phase_sim"])
 
         # Quantized phase
-        self._hologram.amp = cp.array(self._slm.source["amplitude_sim"], dtype=self._hologram.dtype)
-        display = cp.asarray(self._slm.display)
+        self._bind_source_amplitude()
+        display = cp.asarray(display)
         phase = self._slm._display2phase(display, dtype=self._hologram.dtype)
         phase = phase - phase.min() + cp.asarray(
             self._slm.source["phase_sim"], dtype=self._hologram.dtype
@@ -378,12 +424,40 @@ class SimulatedCamera(Camera):
             img = img * self._pixel_area
         else:
             img = toolbox.unpad(intensity, self._shape)
-        if cp != np:
-            img = img.get()
 
+        return img
+
+    def _apply_response(self, img, xp=np):
+        """
+        Apply the sensor response to a rendered far-field intensity.
+
+        Vignetting, exposure, gain, :attr:`noise`, and saturation -- everything between
+        the optics of :meth:`_render()` and the integer readout of :meth:`_store()`.
+        Split out so that a caller which keeps frames on the device can apply the
+        response there rather than round-tripping through the host.
+
+        Parameters
+        ----------
+        img : numpy.ndarray OR cupy.ndarray
+            Far-field intensity, as returned by :meth:`_render()`.
+        xp : module
+            :mod:`numpy` or :mod:`cupy`, matching the backend of ``img``.
+
+            :meth:`_get_image_hw()` passes :mod:`numpy` so that the user-supplied
+            callables in :attr:`noise` -- which the class docstring documents with
+            :mod:`numpy` examples -- keep working unchanged. Passing :mod:`cupy`
+            requires those callables, and :attr:`_aperture`, to accept device arrays.
+
+        Returns
+        -------
+        numpy.ndarray OR cupy.ndarray
+            The image after the sensor response, still in floating point.
+        """
         # Efficiency of each camera pixel (apertures in the optical train, vignetting).
         if self._aperture is not None:
-            img = img * self._aperture
+            # asarray is free when _aperture already lives on the requested backend;
+            # keep it there to avoid a per-frame transfer on the device path.
+            img = img * xp.asarray(self._aperture)
 
         img = img * (self.exposure_s * self.gain)
 
@@ -394,19 +468,72 @@ class SimulatedCamera(Camera):
             for key in self.noise.keys():
                 if key == 'dark':
                     # Background/dark current - exposure dependent
-                    dark = self.noise['dark'](np.ones_like(img) * frame_bitresolution) * self.exposure_s
+                    dark = self.noise['dark'](xp.ones_like(img) * frame_bitresolution) * self.exposure_s
                     img = img + dark
                 elif key == 'read':
                     # Readout noise - exposure independent
-                    read = self.noise['read'](np.ones_like(img) * frame_bitresolution)
+                    read = self.noise['read'](xp.ones_like(img) * frame_bitresolution)
                     img = img + read
                 else:
                     raise RuntimeError('Unknown noise source %s specified!'%(key))
 
-        # Truncate to maximum readout value
-        img[img > frame_bitresolution-1] = frame_bitresolution-1
+        # Truncate to maximum readout value. `img` is always a fresh array by this point
+        # (the exposure multiply allocates), so clipping in place cannot disturb a caller.
+        xp.minimum(img, frame_bitresolution - 1, out=img)
 
+        return img
+
+    def _store(self, img, out=None):
+        """
+        Quantize a floating-point image to the camera's integer readout.
+
+        Parameters
+        ----------
+        img : numpy.ndarray OR cupy.ndarray
+            The image after :meth:`_apply_response()`.
+        out : numpy.ndarray OR cupy.ndarray OR None
+            Optional preallocated destination of shape :attr:`shape`. Need not be on the
+            same backend as ``img``; a device image with a host destination is quantized
+            on the device and then transferred, so only the narrow integer frame crosses
+            the bus. If ``None``, a new array is returned.
+
+        Returns
+        -------
+        numpy.ndarray OR cupy.ndarray
+            The quantized image, which is ``out`` when ``out`` was provided.
+        """
         # Quantize: all power in one pixel (img=1) -> maximum readout value at base exposure=1
         # img = np.rint(img)
 
-        return img.astype(self.dtype)
+        if out is None:
+            return img.astype(self.dtype)
+
+        if cp is not np and isinstance(img, cp.ndarray) and not isinstance(out, cp.ndarray):
+            # Device image, host destination: cupy refuses to be implicitly converted.
+            quantized = img.astype(self.dtype)
+            if out.flags.c_contiguous and out.dtype == self.dtype:
+                quantized.get(out=out)
+            else:
+                out[...] = quantized.get()
+            return out
+
+        out[...] = img
+        return out
+
+    def _get_image_hw(self, timeout_s):
+        """
+        See :meth:`.Camera._get_image_hw`. Computes and samples the affine-transformed SLM far-field.
+
+        Returns
+        -------
+        numpy.ndarray
+            Array of shape :attr:`shape`
+        """
+        img = self._render(self._slm.display)
+
+        if cp != np:
+            img = img.get()
+
+        # The response is applied on the host so that the user-supplied numpy noise
+        # callables documented in the class docstring keep working unchanged.
+        return self._store(self._apply_response(img, xp=np))
