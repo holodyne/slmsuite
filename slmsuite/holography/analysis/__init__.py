@@ -2416,7 +2416,7 @@ def blob_array_detect(
         M = image_lattice_detect(
             image,
             method=method,
-            plot=plot,
+            plot=plot>=2,
             **(
                 dict(dft_threshold=dft_threshold, dft_padding=dft_padding, k=k, tol=tol)
                 if method == "fourier" else {}
