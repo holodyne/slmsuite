@@ -7,6 +7,7 @@ import logging
 import copy
 
 from slmsuite.holography.algorithms import *
+from slmsuite.holography import analysis
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography.toolbox import convert_vector, format_vectors
 from slmsuite.holography.toolbox.phase import blaze
@@ -47,6 +48,25 @@ class TestHologram:
         assert np.allclose(phase_diff, phase_diff.flat[0])
         amp_ratio = hologram.get_amp() / random_amplitude
         assert np.allclose(amp_ratio, amp_ratio.flat[0])
+
+    def test_remove_vortices(self):
+        # Flat-top target, which GS fills with vortices.
+        target = np.zeros((128, 128), dtype=np.float32)
+        target[48:80, 48:80] = 1
+        hologram = Hologram(target=target, slm_shape=(64, 64))
+        hologram.optimize(method="GS", maxiter=5, verbose=False)
+
+        mask = target > 0
+        vortices_before = np.count_nonzero(analysis.image_vortices(hologram.phase_ff)[mask])
+        assert vortices_before > 0
+
+        figures_before = plt.get_fignums()
+        hologram.remove_vortices()
+        vortices_after = np.count_nonzero(analysis.image_vortices(hologram.phase_ff)[mask])
+
+        # Removal happens without plotting, and actually removes vortices.
+        assert plt.get_fignums() == figures_before
+        assert vortices_after < vortices_before
 
     @pytest.mark.parametrize("method", ["GS", "WGS-Leonardo", "WGS-Kim", "WGS-Nogrette"])
     def test_gs_validity(self, random_seed, method):
