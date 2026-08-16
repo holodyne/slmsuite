@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import optimize
+from scipy.interpolate import RBFInterpolator
 from scipy.spatial import Delaunay
 from tqdm.auto import tqdm
 import warnings
@@ -696,30 +697,181 @@ class _WavefrontCalibrationZernike(object):
 
         return final
 
-    def _wavefront_calibrate_zernike_apply(
+    def _wavefront_calibrate_zernike_get_calibration(
         self,
         vector,
         from_units="norm",
+        **kwargs,
     ):
         """
-        Apply a Zernike-basis wavefront correction to the SLM.
-
-        .. warning::
-            Not yet implemented. Expected as part of version 0.5.0.
+        Get the phase calibration for a given vector.
 
         Parameters
         ----------
         vector : array_like
-            Zernike coefficients describing the wavefront correction.
+            Vector in the farfield.
         from_units : str
             Units of ``vector``. Defaults to ``"norm"``.
-        """
-        raise NotImplementedError("Expected as a part of 0.5.0")
+        **kwargs : dict
+            Passed to :func:`zernike_sum`.
 
-        if from_units == "knm":
-            warnings.warn(
-                "'knm' requires shape information, which here defaults to the SLM shape. "
-                "This may give unexpected results."
+        Returns
+        -------
+        array_like
+            Phase pattern corresponding to the calibration at the position of ``vector``.
+        """
+        vector_kxy = convert_vector(
+            vector,
+            from_units=from_units,
+            to_units="norm",
+            hardware=self,
+        )
+
+        interpolator = self._wavefront_calibrate_zernike_get_interpolator_2d()
+
+        return zernike_sum(
+            self.slm,
+            self.calibrations["wavefront_zernike"]["zernike_indices"],
+            interpolator(vector_kxy),
+            **kwargs
+        )
+
+    def _wavefront_calibrate_zernike_get_interpolator_2d(self):
+        """
+        Get the interpolator mapping the coordinates in normalized ``"kxy"`` units 
+        to their full Zernike vectors. Cached until the calibration changes.
+        """
+        if not "wavefront_zernike" in self.calibrations:
+            raise RuntimeError("Could not find Zernike wavefront calibration.")
+
+        corrected_spots = self.calibrations["wavefront_zernike"]["corrected_spots"]
+
+        cache = getattr(self, "_wavefront_calibration_zernike_interpolator_2d", None)
+        if cache is not None and cache[0] is corrected_spots:   # TODO: hash/id?
+            return cache[1]
+
+        base = convert_vector(
+            self.calibrations["wavefront_zernike"]["calibration_points_ij"],
+            from_units="ij",
+            to_units="norm",
+            hardware=self,
+        )
+
+        interpolator = RBFInterpolator(
+            base[:2, :].T, np.array(corrected_spots).T, kernel="linear", degree=1
+        )
+        self._wavefront_calibration_zernike_interpolator_2d = (corrected_spots, interpolator)
+
+        # Interpolator operates with swapped axes for 2D input.
+        return lambda v: interpolator(v).T
+
+    def wavefront_calibrate_zernike_get(
+        self,
+        vector=None,
+        from_units="norm",
+        plot=0,
+    ):
+        r"""
+        Returns a set of vectors in the Zernike basis corresponding to calibrated points at
+        the requested 2D coordinates given by ``vector``.
+        The aberration measured by :meth:`wavefront_calibrate_zernike()` is interpolated in the plane
+        between the calibration points, such that the result can used as the
+        ``spot_vectors`` of a
+        :class:`~slmsuite.holography.algorithms.CompressedSpotHologram` with the
+        basis of calibration ``"zernike_indices"`` as the spot basis.
+
+        Parameters
+        ----------
+        vector : array_like
+            Position(s) to evaluate the calibration at, of shape ``(2, M)`` or ``(3, M)``.
+            A third dimension is added to the calibrated focus :math:`Z_4` term.
+            If ``vector`` is ``None``, the 2D interpolator is returned directly.
+        from_units : str
+            Units of ``vector``. See
+            :meth:`~slmsuite.holography.toolbox.convert_vector()`.
+        plot : int OR bool
+            Whether to plot the interpolated Zernike coefficients across the camera's
+            field of view. If ``vector`` is not ``None``, these points are indicated.
+
+        Returns
+        -------
+        numpy.ndarray
+            Calibrated Zernike coefficients of shape ``(D, M)``.
+        """
+        data = self.calibrations["wavefront_zernike"]
+        zernike_indices = np.squeeze(data["zernike_indices"])
+
+        interpolator = self._wavefront_calibrate_zernike_get_interpolator_2d()
+
+        if vector is not None:
+            if vector.shape[0] > 2:
+                raise ValueError(
+                    "3D Zernike interpolation is not currently supported."
+                )
+            vectors_kxy = convert_vector(
+                vector,
+                from_units=from_units,
+                to_units="norm",
+                hardware=self,
             )
 
-        pass
+            result = interpolator(vectors_kxy[:2, :])
+        else:
+            return interpolator
+
+        if plot >= 1:
+            points_ij = data["calibration_points_ij"]
+            if vector is not None:
+                vectors_ij = convert_vector(
+                    vectors_kxy, 
+                    from_units="norm", 
+                    to_units="ij", 
+                    hardware=self,
+                )
+
+            # Evaluate the interpolation over the camera's field of view.
+            N = 256
+            x = np.linspace(0, self.cam.shape[1], N)
+            y = np.linspace(0, self.cam.shape[0], N)
+            grid = np.vstack([g.ravel() for g in np.meshgrid(x, y)])
+            field = self.wavefront_calibrate_zernike_get(
+                grid, from_units="ij"
+            )
+
+            D = len(zernike_indices)
+            W = int(np.ceil(np.sqrt(D)))
+            H = int(np.ceil(D / W))
+            _, axs = plt.subplots(H, W, figsize=(2.5*W, 2.5*H), squeeze=False)
+
+            for j, ax in enumerate(axs.ravel()):
+                if j >= D:
+                    ax.axis("off")
+                    continue
+
+                lim = np.max(np.abs(field[j, :]))
+                kwargs = {"cmap": "seismic", "vmin": -lim, "vmax": lim}
+
+                # Interpolated field.
+                ax.imshow(
+                    field[j, :].reshape(N, N),
+                    extent=(0, self.cam.shape[1], self.cam.shape[0], 0),
+                    **kwargs
+                )
+                # Control points.
+                ax.scatter(
+                    points_ij[0, :], points_ij[1, :], c=data["corrected_spots"][j, :],
+                    s=20, edgecolor="k", linewidths=.5, **kwargs
+                )
+
+                # Evaluation points.
+                if vector is not None:
+                    ax.scatter(vectors_ij[0, :], vectors_ij[1, :], c="k", marker="x", s=10)
+
+                ax.set_title("$Z_{" + str(zernike_indices[j]) + "}$")
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+            plt.tight_layout()
+            _slmsuite_plt_show(name="wavefront_calibrate_zernike_get")
+
+        return result
