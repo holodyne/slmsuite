@@ -777,7 +777,7 @@ class _WavefrontCalibrationSuperpixel(object):
 
                 # Plot phase on the first axis.
                 if phase is None:
-                    phase = self.slm.phase
+                    phase = self.slm.phase if self.slm.xp is np else self.slm.phase.get()
                 axs[0].imshow(
                     np.mod(phase, 2*np.pi),
                     cmap=plt.get_cmap("twilight"),

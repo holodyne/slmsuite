@@ -1902,8 +1902,14 @@ def _lattice_autocorrelation(image, spot_size=2, threshold=0.2, plot=0):
 
         # Plot the zoomed figure
         axs[1].imshow(plt_img)
+        xx = x - center[0]
+        yy = y - center[1]
+        rr = (xx**2 + yy**2)
+        I = np.argsort(rr)
+        if len(I) > 16:
+            I = I[:16] # First 16 peaks, sorted by distance from the center
         axs[1].scatter(
-            x, y, facecolors="none", edgecolors="r", marker="o", s=100, linewidths=0.5
+            xx[I], yy[I], facecolors="none", edgecolors="r", marker="o", s=100, linewidths=0.5
         )
         for i in [0, 1]:
             axs[1].plot(
@@ -2410,7 +2416,7 @@ def blob_array_detect(
         M = image_lattice_detect(
             image,
             method=method,
-            plot=plot,
+            plot=plot>=2,
             **(
                 dict(dft_threshold=dft_threshold, dft_padding=dft_padding, k=k, tol=tol)
                 if method == "fourier" else {}

@@ -46,12 +46,12 @@ class _FarfieldCalibration(object):
 
         # Do the full HDR range by default, using powers of 16.
         if exposures is None:
-            exposures = (4, 16)
+            exposures = (1, 16)
 
         # (1) Capture the zeroth order and scatter with a flat phase pattern.
         self.slm.set_phase(None, settle=True, phase_correct=False)
 
-        self.cam.autoexpose()
+        self.cam.autoexpose(exposure_bounds_s=(0, 1))
         exposure_zeroth = self.cam.get_exposure()
         self.cam.flush()
 
@@ -72,7 +72,7 @@ class _FarfieldCalibration(object):
 
             if i == 0:
                 # Fix one exposure for the dimmer speckle, windowed off the zeroth order.
-                self.cam.autoexpose(window=img_zeroth < (np.median(img_zeroth)+1))
+                self.cam.autoexpose(window=img_zeroth < (np.median(img_zeroth)+1), exposure_bounds_s=(0, 1))
                 exposure_raw = self.cam.get_exposure()
                 self.cam.flush()
 
@@ -81,7 +81,7 @@ class _FarfieldCalibration(object):
         # (3) Deflect the power into diffracted orders in each of several directions; the
         # per-pixel minimum then sees the camera background wherever the orders miss.
         backgrounds = []
-        n_background = 3
+        n_background = 7
         for i in range(n_background):
             vector_base = format_2vectors(
                 [np.cos(np.pi * i / n_background), np.sin(np.pi * i / n_background)]
@@ -123,7 +123,7 @@ class _FarfieldCalibration(object):
 
         return self.calibrations["farfield"]
 
-    def farfield_calibration_process(self, size_blur=True):
+    def farfield_calibration_process(self, size_blur=True, background_subtract=True):
         """
         Processes raw :meth:`farfield_calibrate()` data into a usable efficiency map.
         Averages and blurs the speckle of the raw data, less the background taken as the
@@ -174,17 +174,18 @@ class _FarfieldCalibration(object):
 
         # Process the raw farfield data, less the floor that is not diffracted light.
         raw = np.asarray(self.calibrations["farfield"]["efficiency_raw"], dtype=float)
-        speckle = blur(np.mean(raw, axis=0))
-        signal = np.maximum(speckle - background, 0)
+        signal = blur(np.mean(raw, axis=0))
+        if background_subtract:
+            signal = np.maximum(signal - background, 0)
 
         # Neither pixels the camera railed on nor the zeroth order, which outshines the
         # pattern it is measuring, say anything about the farfield's brightest spot.
-        zeroth = np.asarray(self.calibrations["farfield"]["zeroth"], dtype=float) * (
+        zeroth = blur(np.asarray(self.calibrations["farfield"]["zeroth"], dtype=float) * (
             self.calibrations["farfield"]["exposure_raw"] /
             self.calibrations["farfield"]["exposure_zeroth"]
-        )
+        ))
         unusable = (
-            np.any(raw >= self.calibrations["farfield"]["saturation"], axis=0) | (zeroth > speckle)
+            np.any(raw >= self.calibrations["farfield"]["saturation"], axis=0) | (zeroth > signal)
         )
 
         if size_blur:   # The blur spreads unusable power onto its neighbors.
@@ -254,11 +255,21 @@ class _FarfieldCalibration(object):
         efficiency = np.array(self.calibrations["farfield"]["efficiency"])
 
         if fourier_crop and "fourier" in self.calibrations:
-            efficiency *= self.get_farfield_extent(return_mask=True)
+            # efficiency *= self.get_farfield_extent(return_mask=True)
+            efficiency = np.where(
+                self.get_farfield_extent(return_mask=True),
+                efficiency,
+                np.nan,
+            )
 
         if zeroth_threshold is not None:
             zeroth = self.get_farfield_zeroth()
-            efficiency *= (zeroth < zeroth_threshold)
+            # efficiency *= (zeroth < zeroth_threshold)
+            efficiency = np.where(
+                (zeroth < zeroth_threshold),
+                efficiency,
+                np.nan,
+            )
 
         if efficiency_threshold is not None:
             mask = efficiency > efficiency_threshold
@@ -278,12 +289,12 @@ class _FarfieldCalibration(object):
                     linewidths=0.5,
                 )
 
-            if zeroth_threshold is not None:
-                plt.contour(
-                    zeroth >= zeroth_threshold,
-                    colors="g",
-                    linewidths=0.5,
-                )
+            # if zeroth_threshold is not None:
+            #     plt.contour(
+            #         zeroth >= zeroth_threshold,
+            #         colors="g",
+            #         linewidths=0.5,
+            #     )
 
             plt.title("Farfield Efficiency")
             _slmsuite_plt_show("get_farfield_efficiency")

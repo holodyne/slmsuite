@@ -302,9 +302,16 @@ class _ViewerObject:
         is_cam = not self.parent.is_slm
 
         if img is not None:
-            self.last_image = img
+            if hasattr(img, "get"):
+                self.last_image = img.get()
+            else:
+                self.last_image = img
         if self.last_image is None:
-            return  # Nothing to render.
+            # No frame has been captured yet (e.g. a fresh camera, or one whose
+            # last_image was invalidated by a WOI/shape change). Render a blank
+            # frame 
+            dtype = getattr(self.parent, "dtype", np.float32)
+            self.last_image = np.zeros(self.parent.shape, dtype=dtype)
 
         # Crop to the current region of interest (ROI).
         H, W = self.last_image.shape[0], self.last_image.shape[1]

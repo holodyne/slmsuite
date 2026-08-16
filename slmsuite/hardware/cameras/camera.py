@@ -621,6 +621,7 @@ class Camera(_Common, ABC):
         float
             The resulting integration time in seconds (pulled from :meth:`.get_exposure()`).
         """
+        # Handle exposure bounds if they are defined.
         if self.exposure_bounds_s is not None:
             exposure_s_ = np.clip(exposure_s, *self.exposure_bounds_s)
             if exposure_s_ != exposure_s:
@@ -629,13 +630,23 @@ class Camera(_Common, ABC):
                     exposure_s, self.exposure_bounds_s, exposure_s_,
                 )
                 exposure_s = exposure_s_
+
+        # Actually set the exposure on the hardware.
         self._set_exposure_hw(exposure_s)
 
+        # Read back the exposure to see what the hardware actually set.
         self._exposure_s = self.get_exposure()
-        if not np.isclose(self._exposure_s, exposure_s):
-            self.logger.warning("Attempted to set exposure to %s seconds, but realized %s seconds.", exposure_s, self._exposure_s)
+
+        # Report to the logger.
+        if not np.isclose(self._exposure_s, exposure_s): 
+            if abs(self._exposure_s - exposure_s) / self._exposure_s > 0.01:
+                warn = self.logger.warning
+            else:
+                warn = self.logger.debug
+            warn("Attempted to set exposure to %s seconds, but realized %s seconds.", exposure_s, self._exposure_s)
         else:
             self.logger.debug("Set exposure to %s s.", self._exposure_s)
+
         return self._exposure_s
 
     @abstractmethod
