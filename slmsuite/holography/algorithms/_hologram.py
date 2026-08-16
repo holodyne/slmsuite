@@ -997,6 +997,17 @@ class Hologram(_HologramStats):
 
             analysis.image_remove_vortices(self.phase_ff, self.target > 0)
 
+            # Push the corrected phase back into the farfield. Without this, the
+            # arctan2 in _gs_farfield_routines recomputes phase_ff from the
+            # untouched farfield later in the same iteration and the removal is
+            # discarded, which makes the documented callback a no-op.
+            if self.farfield is not None:
+                cp.multiply(
+                    cp.abs(self.farfield),
+                    cp.exp(1j * self.phase_ff),
+                    out=self.farfield,
+                )
+
             if plot:
                 self.plot_farfield(self.phase_ff, title="phase removal after", limits=limits)
 

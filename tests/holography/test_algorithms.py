@@ -68,6 +68,34 @@ class TestHologram:
         assert plt.get_fignums() == figures_before
         assert vortices_after < vortices_before
 
+    def test_remove_vortices_callback(self):
+        # Used as the docstring documents it, the removal has to change the
+        # optimization, not just phase_ff. The loop recomputes phase_ff from the
+        # farfield after the callback returns, so a removal that does not reach
+        # the farfield is discarded in the same iteration.
+        target = np.zeros((128, 128), dtype=np.float32)
+        target[40:88, 40:88] = 1
+        mask = target > 0
+
+        def remove_vortices_callback(holo):
+            if holo.iter % 5 == 4:
+                holo.remove_vortices()
+
+        # Same start for both arms, so the only difference is the callback.
+        initial_phase = np.random.default_rng(0).uniform(0, 2 * np.pi, (64, 64))
+
+        def run(callback):
+            hologram = Hologram(target=target, slm_shape=(64, 64))
+            hologram.reset_phase(custom_phase=initial_phase)
+            hologram.optimize(method="GS", maxiter=20, verbose=False, callback=callback)
+            return np.count_nonzero(analysis.image_vortices(hologram.phase_ff)[mask])
+
+        without = run(None)
+        with_callback = run(remove_vortices_callback)
+
+        assert without > 0
+        assert with_callback < without
+
     @pytest.mark.parametrize("method", ["GS", "WGS-Leonardo", "WGS-Kim", "WGS-Nogrette"])
     def test_gs_validity(self, random_seed, method):
 
