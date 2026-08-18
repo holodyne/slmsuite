@@ -330,9 +330,18 @@ class SimulatedCamera(Camera):
 
     # Future: use WOI with Zoom FFT?
 
-    def _get_image_hw(self, timeout_s):
+    def _get_image_hw(self, timeout_s, quantize=True):
         """
         See :meth:`.Camera._get_image_hw`. Computes and samples the affine-transformed SLM far-field.
+
+        Parameters
+        ----------
+        timeout_s : float
+            Unused; a simulated frame is always ready.
+        quantize : bool
+            Whether to apply the readout: clipping at saturation and casting to
+            :attr:`dtype`. :meth:`match_counts` passes ``False`` to measure the
+            collected signal before the readout discards the part of it below one count.
 
         Returns
         -------
@@ -403,10 +412,112 @@ class SimulatedCamera(Camera):
                 else:
                     raise RuntimeError('Unknown noise source %s specified!'%(key))
 
+        if not quantize:
+            return img
+
         # Truncate to maximum readout value
         img[img > frame_bitresolution-1] = frame_bitresolution-1
 
-        # Quantize: all power in one pixel (img=1) -> maximum readout value at base exposure=1
-        # img = np.rint(img)
-
         return img.astype(self.dtype)
+
+    def match_counts(self, reference, background=None):
+        """
+        Sets :attr:`gain` such that the frame this camera renders *right now* totals the
+        same counts as ``reference``. Use this to put a simulated camera on the same
+        radiometric scale as the hardware camera it stands in for: display the same
+        phase on the simulated SLM, then pass a hardware image taken at the same
+        exposure. Without this, the far-field is normalized to unit total power and the
+        simulated counts are arbitrary.
+
+        Note
+        ~~~~
+        Call this after :attr:`exposure_s` is set, since exposure scales the counts.
+
+        Parameters
+        ----------
+        reference : array_like
+            An image from the camera being emulated.
+        background : array_like OR None
+            A blank (no signal) image from the same camera at the same exposure, whose
+            total is subtracted from ``reference`` so that only signal is matched.
+
+        Returns
+        -------
+        float
+            The new :attr:`gain`.
+        """
+        target = float(np.sum(np.asarray(reference, dtype=float)))
+        if background is not None:
+            target -= float(np.sum(np.asarray(background, dtype=float)))
+
+        if not target > 0:
+            raise ValueError(
+                "Expected reference to carry positive signal above background; "
+                f"found a total of {target} counts."
+            )
+
+        # Render at unit gain without noise: the total is then the gain-independent,
+        # unquantized signal that `gain` scales.
+        (gain, noise) = (self.gain, self.noise)
+        try:
+            (self.gain, self.noise) = (1.0, None)
+            # Deliver the frame as get_image() would, so that a windowed or binned
+            # camera is matched over the pixels it actually reads out.
+            frame = self._get_image_hw(0, quantize=False)
+            total = float(np.sum(self.transform(self._crop_to_woi(frame))))
+        finally:
+            (self.gain, self.noise) = (gain, noise)
+
+        if not total > 0:
+            raise ValueError(
+                "The simulated camera collects no light, so its gain cannot be matched "
+                "to a reference. Is the far-field within the camera's field of view?"
+            )
+
+        self.gain = target / total
+
+        return self.gain
+
+    def set_noise_from_background(self, background, exposure_s=None):
+        """
+        Sets :attr:`noise` from a blank (no signal) image of the camera being emulated.
+        The mean of ``background`` is attributed to the exposure-dependent ``'dark'``
+        term and its standard deviation to the exposure-independent ``'read'`` term.
+
+        Note
+        ~~~~
+        This is the Gaussian background plus Gaussian read term that
+        :class:`SimulatedCamera` models. It is *not* photon shot noise, which scales
+        with the signal and is not simulated here.
+
+        Parameters
+        ----------
+        background : array_like
+            A blank image from the camera being emulated.
+        exposure_s : float OR None
+            The exposure ``background`` was taken at. Defaults to :attr:`exposure_s`.
+
+        Returns
+        -------
+        dict
+            The new :attr:`noise`.
+        """
+        background = np.asarray(background, dtype=float)
+
+        if exposure_s is None:
+            exposure_s = self.exposure_s
+        if not exposure_s > 0:
+            raise ValueError(f"Expected a positive exposure; found {exposure_s}.")
+
+        bitresolution = 2 ** self.bitdepth
+
+        # 'dark' is scaled by exposure_s downstream, so divide it out here.
+        dark = float(np.mean(background)) / (bitresolution * exposure_s)
+        read = float(np.std(background)) / bitresolution
+
+        self.noise = {
+            "dark": lambda img, dark=dark: dark * img,
+            "read": lambda img, read=read: np.random.normal(0, read * img),
+        }
+
+        return self.noise

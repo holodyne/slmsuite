@@ -95,6 +95,14 @@ class Aperture:
     def center(self):
         return self._center
 
+    @property
+    def grid(self):
+        """
+        The grid this aperture is bound to. For an aperture held by an SLM this is
+        the raw, unshifted grid; see the centering note on the class docstring.
+        """
+        return self._grid
+
     @staticmethod
     def _validate_spec(spec):
         """
@@ -142,7 +150,12 @@ class Aperture:
         grid and so masks nothing; ``True`` otherwise. Lets callers skip masking work in
         the common no-aperture case without materializing :attr:`mask`.
         """
-        return self._spec != "cropped" or self._center is not None
+        if self._center is not None:
+            return True
+        # A numeric spec is always a real aperture; only the string "cropped"
+        # circumscribes the grid. Guard the isinstance so an array-valued spec
+        # does not produce an elementwise comparison here.
+        return not (isinstance(self._spec, str) and self._spec == "cropped")
 
     @cached_property
     def scale(self):

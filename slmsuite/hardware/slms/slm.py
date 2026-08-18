@@ -1355,10 +1355,20 @@ class SLM(_Common, ABC):
             if spec is not None:
                 raise ValueError("Provide either spec or radius, not both.")
             spec = 1.0 / (2.0 * self._length_to_norm(radius, units))
+
+        # An Aperture may be passed directly; take its spec, and its (already
+        # normalized) center unless an explicit pixel ``center`` overrides it.
+        spec_center_norm = None
+        if isinstance(spec, toolbox.Aperture):
+            spec_center_norm = spec.center
+            spec = spec.spec
+
         if spec is None:
             spec = self.aperture.spec
 
-        center_norm = None if center is None else self._center_pix_to_norm(center)
+        center_norm = (
+            spec_center_norm if center is None else self._center_pix_to_norm(center)
+        )
 
         self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
         self._grid = None
