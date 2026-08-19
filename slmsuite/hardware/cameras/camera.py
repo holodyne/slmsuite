@@ -362,6 +362,20 @@ class Camera(_Common, ABC):
         pass  # derived from _woi and _binning; _Common.__init__ sets this
 
     @property
+    def sensor_shape(self):
+        """
+        Returns ``(height, width)`` of the **full sensor**, in the same transformed,
+        unbinned coordinate frame that :attr:`woi` and :meth:`set_woi` use.
+
+        Distinct from :attr:`shape`, which describes the image currently being returned
+        and therefore shrinks when a WOI is set. Sizing or centering a window must be done
+        against this, not against :attr:`shape`: offsets computed from :attr:`shape` work
+        once and then silently collapse to ``(0, 0)`` on every later call, because by then
+        :attr:`shape` *is* the window.
+        """
+        return self.transform.transform_shape(self._shape)
+
+    @property
     def origin(self):
         """
         Returns the ``(x, y)`` coordinate of the upper-left corner of the image in pixels,
@@ -435,10 +449,24 @@ class Camera(_Common, ABC):
 
         Parameters
         ----------
-        woi : (int, int, int, int) or None
-            ``(x0, w, y0, h)`` in **transformed, unbinned** pixel coordinates
-            (i.e. the camera's image orientation at full sensor resolution).
-            If ``None``, resets to the full sensor.
+        woi : (int, int, int, int) OR (int, int) OR int OR None
+            The window, in one of four forms.
+
+            - ``(x0, w, y0, h)`` places the window explicitly, in **transformed,
+              unbinned** pixel coordinates, i.e. the camera's image orientation at *full
+              sensor* resolution -- the frame reported by :attr:`sensor_shape`.
+            - ``(w, h)`` or a scalar ``s`` (meaning ``(s, s)``) requests a window of that
+              size **centred on the sensor**, which is by far the common case and is
+              idempotent: calling it repeatedly re-centres the same window rather than
+              walking toward a corner.
+            - ``None`` resets to the full sensor.
+
+            Caution
+            ~~~~~~~
+            The explicit form is in full-sensor coordinates, while :attr:`shape` describes
+            the *current window*. Deriving offsets from :attr:`shape` therefore works once
+            and then collapses to ``(0, 0)`` on every later call, sending the window to
+            the sensor corner. Use :attr:`sensor_shape`, or the size form above.
 
         Returns
         -------
@@ -449,6 +477,20 @@ class Camera(_Common, ABC):
         old_shape = self.shape
 
         binx, biny = self._binning[0], self._binning[1]
+
+        # Expand the "centred window of this size" forms against the full sensor.
+        if woi is not None and np.isscalar(woi):
+            woi = (int(woi), int(woi))
+        if woi is not None and len(woi) == 2:
+            sensor_h, sensor_w = self.sensor_shape
+            w = min(int(woi[0]), sensor_w)
+            h = min(int(woi[1]), sensor_h)
+            woi = ((sensor_w - w) // 2, w, (sensor_h - h) // 2, h)
+        elif woi is not None and len(woi) != 4:
+            raise ValueError(
+                f"set_woi expects (x0, w, y0, h), (w, h), a scalar size, or None; "
+                f"got {woi!r}."
+            )
 
         if woi is None:
             # Full sensor in untransformed, unbinned coordinates.

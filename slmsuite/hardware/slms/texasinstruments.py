@@ -393,8 +393,9 @@ class PLM(ScreenMirrored):
 
         return dlpc
 
-    @staticmethod
+    @classmethod
     def open_all(
+        cls,
         model_name,
         display_numbers=None,
         video_input=None,
@@ -463,9 +464,9 @@ class PLM(ScreenMirrored):
         Returns
         -------
         list of PLM
-            One :class:`PLM` per connected EVM, ordered by USB device number.
-            Use :meth:`DLPC900.info` to map device numbers to physical USB
-            ports.
+            One instance of the class this was called on -- :class:`PLM`, or a
+            subclass -- per connected EVM, ordered by USB device number. Use
+            :meth:`DLPC900.info` to map device numbers to physical USB ports.
         """
         devices = DLPC900._enumerate()
 
@@ -511,7 +512,7 @@ class PLM(ScreenMirrored):
 
             for dlpc, display_number, name in zip(dlpcs, display_numbers, names):
                 plms.append(
-                    PLM(model_name, display_number, dlpc=dlpc, name=name, **kwargs)
+                    cls(model_name, display_number, dlpc=dlpc, name=name, **kwargs)
                 )
 
             # Lock and start the sequencers only now that no more displays will appear.

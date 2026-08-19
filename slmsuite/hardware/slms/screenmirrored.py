@@ -144,6 +144,7 @@ class ScreenMirrored(SLM):
         pitch_um=(8,8),
         slm_resolution=None,
         gpu=None,
+        interop=None,
         **kwargs
     ):
         """
@@ -195,8 +196,21 @@ class ScreenMirrored(SLM):
         gpu : bool or None
             Whether to store and process data with :mod:`cupy` (see :attr:`xp`).
             ``None`` uses :mod:`cupy` if it is installed. Defaults to ``False``.
-            If this feature is enabled, the SLM will attempt to use 
+            If this feature is enabled, the SLM will attempt to use
             :mod:`cupy`-OpenGL interop if available.
+        interop : bool or None
+            Whether to write phase data straight into an ``OpenGL`` pixel buffer, avoiding
+            a transfer across PCIe. ``None`` (the default) uses interop when ``gpu`` is
+            enabled and it is available, ``True`` requires it, and ``False`` forbids it in
+            favor of pinned host staging.
+
+            Caution
+            ~~~~~~~
+            Interop is only usable from the thread ``OpenGL`` is current on -- in practice
+            the thread that initialized :mod:`pyglet`. Mapping the buffer from any other
+            thread fails with ``CUDA_ERROR_INVALID_GRAPHICS_CONTEXT``. Pass
+            ``interop=False`` when :meth:`set_phase` will be called from a worker thread,
+            as a real-time control loop does.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
         """
@@ -253,11 +267,17 @@ class ScreenMirrored(SLM):
         )
         gpu = self.xp is cp
 
+        # Interop is only meaningful on the GPU backend, so `gpu` is the default answer;
+        # an explicit `interop` overrides it. See the caution in the docstring for why a
+        # caller writing from a worker thread must pass False.
+        if interop is None:
+            interop = gpu
+
         # Create the window on a dedicated background thread.
         try:
             time.sleep(0.2) # Short delay
             wm = _WindowManager.get_instance()
-            self._window_thread = wm.create_window(None, screen, self.name, interop=gpu)
+            self._window_thread = wm.create_window(None, screen, self.name, interop=interop)
             self.window = self._window_thread.window
         except Exception:
             self.logger.error("Window creation failed.")
