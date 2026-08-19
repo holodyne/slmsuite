@@ -23,6 +23,14 @@ from slmsuite.hardware.cameraslms._pixel import _PixelCalibration
 from slmsuite.hardware.cameraslms._settle import _SettleCalibration
 from slmsuite.hardware.cameraslms._wavefront import _WavefrontCalibration
 
+
+def _to_numpy(array):
+    """Host copy of ``array``, which may live in GPU memory. Passes ``None`` through."""
+    if array is None or not hasattr(array, "get"):
+        return array
+    return array.get()
+
+
 class CameraSLM(_Loggable):
     """
     Base class for an SLM with camera feedback.
@@ -225,18 +233,30 @@ class FourierSLM(
             :meth:`~slmsuite.hardware.cameraslms.FourierSLM.farfield_calibrate()`.
             Usable data is produced by running
             :meth:`~slmsuite.hardware.cameraslms.FourierSLM.farfield_calibration_process()`.
-        "wavefront" : dict
+        "wavefront_superpixel" : dict
             Raw data for correcting aberrations in the optical system (``phase``) and
-            measuring the optical amplitude distribution incident on the SLM (``amp``).
+            measuring the optical amplitude distribution incident on the SLM (``amp``),
+            measured by interfering pairs of superpixels.
 
             See
-            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_zernike()`
-            and
-            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_superpixel()`
-            Usable data for the superpixel implementation is produced by running
-            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibration_superpixel_process()`.
+            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_superpixel()`.
+            Usable data is produced by running
+            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibration_superpixel_process()`,
+            which writes the result onto
+            :attr:`~slmsuite.hardware.slms.slm.SLM.source`.
 
             This data is critical for crisp holography.
+
+            Note
+            ~~~~
+            Calibrations saved before this key was split in two are named ``"wavefront"``;
+            :meth:`wavefront_calibration_superpixel_process()` reads either.
+        "wavefront_zernike" : dict
+            Raw data for the same correction, measured instead by optimizing Zernike
+            coefficients against a metric.
+
+            See
+            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_zernike()`.
         "pixel" : dict
             Raw data for measuring the crosstalk and :math:`V_\pi` of sections of the
             SLM via measurements on the diffractive orders of binary gratings.
@@ -260,7 +280,7 @@ class FourierSLM(
             acquire data after a pattern is displayed. This is, of course, a tradeoff
             between measurement speed and measurement precision.
     """
-    _pickle = ["name", "cam", "slm", "mag"]
+    _pickle = ["name", "cam", "slm", "mag", "_wavefront_calibration_window_multiplier"]
     _pickle_data = ["calibrations"]
 
     def __init__(self, *args, **kwargs):
@@ -270,9 +290,34 @@ class FourierSLM(
         # Size of the calibration point window relative to the spot radius.
         self._wavefront_calibration_window_multiplier = 4
 
-    def simulate(self):
-        """
-        Clones the hardware-based experiment into a simulation.
+    def simulate(self, reference=None, background=None, settle=False, source=None):
+        r"""
+        Clones the hardware-based experiment into a simulation, such that the same
+        algorithm can be run against either and the results compared.
+
+        The clone replicates the geometry, the calibrations, and the physical
+        characteristics of the hardware:
+
+        -  The camera's placement in the SLM's :math:`k`-space, from the Fourier
+           calibration, along with its pixel pitch, dynamic range, exposure, averaging,
+           and HDR settings. The simulated sensor is built as the image the hardware
+           *delivers*, so the camera's WOI, binning, and orientation are inherited
+           through :attr:`fourier_affine`. Thus, 
+           :meth:`~slmsuite.hardware.cameraslms.FourierSLM.kxyslm_to_ijcam` agrees
+           between the hardware and the clone.
+        -  The SLM's measured phase response (:attr:`~slmsuite.hardware.slms.slm.SLM.gamma`,
+           from the pixel calibration) is installed as both the clone's quantization
+           table *and* the response it actually realizes
+           (:attr:`~slmsuite.hardware.slms.simulated.SimulatedSLM.gamma_sim`), so a
+           coarsely-quantized or nonlinear SLM is simulated as such.
+        -  The SLM's :attr:`~slmsuite.hardware.slms.slm.SLM.aperture` and its measured
+           source illumination and wavefront (from the wavefront calibration). The
+           measured wavefront correction becomes the simulated aberration, so applying
+           the correction cancels it, exactly as on hardware.
+
+        The clone's :attr:`~slmsuite.hardware.slms.slm.SLM.source` is deep-copied, so
+        modifying it (e.g. injecting a known aberration into ``"phase_sim"`` to test
+        what a calibration recovers) does not disturb the hardware.
 
         Note
         ~~~~
@@ -280,52 +325,255 @@ class FourierSLM(
         camera, the :class:`~slmsuite.hardware.cameraslms.FourierSLM` should be
         Fourier-calibrated prior to cloning for simulation.
 
+        Caution
+        ~~~~~~~
+        The clone is an *ideally corrected* version of the experiment. Its simulated
+        aberration is exactly the measured correction, so applying that correction
+        leaves a diffraction-limited spot, whereas the hardware retains whatever the
+        calibration failed to measure. The clone also models only the single-transform
+        far-field of the SLM: scatter, stray light, and non-affine distortion in the
+        optical train are absent. Expect the simulated spot to be tighter and cleaner
+        than the measured one, and expect the two to agree on where light lands rather
+        than on exactly how much of it arrives.
+
+        Parameters
+        ----------
+        reference : array_like OR None
+            An image from the hardware camera, taken at the current exposure with the
+            current pattern on the SLM. If provided, the simulated camera's gain is set
+            such that its images total the same number of counts
+            (see :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.match_counts`).
+            Without this, simulated counts are arbitrary, as the simulated far-field is
+            normalized to unit power.
+        background : array_like OR None
+            A blank (no signal) image from the hardware camera at the same exposure. If
+            provided, the simulated camera's noise is fit to it (see
+            :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.set_noise_from_background`)
+            and its total is subtracted from ``reference``.
+        settle : bool
+            Whether to also clone the SLM's
+            :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`. Defaults to ``False``,
+            as waiting for a simulated SLM to stabilize only slows the simulation down.
+        source : dict OR None
+            Overrides for the clone's :attr:`~slmsuite.hardware.slms.slm.SLM.source`,
+            applied on top of the copy taken from the hardware. Use this to set a
+            simulated truth (``"amplitude_sim"``, ``"phase_sim"``) other than the
+            measured one.
+
         Returns
         -------
         FourierSLM
-            A :class:`~slmsuite.hardware.cameraslms.FourierSLM` object with simulated
-            hardware.
+            A :class:`~slmsuite.hardware.cameraslms.FourierSLM` (of the same class as
+            ``self``) with simulated hardware.
         """
         # Make sure we have a Fourier calibration.
         if not "fourier" in self.calibrations:
             raise ValueError("Cannot simulate() a FourierSLM without a Fourier calibration.")
 
-        # Make a simulated SLM
+        slm_sim = self._simulate_slm(settle=settle, source=source)
+        cam_sim = self._simulate_cam(slm_sim)
+
+        # Combine the two and pass FourierSLM attributes from hardware. type(self) so
+        # that a subclass clones into its own class and keeps its methods; a subclass
+        # whose constructor does not accept (cam, slm, mag) must override simulate().
+        fs_sim = type(self)(cam_sim, slm_sim, mag=self.mag)
+
+        fs_sim.calibrations = copy.deepcopy(self.calibrations)
+        fs_sim._wavefront_calibration_window_multiplier = self._wavefront_calibration_window_multiplier
+
+        # The simulated sensor *is* the hardware's delivered image, so its raw pixels are
+        # the hardware's "ij" pixels. Restate the Fourier calibration in that frame,
+        # which is what makes kxyslm_to_ijcam() agree between the two.
+        fs_sim.calibrations["fourier"].update(self.fourier_affine.to_dict())
+
+        # Radiometry: put the simulated camera on the hardware's count scale. This must
+        # happen last, as it depends on the exposure, the WOI, and the displayed phase.
+        if reference is not None:
+            cam_sim.match_counts(reference, background=background)
+        if background is not None:
+            cam_sim.set_noise_from_background(background)
+
+        return fs_sim
+
+    def _simulate_slm(self, settle=False, source=None):
+        """
+        The :class:`~slmsuite.hardware.slms.simulated.SimulatedSLM` half of
+        :meth:`simulate()`. See that method for the parameters.
+        """
+        # The measured phase response, which the clone both quantizes through and
+        # realizes. numpy: SimulatedSLM.gamma_sim cannot read GPU memory.
+        gamma = _to_numpy(self.slm.gamma)
+
+        # The simulated truth. The aperture-masked source is what the hardware actually
+        # uses, so it is what the simulation should reproduce; note the sign, as the
+        # measured phase is the *correction* for the aberration we want to simulate.
+        source_sim = copy.deepcopy(self.slm.source)
+        if "amplitude_sim" not in source_sim:
+            source_sim["amplitude_sim"] = _to_numpy(self.slm._get_source_amplitude())
+            source_sim["phase_sim"] = -_to_numpy(self.slm._get_source_phase())
+        if source is not None:
+            source_sim.update(source)
+
         slm_sim = SimulatedSLM(
-            self.slm.shape[::-1],
-            source=self.slm.source,
+            np.flip(self.slm.shape),
+            source=source_sim,
+            gamma_sim=gamma,
             bitdepth=self.slm.bitdepth,
             name=self.slm.name+"_sim",
             wav_um=self.slm.wav_um,
             wav_design_um=self.slm.wav_design_um,
             pitch_um=self.slm.pitch_um,
+            settle_time_s=self.slm.settle_time_s if settle else 0,
+            gpu=self.slm.xp is not np,
         )
 
-        # Make a simulated camera using the current Fourier calibration
+        # Quantize through the same lookup table that the hardware does.
+        if gamma is not None:
+            slm_sim.set_gamma(gamma)
+
+        # The aperture defines the working grid, the Zernike scaling, and the region of
+        # the source in use. Both SLMs share a grid (same shape, pitch, and wavelength),
+        # so the aperture transfers as-is.
+        slm_sim.set_aperture(self.slm.aperture)
+
+        # Defaults for set_phase().
+        slm_sim.phase_correct = self.slm.phase_correct
+        slm_sim.settle = self.slm.settle and settle
+
+        # Display what the hardware is displaying. The hardware's `phase` is already
+        # corrected, so the correction must not be applied a second time.
+        slm_sim.set_phase(self.slm.phase, phase_correct=False, settle=False)
+
+        return slm_sim
+
+    def _simulate_cam(self, slm_sim):
+        """
+        The :class:`~slmsuite.hardware.cameras.simulated.SimulatedCamera` half of
+        :meth:`simulate()`, imaging ``slm_sim``.
+        """
+        # The stored Fourier calibration maps kxy onto *raw* sensor pixels, while
+        # `fourier_affine` maps it onto the delivered image, folding in the camera's WOI,
+        # binning, and orientation. Building the simulated sensor as the delivered image
+        # inherits all three: it needs no WOI, no binning, and no transform of its own,
+        # and it renders only the pixels the hardware actually returns.
+        affine = self.fourier_affine
+
+        # Binning sums pixels, so a binned frame ranges beyond the raw bitdepth. The
+        # clone reads that frame out directly, so the widened range is its bitdepth.
+        # (`bitresolution` is `2**bitdepth` times the averaging and software binning.)
+        bitdepth = int(np.log2(self.cam.bitresolution // (self.cam.averaging or 1)))
+
         cam_sim = SimulatedCamera(
             slm_sim,
-            resolution=self.cam.shape[::-1],
-            M=copy.copy(self.calibrations["fourier"]["M"]),
-            b=copy.copy(self.calibrations["fourier"]["b"]),
-            bitdepth=self.cam.bitdepth,
+            resolution=np.flip(self.cam.shape),
+            M=copy.copy(affine.M),
+            b=copy.copy(affine.b),
+            bitdepth=bitdepth,
             averaging=self.cam.averaging,
             hdr=self.cam.hdr,
             pitch_um=self.cam.pitch_um,
+            exposure_bounds_s=self.cam.exposure_bounds_s,
             name=self.cam.name+"_sim",
         )
-        cam_sim.transform = copy.copy(self.cam.transform)
+        cam_sim.set_exposure(self.cam.exposure_s)
 
-        #Combine the two and pass FourierSLM attributes from hardware
-        fs_sim = FourierSLM(cam_sim, slm_sim)
-        fs_sim.calibrations = copy.deepcopy(self.calibrations)
-        fs_sim._wavefront_calibration_window_multiplier = self._wavefront_calibration_window_multiplier
+        # Cloning a simulation: carry the simulated detector characteristics too, so
+        # that the clone reproduces the original exactly.
+        if isinstance(self.cam, SimulatedCamera):
+            cam_sim.gain = self.cam.gain
+            cam_sim.noise = copy.copy(self.cam.noise)
+            cam_sim._aperture = copy.copy(self.cam._aperture)
 
-        return fs_sim
+        return cam_sim
 
-    @staticmethod
-    def load(file_path : str):
+    @classmethod
+    def _load_class(cls, meta):
         """
-        Creates a simulation of a system from a file.
+        The class which :meth:`load()` should rebuild as.
+
+        An explicit subclass on the call (``MyFourierSLM.load(...)``) wins. Otherwise the
+        class recorded when the file was written is looked up among the subclasses which
+        have been imported, mirroring the ``type(self)`` that :meth:`simulate()` keeps:
+        a system saved as a subclass reloads with that subclass's methods.
+
+        Falls back to :class:`FourierSLM` if the name cannot be resolved, which happens
+        when the module defining it has not been imported. The result still carries every
+        calibration; it just lacks the subclass's methods, so say so rather than let it
+        pass as the class the user asked for.
+        """
+        if cls is not FourierSLM:
+            return cls
+
+        name = meta.get("__class__", None)
+        if name is None or name == FourierSLM.__name__:
+            return cls
+
+        def descendants(base):
+            for sub in base.__subclasses__():
+                yield sub
+                yield from descendants(sub)
+
+        matches = {sub for sub in descendants(FourierSLM) if sub.__name__ == name}
+
+        if len(matches) == 1:
+            return matches.pop()
+
+        warnings.warn(
+            f"File was saved from '{name}', which is "
+            + ("ambiguous among the imported subclasses"
+               if matches else "not among the imported subclasses")
+            + f"; rebuilding as {FourierSLM.__name__}. Import the module defining "
+            f"'{name}' before loading, or call '{name}.load()' directly, to keep its "
+            "methods."
+        )
+        return cls
+
+    @classmethod
+    def load(cls, file_path : str):
+        """
+        Rebuilds a system as a simulation from the metadata in an :mod:`slmsuite` file,
+        without the hardware present. Both a calibration written by
+        :meth:`save_calibration()` and a pickle written by
+        :meth:`~slmsuite._pickling._Picklable.save()` carry this metadata; a pickle
+        saved with ``attributes=True`` also carries the SLM's measured
+        :attr:`~slmsuite.hardware.slms.slm.SLM.source`, its measured phase response,
+        :attr:`~slmsuite.hardware.slms.slm.SLM.aperture`, and displayed
+        :attr:`~slmsuite.hardware.slms.slm.SLM.phase`, along with every calibration, and
+        so reconstructs the most.
+
+        A pickle of a system which was already simulated round trips exactly:
+        the simulated phase response
+        (:attr:`~slmsuite.hardware.slms.simulated.SimulatedSLM.gamma_sim`), the
+        camera's placement, gain, pixel efficiency, and any
+        :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.set_noise_from_background()`
+        noise all return with it. Saving the result of :meth:`simulate()` and
+        loading it back is therefore the way to keep a simulated system across
+        sessions.
+
+        If the file supplies a Fourier calibration, the simulated camera is placed by
+        it, so the result images the same region of :math:`k`-space that the hardware
+        did. Otherwise the camera samples the SLM's far-field directly and only the
+        shapes are meaningful.
+
+        The subclass is kept, as :meth:`simulate()` keeps it: a file written from a
+        subclass of :class:`FourierSLM` reloads as that subclass, provided the module
+        defining it has been imported (or that its :meth:`load()` is called directly).
+        A subclass whose constructor does not accept ``(cam, slm, mag)`` must override
+        this method, exactly as it must override :meth:`simulate()`.
+
+        Note
+        ~~~~
+        The camera's orientation transform and binning are not recorded in the
+        metadata, so neither is restored; a window of interest is folded into the
+        camera's placement. A :attr:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.noise`
+        of hand-written callables cannot be written to an ``.h5`` and is lost. To clone a
+        system that is actually connected, with its phase response, aperture, and noise,
+        use :meth:`simulate()` instead.
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the ``.h5`` file to read.
 
         Returns
         -------
@@ -341,36 +589,101 @@ class FourierSLM(
             raise ValueError(
                 f"Cannot interpret file {file_path} without field '__meta__'. "
             )
-        if not "cam" in data["__meta__"]:
-            raise ValueError(
-                f"Cannot interpret file {file_path} without metadata field 'cam'. "
-            )
+        for field in ("cam", "slm"):
+            if not field in data["__meta__"]:
+                raise ValueError(
+                    f"Cannot interpret file {file_path} without metadata field '{field}'. "
+                )
         cam_data = data["__meta__"]["cam"]
-        if not "slm" in data["__meta__"]:
-            raise ValueError(
-                f"Cannot interpret file {file_path} without metadata field 'slm'. "
-            )
         slm_data = data["__meta__"]["slm"]
 
-        # Create the SLM and Camera objects.
+        # Create the SLM and Camera objects. Every calibration is wavelength specific,
+        # so the wavelengths matter as much as the shapes.
         slm = SimulatedSLM(
             resolution=np.flip(slm_data["shape"]),
             pitch_um=slm_data["pitch_um"],
+            bitdepth=slm_data["bitdepth"],
+            wav_um=slm_data["wav_um"],
+            wav_design_um=slm_data["wav_design_um"],
+            source=slm_data.get("source", None),
+            name=slm_data["name"],
         )
         cam = SimulatedCamera(
             slm=slm,
             resolution=np.flip(cam_data["shape"]),
             bitdepth=cam_data["bitdepth"],
             pitch_um=cam_data["pitch_um"],
+            averaging=cam_data.get("averaging", None),
+            hdr=cam_data.get("hdr", None),
             name=cam_data["name"],
         )
+        calibrations = data["__meta__"].get("calibrations", {})
 
-        fs = FourierSLM(cam, slm, mag=data["__meta__"]["mag"])
+        # A calibration file carries its payload at the top level rather than under
+        # "__meta__"; a Fourier one is the payload that places the camera.
+        if "M" in data and "b" in data and "fourier" not in calibrations:
+            calibrations["fourier"] = {
+                key: value for (key, value) in data.items() if key != "__meta__"
+            }
+
+        # A Fourier calibration places the camera below, and corrects for a window of
+        # interest which a camera's own pickled affine does not record. Let it win, and
+        # do not place the camera twice: each placement rebuilds the padded far-field.
+        if "fourier" in calibrations:
+            cam_data = {k: v for (k, v) in cam_data.items() if k not in ("M", "b")}
+
+        # Restore the exposure and the simulated detector characteristics.
+        cam._unpickle(cam_data)
+
+        fs = cls._load_class(data["__meta__"])(cam, slm, mag=data["__meta__"]["mag"])
         fs.name = data["__meta__"]["name"]
 
-        fs.calibrations = data["__meta__"].get("calibrations", {})
+        fs.calibrations = calibrations
+        if "_wavefront_calibration_window_multiplier" in data["__meta__"]:
+            fs._wavefront_calibration_window_multiplier = (
+                data["__meta__"]["_wavefront_calibration_window_multiplier"]
+            )
+
+        # The phase response is not pickled on the SLM; it is rebuilt from the pixel
+        # calibration that measured it. Before the SLM restores its own state, which
+        # re-displays the stored phase through this lookup table.
+        if "pixel" in fs.calibrations:
+            fs._pixel_calibration_apply_gamma()
+
+        # Restore what the SLM's constructor does not take: the display defaults, the
+        # aperture, and the displayed phase.
+        slm._unpickle(slm_data)
+
+        if "fourier" in fs.calibrations:
+            fs._load_place_camera(cam_data)
 
         return fs
+
+    def _load_place_camera(self, cam_data):
+        """
+        Places the simulated camera of :meth:`load()` using the Fourier calibration that
+        was read with it. That calibration maps onto *raw* sensor pixels while the
+        rebuilt camera is the delivered image, so a window of interest has to be
+        subtracted off; binning and orientation are not recorded and cannot be.
+        """
+        M = np.array(self.calibrations["fourier"]["M"], dtype=float)
+        b = np.array(self.calibrations["fourier"]["b"], dtype=float).reshape(2, 1)
+
+        woi = cam_data.get("woi", None)
+        if woi is not None:
+            (height, width) = self.cam.shape
+            if (woi[1], woi[3]) != (width, height):
+                self.logger.warning(
+                    "The saved camera was binned or reoriented (window %s delivering "
+                    "shape %s), which the metadata does not record; the simulated "
+                    "camera is placed as though it were neither.",
+                    tuple(woi), (height, width),
+                )
+            b = b - np.array([[woi[0]], [woi[2]]], dtype=float)
+
+        self.calibrations["fourier"]["M"] = M
+        self.calibrations["fourier"]["b"] = b
+        self.cam.set_affine(M, b)
 
     ### Automatic Calibration ###
 

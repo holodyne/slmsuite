@@ -649,6 +649,15 @@ class Camera(_Common, ABC):
 
         return self._exposure_s
 
+    def _unpickle(self, data):
+        """
+        Restores pickled state data not restored by constructor. See
+        :meth:`~slmsuite._pickling._Picklable._unpickle`. 
+        """
+        super()._unpickle(data)
+
+        self.set_exposure(data.get("exposure_s", 1))
+
     @abstractmethod
     def _get_exposure_hw(self):
         """

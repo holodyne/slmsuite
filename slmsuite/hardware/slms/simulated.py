@@ -25,6 +25,7 @@ class SimulatedSLM(SLM):
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibrate` measures, as
         opposed to the :attr:`~slmsuite.hardware.slms.slm.SLM.gamma` it recovers.
     """
+    _pickle_data = SLM._pickle_data + ["gamma_sim"]
 
     def __init__(self, resolution, pitch_um=(8,8), source=None, gamma_sim=None, **kwargs):
         r"""
@@ -42,7 +43,11 @@ class SimulatedSLM(SLM):
         pitch_um : (float, float)
             Pixel pitch in microns. Defaults to 8 micron square pixels.
         source : dict
-            See :attr:`source`. Defaults to uniform illumination with a flat phase if ``None``.
+            See :attr:`source`. Defaults to uniform illumination with a flat phase if
+            ``None``. A measured source (``"amplitude"``/``"phase"``, as a wavefront
+            calibration produces) is accepted in place of ``"amplitude_sim"`` and
+            ``"phase_sim"``: the measured phase is a *correction*, so the aberration
+            simulated is its negative, and an unmeasured half defaults to ideal.
         gamma_sim : array_like OR None
             See :attr:`gamma_sim`. Must span every one of the ``bitresolution`` levels;
             interpolate a sparse measurement with
@@ -63,16 +68,20 @@ class SimulatedSLM(SLM):
             # ), "The shape of the provided phase profile must match the SLM resolution!"
             self.source.update(source)
 
-            # Handle case where `source` only has real values from experiment
-            if "amplitude_sim" not in source.keys():
-                missing = [k for k in ("amplitude", "phase") if k not in self.source]
-                if missing:
-                    raise ValueError(
-                        f"source must contain 'amplitude_sim' and 'phase_sim', or {missing} "
-                        f"to derive them from."
-                    )
-                self.source["amplitude_sim"] = self.source["amplitude"]
-                self.source["phase_sim"] = -self.source["phase"]
+            # Handle case where `source` only has real values from experiment. A
+            # measured phase is the *correction* for an aberration, so the aberration
+            # this SLM simulates is its negative. Whichever half was never measured
+            # defaults to ideal illumination.
+            if "amplitude_sim" not in self.source:
+                amplitude = self.source.get("amplitude", None)
+                phase = self.source.get("phase", None)
+
+                self.source["amplitude_sim"] = (
+                    np.ones_like(self.grid[0]) if amplitude is None else amplitude
+                )
+                self.source["phase_sim"] = (
+                    np.zeros_like(self.grid[0]) if phase is None else -phase
+                )
 
         self.set_phase(None)
 
@@ -97,6 +106,14 @@ class SimulatedSLM(SLM):
             raise ValueError("Expected finite gamma_sim.")
 
         self._gamma_sim = gamma_sim
+
+    def _unpickle(self, data):
+        """
+        Restores :attr:`gamma_sim` alongside the base SLM state. Set before ``super()``,
+        which re-displays the pickled phase through this simulated response.
+        """
+        self.gamma_sim = data.get("gamma_sim", None)
+        super()._unpickle(data)
 
     def _display2phase(self, display, dtype=float):
         """Phase realized by the integer ``display``, including any simulated response."""

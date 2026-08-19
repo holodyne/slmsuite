@@ -66,7 +66,15 @@ class SimulatedCamera(Camera):
                 'read': lambda img: np.random.poisson(0.2*img)
             }
 
+        Note
+        ~~~~
+        Callables cannot be written to an ``.h5``, so a noise assigned this way does not
+        survive :meth:`~slmsuite._pickling._Picklable.save()`. Noise set through
+        :meth:`set_noise_from_background()` does, as that model is two scalars.
+
     """
+    _pickle = Camera._pickle + ["gain", "M", "b", "_noise_spec"]
+    _pickle_data = Camera._pickle_data + ["_aperture"]
 
     def __init__(
         self, slm, resolution=None, M=None, b=None, noise=None, pitch_um=None, gain=1, **kwargs
@@ -97,6 +105,9 @@ class SimulatedCamera(Camera):
         # Store a reference to the SLM: we need this to compute the far-field camera images.
         self._slm = slm
 
+        # Backing store for the `noise` property, set before anything can read it.
+        self._noise = self._noise_spec = None
+
         # Don't interpolate (slower) by default unless required.
         self._interpolate = False
 
@@ -117,6 +128,8 @@ class SimulatedCamera(Camera):
         # Hidden: efficiency of each camera pixel; an image of shape ``_shape`` or None.
         self._aperture = None
 
+        # Placement in the SLM's k-space; None until set_affine() interpolates.
+        self.M = self.b = None
 
         # Compute the camera pixel grid in `basis` units (currently "ij")
         self.grid = np.meshgrid(
@@ -129,6 +142,39 @@ class SimulatedCamera(Camera):
 
     def close(self):
         pass
+
+    @property
+    def noise(self):
+        return self._noise
+
+    @noise.setter
+    def noise(self, noise):
+        # A dictionary of callables cannot be written to an .h5, so only the scalars
+        # recorded by _set_noise() survive a save(). Disown them for any other noise,
+        # rather than let them silently reappear on the reloaded camera.
+        self._noise_spec = None
+        self._noise = noise
+
+    def _unpickle(self, data):
+        """
+        Restores pickled state data not restored by constructor. See
+        :meth:`~slmsuite._pickling._Picklable._unpickle`. 
+        """
+        super()._unpickle(data)
+
+        self.gain = data.get("gain", 1)
+        self._aperture = data.get("_aperture", None)
+
+        # Noise handled separately to avoid callable in h5
+        spec = data.get("_noise_spec", None)
+        if spec is not None:
+            self._set_noise(spec["dark"], spec["read"])
+
+        # The pickled affine is already stated in this camera's delivered frame, unlike
+        # a Fourier calibration's, which FourierSLM.load() must correct for a WOI.
+        (M, b) = (data.get("M", None), data.get("b", None))
+        if M is not None and b is not None:
+            self.set_affine(M, b)
 
     def set_affine(self, M=None, b=None, **kwargs):
         """
@@ -160,6 +206,7 @@ class SimulatedCamera(Camera):
                 M, b = self.build_affine(f_eff, **kwargs)
 
         self._interpolate = not (M is None or b is None)
+        self.M = self.b = None
         self.grid = np.meshgrid(
             np.arange(self._shape[1]),
             np.arange(self._shape[0]),
@@ -431,10 +478,12 @@ class SimulatedCamera(Camera):
         """
         Apply the sensor response to a rendered far-field intensity.
 
-        Vignetting, exposure, gain, :attr:`noise`, and saturation -- everything between
-        the optics of :meth:`_render()` and the integer readout of :meth:`_store()`.
-        Split out so that a caller which keeps frames on the device can apply the
-        response there rather than round-tripping through the host.
+        Vignetting, exposure, gain, and :attr:`noise` -- everything between the optics
+        of :meth:`_render()` and the readout of :meth:`_store()`, which clips and
+        quantizes. Split out so that a caller which keeps frames on the device can
+        apply the response there rather than round-tripping through the host, and so
+        that :meth:`match_counts()` can weigh the collected signal before the readout
+        truncates it.
 
         Parameters
         ----------
@@ -451,7 +500,8 @@ class SimulatedCamera(Camera):
         Returns
         -------
         numpy.ndarray OR cupy.ndarray
-            The image after the sensor response, still in floating point.
+            The image after the sensor response, still in floating point and not yet
+            clipped to the readout range.
         """
         # Efficiency of each camera pixel (apertures in the optical train, vignetting).
         if self._aperture is not None:
@@ -477,15 +527,15 @@ class SimulatedCamera(Camera):
                 else:
                     raise RuntimeError('Unknown noise source %s specified!'%(key))
 
-        # Truncate to maximum readout value. `img` is always a fresh array by this point
-        # (the exposure multiply allocates), so clipping in place cannot disturb a caller.
-        xp.minimum(img, frame_bitresolution - 1, out=img)
-
         return img
 
     def _store(self, img, out=None):
         """
         Quantize a floating-point image to the camera's integer readout.
+
+        Clips to ``[0, 2**bitdepth - 1]`` first: light above full scale saturates,
+        while a negative noise fluctuation would otherwise underflow the unsigned
+        container and wrap around to full scale.
 
         Parameters
         ----------
@@ -505,6 +555,11 @@ class SimulatedCamera(Camera):
         # Quantize: all power in one pixel (img=1) -> maximum readout value at base exposure=1
         # img = np.rint(img)
 
+        # `img` is always a fresh array by this point (the exposure multiply in
+        # _apply_response() allocates), so clipping in place cannot disturb a caller.
+        xp = cp if (cp is not np and isinstance(img, cp.ndarray)) else np
+        xp.clip(img, 0, 2 ** self.bitdepth - 1, out=img)
+
         if out is None:
             return img.astype(self.dtype)
 
@@ -520,9 +575,18 @@ class SimulatedCamera(Camera):
         out[...] = img
         return out
 
-    def _get_image_hw(self, timeout_s):
+    def _get_image_hw(self, timeout_s, quantize=True):
         """
         See :meth:`.Camera._get_image_hw`. Computes and samples the affine-transformed SLM far-field.
+
+        Parameters
+        ----------
+        timeout_s : float
+            Unused; a simulated frame is always ready.
+        quantize : bool
+            Whether to apply the readout: clipping at saturation and casting to
+            :attr:`dtype`. :meth:`match_counts` passes ``False`` to measure the
+            collected signal before the readout discards the part of it below one count.
 
         Returns
         -------
@@ -536,4 +600,122 @@ class SimulatedCamera(Camera):
 
         # The response is applied on the host so that the user-supplied numpy noise
         # callables documented in the class docstring keep working unchanged.
-        return self._store(self._apply_response(img, xp=np))
+        img = self._apply_response(img, xp=np)
+
+        return self._store(img) if quantize else img
+
+    def match_counts(self, reference, background=None):
+        """
+        Sets :attr:`gain` such that the frame this camera renders *right now* totals the
+        same counts as ``reference``. Use this to put a simulated camera on the same
+        radiometric scale as the hardware camera it stands in for: display the same
+        phase on the simulated SLM, then pass a hardware image taken at the same
+        exposure. Without this, the far-field is normalized to unit total power and the
+        simulated counts are arbitrary.
+
+        Note
+        ~~~~
+        Call this after :attr:`exposure_s` is set, since exposure scales the counts.
+
+        Parameters
+        ----------
+        reference : array_like
+            An image from the camera being emulated.
+        background : array_like OR None
+            A blank (no signal) image from the same camera at the same exposure, whose
+            total is subtracted from ``reference`` so that only signal is matched.
+
+        Returns
+        -------
+        float
+            The new :attr:`gain`.
+        """
+        target = float(np.sum(np.asarray(reference, dtype=float)))
+        if background is not None:
+            target -= float(np.sum(np.asarray(background, dtype=float)))
+
+        if not target > 0:
+            raise ValueError(
+                "Expected reference to carry positive signal above background; "
+                f"found a total of {target} counts."
+            )
+
+        # Render at unit gain without noise: the total is then the gain-independent,
+        # unquantized signal that `gain` scales.
+        # `_noise_spec` rides along, as setting `noise` disowns it.
+        (gain, noise, spec) = (self.gain, self.noise, self._noise_spec)
+        try:
+            (self.gain, self.noise) = (1.0, None)
+            # Deliver the frame as get_image() would, so that a windowed or binned
+            # camera is matched over the pixels it actually reads out.
+            frame = self._get_image_hw(0, quantize=False)
+            total = float(np.sum(self.transform(self._crop_to_woi(frame))))
+        finally:
+            (self.gain, self.noise) = (gain, noise)
+            self._noise_spec = spec
+
+        if not total > 0:
+            raise ValueError(
+                "The simulated camera collects no light, so its gain cannot be matched "
+                "to a reference. Is the far-field within the camera's field of view?"
+            )
+
+        self.gain = target / total
+
+        return self.gain
+
+    def set_noise_from_background(self, background, exposure_s=None):
+        """
+        Sets :attr:`noise` from a blank (no signal) image of the camera being emulated.
+        The mean of ``background`` is attributed to the exposure-dependent ``'dark'``
+        term and its standard deviation to the exposure-independent ``'read'`` term.
+
+        Note
+        ~~~~
+        This is the Gaussian background plus Gaussian read term that
+        :class:`SimulatedCamera` models. It is *not* photon shot noise, which scales
+        with the signal and is not simulated here.
+
+        Parameters
+        ----------
+        background : array_like
+            A blank image from the camera being emulated.
+        exposure_s : float OR None
+            The exposure ``background`` was taken at. Defaults to :attr:`exposure_s`.
+
+        Returns
+        -------
+        dict
+            The new :attr:`noise`.
+        """
+        background = np.asarray(background, dtype=float)
+
+        if exposure_s is None:
+            exposure_s = self.exposure_s
+        if not exposure_s > 0:
+            raise ValueError(f"Expected a positive exposure; found {exposure_s}.")
+
+        bitresolution = 2 ** self.bitdepth
+
+        # 'dark' is scaled by exposure_s downstream, so divide it out here.
+        dark = float(np.mean(background)) / (bitresolution * exposure_s)
+        read = float(np.std(background)) / bitresolution
+
+        return self._set_noise(dark, read)
+
+    def _set_noise(self, dark, read):
+        """
+        Sets :attr:`noise` to the Gaussian background/read model from its two scalars,
+        recording them in :attr:`_noise_spec` so that the model survives a
+        :meth:`~slmsuite._pickling._Picklable.save()`. The callables themselves cannot
+        be written to an ``.h5``; these two floats can.
+        """
+        (dark, read) = (float(dark), float(read))
+
+        self.noise = {
+            "dark": lambda img, dark=dark: dark * img,
+            "read": lambda img, read=read: np.random.normal(0, read * img),
+        }
+        self._noise_spec = {"dark": dark, "read": read}
+
+        return self.noise

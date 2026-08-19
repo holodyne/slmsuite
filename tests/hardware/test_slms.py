@@ -711,6 +711,69 @@ class TestSLM:
             assert r > 0
 
 
+class TestSimulatedSource:
+    """
+    ``SimulatedSLM`` accepts a *measured* source in place of a simulated one, which is
+    what lets a wavefront-calibrated experiment be carried into simulation. The measured
+    phase is a correction, so the aberration simulated is its negative.
+    """
+
+    RESOLUTION = (64, 48)
+
+    def _slm(self, source):
+        from slmsuite.hardware.slms.simulated import SimulatedSLM
+        return SimulatedSLM(self.RESOLUTION, source=source)
+
+    def test_no_source_is_ideal(self, subtests):
+        slm = self._slm(None)
+        assert np.allclose(slm.source["amplitude_sim"], 1)
+        assert np.allclose(slm.source["phase_sim"], 0)
+
+    def test_measured_source_is_negated(self, subtests):
+        shape = np.flip(self.RESOLUTION)
+        amplitude = np.random.rand(*shape)
+        phase = np.random.rand(*shape)
+
+        slm = self._slm({"amplitude": amplitude, "phase": phase})
+
+        with subtests.test("amplitude carries over"):
+            assert np.allclose(slm.source["amplitude_sim"], amplitude)
+
+        with subtests.test("phase is the aberration the correction undoes"):
+            assert np.allclose(slm.source["phase_sim"], -phase)
+
+    @pytest.mark.parametrize("measured", ("amplitude", "phase"))
+    def test_half_measured_source(self, measured, subtests):
+        """
+        A vendor phase correction comes with no measured amplitude, and an amplitude
+        measurement can arrive before any phase. The unmeasured half is ideal.
+        """
+        shape = np.flip(self.RESOLUTION)
+        value = np.random.rand(*shape)
+
+        slm = self._slm({measured: value, "r2": np.ones(shape)})
+
+        if measured == "amplitude":
+            assert np.allclose(slm.source["amplitude_sim"], value)
+            assert np.allclose(slm.source["phase_sim"], 0)
+        else:
+            assert np.allclose(slm.source["amplitude_sim"], 1)
+            assert np.allclose(slm.source["phase_sim"], -value)
+
+    def test_explicit_simulated_source_wins(self):
+        """An explicit truth is used as given, not derived from the measurement."""
+        shape = np.flip(self.RESOLUTION)
+        truth = np.random.rand(*shape)
+
+        slm = self._slm({
+            "amplitude": np.zeros(shape), "phase": np.zeros(shape),
+            "amplitude_sim": truth, "phase_sim": truth,
+        })
+
+        assert np.allclose(slm.source["amplitude_sim"], truth)
+        assert np.allclose(slm.source["phase_sim"], truth)
+
+
 class TestSegmented:
     """Tests for SegmentedSLM and SLM.segment()."""
 
