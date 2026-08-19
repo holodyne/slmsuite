@@ -66,7 +66,15 @@ class SimulatedCamera(Camera):
                 'read': lambda img: np.random.poisson(0.2*img)
             }
 
+        Note
+        ~~~~
+        Callables cannot be written to an ``.h5``, so a noise assigned this way does not
+        survive :meth:`~slmsuite._pickling._Picklable.save()`. Noise set through
+        :meth:`set_noise_from_background()` does, as that model is two scalars.
+
     """
+    _pickle = Camera._pickle + ["gain", "M", "b", "_noise_spec"]
+    _pickle_data = Camera._pickle_data + ["_aperture"]
 
     def __init__(
         self, slm, resolution=None, M=None, b=None, noise=None, pitch_um=None, gain=1, **kwargs
@@ -97,6 +105,9 @@ class SimulatedCamera(Camera):
         # Store a reference to the SLM: we need this to compute the far-field camera images.
         self._slm = slm
 
+        # Backing store for the `noise` property, set before anything can read it.
+        self._noise = self._noise_spec = None
+
         # Don't interpolate (slower) by default unless required.
         self._interpolate = False
 
@@ -117,6 +128,8 @@ class SimulatedCamera(Camera):
         # Hidden: efficiency of each camera pixel; an image of shape ``_shape`` or None.
         self._aperture = None
 
+        # Placement in the SLM's k-space; None until set_affine() interpolates.
+        self.M = self.b = None
 
         # Compute the camera pixel grid in `basis` units (currently "ij")
         self.grid = np.meshgrid(
@@ -129,6 +142,39 @@ class SimulatedCamera(Camera):
 
     def close(self):
         pass
+
+    @property
+    def noise(self):
+        return self._noise
+
+    @noise.setter
+    def noise(self, noise):
+        # A dictionary of callables cannot be written to an .h5, so only the scalars
+        # recorded by _set_noise() survive a save(). Disown them for any other noise,
+        # rather than let them silently reappear on the reloaded camera.
+        self._noise_spec = None
+        self._noise = noise
+
+    def _unpickle(self, data):
+        """
+        Restores pickled state data not restored by constructor. See
+        :meth:`~slmsuite._pickling._Picklable._unpickle`. 
+        """
+        super()._unpickle(data)
+
+        self.gain = data.get("gain", 1)
+        self._aperture = data.get("_aperture", None)
+
+        # Noise handled separately to avoid callable in h5
+        spec = data.get("_noise_spec", None)
+        if spec is not None:
+            self._set_noise(spec["dark"], spec["read"])
+
+        # The pickled affine is already stated in this camera's delivered frame, unlike
+        # a Fourier calibration's, which FourierSLM.load() must correct for a WOI.
+        (M, b) = (data.get("M", None), data.get("b", None))
+        if M is not None and b is not None:
+            self.set_affine(M, b)
 
     def set_affine(self, M=None, b=None, **kwargs):
         """
@@ -160,6 +206,7 @@ class SimulatedCamera(Camera):
                 M, b = self.build_affine(f_eff, **kwargs)
 
         self._interpolate = not (M is None or b is None)
+        self.M = self.b = None
         self.grid = np.meshgrid(
             np.arange(self._shape[1]),
             np.arange(self._shape[0]),
@@ -415,8 +462,8 @@ class SimulatedCamera(Camera):
         if not quantize:
             return img
 
-        # Truncate to maximum readout value
-        img[img > frame_bitresolution-1] = frame_bitresolution-1
+        # Truncate to valid readout range [0, 2**bitdepth - 1]
+        img = np.clip(img, 0, frame_bitresolution - 1)
 
         return img.astype(self.dtype)
 
@@ -458,7 +505,8 @@ class SimulatedCamera(Camera):
 
         # Render at unit gain without noise: the total is then the gain-independent,
         # unquantized signal that `gain` scales.
-        (gain, noise) = (self.gain, self.noise)
+        # `_noise_spec` rides along, as setting `noise` disowns it.
+        (gain, noise, spec) = (self.gain, self.noise, self._noise_spec)
         try:
             (self.gain, self.noise) = (1.0, None)
             # Deliver the frame as get_image() would, so that a windowed or binned
@@ -467,6 +515,7 @@ class SimulatedCamera(Camera):
             total = float(np.sum(self.transform(self._crop_to_woi(frame))))
         finally:
             (self.gain, self.noise) = (gain, noise)
+            self._noise_spec = spec
 
         if not total > 0:
             raise ValueError(
@@ -515,9 +564,21 @@ class SimulatedCamera(Camera):
         dark = float(np.mean(background)) / (bitresolution * exposure_s)
         read = float(np.std(background)) / bitresolution
 
+        return self._set_noise(dark, read)
+
+    def _set_noise(self, dark, read):
+        """
+        Sets :attr:`noise` to the Gaussian background/read model from its two scalars,
+        recording them in :attr:`_noise_spec` so that the model survives a
+        :meth:`~slmsuite._pickling._Picklable.save()`. The callables themselves cannot
+        be written to an ``.h5``; these two floats can.
+        """
+        (dark, read) = (float(dark), float(read))
+
         self.noise = {
             "dark": lambda img, dark=dark: dark * img,
             "read": lambda img, read=read: np.random.normal(0, read * img),
         }
+        self._noise_spec = {"dark": dark, "read": read}
 
         return self.noise

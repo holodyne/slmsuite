@@ -280,7 +280,7 @@ class FourierSLM(
             acquire data after a pattern is displayed. This is, of course, a tradeoff
             between measurement speed and measurement precision.
     """
-    _pickle = ["name", "cam", "slm", "mag"]
+    _pickle = ["name", "cam", "slm", "mag", "_wavefront_calibration_window_multiplier"]
     _pickle_data = ["calibrations"]
 
     def __init__(self, *args, **kwargs):
@@ -486,28 +486,89 @@ class FourierSLM(
 
         return cam_sim
 
-    @staticmethod
-    def load(file_path : str):
+    @classmethod
+    def _load_class(cls, meta):
+        """
+        The class which :meth:`load()` should rebuild as.
+
+        An explicit subclass on the call (``MyFourierSLM.load(...)``) wins. Otherwise the
+        class recorded when the file was written is looked up among the subclasses which
+        have been imported, mirroring the ``type(self)`` that :meth:`simulate()` keeps:
+        a system saved as a subclass reloads with that subclass's methods.
+
+        Falls back to :class:`FourierSLM` if the name cannot be resolved, which happens
+        when the module defining it has not been imported. The result still carries every
+        calibration; it just lacks the subclass's methods, so say so rather than let it
+        pass as the class the user asked for.
+        """
+        if cls is not FourierSLM:
+            return cls
+
+        name = meta.get("__class__", None)
+        if name is None or name == FourierSLM.__name__:
+            return cls
+
+        def descendants(base):
+            for sub in base.__subclasses__():
+                yield sub
+                yield from descendants(sub)
+
+        matches = {sub for sub in descendants(FourierSLM) if sub.__name__ == name}
+
+        if len(matches) == 1:
+            return matches.pop()
+
+        warnings.warn(
+            f"File was saved from '{name}', which is "
+            + ("ambiguous among the imported subclasses"
+               if matches else "not among the imported subclasses")
+            + f"; rebuilding as {FourierSLM.__name__}. Import the module defining "
+            f"'{name}' before loading, or call '{name}.load()' directly, to keep its "
+            "methods."
+        )
+        return cls
+
+    @classmethod
+    def load(cls, file_path : str):
         """
         Rebuilds a system as a simulation from the metadata in an :mod:`slmsuite` file,
         without the hardware present. Both a calibration written by
         :meth:`save_calibration()` and a pickle written by
         :meth:`~slmsuite._pickling._Picklable.save()` carry this metadata; a pickle
         saved with ``attributes=True`` also carries the SLM's measured
-        :attr:`~slmsuite.hardware.slms.slm.SLM.source` and every calibration, and so
-        reconstructs the most.
+        :attr:`~slmsuite.hardware.slms.slm.SLM.source`, its measured phase response,
+        :attr:`~slmsuite.hardware.slms.slm.SLM.aperture`, and displayed
+        :attr:`~slmsuite.hardware.slms.slm.SLM.phase`, along with every calibration, and
+        so reconstructs the most.
+
+        A pickle of a system which was already simulated round trips exactly:
+        the simulated phase response
+        (:attr:`~slmsuite.hardware.slms.simulated.SimulatedSLM.gamma_sim`), the
+        camera's placement, gain, pixel efficiency, and any
+        :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.set_noise_from_background()`
+        noise all return with it. Saving the result of :meth:`simulate()` and
+        loading it back is therefore the way to keep a simulated system across
+        sessions.
 
         If the file supplies a Fourier calibration, the simulated camera is placed by
         it, so the result images the same region of :math:`k`-space that the hardware
         did. Otherwise the camera samples the SLM's far-field directly and only the
         shapes are meaningful.
 
+        The subclass is kept, as :meth:`simulate()` keeps it: a file written from a
+        subclass of :class:`FourierSLM` reloads as that subclass, provided the module
+        defining it has been imported (or that its :meth:`load()` is called directly).
+        A subclass whose constructor does not accept ``(cam, slm, mag)`` must override
+        this method, exactly as it must override :meth:`simulate()`.
+
         Note
         ~~~~
         The camera's orientation transform and binning are not recorded in the
         metadata, so neither is restored; a window of interest is folded into the
-        camera's placement. To clone a system that is actually connected, with its
-        phase response, aperture, and noise, use :meth:`simulate()` instead.
+        camera's placement. A :attr:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.noise`
+        of hand-written callables cannot be written to an ``.h5`` and is lost. To clone a
+        system that is actually connected, with its phase response, aperture, and noise,
+        use :meth:`simulate()` instead.
 
         Parameters
         ----------
@@ -556,19 +617,42 @@ class FourierSLM(
             hdr=cam_data.get("hdr", None),
             name=cam_data["name"],
         )
-        cam.set_exposure(cam_data.get("exposure_s", 1))
-
-        fs = FourierSLM(cam, slm, mag=data["__meta__"]["mag"])
-        fs.name = data["__meta__"]["name"]
-
-        fs.calibrations = data["__meta__"].get("calibrations", {})
+        calibrations = data["__meta__"].get("calibrations", {})
 
         # A calibration file carries its payload at the top level rather than under
         # "__meta__"; a Fourier one is the payload that places the camera.
-        if "M" in data and "b" in data and "fourier" not in fs.calibrations:
-            fs.calibrations["fourier"] = {
+        if "M" in data and "b" in data and "fourier" not in calibrations:
+            calibrations["fourier"] = {
                 key: value for (key, value) in data.items() if key != "__meta__"
             }
+
+        # A Fourier calibration places the camera below, and corrects for a window of
+        # interest which a camera's own pickled affine does not record. Let it win, and
+        # do not place the camera twice: each placement rebuilds the padded far-field.
+        if "fourier" in calibrations:
+            cam_data = {k: v for (k, v) in cam_data.items() if k not in ("M", "b")}
+
+        # Restore the exposure and the simulated detector characteristics.
+        cam._unpickle(cam_data)
+
+        fs = cls._load_class(data["__meta__"])(cam, slm, mag=data["__meta__"]["mag"])
+        fs.name = data["__meta__"]["name"]
+
+        fs.calibrations = calibrations
+        if "_wavefront_calibration_window_multiplier" in data["__meta__"]:
+            fs._wavefront_calibration_window_multiplier = (
+                data["__meta__"]["_wavefront_calibration_window_multiplier"]
+            )
+
+        # The phase response is not pickled on the SLM; it is rebuilt from the pixel
+        # calibration that measured it. Before the SLM restores its own state, which
+        # re-displays the stored phase through this lookup table.
+        if "pixel" in fs.calibrations:
+            fs._pixel_calibration_apply_gamma()
+
+        # Restore what the SLM's constructor does not take: the display defaults, the
+        # aperture, and the displayed phase.
+        slm._unpickle(slm_data)
 
         if "fourier" in fs.calibrations:
             fs._load_place_camera(cam_data)

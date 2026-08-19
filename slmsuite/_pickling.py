@@ -68,6 +68,24 @@ class _Picklable(object):
         else:
             return pickled
 
+    def _unpickle(self, data):
+        """
+        Restores the attributes of :meth:`pickle()` onto an already-constructed
+        object.
+
+        Subclasses override this to restore what their constructor does not
+        take; the base implementation is a no-op. Only genuinely settable state
+        data is restored: much of :attr:`_pickle` is read-only geometry which
+        the constructor already fixed.
+
+        Parameters
+        ----------
+        data : dict
+            The dictionary that :meth:`pickle()` produced for this object, i.e. the
+            ``"__meta__"`` payload without its metadata wrapper.
+        """
+        pass
+
     def save(self, path=".", name=None, **kwargs):
         """
         Saves the dictionary returned from :meth:`pickle()` to a file like ``"path/name_id.h5"``.

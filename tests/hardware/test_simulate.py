@@ -7,12 +7,15 @@ than deriving it, so (absent camera noise) it must reproduce the original frame 
 frame. That makes a simulated system a usable stand-in for hardware here, and lets
 the geometry assertions be exact rather than approximate.
 """
+import warnings
+
 import numpy as np
 import pytest
 
 from slmsuite.hardware.cameraslms import FourierSLM
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.hardware.slms.simulated import SimulatedSLM
+from slmsuite.holography.analysis.files import load_h5, save_h5
 from slmsuite.holography.toolbox.phase import blaze, zernike_sum
 
 from conftest import (
@@ -480,6 +483,192 @@ class TestLoad:
             )
 
 
+class TestSaveLoadRoundTrip:
+    """
+    A pickle of an already-simulated system must reload as the same simulation. This is
+    what lets a simulated rig be kept across sessions: everything that decides what the
+    camera renders — the simulated phase response, the aperture, the placement, the
+    detector characteristics — has to survive the ``.h5``, not just the geometry.
+    """
+
+    def _decorated(self, name="matched", background=True):
+        """A simulated system carrying every piece of state a round trip must keep."""
+        fs = _calibrated(name)
+
+        levels = 2 ** fs.slm.bitdepth
+        # A non-ideal, non-linear response, so that a lost gamma_sim changes the image.
+        fs.slm.gamma_sim = np.linspace(0, 1.8, levels) ** 1.3
+
+        # gamma is not pickled on the SLM; it is rebuilt from the pixel calibration
+        # which measured it, so that is what has to be installed here.
+        fs.calibrations["pixel"] = {
+            "gamma": np.linspace(0, 1.8, levels),
+            "levels": np.arange(levels),
+        }
+        fs._pixel_calibration_apply_gamma()
+
+        # Off-center, so that a dropped aperture center is caught as well as its spec.
+        (height, width) = fs.slm.shape
+        fs.slm.set_aperture(0.35, center=(0.45 * width, 0.55 * height))
+
+        fs_sim = fs.simulate(
+            background=np.full(fs.cam.shape, 3.0) if background else None
+        )
+        fs_sim.cam.gain = 2.5
+        fs_sim.cam._aperture = np.linspace(0.5, 1.0, fs_sim.cam._shape[1])[None, :] * (
+            np.ones((fs_sim.cam._shape[0], 1))
+        )
+        _display(fs_sim)
+        return fs_sim
+
+    def test_reloaded_simulation_renders_the_same_frame(self, temp_dir):
+        """
+        The acceptance test: a reloaded clone is the clone. Seeding both renders makes
+        the camera's noise deterministic, so this is exact rather than approximate.
+        """
+        fs_sim = self._decorated()
+        fs_loaded = FourierSLM.load(fs_sim.save(path=temp_dir, name="round_trip"))
+
+        seed_for("round_trip")
+        expected = fs_sim.cam.get_image()
+        seed_for("round_trip")
+        assert np.array_equal(fs_loaded.cam.get_image(), expected)
+
+    def test_restores_every_attribute(self, temp_dir, subtests):
+        """Each piece individually, so a failure above says which one was dropped."""
+        fs_sim = self._decorated()
+        fs_loaded = FourierSLM.load(fs_sim.save(path=temp_dir, name="round_trip_attrs"))
+
+        (slm, cam) = (fs_loaded.slm, fs_loaded.cam)
+
+        with subtests.test("gamma_sim"):
+            assert np.allclose(slm.gamma_sim, fs_sim.slm.gamma_sim)
+
+        with subtests.test("gamma and its lookup table, rebuilt from the calibration"):
+            assert np.allclose(slm.gamma, fs_sim.slm.gamma)
+            assert np.array_equal(slm.lut, fs_sim.slm.lut)
+
+        with subtests.test("aperture"):
+            assert slm.aperture.spec == fs_sim.slm.aperture.spec
+            assert np.allclose(slm.aperture.center, fs_sim.slm.aperture.center)
+
+        with subtests.test("displayed phase"):
+            assert np.allclose(slm.phase, fs_sim.slm.phase)
+            assert np.array_equal(slm.display, fs_sim.slm.display)
+
+        with subtests.test("source"):
+            for key in ("amplitude_sim", "phase_sim"):
+                assert np.allclose(slm.source[key], fs_sim.slm.source[key])
+
+        with subtests.test("detector characteristics"):
+            assert cam.gain == fs_sim.cam.gain
+            assert np.allclose(cam._aperture, fs_sim.cam._aperture)
+            assert cam.exposure_s == fs_sim.cam.exposure_s
+            assert cam._noise_spec == fs_sim.cam._noise_spec
+
+        with subtests.test("placement"):
+            assert np.allclose(cam.M, fs_sim.cam.M)
+            assert np.allclose(cam.b, fs_sim.cam.b)
+            kxy = in_view_kxy(fs_sim, frac=0.4)
+            assert np.allclose(
+                fs_loaded.kxyslm_to_ijcam(kxy), fs_sim.kxyslm_to_ijcam(kxy), atol=1e-9
+            )
+
+        with subtests.test("cameraSLM"):
+            assert fs_loaded.mag == fs_sim.mag
+            assert set(fs_loaded.calibrations) == set(fs_sim.calibrations)
+            assert (
+                fs_loaded._wavefront_calibration_window_multiplier
+                == fs_sim._wavefront_calibration_window_multiplier
+            )
+
+    def test_pickles_without_warning(self, temp_dir):
+        """
+        ``pickle()`` warns for any listed attribute it cannot find. The identity case
+        never sets the camera's affine, so ``M``/``b`` must exist as ``None`` regardless.
+        """
+        seed_for("identity")
+        fs = build_simulated_system("identity")
+        install_ground_truth_calibration(fs)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            path = fs.save(path=temp_dir, name="identity_pickle")
+
+        assert isinstance(FourierSLM.load(path), FourierSLM)
+
+    def test_hand_written_noise_is_not_claimed_to_survive(self, temp_dir):
+        """
+        Callables cannot be written to an ``.h5``. Setting ``noise`` directly must
+        disown the scalars of any earlier ``set_noise_from_background()``, rather than
+        let them reappear on the reloaded camera as a noise the user never asked for.
+        """
+        fs_sim = self._decorated()
+        assert fs_sim.cam._noise_spec is not None
+
+        fs_sim.cam.noise = {"read": lambda img: np.zeros_like(img)}
+        assert fs_sim.cam._noise_spec is None
+
+        fs_loaded = FourierSLM.load(fs_sim.save(path=temp_dir, name="hand_noise"))
+        assert fs_loaded.cam.noise is None
+
+    def test_preserves_subclass(self, temp_dir, subtests):
+        """
+        A FourierSLM subclass must survive the file as it survives ``simulate()``.
+        Reloading a saved subclass as a bare FourierSLM silently drops the calibration
+        routines the system was saved for, which is what makes the reloaded object
+        useless for the algorithm it was meant to run.
+        """
+        class _Subclass(FourierSLM):
+            def only_here(self):
+                return True
+
+        fs = _calibrated("matched")
+        fs.__class__ = _Subclass
+        path = fs.save(path=temp_dir, name="subclass")
+
+        with subtests.test("recorded class is resolved from the base"):
+            fs_loaded = FourierSLM.load(path)
+            assert type(fs_loaded) is _Subclass
+            assert fs_loaded.only_here()
+
+        with subtests.test("an explicit subclass wins"):
+            assert type(_Subclass.load(path)) is _Subclass
+
+        with subtests.test("a base system still reloads as the base"):
+            base = _calibrated("matched")
+            assert type(FourierSLM.load(base.save(path=temp_dir, name="base"))) is FourierSLM
+
+    def test_unresolvable_subclass_warns(self, temp_dir):
+        """
+        The subclass name is resolved among imported subclasses. If its module was never
+        imported the load still works, but must say the methods are missing rather than
+        hand back a bare FourierSLM as though nothing were lost.
+        """
+        fs = _calibrated("matched")
+        path = fs.save(path=temp_dir, name="unresolvable")
+
+        # Rewrite the recorded class to a name no subclass carries.
+        data = load_h5(path)
+        data["__meta__"]["__class__"] = "_NeverImported"
+        save_h5(path, data)
+
+        with pytest.warns(UserWarning, match="_NeverImported"):
+            fs_loaded = FourierSLM.load(path)
+
+        assert type(fs_loaded) is FourierSLM
+
+    def test_match_counts_keeps_the_noise_spec(self):
+        """``match_counts`` blanks the noise to measure, and must put it back whole."""
+        fs_sim = self._decorated()
+        spec = dict(fs_sim.cam._noise_spec)
+
+        fs_sim.cam.match_counts(np.full(fs_sim.cam.shape, 10.0))
+
+        assert fs_sim.cam._noise_spec == spec
+        assert fs_sim.cam.noise is not None
+
+
 class TestSimulateRadiometry:
     """
     The simulated far-field carries unit total power, so counts are arbitrary until
@@ -566,3 +755,24 @@ class TestSimulateRadiometry:
             assert set(fs_sim.cam.noise) == {"read"}
         with subtests.test("pixel efficiency"):
             assert np.array_equal(fs_sim.cam._aperture, fs.cam._aperture)
+
+    def test_readout_quantization_clipping(self, subtests):
+        """
+        Noise fluctuations below zero must clamp to zero rather than underflow and wrap
+        around to full scale (e.g. 65535 on a 12-bit uint16 sensor), and light above full
+        scale must clamp to 2**bitdepth - 1.
+        """
+        fs = _calibrated("matched")
+        fs.cam.gain = 1.0
+        # A tiny pedestal with larger read noise so negative fluctuations frequently occur
+        fs.cam._set_noise(dark=0.01, read=0.005)
+
+        img = fs.cam.get_image()
+        max_val = 2 ** fs.cam.bitdepth - 1
+
+        with subtests.test("no underflow wraparound to uint container max"):
+            assert img.min() >= 0
+            assert img.max() <= max_val
+            if fs.cam.dtype == np.uint16 and fs.cam.bitdepth < 16:
+                assert not np.any(img == 65535)
+

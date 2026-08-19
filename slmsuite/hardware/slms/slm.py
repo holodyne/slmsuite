@@ -145,6 +145,8 @@ class SLM(_Common, ABC):
         "wav_design_um",
         "phase_scaling",
         "aperture",
+        "phase_correct",
+        "settle",
     ]
     _pickle_data = [
         "source",
@@ -324,6 +326,41 @@ class SLM(_Common, ABC):
         which a single radius cannot describe.
         """
         return float(1.0 / (2.0 * self.aperture._isotropic_scale()))
+
+    def _unpickle(self, data):
+        """
+        Restores the pickled state which :meth:`__init__` does not take: the display
+        defaults, the :attr:`aperture`, the measured phase response, and the displayed
+        :attr:`phase`. See :meth:`~slmsuite._pickling._Picklable._unpickle`.
+
+        :attr:`phase_scaling` is not restored, as it is derived from the wavelengths
+        which the constructor already fixed. Neither are :attr:`gamma` and :attr:`lut`,
+        which are rebuilt from the pixel calibration that measured them; see
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM._pixel_calibration_apply_gamma`.
+        """
+        super()._unpickle(data)
+
+        if "settle_time_s" in data:
+            self.settle_time_s = float(data["settle_time_s"])
+        if "phase_correct" in data:
+            self.phase_correct = bool(data["phase_correct"])
+        if "settle" in data:
+            self.settle = bool(data["settle"])
+
+        # The pickled center is already in normalized grid units, so build the Aperture
+        # directly rather than through set_aperture(), which reads `center` as pixels.
+        aperture = data.get("aperture", None)
+        if aperture is not None:
+            self.aperture = toolbox.Aperture(
+                self._grid_base, aperture["spec"], center=aperture.get("center", None)
+            )
+            self._grid = None
+
+        # Last, as this renders through everything set above. The stored phase is
+        # already corrected, so it must not be corrected a second time.
+        phase = data.get("phase", None)
+        if phase is not None:
+            self.set_phase(phase, phase_correct=False, settle=False)
 
     @abstractmethod
     def close(self):

@@ -25,6 +25,7 @@ class SimulatedSLM(SLM):
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibrate` measures, as
         opposed to the :attr:`~slmsuite.hardware.slms.slm.SLM.gamma` it recovers.
     """
+    _pickle_data = SLM._pickle_data + ["gamma_sim"]
 
     def __init__(self, resolution, pitch_um=(8,8), source=None, gamma_sim=None, **kwargs):
         r"""
@@ -105,6 +106,14 @@ class SimulatedSLM(SLM):
             raise ValueError("Expected finite gamma_sim.")
 
         self._gamma_sim = gamma_sim
+
+    def _unpickle(self, data):
+        """
+        Restores :attr:`gamma_sim` alongside the base SLM state. Set before ``super()``,
+        which re-displays the pickled phase through this simulated response.
+        """
+        self.gamma_sim = data.get("gamma_sim", None)
+        super()._unpickle(data)
 
     def _display2phase(self, display, dtype=float):
         """Phase realized by the integer ``display``, including any simulated response."""
