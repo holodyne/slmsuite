@@ -24,6 +24,7 @@ from slmsuite.holography.toolbox.phase import (
     zernike_sum, laguerre_gaussian, ZernikeBasis, _zernike_get_basis,
 )
 from slmsuite.misc.math import REAL_TYPES
+from slmsuite.misc.xp import get_array_module
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
 from slmsuite._logging import make_logger
 logger = make_logger(__name__)
@@ -1234,7 +1235,7 @@ def image_zernike_fit(
         basis = _zernike_get_basis(grid, indices_ansi, aperture=aperture, use_mask=use_mask)
 
     # Work on the basis's array module (GPU when the basis is GPU-resident).
-    xp = _get_module(basis.basis_flat)
+    xp = get_array_module(basis.basis_flat)
     phase_images = xp.asarray(phase_images)
 
     if gradient:
@@ -1276,13 +1277,6 @@ def image_zernike_fit(
     return vectors_zernike
 
 
-def _get_module(matrix):
-    if np == cp:
-        return np
-    else:
-        return cp.get_array_module(matrix)
-
-
 def image_vortices(phase_image):
     """
     Compute the winding number of a phase image directly, at every pixel.
@@ -1298,7 +1292,7 @@ def image_vortices(phase_image):
         Image with the integer winding number at each pixel,
         negated relative to the conventional right-handed sense.
     """
-    xp = _get_module(phase_image)
+    xp = get_array_module(phase_image)
 
     # Discrete derivatives, with appropriate wrapping.
     dd = [
@@ -1333,7 +1327,7 @@ def image_vortices_coordinates(phase_image, mask=None):
     coordinates, weights
         The coordinates and winding number of each coordinate.
     """
-    xp = _get_module(phase_image)
+    xp = get_array_module(phase_image)
 
     winding_number = image_vortices(phase_image)
 
@@ -1367,7 +1361,7 @@ def image_remove_vortices(phase_image, mask=None, return_vortices_negative=False
     phase_image
         The image or vortices, depending upon ``return_vortices_negative``
     """
-    xp = _get_module(phase_image)
+    xp = get_array_module(phase_image)
 
     if mask is not None:
         mask_eroded = binary_erosion(mask, np.ones((5,5)))
@@ -2901,18 +2895,19 @@ class OrientationTransform:
             axis order or ``(..., W, H)`` for transforms that swap the spatial axes
             (90° / 270° rotations and their flip variants).
         """
-        image = np.asarray(image)
+        xp = get_array_module(image)
+        image = xp.asarray(image)
         c = self.code
         C = self.D_4
         # Operates on the last two axes, so 2D and ND (batched) inputs share one path.
         if   c == C.IDENTITY:
             return image
         elif c == C.ROT90:
-            return np.rot90(image, 1, axes=(-2, -1))
+            return xp.rot90(image, 1, axes=(-2, -1))
         elif c == C.ROT180:
             return image[..., ::-1, ::-1]
         elif c == C.ROT270:
-            return np.rot90(image, 3, axes=(-2, -1))
+            return xp.rot90(image, 3, axes=(-2, -1))
         elif c == C.FLIP:
             return image[..., ::-1]
         elif c == C.FLIP_ROT90:

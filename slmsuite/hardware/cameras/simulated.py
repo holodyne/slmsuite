@@ -15,6 +15,7 @@ except Exception:
 import matplotlib.pyplot as plt
 
 from slmsuite.hardware.cameras.camera import Camera
+from slmsuite.misc.xp import get_array_module
 from slmsuite.holography.algorithms import Hologram
 from slmsuite.holography import toolbox
 
@@ -46,11 +47,14 @@ class SimulatedCamera(Camera):
     shape_padded : (int, int)
         Size of the FFT computational space required to faithfully reproduce the far-field at
         full camera resolution.
-    noise : dict
-        Dictionary of single-argument functions (returning the normalized noise amplitude
-        for any normalized input pixel amplitude) to simulate various noise sources. Currently,
-        ``'dark'`` and ``'read'``, representing exposure-dependent dark current/background noise
-        and exposure-independent readout noise, respectively, are the only accepted keys.
+    noise : GaussianDetectorNoise OR dict OR None
+        The detector noise added to each rendered frame. Either a
+        :class:`GaussianDetectorNoise` (what :meth:`set_noise_from_background()` builds,
+        and the only form that survives a save) or, for a custom model, a dictionary of
+        single-argument functions returning the normalized noise amplitude for any
+        normalized input pixel amplitude. Currently, ``'dark'`` and ``'read'``,
+        representing exposure-dependent dark current/background noise and
+        exposure-independent readout noise, respectively, are the only accepted keys.
 
         Example
         ~~~~~~~
@@ -91,7 +95,7 @@ class SimulatedCamera(Camera):
         M, b : array_like
             Passed to :meth:`set_affine()`. Can be set later, but the camera cannot be
             used until then.
-        noise : dict
+        noise : GaussianDetectorNoise OR dict OR None
             See :attr:`noise`.
         pitch_um : (float, float) OR None
             Pixel pitch in microns. If ``None``, certain calibrations and conversions
@@ -126,7 +130,8 @@ class SimulatedCamera(Camera):
         self.noise = noise
 
         # Hidden: efficiency of each camera pixel; an image of shape ``_shape`` or None.
-        self._aperture = None
+        # Backing store for the `_aperture` property, which lands it on the render backend.
+        self.__aperture = None
 
         # Placement in the SLM's k-space; None until set_affine() interpolates.
         self.M = self.b = None
@@ -144,15 +149,31 @@ class SimulatedCamera(Camera):
         pass
 
     @property
+    def _aperture(self):
+        """
+        Efficiency of each camera pixel (apertures in the optical train, vignetting): an
+        image of shape :attr:`_shape`, or ``None``. Held on the render backend, so that
+        applying it costs a multiply rather than a host-to-device copy per frame.
+        """
+        return self.__aperture
+
+    @_aperture.setter
+    def _aperture(self, aperture):
+        self.__aperture = None if aperture is None else cp.asarray(aperture)
+
+    @property
     def noise(self):
         return self._noise
 
     @noise.setter
     def noise(self, noise):
-        # A dictionary of callables cannot be written to an .h5, so only the scalars
-        # recorded by _set_noise() survive a save(). Disown them for any other noise,
-        # rather than let them silently reappear on the reloaded camera.
-        self._noise_spec = None
+        # A dictionary of callables cannot be written to an .h5; a GaussianDetectorNoise
+        # is two floats and can. Disown the recorded scalars for any other noise, rather
+        # than let them silently reappear on the reloaded camera.
+        if isinstance(noise, GaussianDetectorNoise):
+            self._noise_spec = {"dark": noise.dark, "read": noise.read}
+        else:
+            self._noise_spec = None
         self._noise = noise
 
     def _unpickle(self, data):
@@ -274,10 +295,10 @@ class SimulatedCamera(Camera):
                     (2, self._shape[0] * sv, self._shape[1] * su),
                 ).astype(cp.float32)
 
-        display = self._slm.display
-        if hasattr(display, "get"):
-            display = display.get()
+        display = cp.asarray(self._slm.display)
         phase = self._slm._display2phase(display)
+        amp = cp.asarray(self._slm.source["amplitude_sim"])
+        phase_sim = cp.asarray(self._slm.source["phase_sim"])
 
         # Suppress power of 2 warning from Hologram.
         with warnings.catch_warnings():
@@ -285,8 +306,8 @@ class SimulatedCamera(Camera):
 
             self._hologram = Hologram(
                 self.shape_padded,
-                amp=self._slm.source["amplitude_sim"],
-                phase=phase - phase.min() + self._slm.source["phase_sim"],
+                amp=amp,
+                phase=phase - phase.min() + phase_sim,
                 slm_shape=self._slm,
             )
 
@@ -377,23 +398,10 @@ class SimulatedCamera(Camera):
 
     # Future: use WOI with Zoom FFT?
 
-    def _get_image_hw(self, timeout_s, quantize=True):
+    def _render(self):
         """
-        See :meth:`.Camera._get_image_hw`. Computes and samples the affine-transformed SLM far-field.
-
-        Parameters
-        ----------
-        timeout_s : float
-            Unused; a simulated frame is always ready.
-        quantize : bool
-            Whether to apply the readout: clipping at saturation and casting to
-            :attr:`dtype`. :meth:`match_counts` passes ``False`` to measure the
-            collected signal before the readout discards the part of it below one count.
-
-        Returns
-        -------
-        numpy.ndarray
-            Array of shape :attr:`shape`
+        Propagates the SLM's current display to the camera plane, returning the
+        far-field intensity sampled on this camera's pixels. Device-native.
         """
         if not hasattr(self, "_hologram"):
             raise RuntimeError(
@@ -404,11 +412,8 @@ class SimulatedCamera(Camera):
         # FUTURE: in the case where sim is being used inside a GS loop, there could be
         # something clever here to use the existing Hologram's data.
 
-        # Analog phase
-        # self._hologram.reset_phase(self._slm.phase + self._slm.source["phase_sim"])
-
         # Quantized phase
-        self._hologram.amp = cp.array(self._slm.source["amplitude_sim"], dtype=self._hologram.dtype)
+        self._hologram.amp = cp.asarray(self._slm.source["amplitude_sim"], dtype=self._hologram.dtype)
         display = cp.asarray(self._slm.display)
         phase = self._slm._display2phase(display, dtype=self._hologram.dtype)
         phase = phase - phase.min() + cp.asarray(
@@ -434,10 +439,18 @@ class SimulatedCamera(Camera):
             img = img * self._pixel_area
         else:
             img = toolbox.unpad(intensity, self._shape)
-        if cp != np:
-            img = img.get()
+
+        return img
+
+    def _apply_response(self, img):
+        """
+        Applies pixel efficiency, exposure, gain, and noise to the rendered optical
+        field, on whichever backend ``img`` lives on.
+        """
+        xp = get_array_module(img)
 
         # Efficiency of each camera pixel (apertures in the optical train, vignetting).
+        # Already on the render backend; see the _aperture property.
         if self._aperture is not None:
             img = img * self._aperture
 
@@ -447,25 +460,53 @@ class SimulatedCamera(Camera):
 
         # Basic noise sources.
         if self.noise is not None:
-            for key in self.noise.keys():
-                if key == 'dark':
-                    # Background/dark current - exposure dependent
-                    dark = self.noise['dark'](np.ones_like(img) * frame_bitresolution) * self.exposure_s
-                    img = img + dark
-                elif key == 'read':
-                    # Readout noise - exposure independent
-                    read = self.noise['read'](np.ones_like(img) * frame_bitresolution)
-                    img = img + read
-                else:
-                    raise RuntimeError('Unknown noise source %s specified!'%(key))
+            if hasattr(self.noise, "apply"):
+                img = self.noise.apply(img, self.exposure_s, frame_bitresolution)
+            else:   # A user-supplied dictionary of callables.
+                for key in self.noise.keys():
+                    if key == 'dark':
+                        # Background/dark current - exposure dependent
+                        dark = self.noise['dark'](xp.ones_like(img) * frame_bitresolution) * self.exposure_s
+                        img = img + dark
+                    elif key == 'read':
+                        # Readout noise - exposure independent
+                        read = self.noise['read'](xp.ones_like(img) * frame_bitresolution)
+                        img = img + read
+                    else:
+                        raise RuntimeError('Unknown noise source %s specified!' % (key))
+
+        return img
+
+    def _get_image_hw(self, timeout_s=0, quantize=True):
+        """
+        Calculates and returns a simulated farfield image.
+        Uses cached values from :attr:`_hologram` to speed up calculation.
+
+        The frame is left on whichever backend it was rendered on;
+        :meth:`.Camera.get_image()` decides whether to copy it to the host.
+
+        Parameters
+        ----------
+        timeout_s : float
+            Unused parameter for standard interface.
+        quantize : bool
+            Whether to apply the readout: clipping at saturation and casting to
+            :attr:`dtype`. :meth:`match_counts` passes ``False`` to measure the
+            collected signal before the readout discards the part of it below one count.
+
+        Returns
+        -------
+        numpy.ndarray OR cupy.ndarray
+            Array of shape :attr:`shape`
+        """
+        img = self._apply_response(self._render())
 
         if not quantize:
             return img
 
         # Truncate to valid readout range [0, 2**bitdepth - 1]
-        img = np.clip(img, 0, frame_bitresolution - 1)
-
-        return img.astype(self.dtype)
+        xp = get_array_module(img)
+        return xp.clip(img, 0, 2 ** self.bitdepth - 1).astype(self.dtype)
 
     def match_counts(self, reference, background=None):
         """
@@ -512,7 +553,7 @@ class SimulatedCamera(Camera):
             # Deliver the frame as get_image() would, so that a windowed or binned
             # camera is matched over the pixels it actually reads out.
             frame = self._get_image_hw(0, quantize=False)
-            total = float(np.sum(self.transform(self._crop_to_woi(frame))))
+            total = float(self.transform(self._crop_to_woi(frame)).sum())
         finally:
             (self.gain, self.noise) = (gain, noise)
             self._noise_spec = spec
@@ -573,12 +614,41 @@ class SimulatedCamera(Camera):
         :meth:`~slmsuite._pickling._Picklable.save()`. The callables themselves cannot
         be written to an ``.h5``; these two floats can.
         """
-        (dark, read) = (float(dark), float(read))
-
-        self.noise = {
-            "dark": lambda img, dark=dark: dark * img,
-            "read": lambda img, read=read: np.random.normal(0, read * img),
-        }
-        self._noise_spec = {"dark": dark, "read": read}
+        self.noise = GaussianDetectorNoise(dark, read)
 
         return self.noise
+
+class GaussianDetectorNoise:
+    """
+    Gaussian background and readout noise model for :class:`SimulatedCamera`.
+
+    Attributes
+    ----------
+    dark : float
+        Exposure-dependent dark current / fixed background pedestal rate, normalized to dynamic range.
+    read : float
+        Exposure-independent readout noise standard deviation, normalized to dynamic range.
+    """
+    def __init__(self, dark=0.0, read=0.0):
+        self.dark = float(dark)
+        self.read = float(read)
+
+    def apply(self, img, exposure_s, frame_bitresolution):
+        """
+        Adds the dark and read terms to ``img``, on whichever backend it lives on.
+        """
+        xp = get_array_module(img)
+        if self.dark != 0:
+            # Background/dark current; exposure dependent.
+            img = img + (self.dark * frame_bitresolution) * exposure_s
+        if self.read != 0:
+            # Readout noise; exposure independent.
+            read = xp.random.normal(0, self.read * frame_bitresolution, size=img.shape)
+            if img.dtype.kind == "f":
+                # normal() hands back float64; do not widen the frame on the way through.
+                read = read.astype(img.dtype, copy=False)
+            img = img + read
+        return img
+
+    def __repr__(self):
+        return f"GaussianDetectorNoise(dark={self.dark}, read={self.read})"

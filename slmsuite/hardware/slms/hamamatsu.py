@@ -30,6 +30,7 @@ from ctypes import *
 
 import numpy as np
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite.misc.xp import as_numpy
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
@@ -175,8 +176,7 @@ class Hamamatsu(SLM):
             this variable may be renamed in a future slmsuite release to
             conform with eventual implementation of this feature in other SLMs.
         """
-        if hasattr(display, "get"):
-            display = display.get()
+        display = as_numpy(display)   # The driver needs host memory.
 
         array_size = int(self.shape[0] * self.shape[1])
         write_fmemarray = Lcoslib.Write_FMemArray

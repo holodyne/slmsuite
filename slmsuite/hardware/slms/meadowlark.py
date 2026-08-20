@@ -25,6 +25,7 @@ from platform import system
 from typing import Union, Optional, Tuple, List
 
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite.misc.xp import as_numpy
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
@@ -624,8 +625,7 @@ class Meadowlark(SLM):
         timeout_s : float
             Timeout for SLM trigger.
         """
-        if hasattr(display, "get"):
-            display = display.get()
+        display = as_numpy(display)   # The driver needs host memory.
 
         slm_number = ctypes.c_uint(self.slm_number)
         if self.sdk_mode == _SDK_MODE.HDMI:

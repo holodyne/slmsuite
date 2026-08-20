@@ -5,6 +5,7 @@ the SLM's source and applied functions (e.g., lenses, Zernike polynomials).
 from functools import cached_property
 
 import numpy as np
+from slmsuite.misc.xp import get_array_module
 
 # The string ``spec`` keywords understood by :class:`Aperture`.
 _STRING_SPECS = ("circular", "elliptical", "cropped")
@@ -176,8 +177,9 @@ class Aperture:
 
         if isinstance(spec, str):
             # Calculate the half-extent (radius) of the grid, which is shift-invariant.
-            rx = (np.nanmax(x_grid) - np.nanmin(x_grid)) / 2
-            ry = (np.nanmax(y_grid) - np.nanmin(y_grid)) / 2
+            xp = get_array_module(x_grid)
+            rx = float((xp.nanmax(x_grid) - xp.nanmin(x_grid)) / 2)
+            ry = float((xp.nanmax(y_grid) - xp.nanmin(y_grid)) / 2)
             if spec == "elliptical":
                 x_scale = 1 / rx
                 y_scale = 1 / ry

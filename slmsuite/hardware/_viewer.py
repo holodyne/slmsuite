@@ -13,6 +13,7 @@ import numpy as np
 import PIL
 
 from slmsuite.holography.analysis import _center, image_centroids, image_remove_field
+from slmsuite.misc.xp import as_numpy
 from slmsuite.misc.files import generate_path, save_h5
 
 _CROSSHAIR_OPTIONS = [
@@ -302,10 +303,7 @@ class _ViewerObject:
         is_cam = not self.parent.is_slm
 
         if img is not None:
-            if hasattr(img, "get"):
-                self.last_image = img.get()
-            else:
-                self.last_image = img
+            self.last_image = as_numpy(img)     # The renderers are host-only.
         if self.last_image is None:
             # No frame has been captured yet (e.g. a fresh camera, or one whose
             # last_image was invalidated by a WOI/shape change). Render a blank

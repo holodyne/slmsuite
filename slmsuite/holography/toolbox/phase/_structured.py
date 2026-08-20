@@ -7,6 +7,7 @@ from scipy import special
 
 from slmsuite.holography.toolbox import _process_grid
 from slmsuite.holography.toolbox.phase._misc import _determine_source_radius
+from slmsuite.misc.xp import get_array_module, as_numpy
 
 
 # Structured light.
@@ -52,18 +53,20 @@ def laguerre_gaussian(grid, l, p=0, w=None):
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_array_module(x_grid)
 
     w = _determine_source_radius(grid, w)
 
-    theta_grid = np.arctan2(y_grid, x_grid)
+    theta_grid = xp.arctan2(y_grid, x_grid)
     rr_grid = y_grid * y_grid + x_grid * x_grid
 
-    canvas = np.zeros_like(x_grid)
+    canvas = xp.zeros_like(x_grid)
 
     if l != 0:
         canvas += l * theta_grid
     if p != 0:
-        canvas += np.pi * np.heaviside(-special.genlaguerre(p, np.abs(l))(2 * rr_grid / w / w), 0)
+        lag = special.genlaguerre(p, np.abs(l))(as_numpy(2 * rr_grid / w / w))
+        canvas += np.pi * xp.asarray(np.heaviside(-lag, 0))
 
     return canvas
 
@@ -94,12 +97,15 @@ def hermite_gaussian(grid, n, m, w=None):
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_array_module(x_grid)
     w = _determine_source_radius(grid, w)
 
     factor = np.sqrt(2) / w
 
     # Generate the amplitude of a Hermite-Gaussian mode.
-    phase = special.hermite(n)(factor * x_grid) * special.hermite(m)(factor * y_grid)
+    phase = xp.asarray(
+        special.hermite(n)(as_numpy(factor * x_grid)) * special.hermite(m)(as_numpy(factor * y_grid))
+    )
 
     # This is real, so the phase is just the sign of the mode. This produces a
     # checkerboard pattern. Probably could make this faster by bitflipping rows and columns.

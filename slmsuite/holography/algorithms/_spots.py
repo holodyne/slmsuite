@@ -570,10 +570,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         (knm integers divided by shape)
         """
         # Grab the target.
-        target = self.target
-        if hasattr(target, "get"):
-            target = self.target.get()
-        target = target.reshape(1,-1,1)
+        target = as_numpy(self.target).reshape(1,-1,1)
 
         spot_knm_norm = toolbox.convert_vector(
             self.spot_kxy,

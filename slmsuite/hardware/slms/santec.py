@@ -25,6 +25,7 @@ import cv2
 import warnings
 
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite.misc.xp import as_numpy
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
@@ -406,8 +407,7 @@ class Santec(SLM):
         display
             Integer data to display on the SLM. See :meth:`.SLM._set_phase_hw`.
         """
-        if hasattr(display, "get"):
-            display = display.get()
+        display = as_numpy(display)   # The driver needs host memory.
 
         matrix = display.astype(slm_funcs.USHORT)
         n_h, n_w = self.shape

@@ -13,6 +13,9 @@ from scipy.ndimage import gaussian_filter1d as sp_gaussian_filter1d
 from scipy.ndimage import affine_transform as sp_affine_transform
 from scipy.ndimage import gaussian_filter as sp_gaussian_filter
 
+# Shared host/device helpers, re-exported to every algorithms module via `import *`.
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
+
 # Try to import cupy, but revert to base numpy/scipy upon ImportError.
 try:
     import cupy as cp                                                           # type: ignore

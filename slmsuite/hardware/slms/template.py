@@ -3,6 +3,7 @@ Template for writing a subclass for SLM hardware control in :mod:`slmsuite`.
 Outlines which SLM superclass functions must be implemented.
 """
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite.misc.xp import as_numpy
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
@@ -112,8 +113,7 @@ class Template(SLM):
         display
             Integer data to display on the SLM. See :meth:`.SLM._set_phase_hw`.
         """
-        if hasattr(display, "get"):
-            display = display.get()
+        display = as_numpy(display)   # The driver needs host memory.
         # TODO: Insert code here to write raw phase data to the SLM.
         raise NotImplementedError()
 

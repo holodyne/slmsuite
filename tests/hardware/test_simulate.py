@@ -13,9 +13,11 @@ import numpy as np
 import pytest
 
 from slmsuite.hardware.cameraslms import FourierSLM
-from slmsuite.hardware.cameras.simulated import SimulatedCamera
+from slmsuite.hardware.cameras.simulated import GaussianDetectorNoise, SimulatedCamera
 from slmsuite.hardware.slms.simulated import SimulatedSLM
+from slmsuite.holography import toolbox
 from slmsuite.holography.analysis.files import load_h5, save_h5
+from slmsuite.misc.xp import as_numpy, cp
 from slmsuite.holography.toolbox.phase import blaze, zernike_sum
 
 from conftest import (
@@ -97,7 +99,7 @@ class TestSimulateFidelity:
             fs.slm.set_phase(phase)
             fs_sim.slm.set_phase(phase)
             assert np.array_equal(
-                np.asarray(fs.slm.display), np.asarray(fs_sim.slm.display)
+                as_numpy(fs.slm.display), as_numpy(fs_sim.slm.display)
             )
             assert np.array_equal(fs.cam.get_image(), fs_sim.cam.get_image())
 
@@ -248,8 +250,8 @@ class TestSimulateSLMCharacteristics:
             assert np.allclose(fs_sim.slm.gamma_sim, gamma)
 
         with subtests.test("quantization table is cloned"):
-            assert np.array_equal(np.asarray(fs_sim.slm.gamma), np.asarray(fs.slm.gamma))
-            assert np.array_equal(np.asarray(fs_sim.slm.lut), np.asarray(fs.slm.lut))
+            assert np.array_equal(as_numpy(fs_sim.slm.gamma), as_numpy(fs.slm.gamma))
+            assert np.array_equal(as_numpy(fs_sim.slm.lut), as_numpy(fs.slm.lut))
 
         with subtests.test("image is identical"):
             assert np.array_equal(fs.cam.get_image(), fs_sim.cam.get_image())
@@ -271,7 +273,7 @@ class TestSimulateSLMCharacteristics:
 
         with subtests.test("mask is cloned"):
             assert np.array_equal(
-                np.asarray(fs_sim.slm.aperture_mask), np.asarray(fs.slm.aperture_mask)
+                as_numpy(fs_sim.slm.aperture_mask), as_numpy(fs.slm.aperture_mask)
             )
 
         with subtests.test("a default aperture is left alone"):
@@ -286,7 +288,7 @@ class TestSimulateSLMCharacteristics:
         """
         fs = _calibrated("matched")
         aberration = zernike_sum(fs.slm, (4, 7), (2.0, -1.5))
-        amplitude = np.abs(np.asarray(fs.slm.source["amplitude_sim"]))
+        amplitude = np.abs(as_numpy(fs.slm.source["amplitude_sim"]))
 
         # Stand in for a wavefront calibration: the measurement is the correction.
         fs.slm.source["phase"] = -aberration
@@ -296,8 +298,8 @@ class TestSimulateSLMCharacteristics:
         fs_sim = fs.simulate()
 
         with subtests.test("truth is the aberration, not the correction"):
-            assert np.allclose(fs_sim.slm.source["phase_sim"], aberration)
-            assert np.allclose(fs_sim.slm.source["amplitude_sim"], amplitude)
+            assert np.allclose(as_numpy(fs_sim.slm.source["phase_sim"]), as_numpy(aberration))
+            assert np.allclose(as_numpy(fs_sim.slm.source["amplitude_sim"]), as_numpy(amplitude))
 
         with subtests.test("applying the correction flattens the wavefront"):
             # The unquantized render, since a corrected spot saturates the readout.
@@ -315,9 +317,9 @@ class TestSimulateSLMCharacteristics:
         for key in ("amplitude_sim", "phase_sim"):
             with subtests.test(key):
                 assert fs_sim.slm.source[key] is not fs.slm.source[key]
-                before = np.array(fs.slm.source[key])
+                before = np.array(as_numpy(fs.slm.source[key]))
                 fs_sim.slm.source[key] *= 0
-                assert np.array_equal(fs.slm.source[key], before)
+                assert np.array_equal(as_numpy(fs.slm.source[key]), before)
 
     def test_source_override(self):
         """``source=`` injects a known truth, e.g. to test what a calibration recovers."""
@@ -326,8 +328,8 @@ class TestSimulateSLMCharacteristics:
 
         fs_sim = fs.simulate(source={"phase_sim": injected})
 
-        assert np.allclose(fs_sim.slm.source["phase_sim"], injected)
-        assert not np.allclose(fs.slm.source["phase_sim"], injected)
+        assert np.allclose(as_numpy(fs_sim.slm.source["phase_sim"]), as_numpy(injected))
+        assert not np.allclose(as_numpy(fs.slm.source["phase_sim"]), as_numpy(injected))
 
     def test_settle_time(self, subtests):
         fs = _calibrated("matched")
@@ -473,7 +475,7 @@ class TestLoad:
 
         with subtests.test("measured source"):
             assert np.allclose(
-                fs_loaded.slm.source["amplitude_sim"], fs.slm.source["amplitude_sim"]
+                as_numpy(fs_loaded.slm.source["amplitude_sim"]), as_numpy(fs.slm.source["amplitude_sim"])
             )
 
         with subtests.test("camera is still placed"):
@@ -545,20 +547,20 @@ class TestSaveLoadRoundTrip:
             assert np.allclose(slm.gamma_sim, fs_sim.slm.gamma_sim)
 
         with subtests.test("gamma and its lookup table, rebuilt from the calibration"):
-            assert np.allclose(slm.gamma, fs_sim.slm.gamma)
-            assert np.array_equal(slm.lut, fs_sim.slm.lut)
+            assert np.allclose(as_numpy(slm.gamma), as_numpy(fs_sim.slm.gamma))
+            assert np.array_equal(as_numpy(slm.lut), as_numpy(fs_sim.slm.lut))
 
         with subtests.test("aperture"):
             assert slm.aperture.spec == fs_sim.slm.aperture.spec
             assert np.allclose(slm.aperture.center, fs_sim.slm.aperture.center)
 
         with subtests.test("displayed phase"):
-            assert np.allclose(slm.phase, fs_sim.slm.phase)
-            assert np.array_equal(slm.display, fs_sim.slm.display)
+            assert np.allclose(as_numpy(slm.phase), as_numpy(fs_sim.slm.phase))
+            assert np.array_equal(as_numpy(slm.display), as_numpy(fs_sim.slm.display))
 
         with subtests.test("source"):
             for key in ("amplitude_sim", "phase_sim"):
-                assert np.allclose(slm.source[key], fs_sim.slm.source[key])
+                assert np.allclose(as_numpy(slm.source[key]), as_numpy(fs_sim.slm.source[key]))
 
         with subtests.test("detector characteristics"):
             assert cam.gain == fs_sim.cam.gain
@@ -726,7 +728,8 @@ class TestSimulateRadiometry:
         fs_sim = fs.simulate(background=background)
 
         with subtests.test("noise is fit"):
-            assert set(fs_sim.cam.noise) == {"dark", "read"}
+            assert isinstance(fs_sim.cam.noise, GaussianDetectorNoise)
+            assert fs_sim.cam.noise.dark > 0 and fs_sim.cam.noise.read > 0
 
         with subtests.test("reproduces the background statistics"):
             # Zero the gain so only the noise terms remain.
@@ -775,4 +778,269 @@ class TestSimulateRadiometry:
             assert img.max() <= max_val
             if fs.cam.dtype == np.uint16 and fs.cam.bitdepth < 16:
                 assert not np.any(img == 65535)
+
+
+HAS_CUPY = cp is not np
+requires_cupy = pytest.mark.skipif(not HAS_CUPY, reason="CuPy is not installed.")
+
+
+class TestSimulateGPUAcceleration:
+    """Tests for GPU (CuPy) acceleration and CPU/GPU parity in simulated hardware."""
+
+    def test_gpu_auto_detection_and_explicit_flags(self, subtests):
+        fs = _calibrated("matched")
+
+        with subtests.test("simulate inherits hardware SLM backend by default"):
+            fs_auto = fs.simulate(gpu=None)
+            assert fs_auto.slm.xp is fs.slm.xp
+
+        with subtests.test("gpu=False forces CPU NumPy"):
+            fs_cpu = fs.simulate(gpu=False)
+            assert fs_cpu.slm.xp is np
+
+        if HAS_CUPY:
+            with subtests.test("gpu=True uses CuPy"):
+                fs_gpu = fs.simulate(gpu=True)
+                assert fs_gpu.slm.xp is cp
+
+            with subtests.test("simulate from GPU SLM defaults to GPU clone"):
+                fs_gpu_clone = fs_gpu.simulate(gpu=None)
+                assert fs_gpu_clone.slm.xp is cp
+
+    @requires_cupy
+    def test_plot_after_a_device_capture(self):
+        """
+        ``last_image`` follows ``get=``, and FeedbackHologram.measure() captures with
+        ``get=False``, so plotting the stored frame must not assume host memory.
+        """
+        import matplotlib
+        matplotlib.use("Agg")
+
+        fs_sim = _calibrated("matched").simulate(gpu=True)
+        fs_sim.cam.get_image(get=False)
+
+        assert isinstance(fs_sim.cam.last_image, cp.ndarray)
+        fs_sim.cam.plot(image=False)     # Raised TypeError while this assumed numpy.
+
+    @requires_cupy
+    def test_camera_aperture_is_stored_on_the_render_backend(self, subtests):
+        """
+        The pixel-efficiency map is multiplied into every rendered frame, so storing it
+        on the host would re-upload it per capture (0.6 ms at 1100x1440).
+        """
+        fs_sim = _calibrated("matched").simulate(gpu=True)
+
+        with subtests.test("a host assignment lands on the device"):
+            fs_sim.cam._aperture = np.random.rand(*fs_sim.cam._shape)
+            assert isinstance(fs_sim.cam._aperture, cp.ndarray)
+
+        with subtests.test("None stays None"):
+            fs_sim.cam._aperture = None
+            assert fs_sim.cam._aperture is None
+
+    @requires_cupy
+    def test_get_image_hw_renders_on_device(self):
+        """The render never leaves the GPU; the host copy is get_image()'s decision."""
+        fs_sim = _calibrated("matched").simulate(gpu=True)
+
+        assert isinstance(fs_sim.cam._get_image_hw(0), cp.ndarray)
+        assert isinstance(fs_sim.cam._get_image_hw(0, quantize=False), cp.ndarray)
+
+    def test_load_gpu_propagation(self, temp_dir, subtests):
+        fs = _calibrated("matched")
+        path = fs.save(path=temp_dir, name="gpu_load_test")
+
+        with subtests.test("load with gpu=False produces CPU simulation"):
+            fs_cpu = FourierSLM.load(path, gpu=False)
+            assert fs_cpu.slm.xp is np
+
+        if HAS_CUPY:
+            with subtests.test("load with gpu=None produces GPU simulation"):
+                fs_gpu = FourierSLM.load(path, gpu=None)
+                assert fs_gpu.slm.xp is cp
+
+    def test_gaussian_detector_noise_model(self, subtests):
+        model = GaussianDetectorNoise(dark=0.01, read=0.02)
+
+        with subtests.test("apply on CPU"):
+            arr = np.zeros((10, 10), dtype=np.float32)
+            noisy = model.apply(arr, exposure_s=1.0, frame_bitresolution=256)
+            assert isinstance(noisy, np.ndarray)
+            assert noisy.shape == (10, 10)
+            # The model must not widen the frame it is handed.
+            assert noisy.dtype == np.float32
+
+        with subtests.test("the two scalars survive a save"):
+            assert model.dark == 0.01 and model.read == 0.02
+
+        if HAS_CUPY:
+            with subtests.test("apply on GPU"):
+                arr_gpu = cp.zeros((10, 10), dtype=cp.float32)
+                noisy_gpu = model.apply(arr_gpu, exposure_s=1.0, frame_bitresolution=256)
+                assert isinstance(noisy_gpu, cp.ndarray)
+                assert noisy_gpu.shape == (10, 10)
+                assert noisy_gpu.dtype == cp.float32
+
+    @requires_cupy
+    def test_camera_get_image_zero_copy(self, subtests):
+        fs = _calibrated("matched")
+        fs_sim = fs.simulate(gpu=True)
+
+        with subtests.test("get_image(get=True) returns host numpy ndarray"):
+            img_host = fs_sim.cam.get_image(get=True)
+            assert isinstance(img_host, np.ndarray)
+
+        with subtests.test("get_image(get=False) returns GPU cupy ndarray"):
+            img_gpu = fs_sim.cam.get_image(get=False)
+            assert isinstance(img_gpu, cp.ndarray)
+            assert np.array_equal(img_host, img_gpu.get())
+
+    @requires_cupy
+    def test_slm_grid_gpu_phase_generation(self, subtests):
+        from slmsuite.hardware.slms.simulated import SimulatedSLM
+        from slmsuite.holography.toolbox.phase import blaze, lens, axicon, laguerre_gaussian, hermite_gaussian
+
+        slm_gpu = SimulatedSLM((128, 128), gpu=True)
+
+        with subtests.test("slm.grid resides on GPU"):
+            assert isinstance(slm_gpu.grid[0], cp.ndarray)
+            assert isinstance(slm_gpu.grid[1], cp.ndarray)
+            assert isinstance(as_numpy(slm_gpu.grid[0]), np.ndarray)
+
+        with subtests.test("blaze on GPU grid"):
+            b = blaze(slm_gpu, (1, 1))
+            assert isinstance(b, cp.ndarray)
+
+        with subtests.test("lens on GPU grid"):
+            l = lens(slm_gpu, 100)
+            assert isinstance(l, cp.ndarray)
+
+        with subtests.test("axicon on GPU grid"):
+            a = axicon(slm_gpu, 100, w=50)
+            assert isinstance(a, cp.ndarray)
+
+        with subtests.test("laguerre_gaussian on GPU grid"):
+            lg = laguerre_gaussian(slm_gpu, 1, 0, w=50)
+            assert isinstance(lg, cp.ndarray)
+
+        with subtests.test("hermite_gaussian on GPU grid"):
+            hg = hermite_gaussian(slm_gpu, 1, 1, w=50)
+            assert isinstance(hg, cp.ndarray)
+
+    @requires_cupy
+    def test_every_slm_array_lives_on_xp(self, subtests):
+        """
+        The backend invariant: a ``gpu=True`` SLM holds *all* of its arrays on
+        :attr:`SLM.xp`. Anything left on the host strands a later
+        ``source["phase"] + zernike_sum(slm, ...)`` across two backends, which CuPy
+        refuses to evaluate.
+        """
+        from slmsuite.hardware.slms.simulated import SimulatedSLM
+
+        slm = SimulatedSLM((128, 128), gpu=True)
+        slm.set_aperture("circular")
+
+        # Deliberately host writes, as a vendor correction file, a reloaded .h5, or a
+        # wavefront calibration performs. These must be moved onto the device on store.
+        slm.source["phase"] = np.zeros(slm.shape)
+        slm.source.update({"amplitude": np.ones(slm.shape), "r2_threshold": 0.8})
+
+        on_device = {
+            "grid": slm.grid[0],
+            "aperture_mask": slm.aperture_mask,
+            "source['phase'] (written from host)": slm.source["phase"],
+            "source['amplitude'] (written from host)": slm.source["amplitude"],
+            "source['amplitude_sim']": slm.source["amplitude_sim"],
+            "_get_source_amplitude()": slm._get_source_amplitude(),
+            "_get_source_phase()": slm._get_source_phase(),
+            "zernike_sum(slm, ...)": zernike_sum(slm, (4, 7), (1.0, 2.0)),
+            "blaze(slm, ...)": blaze(slm, (0.01, 0.01)),
+        }
+        for name, array in on_device.items():
+            with subtests.test(name):
+                assert isinstance(array, cp.ndarray)
+
+        with subtests.test("non-array source values are stored untouched"):
+            assert slm.source["r2_threshold"] == 0.8
+
+        with subtests.test("a host source no longer strands the device phase functions"):
+            # This raised TypeError while source was left on whichever backend wrote it.
+            assert isinstance(
+                slm.source["phase"] + zernike_sum(slm, (4,), (1.0,)), cp.ndarray
+            )
+
+        with subtests.test("as_numpy is the host escape hatch"):
+            assert isinstance(as_numpy(slm.grid[0]), np.ndarray)
+
+        with subtests.test("|= is coerced too, not just []= and update()"):
+            # dict.__ior__ is a C-level slot that bypasses a __setitem__ override.
+            slm.source |= {"phase": np.zeros(slm.shape)}
+            assert isinstance(slm.source["phase"], cp.ndarray)
+
+    def test_source_follows_a_cpu_slm(self, subtests):
+        """The same invariant in reverse: a CPU SLM never acquires device arrays."""
+        from slmsuite.hardware.slms.simulated import SimulatedSLM
+
+        slm = SimulatedSLM((128, 128), gpu=False)
+        if HAS_CUPY:
+            slm.source["phase"] = cp.zeros(slm.shape)
+        else:
+            slm.source["phase"] = np.zeros(slm.shape)
+
+        assert isinstance(slm.source["phase"], np.ndarray)
+        assert isinstance(zernike_sum(slm, (4,), (1.0,)), np.ndarray)
+
+    @requires_cupy
+    def test_slm_plot_source_gpu(self):
+        from slmsuite.hardware.slms.simulated import SimulatedSLM
+        slm_gpu = SimulatedSLM((128, 128), gpu=True)
+        # Should not throw TypeError about implicit conversion to numpy array
+        axs = slm_gpu.plot_source(sim=True)
+        assert len(axs) == 2
+
+    @requires_cupy
+    def test_set_source_analytic_gpu(self, subtests):
+        """The fit functions are host-only, but the source they set is not."""
+        from slmsuite.hardware.slms.simulated import SimulatedSLM
+        slm_gpu = SimulatedSLM((128, 128), gpu=True)
+
+        source = slm_gpu.set_source_analytic("gaussian2d", units="frac", sim=True)
+
+        for key in ("amplitude_sim", "phase_sim"):
+            with subtests.test(key):
+                assert isinstance(source[key], cp.ndarray)
+                assert source[key].shape == slm_gpu.shape
+
+        with subtests.test("the profile is a centered gaussian"):
+            amp = as_numpy(source["amplitude_sim"])
+            assert amp[64, 64] == pytest.approx(amp.max())
+
+    @requires_cupy
+    def test_imprint_onto_host_canvas_from_device_grid(self):
+        """The documented imprint() recipe holds when slm.grid lives on the GPU."""
+        from slmsuite.hardware.slms.simulated import SimulatedSLM
+        slm_gpu = SimulatedSLM((128, 128), gpu=True)
+
+        canvas = np.zeros(slm_gpu.shape)
+        toolbox.imprint(
+            canvas, (0, 64, 0, 64), toolbox.phase.blaze, slm_gpu, vector=(0.01, 0.01)
+        )
+
+        assert isinstance(canvas, np.ndarray)
+        assert np.any(canvas[:64, :64] != 0)
+        assert np.all(canvas[64:, 64:] == 0)
+
+    @requires_cupy
+    def test_get_image_stays_on_device_when_averaging(self, subtests):
+        """get=False must not be quietly dropped by the averaging path."""
+        fs_sim = _calibrated("matched").simulate(gpu=True)
+
+        with subtests.test("averaged frame stays on the device"):
+            assert isinstance(fs_sim.cam.get_image(get=False, averaging=4), cp.ndarray)
+
+        with subtests.test("and matches the host result"):
+            assert np.array_equal(
+                as_numpy(fs_sim.cam.get_image(get=False, averaging=4)),
+                fs_sim.cam.get_image(averaging=4),
+            )
 
