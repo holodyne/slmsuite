@@ -11,6 +11,7 @@ from slmsuite._plotting import _slmsuite_plt_show
 import warnings
 
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.misc.xp import as_backend, get_array_module
 from slmsuite.holography.toolbox._aperture import Aperture as Aperture
 from slmsuite._logging import make_logger
 
@@ -939,21 +940,22 @@ def imprint(
                 "grid cannot be None if a function is given; None is a float-only option."
             )
 
+    # Evaluate the function on the windowed grid. The grid and the canvas need not
+    # share a backend (a GPU slm.grid is often imprinted onto a host matrix), so land
+    # the result on the canvas' backend before writing it in.
+    if not is_float:
+        function = as_backend(
+            function(
+                transform_grid((x_grid[slice_], y_grid[slice_]), transform, shift), **kwargs
+            ),
+            get_array_module(matrix),
+        )
+
     # Modify the matrix.
     if imprint_operation == "replace":
-        if is_float:
-            matrix[slice_] = function
-        else:
-            matrix[slice_] = function(
-                transform_grid((x_grid[slice_], y_grid[slice_]), transform, shift), **kwargs
-            )
+        matrix[slice_] = function
     elif imprint_operation == "add":
-        if is_float:
-            matrix[slice_] += function
-        else:
-            matrix[slice_] += function(
-                transform_grid((x_grid[slice_], y_grid[slice_]), transform, shift), **kwargs
-            )
+        matrix[slice_] += function
     else:
         raise ValueError("Unrecognized imprint operation {}.".format(imprint_operation))
 

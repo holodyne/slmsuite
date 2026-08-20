@@ -1,5 +1,6 @@
 from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._hologram import Hologram
+from slmsuite.misc.xp import as_numpy, get_array_module, is_gpu_array
 
 
 # Transparent cache of the ``"ij"`` -> ``"knm"`` transformation, keyed on
@@ -373,9 +374,8 @@ class FeedbackHologram(Hologram):
 
         # FUTURE: use cp_gaussian_filter (faster?); was having trouble with cp_gaussian_filter.
         if blur_ij > 0:
-            if hasattr(img, "get"):
-                img = img.get()
-            img = sp_gaussian_filter(img, (blur_ij, blur_ij), truncate=2)
+            # scipy's filter is host-only.
+            img = sp_gaussian_filter(as_numpy(img), (blur_ij, blur_ij), truncate=2)
 
         # The composite transformation is pure geometry, so it is derived once and
         # cached across the repeated calls made by set_target() and measure().
@@ -483,7 +483,14 @@ class FeedbackHologram(Hologram):
         if self.img_ij is None and (basis == "knm" or basis == "ij"):
             # Measure the result.
             self.cameraslm.cam.flush()
-            self.img_ij = np.array(self.cameraslm.cam.get_image(), copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype)
+            # get=False so that a simulated camera's frame never crosses the bus.
+            raw_img = self.cameraslm.cam.get_image(get=False)
+            if is_gpu_array(raw_img):
+                self.img_ij = cp.asarray(raw_img, dtype=self.dtype)
+            else:
+                self.img_ij = np.array(
+                    raw_img, copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype
+                )
 
             if basis == "knm":  # Compute the knm basis image.
                 # Window by the ROI, when there is one: the rest of the frame
@@ -498,13 +505,15 @@ class FeedbackHologram(Hologram):
             else:  # The old image is outdated, erase it. FUTURE: memory concerns?
                 self.img_knm = None
 
-            self.img_ij = np.sqrt(self.img_ij)  # Don't load to the GPU if not necessary.
+            xp_ij = get_array_module(self.img_ij)
+            self.img_ij = xp_ij.sqrt(self.img_ij)
         elif basis == "knm":
             if self.img_knm is None:
                 # Square the window, not the frame; img_ij is amplitude by this
                 # point.
+                xp_ij = get_array_module(self.img_ij)
                 self.img_knm = self.ijcam_to_knmslm(
-                    np.square(self._roi_window(self.img_ij)),
+                    xp_ij.square(self._roi_window(self.img_ij)),
                     out=self.img_knm,
                     roi=self.target_ij_roi,
                 )

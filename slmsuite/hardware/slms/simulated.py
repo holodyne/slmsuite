@@ -3,7 +3,8 @@ A simulated SLM.
 """
 
 import numpy as np
-from slmsuite.hardware.slms.slm import SLM, _xp
+from slmsuite.hardware.slms.slm import SLM
+from slmsuite.misc.xp import as_backend, get_array_module
 
 class SimulatedSLM(SLM):
     r"""
@@ -61,8 +62,8 @@ class SimulatedSLM(SLM):
         self.gamma_sim = gamma_sim
 
         if not source:
-            self.source["amplitude_sim"] = np.ones_like(self.grid[0])
-            self.source["phase_sim"] = np.zeros_like(self.grid[0])
+            self.source["amplitude_sim"] = self.xp.ones_like(self.grid[0])
+            self.source["phase_sim"] = self.xp.zeros_like(self.grid[0])
         else:
             # assert np.all([source[kw].shape == self.shape for kw in source.keys()]
             # ), "The shape of the provided phase profile must match the SLM resolution!"
@@ -72,15 +73,16 @@ class SimulatedSLM(SLM):
             # measured phase is the *correction* for an aberration, so the aberration
             # this SLM simulates is its negative. Whichever half was never measured
             # defaults to ideal illumination.
+            # source is a _Source, so anything stored above already landed on self.xp.
             if "amplitude_sim" not in self.source:
                 amplitude = self.source.get("amplitude", None)
                 phase = self.source.get("phase", None)
 
                 self.source["amplitude_sim"] = (
-                    np.ones_like(self.grid[0]) if amplitude is None else amplitude
+                    self.xp.ones_like(self.grid[0]) if amplitude is None else amplitude
                 )
                 self.source["phase_sim"] = (
-                    np.zeros_like(self.grid[0]) if phase is None else -phase
+                    self.xp.zeros_like(self.grid[0]) if phase is None else -phase
                 )
 
         self.set_phase(None)
@@ -115,12 +117,19 @@ class SimulatedSLM(SLM):
         self.gamma_sim = data.get("gamma_sim", None)
         super()._unpickle(data)
 
-    def _display2phase(self, display, dtype=float):
-        """Phase realized by the integer ``display``, including any simulated response."""
+    def _display2phase(self, display, dtype=np.float32):
+        """
+        Converts integer display array to floating-point phase realizing the simulated
+        phase response (gamma_sim) or ideal linear response.
+        """
+        xp = get_array_module(display)
         if self.gamma_sim is None:
-            return display.astype(dtype) * (self._gamma_sign * 2 * np.pi / self.bitresolution)
+            return (
+                display.astype(dtype)
+                * (self._gamma_sign * 2 * np.pi / self.phase_scaling / self.bitresolution)
+            )
 
-        gamma_sim = _xp(display).asarray(self.gamma_sim, dtype=dtype)
+        gamma_sim = as_backend(self.gamma_sim, xp).astype(dtype)
         return gamma_sim[display] * (self._gamma_sign * 2 * np.pi)
 
     def close(self):

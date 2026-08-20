@@ -24,11 +24,7 @@ from slmsuite.hardware.cameraslms._settle import _SettleCalibration
 from slmsuite.hardware.cameraslms._wavefront import _WavefrontCalibration
 
 
-def _to_numpy(array):
-    """Host copy of ``array``, which may live in GPU memory. Passes ``None`` through."""
-    if array is None or not hasattr(array, "get"):
-        return array
-    return array.get()
+from slmsuite.misc.xp import as_numpy
 
 
 class CameraSLM(_Loggable):
@@ -290,7 +286,7 @@ class FourierSLM(
         # Size of the calibration point window relative to the spot radius.
         self._wavefront_calibration_window_multiplier = 4
 
-    def simulate(self, reference=None, background=None, settle=False, source=None):
+    def simulate(self, reference=None, background=None, settle=False, source=None, gpu=None):
         r"""
         Clones the hardware-based experiment into a simulation, such that the same
         algorithm can be run against either and the results compared.
@@ -359,6 +355,12 @@ class FourierSLM(
             applied on top of the copy taken from the hardware. Use this to set a
             simulated truth (``"amplitude_sim"``, ``"phase_sim"``) other than the
             measured one.
+        gpu : bool OR None
+            Whether the clone stores and processes data with :mod:`cupy` on the GPU
+            (see :attr:`~slmsuite.hardware.slms.slm.SLM.xp`). Defaults to ``None``, which
+            **inherits the backend of the SLM being cloned** so that the clone matches the
+            original. Note this differs from ``gpu=None`` elsewhere, which means "use
+            :mod:`cupy` if it is installed"; a clone has an original to copy instead.
 
         Returns
         -------
@@ -370,7 +372,7 @@ class FourierSLM(
         if not "fourier" in self.calibrations:
             raise ValueError("Cannot simulate() a FourierSLM without a Fourier calibration.")
 
-        slm_sim = self._simulate_slm(settle=settle, source=source)
+        slm_sim = self._simulate_slm(settle=settle, source=source, gpu=gpu)
         cam_sim = self._simulate_cam(slm_sim)
 
         # Combine the two and pass FourierSLM attributes from hardware. type(self) so
@@ -395,36 +397,39 @@ class FourierSLM(
 
         return fs_sim
 
-    def _simulate_slm(self, settle=False, source=None):
+    def _simulate_slm(self, settle=False, source=None, gpu=None):
         """
         The :class:`~slmsuite.hardware.slms.simulated.SimulatedSLM` half of
         :meth:`simulate()`. See that method for the parameters.
         """
-        # The measured phase response, which the clone both quantizes through and
-        # realizes. numpy: SimulatedSLM.gamma_sim cannot read GPU memory.
-        gamma = _to_numpy(self.slm.gamma)
+        # The measured phase response, which the clone quantizes through.
+        gamma = as_numpy(self.slm.gamma)
+        gamma_sim = as_numpy(getattr(self.slm, "gamma_sim", None))
+        if gamma_sim is None and gamma is not None:
+            gamma_sim = gamma
 
         # The simulated truth. The aperture-masked source is what the hardware actually
         # uses, so it is what the simulation should reproduce; note the sign, as the
         # measured phase is the *correction* for the aberration we want to simulate.
         source_sim = copy.deepcopy(self.slm.source)
         if "amplitude_sim" not in source_sim:
-            source_sim["amplitude_sim"] = _to_numpy(self.slm._get_source_amplitude())
-            source_sim["phase_sim"] = -_to_numpy(self.slm._get_source_phase())
+            source_sim["amplitude_sim"] = as_numpy(self.slm._get_source_amplitude())
+            source_sim["phase_sim"] = -as_numpy(self.slm._get_source_phase())
         if source is not None:
             source_sim.update(source)
 
+        gpu = (self.slm.xp is not np) if gpu is None else gpu
         slm_sim = SimulatedSLM(
             np.flip(self.slm.shape),
             source=source_sim,
-            gamma_sim=gamma,
+            gamma_sim=gamma_sim,
             bitdepth=self.slm.bitdepth,
             name=self.slm.name+"_sim",
             wav_um=self.slm.wav_um,
             wav_design_um=self.slm.wav_design_um,
             pitch_um=self.slm.pitch_um,
             settle_time_s=self.slm.settle_time_s if settle else 0,
-            gpu=self.slm.xp is not np,
+            gpu=gpu,
         )
 
         # Quantize through the same lookup table that the hardware does.
@@ -529,7 +534,7 @@ class FourierSLM(
         return cls
 
     @classmethod
-    def load(cls, file_path : str):
+    def load(cls, file_path : str, gpu=None):
         """
         Rebuilds a system as a simulation from the metadata in an :mod:`slmsuite` file,
         without the hardware present. Both a calibration written by
@@ -574,6 +579,14 @@ class FourierSLM(
         ----------
         file_path : str
             Path to the ``.h5`` file to read.
+        gpu : bool OR None
+            Whether to store and process data with :mod:`cupy` on the GPU
+            (see :attr:`~slmsuite.hardware.slms.slm.SLM.xp`). Defaults to ``None``, using
+            :mod:`cupy` whenever it is installed --- deliberately unlike
+            :meth:`~slmsuite.hardware.slms.slm.SLM.__init__`, which defaults to ``False``.
+            There is no hardware here to match, and what is rebuilt is a simulation, whose
+            phase synthesis and rendering are the parts that benefit from the GPU. Pass
+            ``gpu=False`` for host arrays throughout.
 
         Returns
         -------
@@ -607,6 +620,7 @@ class FourierSLM(
             wav_design_um=slm_data["wav_design_um"],
             source=slm_data.get("source", None),
             name=slm_data["name"],
+            gpu=gpu,
         )
         cam = SimulatedCamera(
             slm=slm,

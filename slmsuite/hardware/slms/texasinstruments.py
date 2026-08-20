@@ -47,7 +47,6 @@ the display can silently fail to reach the mirrors.
 import yaml
 import os
 import time
-import warnings
 from enum import IntEnum
 import numpy as np
 from slmsuite.hardware._pyglet import ( _WindowThread, _screen_ids,
@@ -55,18 +54,10 @@ from slmsuite.hardware._pyglet import ( _WindowThread, _screen_ids,
                                        _wait_for_screens_settled)
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
 from slmsuite.hardware.slms.slm import LUT_SIZE
+from slmsuite.misc.xp import get_array_module
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
-
-try:
-    import cupy as cp
-except ImportError:
-    cp = np
-    warnings.warn(
-        "cupy is not installed; using numpy. "
-        "Install cupy for GPU-accelerated PLM control.",
-    )
 
 # HID availability (for DLPC900 USB control)
 try:
@@ -117,14 +108,23 @@ class PLM(ScreenMirrored):
     """
     Interfaces with Texas Instruments' Phase Light Modulators (PLMs).
 
-    This class combines :class:`ScreenMirrored` for display with GPU-accelerated
-    phase quantization and electrode mapping. Automatically detects and uses
-    :mod:`cupy` for GPU acceleration, falling back to NumPy if unavailable.
+    This class combines :class:`ScreenMirrored` for display with phase quantization
+    and electrode mapping, both of which run on whichever backend the SLM was
+    constructed with.
 
     Optionally configures the DLPC900 EVM via USB, replacing the manual setup
     normally done through TI's GUI software. Use :meth:`open_all` to bring up
     every connected PLM at once, which is the only way to configure several
     without them knocking each other out of source lock.
+
+    Note
+    ~~~~
+    ``gpu=True`` (see :attr:`~slmsuite.hardware.slms.slm.SLM.xp`) is worth more here than
+    for most SLMs. Each phase pixel expands into a block of electrodes, so the bitmap
+    written per frame is several times larger than the phase array itself, and building it
+    on the host also forgoes the :mod:`cupy`-OpenGL interop that :class:`ScreenMirrored`
+    otherwise uses to reach the display. Pass :mod:`cupy` phase to :meth:`set_phase`
+    consistently to avoid a host→device copy on every call.
 
     Attributes
     ----------
@@ -152,7 +152,6 @@ class PLM(ScreenMirrored):
         usb_product_id=None,
         usb_device_number=0,
         dlpc=None,
-        gpu=None,
         **kwargs
     ):
         """
@@ -190,13 +189,9 @@ class PLM(ScreenMirrored):
         usb_device_number : int, optional
             Index of the DLPC900 device to open when multiple units are connected.
             Defaults to ``0``. Only used when ``configure_usb=True``.
-        gpu : bool or None, optional
-            See :attr:`~slmsuite.hardware.slms.slm.SLM.xp`. Unlike the base class, this
-            defaults to ``None``, using :mod:`cupy` whenever it is installed. Pass
-            :mod:`cupy` arrays to :meth:`set_phase` consistently to avoid a CPU→GPU
-            transfer on every call.
         **kwargs
-            Additional arguments for :class:`ScreenMirrored`.
+            Additional arguments for :class:`ScreenMirrored`. Notably ``gpu``, which the
+            PLM benefits from more than most SLMs; see the note in the class documentation.
         """
         self.dlpc900 = dlpc
 
@@ -263,7 +258,6 @@ class PLM(ScreenMirrored):
             bitdepth=bitdepth,
             pitch_um=pitch_um,
             name=kwargs.pop("name", model_name),
-            gpu=gpu,
             **kwargs
         )
 
@@ -925,8 +919,7 @@ class PLM(ScreenMirrored):
             If number of bitmaps is not 8 or 24
         """
         # Determine backend from input arrays
-        from slmsuite.hardware.slms.slm import _xp
-        xp = _xp(bitmaps[0]) if bitmaps else np
+        xp = get_array_module(bitmaps[0]) if bitmaps else np
 
         # Ensure all bitmaps are on same device
         bitmaps = [xp.asarray(bm) for bm in bitmaps]

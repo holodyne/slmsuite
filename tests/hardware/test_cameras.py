@@ -685,6 +685,16 @@ class TestCamera:
             assert cam.woi == (10, 80, 5, 40)
             assert cam.get_woi() == cam.woi
 
+        with subtests.test("scalar int centers a square window"):
+            cam.set_woi(50)
+            assert cam.shape == (50, 50)
+            assert cam.woi == (75, 50, 25, 50)
+
+        with subtests.test("2-tuple (w, h) centers a rectangular window"):
+            cam.set_woi((80, 40))
+            assert cam.shape == (40, 80)
+            assert cam.woi == (60, 80, 30, 40)
+
         with subtests.test("a window past the edge is clipped onto the sensor"):
             cam.set_woi((150, 100, 60, 80))
             (x, w, y, h) = cam.woi
