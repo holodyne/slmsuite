@@ -24,7 +24,7 @@ from slmsuite.holography.toolbox.phase import (
     zernike_sum, laguerre_gaussian, ZernikeBasis, _zernike_get_basis,
 )
 from slmsuite.misc.math import REAL_TYPES
-from slmsuite.misc.xp import get_array_module
+from slmsuite.misc.xp import as_numpy, get_array_module
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
 from slmsuite._logging import make_logger
 logger = make_logger(__name__)
@@ -195,7 +195,7 @@ def take(
             canvas[integration_y, integration_x] = True
 
         if plot >= 1:
-            plt.imshow(canvas.get() if hasattr(canvas, "get") else canvas)
+            plt.imshow(as_numpy(canvas))
             _slmsuite_plt_show(name="take")
 
         return canvas
@@ -258,8 +258,7 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
 
-    if cp is not np and isinstance(images, cp.ndarray):
-        images = cp.asnumpy(images)
+    images = as_numpy(images)
 
     if separate_axes:
         sx = sx / 2.0 - 0.5
@@ -1367,8 +1366,7 @@ def image_remove_vortices(phase_image, mask=None, return_vortices_negative=False
 
     if mask is not None:
         # scipy erodes on the host; the consumers are on the image's backend.
-        host_mask = mask.get() if hasattr(mask, "get") else mask
-        mask_eroded = xp.asarray(binary_erosion(host_mask, np.ones((5, 5))))
+        mask_eroded = xp.asarray(binary_erosion(as_numpy(mask), np.ones((5, 5))))
     else:
         mask_eroded = None
 

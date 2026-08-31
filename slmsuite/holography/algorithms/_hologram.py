@@ -883,7 +883,7 @@ class Hologram(_HologramStats, _Loggable):
         r"""
         Returns the current weights. Collects the current weights from the GPU if applicable.
         """
-        return self.weights.get() if hasattr(self.weights, "get") else self.weights
+        return as_numpy(self.weights)
 
     def get_farfield(self, shape=None, propagation_kernel=None, affine=None, get=True):
         r"""

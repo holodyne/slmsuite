@@ -26,7 +26,7 @@ def _quadratic_gamma(bitresolution):
 
 
 class TestSLM:
-    """Tests for the SLM base class (via SimulatedSLM)."""
+    """Tests for the SLM base class (via SimulatedSLM), and for its drivers."""
 
     @staticmethod
     def _slm(bitdepth=8, gpu=False):
@@ -659,6 +659,16 @@ class TestSLM:
         slm.set_aperture(radius=0.6, units="frac")
         assert slm.get_spot_radius_kxy() == pytest.approx(radius / 2)
 
+    @pytest.mark.parametrize(
+        "driver", driver_classes(SLM), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]
+    )
+    def test_driver_is_concrete(self, driver):
+        """Every shipped SLM driver implements the whole abstract interface."""
+        assert not driver.__abstractmethods__, (
+            f"{driver.__module__}.{driver.__name__} leaves "
+            f"{sorted(driver.__abstractmethods__)} abstract, so it cannot be instantiated."
+        )
+
 
 class TestSimulatedSLM:
     """
@@ -709,7 +719,7 @@ class TestSimulatedSLM:
             assert np.allclose(slm.source["phase_sim"], truth)
 
 
-class TestSegmented:
+class TestSegmentedSLM:
     """Tests for SegmentedSLM and SLM.segment()."""
 
     def test_segment(self, subtests):
@@ -907,14 +917,3 @@ class TestScreenMirrored:
                 with subtests.test("{}: {}".format(name, label)):
                     frame = self._pack(d, self._blank(xp))
                     assert np.array_equal(cp.asnumpy(frame), reference)
-
-
-@pytest.mark.parametrize(
-    "driver", driver_classes(SLM), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]
-)
-def test_slm_driver_is_concrete(driver):
-    """Every shipped SLM driver implements the whole abstract interface."""
-    assert not driver.__abstractmethods__, (
-        f"{driver.__module__}.{driver.__name__} leaves "
-        f"{sorted(driver.__abstractmethods__)} abstract, so it cannot be instantiated."
-    )

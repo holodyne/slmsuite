@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 from scipy import special
 
 from slmsuite.holography.toolbox import Aperture, _process_grid
-from slmsuite.misc.xp import get_array_module
+from slmsuite.misc.xp import as_numpy, get_array_module
 from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite._logging import make_logger
 
@@ -1068,7 +1068,7 @@ def zernike_pyramid_plot(
 
         # Plot the phase.
         phase = phases[i]
-        plt.imshow(phase.get() if hasattr(phase, "get") else phase, cmap=cmap)
+        plt.imshow(as_numpy(phase), cmap=cmap)
 
         # Construct the title.
         title = ""

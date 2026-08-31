@@ -39,6 +39,10 @@ _CYCLES = {
 # is only appended to this list while zoom is enabled.
 _MOUSE_EVENTS = ["mousedown", "mousemove", "mouseup", "mouseleave", "click", "dblclick"]
 
+# State a closing viewer leaves on its hardware, for the next one to open with. "live" is
+# left out so that reopening never starts polling on its own.
+_REMEMBERED = ("cmap", "scale", "zoom", "crosshair", "log", "range", "geometry")
+
 # Mouse events are throttled to this period, roughly the rate at which frames can be
 # drawn: a megapixel frame takes tens of milliseconds to encode.
 _RENDER_PERIOD_S = .033
@@ -172,11 +176,18 @@ class _Viewable:
         coordinate under the cursor. These mouse interactions require the optional
         :mod:`ipyevents` package
         (``pip install ipyevents``); without it the viewer still functions normally.
-        A ``pyglet`` window needs no such package: it zooms and pans always, restores
-        the full image on a right-click, and carries keyboard shortcuts
-        (``esc`` close, ``r`` reset, ``c`` colormap, ``x`` crosshairs, ``l`` logarithmic,
-        ``a`` autorange) so that it is usable without any widgets. The shortcuts that
-        change color scaling take effect on the next frame.
+        A ``pyglet`` window needs no such package, and zooms by default since it has
+        no page to scroll over. It restores the full image on a right-click and carries
+        keyboard shortcuts (``esc`` close, ``r`` reset, ``c`` colormap, ``x`` crosshairs,
+        ``l`` logarithmic, ``a`` autorange) so that it is usable without any widgets.
+        The shortcuts that change color scaling take effect on the next frame. The
+        ``Scale`` widget sizes the window itself, which keeps the image's aspect ratio.
+        Closing the window closes the viewer, as toggling :meth:`live` would.
+
+        A viewer leaves its settings on the hardware when it closes, so calling
+        :meth:`live` again reopens with the same colormap, scaling, and crosshairs, and
+        with the window where and how big it last was. Pass an argument to override any
+        of them.
 
         This limitation is imposed by the
         Python Global Interpreter Lock (GIL) which restricts operation to a single thread,
@@ -269,25 +280,35 @@ class _ViewerObject:
         live=False,
         min=None,
         max=None,
-        log=False,
+        log=None,
         cmap=True,
-        scale=1,
+        scale=None,
         cmap_options=None,
-        crosshair="none",
-        zoom=False,
+        crosshair=None,
+        zoom=None,
     ):
         self.parent = parent
         self.backend = backend
 
+        # The last viewer on this hardware left its settings behind. Anything the caller
+        # did not ask for is taken from there before falling back to a default.
+        memory = getattr(parent, "_viewer_memory", None) or {}
+
+        def recall(key, value, default):
+            return memory.get(key, default) if value is None else value
+
         # Parse range.
-        if min is None:
-            min = 0
-        if max is None:
-            max = self.parent.bitresolution-1
-        range_ = [np.min([min, max]), np.max([min, max])]
+        if min is None and max is None and "range" in memory:
+            range_ = list(memory["range"])
+        else:
+            if min is None:
+                min = 0
+            if max is None:
+                max = self.parent.bitresolution-1
+            range_ = [np.min([min, max]), np.max([min, max])]
 
         # Parse scale
-        scale = 2 ** np.round(np.log2(scale))
+        scale = 2 ** np.round(np.log2(recall("scale", scale, 1)))
 
         # Parse colormap options.
         if cmap_options is None:
@@ -299,21 +320,25 @@ class _ViewerObject:
                     'viridis', 'plasma', 'inferno', 'magma', 'cividis'
                 ]
 
-        if cmap is True: cmap = cmap_options[0]
+        if cmap is True: cmap = recall("cmap", None, cmap_options[0])
         if cmap is False: cmap = "gray"
+        if cmap not in cmap_options and isinstance(cmap, str) and "cmap" in memory:
+            cmap = cmap_options[0]      # A remembered colormap the new options lack.
 
         self.state = {
             "live" : live,
             "range" : range_,
-            "log" : bool(log),
+            "log" : bool(recall("log", log, False)),
             "cmap" : cmap,
             "scale" : scale,
             "cmap_options" : cmap_options,
-            "crosshair" : crosshair,
-            "zoom" : bool(zoom),
+            "crosshair" : recall("crosshair", crosshair, "none"),
+            "zoom" : bool(recall("zoom", zoom, backend == "pyglet")),
+            "geometry" : memory.get("geometry"),
         }
 
         self.task = None
+        self.closed = False
         self._drag = None
         self._dragged = False
 
@@ -329,7 +354,7 @@ class _ViewerObject:
         self.state["roi"] = [0.0, 0.0, float(W), float(H)]
 
         self.last_image = as_numpy(
-            self.parent.phase if self.parent.is_slm else self.parent.last_image
+            self.parent._viewer_frame if self.parent.is_slm else self.parent.last_image
         )
 
         self.widgets = {}
@@ -343,6 +368,10 @@ class _ViewerObject:
             self.display = _ViewerDisplayPyglet(self)
         else:
             self.display = _ViewerDisplayIPython(self)
+
+        if "output" in self.widgets:
+            from IPython.display import display
+            display(self.widgets["output"])
 
     def _quantize(self, img):
         """Window raw counts to the display range and quantize them to palette indices."""
@@ -431,12 +460,13 @@ class _ViewerObject:
             x0, y0, x1, y1 = 0, 0, W, H
             img = self.last_image
         else:
-            # Crop to the requested region of interest (ROI).
-            x0, y0, x1, y1 = np.rint(region).astype(int)
-            x0, x1 = np.clip([x0, x1], 0, W)
-            y0, y1 = np.clip([y0, y1], 0, H)
-            if x1 - x0 < 1: x1 = min(W, x0 + 1)
-            if y1 - y0 < 1: y1 = min(H, y0 + 1)
+            # Crop to the requested region of interest (ROI). The size is rounded
+            # once and the origin clamped to it, so a pan cannot resize the crop.
+            cw = int(np.clip(round(region[2] - region[0]), 1, W))
+            ch = int(np.clip(round(region[3] - region[1]), 1, H))
+            x0 = int(np.clip(round(region[0]), 0, W - cw))
+            y0 = int(np.clip(round(region[1]), 0, H - ch))
+            x1, y1 = x0 + cw, y0 + ch
             src = self.last_image[y0:y1, x0:x1]
 
             # Downsample only if the crop has more pixels than the display box can
@@ -540,7 +570,8 @@ class _ViewerObject:
                     self._reset_roi()      # Else the crop points outside the new image.
 
             self._apply()
-            self.display.render()
+            if not self.closed:     # A closed window tears the viewer down from _apply.
+                self.display.render()
         except Exception as e:
             self._print(str(e))
 
@@ -563,6 +594,8 @@ class _ViewerObject:
 
             if key == "print":
                 self._print(rest[0])
+            elif key == "close":
+                self.parent.live(activate=False)
             elif key == "autorange":
                 self._autorange()
             else:
@@ -646,15 +679,11 @@ class _ViewerObject:
         w, h = x1 - x0, y1 - y0
         sx, sy = self._to_source(fx, fy)
 
-        # The factor is clamped so the ROI stays within [8 px, full image] while
-        # preserving the full-image aspect ratio (same factor for both axes).
+        # Width alone carries the zoom and height follows the image aspect, so the
+        # region never letterboxes; the clamp keeps its shorter side above 8 px.
         factor = 0.8 if inward else 1.25
-        factor = min(factor, W / w, H / h)
-        factor = max(factor, 8.0 / w, 8.0 / h)
-        # Keep the ROI dimensions integral so the integer-sliced crop is exactly
-        # the same size at every pan position (no ±1px breathing).
-        w = float(np.clip(round(w * factor), 8, W))
-        h = float(np.clip(round(w * H / W), 8, H))
+        w = float(np.clip(w * factor, 8 * max(1., W / H), W))
+        h = w * H / W
 
         x0 = float(np.clip(sx - fx * w, 0, W - w))
         y0 = float(np.clip(sy - fy * h, 0, H - h))
@@ -786,32 +815,30 @@ class _ViewerObject:
 
         self.state_keys = ["cmap"]
 
-        # A window is its own size control, with no page to scroll over.
-        if self.backend == "ipython":
-            self.widgets.update({
-                "scale" : FloatLogSlider(
-                    value=self.state["scale"],
-                    base=2,
-                    min=-3, # 12.5%
-                    max=3,  # 800%
-                    step=1,
-                    description="Scale",
-                    tooltip="Scale the image by powers of two.",
-                    layout=Layout(width="300px"),
-                    continuous_update=False,
+        self.widgets.update({
+            "scale" : FloatLogSlider(
+                value=self.state["scale"],
+                base=2,
+                min=-3, # 12.5%
+                max=3,  # 800%
+                step=1,
+                description="Scale",
+                tooltip="Scale the view by powers of two.",
+                layout=Layout(width="300px"),
+                continuous_update=False,
+            ),
+            "zoom" : Checkbox(
+                value=self.state["zoom"],
+                description="Zoom",
+                tooltip=(
+                    "Enable scroll-wheel zoom and click-drag pan; double-click restores "
+                    "the full image. Disable to see the whole image again."
                 ),
-                "zoom" : Checkbox(
-                    value=self.state["zoom"],
-                    description="Zoom",
-                    tooltip=(
-                        "Enable scroll-wheel zoom and click-drag pan; double-click restores "
-                        "the full image. Disable to scroll the notebook over the viewer."
-                    ),
-                    layout=item_layout,
-                    indent=False,   # Else a description-width gutter pads the box.
-                ),
-            })
-            self.state_keys += ["scale", "zoom"]
+                layout=item_layout,
+                indent=False,   # Else a description-width gutter pads the box.
+            ),
+        })
+        self.state_keys += ["scale", "zoom"]
 
         # Extra widgets for cameras, not relevant for SLMs.
         if not self.parent.is_slm:
@@ -915,11 +942,9 @@ class _ViewerObject:
             ])
 
         display(self.widgets["layout"])
-        # Shown beside the controls rather than beside the view, which for a window
-        # backend is not in the notebook at all.
-        display(self.widgets["output"])
 
     def close(self):
+        self.closed = True
         try:
             self.task.cancel()
             self.task = None
@@ -927,6 +952,9 @@ class _ViewerObject:
             pass
 
         self.display.close()
+        self.parent._viewer_memory = {
+            key: self.state[key] for key in _REMEMBERED if self.state.get(key) is not None
+        }
         for w in self.widgets.values():
             w.close()
 
@@ -1067,7 +1095,21 @@ class _ViewerDisplayPyglet:
         self._future = None
         self._index = None
         self._planes = None
+        self._scale = None
+
+        if "zoom" in viewer.widgets:
+            viewer.widgets["zoom"].observe(self._set_zoom, "value")
+
         self.render()
+
+    def _size(self):
+        """Window ``(height, width)`` at the current scale, in the image's aspect ratio."""
+        H, W = self._index.shape
+
+        # One scale on both axes, never so small that the window cannot be grabbed.
+        scale = max(self.viewer.state["scale"], 64. / W, 64. / H)
+
+        return round(H * scale), round(W * scale)
 
     def _open(self):
         """Create the window and its thread, sized to the current image."""
@@ -1079,18 +1121,42 @@ class _ViewerDisplayPyglet:
 
         H, W = self._index.shape
 
-        # The window opens at the requested scale, shrunk to leave the desktop visible.
+        # Open no larger than the desktop, in the slider's powers of two, and show that
+        # on the slider rather than silently capping every larger value it can reach.
         screen = get_pyglet_display().get_default_screen()
-        scale = min(self.viewer.state["scale"], .8 * screen.width / W, .8 * screen.height / H)
+        fit = min(.8 * screen.width / W, .8 * screen.height / H)
+        if self.viewer.state["scale"] > fit:
+            self.viewer._set("scale", 2. ** np.floor(np.log2(fit)))
+
+        self._scale = self.viewer.state["scale"]
+
+        # A viewer closed earlier on this hardware left the frame the user chose.
+        geometry = self.viewer.state.get("geometry")
+        size = (geometry[3], geometry[2]) if geometry else self._size()
 
         self.thread = _WindowManager.get_instance().create_window(
-            (max(64, int(H * scale)), max(64, int(W * scale))),
-            screen,
+            size,
+            get_pyglet_display().get_default_screen(),
             self.viewer.parent.name,
             window_class=_ViewerWindow,
             viewer=self.viewer,
             image_shape=(H, W),
+            on_close=self._closed,
         )
+
+        if geometry:
+            self.thread.submit(self.thread.window.set_location, geometry[0], geometry[1])
+
+    def _closed(self):
+        """Tear the viewer down once the window is gone, as toggling :meth:`.live` would."""
+        self.viewer._post(("close",))
+
+    def _set_zoom(self, event=None):
+        """Follow the Zoom widget, restoring the full image whenever it is switched off."""
+        self.viewer.state["zoom"] = self.viewer.widgets["zoom"].value
+        if not self.viewer.state["zoom"]:
+            self.viewer._reset_roi()
+        self.viewer.render()
 
     def render(self):
         """Color the whole image into the window's frame and hand it to the window thread."""
@@ -1114,6 +1180,10 @@ class _ViewerDisplayPyglet:
         if opened:
             self.close()
             self._open()
+        elif self.viewer.state["scale"] != self._scale:
+            self._scale = self.viewer.state["scale"]
+            height, width = self._size()
+            self.thread.submit(self.thread.window.set_size, width, height)
 
         window = self.thread.window
         if self._planes is None:

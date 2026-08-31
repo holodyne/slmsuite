@@ -30,7 +30,7 @@ ORIENTATIONS = (
 
 
 class TestCamera:
-    """Tests for the Camera base class via SimulatedCamera."""
+    """Tests for the Camera base class via SimulatedCamera, and for its drivers."""
 
     def test_init(self, slm, subtests):
         """Constructor conventions: shape, pitch, bitdepth, and the dtype probe."""
@@ -648,3 +648,13 @@ class TestCamera:
                 before = np.copy(range_z)
                 camera.autofocus(set_z=slm, get_z=0.5, range_z=range_z, verbose=False)
                 assert np.array_equal(range_z, before)
+
+    @pytest.mark.parametrize(
+        "driver", driver_classes(Camera), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]
+    )
+    def test_driver_is_concrete(self, driver):
+        """Every shipped camera driver implements the whole abstract interface."""
+        assert not driver.__abstractmethods__, (
+            f"{driver.__module__}.{driver.__name__} leaves "
+            f"{sorted(driver.__abstractmethods__)} abstract, so it cannot be instantiated."
+        )

@@ -63,6 +63,7 @@ except ImportError:
     zeros_pinned = None
 
 from slmsuite._logging import make_logger
+from slmsuite import __version__ as SLMSUITE_VERSION
 
 logger = make_logger(__name__)
 
@@ -446,6 +447,10 @@ class _Window(__Window):
         Handle to the ``OpenGL`` texture object.
     """
 
+    # How long the window thread may sleep before pumping OS events again. A display
+    # that takes no input only needs to stay under Win32's "Not Responding" threshold.
+    event_period = 1.0
+
     def __init__(self, shape, screen=None, caption="", interop=None, device=None):
         """
         Create a :mod:`pyglet` window on the specified screen.
@@ -640,6 +645,9 @@ class _Window(__Window):
         ``_NET_WM_STATE_ABOVE`` on Linux/X11, and
         ``NSFloatingWindowLevel`` on macOS. Falls back to
         :meth:`~pyglet.window.Window.activate` on unknown platforms.
+
+        The window rises without being activated, so the keyboard stays with whatever
+        opened it.
         """
         if sys.platform == "win32":
             try:
@@ -647,7 +655,7 @@ class _Window(__Window):
                 _user32.SetWindowPos(
                     self._hwnd, constants.HWND_TOPMOST,
                     0, 0, 0, 0,
-                    constants.SWP_NOMOVE | constants.SWP_NOSIZE
+                    constants.SWP_NOMOVE | constants.SWP_NOSIZE | constants.SWP_NOACTIVATE
                 )
             except (ImportError, AttributeError):
                 pass
@@ -978,6 +986,10 @@ class _ViewerWindow(_Window):
         the size of the window.
     """
 
+    # Input is only as smooth as the rate the thread pumps it at. Windows rounds a
+    # wait up to its 15.6 ms timer tick, which this asks for and so lands on.
+    event_period = 1 / 120.
+
     def __init__(self, shape, screen=None, caption="", *, viewer, image_shape, **kwargs):
         """
         Create a window of ``shape`` pixels showing an ``image_shape`` texture.
@@ -996,6 +1008,8 @@ class _ViewerWindow(_Window):
         self.viewer = viewer
         self.vertex_list = None
         self._quad = (0., 0., 1., 1.)
+        self._dirty = False
+        self._sized = (1, 1)
 
         kwargs["interop"] = False       # Frames are colorized on the host.
         super().__init__(shape, screen, caption, **kwargs)
@@ -1024,12 +1038,25 @@ class _ViewerWindow(_Window):
         self._refresh()
 
     def _bring_to_front(self):
-        """Show the window and take focus, without pinning it above the notebook."""
-        self.set_visible(True)          # _Window hides windowed displays.
-        self.activate()
+        """Show the window above the others, leaving the keyboard where it was."""
+        if sys.platform == "win32":
+            # pyglet's own set_visible() ends in SetForegroundWindow, which would pull
+            # focus out of the editor that opened the viewer.
+            from pyglet.libs.win32 import _user32, constants
+            _user32.SetWindowPos(
+                self._hwnd, constants.HWND_TOPMOST,
+                0, 0, 0, 0,
+                constants.SWP_NOMOVE | constants.SWP_NOSIZE
+                | constants.SWP_SHOWWINDOW | constants.SWP_NOACTIVATE
+            )
+            self._visible = True
+            self.dispatch_event("on_show")
+        else:
+            self.set_visible(True)      # _Window hides windowed displays.
+            super()._bring_to_front()
 
     def _refresh(self):
-        """Letterbox the region of interest into the window and redraw."""
+        """Fit the region of interest to the window and mark it for redraw."""
         if self.vertex_list is None:
             return
 
@@ -1053,7 +1080,8 @@ class _ViewerWindow(_Window):
             u1, v0, 0.,     u1, v1, 0.,
         )
 
-        self._redraw()
+        self.viewer.state["geometry"] = self._geometry()
+        self._dirty = True
 
     def _redraw(self, source=None):
         """
@@ -1063,6 +1091,7 @@ class _ViewerWindow(_Window):
         that redraw are themselves called from :meth:`_Window.dispatch_events`, and a
         nested pump would strand the outer one's messages until the next frame.
         """
+        self._dirty = False
         with self.current():
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
             self._blit(source)
@@ -1072,6 +1101,7 @@ class _ViewerWindow(_Window):
 
     def render(self):
         """Upload the current frame to the texture and display it. See :meth:`_redraw`."""
+        self._refresh()     # The viewer moves the region from its own thread, not this one.
         self._redraw(self.cframe)
 
     def _fraction(self, x, y):
@@ -1084,20 +1114,60 @@ class _ViewerWindow(_Window):
         """Whether a :meth:`_fraction` falls on the image rather than the letterbox."""
         return all(0 <= f <= 1 for f in fraction)
 
+    def _geometry(self):
+        """The window's ``(x, y, width, height)`` in the whole pixels the OS deals in."""
+        return tuple(int(v) for v in tuple(self.get_location()) + tuple(self.get_size()))
+
+    def _maximized(self):
+        """Whether the OS is holding the window at a size that is not ours to choose."""
+        if sys.platform == "win32":
+            from pyglet.libs.win32 import _user32
+            return bool(_user32.IsZoomed(self._hwnd))
+        return self.width >= self.screen.width and self.height >= self.screen.height
+
+    def dispatch_events(self):
+        """Pump OS events, then settle the whole burst of them with one draw."""
+        super().dispatch_events()
+        if self._dirty and not self.has_exit:
+            self._redraw()
+
     def on_expose(self):
         """Redraw when the window is uncovered."""
-        self._redraw()
+        self._dirty = True
+        return True
+
+    def on_move(self, x, y):
+        """Remember where the window was put, so the next viewer opens there."""
+        self.viewer.state["geometry"] = self._geometry()
         return True
 
     def on_resize(self, width, height):
-        """Refit the quad; the viewport itself is pyglet's to update."""
+        """Hold the window to the image's aspect, then refit the quad into it."""
+        # A maximized window belongs to the OS; the quad letterboxes inside it instead.
+        if self.vertex_list is not None and not self._maximized():
+            ih, iw = self.shape
+            w0, h0 = self._sized
+
+            # Whichever axis the drag moved proportionally further drives the other,
+            # so grabbing any edge or corner resizes the way it looks like it should.
+            if abs(width - w0) * h0 >= abs(height - h0) * w0:
+                snap = (width, max(1, round(width * ih / iw)))
+            else:
+                snap = (max(1, round(height * iw / ih)), height)
+
+            self._sized = snap
+            # A pixel of rounding is left to the letterbox, else this never settles.
+            if abs(snap[0] - width) > 1 or abs(snap[1] - height) > 1:
+                self.set_size(*snap)    # Re-enters here with the corrected size.
+                return True
+
         self._refresh()
         return True
 
     def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
-        """Scroll-wheel zoom toward the cursor."""
+        """Scroll-wheel zoom toward the cursor, while the viewer allows zooming."""
         fraction = self._fraction(x, y)
-        if scroll_y and self._inside(fraction):
+        if scroll_y and self.viewer.state["zoom"] and self._inside(fraction):
             self.viewer._zoom(*fraction, scroll_y > 0)
             self._refresh()
         return True
@@ -1182,7 +1252,9 @@ class _WindowThread(object):
         thread has finished initialization.
     """
 
-    def __init__(self, shape, screen, caption, manager=None, window_class=None, **kwargs):
+    def __init__(
+        self, shape, screen, caption, manager=None, window_class=None, on_close=None, **kwargs
+    ):
         """
         Create a :class:`_Window` on a dedicated background thread.
 
@@ -1205,6 +1277,8 @@ class _WindowThread(object):
         window_class : type or None
             :class:`_Window` subclass to construct, e.g. :class:`_ViewerWindow`.
             Defaults to :class:`_Window`.
+        on_close : callable or None
+            Called on the window thread once the window is gone, however it went.
         **kwargs
             See :meth:`_Window.__init__` for permissible options.
 
@@ -1225,6 +1299,7 @@ class _WindowThread(object):
         self._error = None
         self._manager = manager
         self._window_class = _Window if window_class is None else window_class
+        self._on_close = on_close
 
         # Store creation params; the device is sampled here, on the thread that writes frames.
         self._init_args = (shape, screen, caption)
@@ -1265,10 +1340,8 @@ class _WindowThread(object):
 
             a.  Processes commands from the main thread (via :attr:`_command_queue`).
             b.  Dispatches OS events for the window to prevent freezing.
-            c.  Waits up to 1s for new commands (via :attr:`_command_event`),
-                waking instantly when a command is submitted. The 1s timeout
-                ensures periodic event dispatch to stay well below the ~5s
-                Win32 "Not Responding" threshold.
+            c.  Waits up to :attr:`~_Window.event_period` for new commands (via
+                :attr:`_command_event`), waking instantly when one is submitted.
         """
         # Phase 1: Create window and OpenGL context on this thread.
         try:
@@ -1356,8 +1429,8 @@ class _WindowThread(object):
             except Exception:
                 pass
 
-            # Wait for a command or 1s timeout (for periodic event dispatch).
-            self._command_event.wait(timeout=1.0)
+            # Wait for a command, or for this window's own event-dispatch period.
+            self._command_event.wait(timeout=self._window.event_period)
             self._command_event.clear()
 
         # Cleanup: stop accepting work and fail any still-queued futures so no waiter
@@ -1375,6 +1448,8 @@ class _WindowThread(object):
         self._teardown()
         if self._manager is not None:
             self._manager.remove_thread(self)
+        if self._on_close is not None:
+            self._on_close()
 
     def _teardown(self):
         """Free the frame and close the window. Must run on the window thread."""
@@ -1527,6 +1602,13 @@ class _WindowManager(object):
     def __init__(self):
         self._threads = []
         self._threads_lock = threading.Lock()
+
+        try:
+            myappid = 'holodyne.slmsuite.viewer.' + SLMSUITE_VERSION
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except:
+            pass
+
         atexit.register(self.shutdown)
 
     def create_window(self, shape, screen, caption, **kwargs):

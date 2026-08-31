@@ -587,7 +587,7 @@ class _FourierCalibration(object):
         self.calibrations["fourier"].update(self._get_calibration_metadata())
 
         # Set the camera's virtual calibration if it is not already set.
-        if hasattr(self.cam, "set_affine") and not hasattr(self.cam, "M"):
+        if hasattr(self.cam, "set_affine") and getattr(self.cam, "M", None) is None:
             self.cam.set_affine(M, b)
 
         return self.calibrations["fourier"]

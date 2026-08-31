@@ -51,7 +51,7 @@ class _FarfieldCalibration(object):
         # (1) Capture the zeroth order and scatter with a flat phase pattern.
         self.slm.set_phase(None, settle=True, phase_correct=False)
 
-        self.cam.autoexpose(exposure_bounds_s=(0, 1))
+        self.cam.autoexpose()
         exposure_zeroth = self.cam.get_exposure()
         self.cam.flush()
 
@@ -72,7 +72,7 @@ class _FarfieldCalibration(object):
 
             if i == 0:
                 # Fix one exposure for the dimmer speckle, windowed off the zeroth order.
-                self.cam.autoexpose(window=img_zeroth < (np.median(img_zeroth)+1), exposure_bounds_s=(0, 1))
+                self.cam.autoexpose(window=img_zeroth < (np.median(img_zeroth) + 1))
                 exposure_raw = self.cam.get_exposure()
                 self.cam.flush()
 

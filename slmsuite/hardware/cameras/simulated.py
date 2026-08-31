@@ -453,15 +453,16 @@ class SimulatedCamera(Camera):
         if self.noise is not None:
             if hasattr(self.noise, "apply"):
                 img = self.noise.apply(img, self.exposure_s, frame_bitresolution)
-            else:   # A user-supplied dictionary of callables.
+            else:   # A user-supplied dictionary of numpy callables.
+                ones = np.ones(img.shape, dtype=img.dtype) * frame_bitresolution
                 for key in self.noise.keys():
                     if key == 'dark':
                         # Background/dark current - exposure dependent
-                        dark = self.noise['dark'](xp.ones_like(img) * frame_bitresolution) * self.exposure_s
+                        dark = xp.asarray(self.noise['dark'](ones)) * self.exposure_s
                         img = img + dark
                     elif key == 'read':
                         # Readout noise - exposure independent
-                        read = self.noise['read'](xp.ones_like(img) * frame_bitresolution)
+                        read = xp.asarray(self.noise['read'](ones))
                         img = img + read
                     else:
                         raise RuntimeError('Unknown noise source %s specified!' % (key))

@@ -621,21 +621,21 @@ class TestSaveLoadRoundTrip:
         routines the system was saved for, which is what makes the reloaded object
         useless for the algorithm it was meant to run.
         """
-        class _Subclass(FourierSLM):
+        class _SavedSubclass(FourierSLM):
             def only_here(self):
                 return True
 
         fs = _calibrated("matched")
-        fs.__class__ = _Subclass
+        fs.__class__ = _SavedSubclass
         path = fs.save(path=temp_dir, name="subclass")
 
         with subtests.test("recorded class is resolved from the base"):
             fs_loaded = FourierSLM.load(path)
-            assert type(fs_loaded) is _Subclass
+            assert type(fs_loaded) is _SavedSubclass
             assert fs_loaded.only_here()
 
         with subtests.test("an explicit subclass wins"):
-            assert type(_Subclass.load(path)) is _Subclass
+            assert type(_SavedSubclass.load(path)) is _SavedSubclass
 
         with subtests.test("a base system still reloads as the base"):
             base = _calibrated("matched")

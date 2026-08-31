@@ -814,6 +814,11 @@ class SLM(_Common, ABC):
         self.xp.copyto(self.display, gray)
         return self.display
 
+    @property
+    def _viewer_frame(self):
+        factor = self.phase_scaling * self.bitresolution / (2 * np.pi)
+        return (as_numpy(self.phase) * factor).astype(self.dtype)
+
     def set_phase(
         self,
         phase,
@@ -1061,9 +1066,7 @@ class SLM(_Common, ABC):
 
         # Maybe some of that time will be spent rendering the data in the viewer...
         if self.viewer is not None:
-            phase = self.phase if self.xp is np else self.phase.get()
-            factor = (self.phase_scaling * self.bitresolution / (2 * np.pi))
-            self.viewer.render((phase * factor).astype(self.dtype))
+            self.viewer.render(self._viewer_frame)
 
         # Optional delay.
         if settle is None:

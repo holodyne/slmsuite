@@ -70,14 +70,14 @@ AUTO_LIMITATIONS = {
         "verification rejects"
     ),
     "fov_extreme": (
-        "The survey measures one scale for both axes, which a farfield ten times "
+        "The survey measures one scale for both axes, which a farfield three times "
         "larger than the camera along one axis and three times smaller along the "
         "other is not described by"
     ),
     ("noisy_severe", "gaussian2d"): (
-        "Severe noise on an apodized source defeats the array fit, which the 0th-order "
-        "anchor then refuses (the fit lands far off while its own spots line up); "
-        "the same noise on a uniform source calibrates"
+        "Severe noise on an apodized source leaves an unbounded fit residual, which the "
+        "calibration refuses rather than returning; the same noise on a uniform source "
+        "calibrates"
     ),
     # TODO: fourier_calibrate_auto should be able to move the center of the array.
     ("zeroth_corner", "gaussian2d"): (
@@ -1338,6 +1338,10 @@ class TestFourierSLM:
         )
 
         if simulated_system_name not in DEFAULT_CALIBRATION_OK:
+            auto_fails_too = AUTO_LIMITATIONS.get(
+                (simulated_system_name, simulated_system_source),
+                AUTO_LIMITATIONS.get(simulated_system_name),
+            )
             # Strict, so a geometry that starts calibrating is reported rather than
             # staying quietly green in the expected-failure column.
             request.node.add_marker(pytest.mark.xfail(
@@ -1345,7 +1349,10 @@ class TestFourierSLM:
                 reason=(
                     f"Fixed array_shape/array_pitch produce a wrong or failed "
                     f"calibration for this geometry ({note}); "
-                    f"fourier_calibrate_auto() handles it."
+                    + (
+                        "fourier_calibrate_auto() does not rescue it either."
+                        if auto_fails_too else "fourier_calibrate_auto() handles it."
+                    )
                 ),
             ))
 
