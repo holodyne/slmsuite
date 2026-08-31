@@ -45,8 +45,7 @@ BATTERY_ARRAY_SHAPE = 10
 BATTERY_ARRAY_PITCH = 10
 
 # Cases where fourier_calibrate with a fixed array recovers the correct affine. The
-# remaining cases silently produce a *wrong* calibration (or raise), and are held to
-# that with a strict xfail so that any of them starting to work is reported.
+# remaining cases silently produce a *wrong* calibration (or raise).
 DEFAULT_CALIBRATION_OK = {
     "identity", "matched", "fov_much_larger", "fov_larger",
     "mirrored", "pitch_anisotropic", "defocus",
@@ -75,14 +74,14 @@ def _ground_truth_error(fs):
 @pytest.fixture(scope="module")
 def calibration_plot_level(request):
     """
-    Plot level for the calibration batteries: 2 emits the diagnostics that explain *why*
+    Plot level for the calibration battery: 2 emits the diagnostics that explain *why*
     a geometry fails, which cost more to render than the calibration costs to run.
     """
     return 2 if request.config.getoption("--save-plots") else 0
 
 
 @pytest.fixture(scope="module")
-def calibration_summaries(test_output_dir, request):
+def calibration_results(test_output_dir, request):
     """Accumulator for the battery, written at teardown as one montage of every case."""
     results = {}
     yield results
@@ -129,9 +128,10 @@ def _write_summary(results, test_output_dir, request):
         "circles = true spot positions, crosses = calibrated prediction"
     )
     fig.tight_layout()
-    fig.savefig(test_output_dir / "fourier_calibrate_summary.png", dpi=150)
+    path = test_output_dir / "fourier_calibrate_summary.png"
+    fig.savefig(path, dpi=150)
     plt.close(fig)
-    print(f"\nSaved summary: {test_output_dir / 'fourier_calibrate_summary.png'}")
+    print(f"\nSaved summary: {path}")
 
 
 def _run_calibration(fs, case, source, results, plot):
@@ -158,7 +158,7 @@ def _run_calibration(fs, case, source, results, plot):
     if failure is None:
         (error, tolerance) = _ground_truth_error(fs)
 
-    # The array that the calibration settled on, for the diagnostic overlays.
+    # The array the calibration used, for the diagnostic overlays.
     array = fs.calibrations.get("fourier", {}).get("array", {})
     spots_kxy = array_kxy(
         fs,
@@ -172,7 +172,7 @@ def _run_calibration(fs, case, source, results, plot):
     )
     img = fs.cam.last_image if fs.cam.last_image is not None else fs.cam.get_image()
     plot_calibration_diagnostic(
-        fs, img=img, spots_kxy=spots_kxy, name=f"fourier_calibrate_{name}", note=note,
+        fs, img=img, spots_kxy=spots_kxy, name=name, note=note,
     )
 
     results[name] = {
@@ -1101,12 +1101,12 @@ class TestFourierSLM:
 
     def test_fourier_calibrate_geometries(
         self, simulated_system, simulated_system_name, simulated_system_source,
-        calibration_summaries, calibration_plot_level, request,
+        calibration_results, calibration_plot_level, request,
     ):
         """fourier_calibrate with a fixed array, across every simulated geometry."""
         (error, tolerance, note, failure) = _run_calibration(
             simulated_system, simulated_system_name, simulated_system_source,
-            calibration_summaries, calibration_plot_level,
+            calibration_results, calibration_plot_level,
         )
 
         if simulated_system_name not in DEFAULT_CALIBRATION_OK:
