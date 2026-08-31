@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 from scipy import special
 
 from slmsuite.holography.toolbox import Aperture, _process_grid
+from slmsuite.misc.xp import get_array_module
 from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite._logging import make_logger
 
@@ -446,13 +447,6 @@ def _zernike_indices_parse(indices=None, D=None, smaller_okay=False):
     return indices
 
 
-def _zernike_xp(array):
-    """Return the array module (``cupy`` or ``numpy``) backing ``array``."""
-    if cp is not np and isinstance(array, cp.ndarray):
-        return cp
-    return np
-
-
 class ZernikeBasis:
     r"""
     A precomputed, reusable basis of Zernike polynomial images.
@@ -531,7 +525,7 @@ class ZernikeBasis:
         self.aperture = aperture
         self.grid_shape = grid_shape
         self.mask = mask
-        self._xp = _zernike_xp(self.basis)
+        self._xp = get_array_module(self.basis)
 
     @cached_property
     def gram(self):
@@ -784,7 +778,7 @@ def _zernike_sum_direct(grid, indices, weights, aperture, use_mask, derivative, 
     (x_grid, y_grid) = _process_grid(grid)
     aperture = Aperture.resolve(grid, aperture)
     (x_scale, y_scale) = aperture.scale
-    xp = _zernike_xp(x_grid)
+    xp = get_array_module(x_grid)
 
     indices, weights, _, N = _zernike_parse_weights_indices(indices, weights)
 
@@ -1444,19 +1438,14 @@ def _parse_out(x_grid, out, stack=1):
 
     if out is None:
         # Initialize out to zero.
-        if cp == np:
-            out = np.zeros(shape, x_grid.dtype)
-        else:
-            out = cp.get_array_module(x_grid).zeros(shape, x_grid.dtype)
-
-        return out
+        return get_array_module(x_grid).zeros(shape, x_grid.dtype)
     else:
         # Error check user-provided out.
         if out.size != np.prod(shape):
             raise ValueError("out must have same size as the stacked grid.")
         if out.dtype != x_grid.dtype:
             raise ValueError("out must have same type as grid.")
-        if cp != np and cp.get_array_module(x_grid) != cp.get_array_module(out):
+        if get_array_module(x_grid) is not get_array_module(out):
             raise ValueError("out and grid must both be cupy arrays if one is.")
 
         return out.reshape(shape)
@@ -1542,12 +1531,8 @@ def polynomial(grid, weights, terms=None, pathing=None, out=None):
 
     out.fill(0)
     nx0 = ny0 = 0
-    if cp == np:
-        xp = np
-        monomial = np.ones_like(x_grid)
-    else:
-        xp = cp.get_array_module(x_grid)
-        monomial = xp.ones_like(x_grid)
+    xp = get_array_module(x_grid)
+    monomial = xp.ones_like(x_grid)
 
     # Force datatype for easier multiplication.
     weights = weights.astype(out.dtype)

@@ -13,6 +13,7 @@ except ImportError:
     cp = np
 import inspect
 import warnings
+import weakref
 from abc import ABC, abstractmethod
 
 import matplotlib.pyplot as plt
@@ -25,16 +26,12 @@ from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis, toolbox
 from slmsuite.misc import fitfunctions
 from slmsuite.misc.files import generate_path, latest_path, load_h5, save_h5
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
 
 
 LUT_SIZE = 1 << 16      # Default number of entries in a phase lookup table.
 
 
-def _xp(array):
-    """Return cupy if array is a cupy ndarray, else numpy."""
-    if cp is not np and isinstance(array, cp.ndarray):
-        return cp
-    return np
 
 
 class SLM(_Common, ABC):
@@ -110,9 +107,27 @@ class SLM(_Common, ABC):
         store the true source properties (defined by the user) used to simulate the SLM's
         far-field.
 
+        Arrays stored here are moved onto :attr:`xp`, so a host array may be assigned
+        without stranding it on the wrong backend; see the note on :attr:`xp`.
+
     xp : module
         The array backend, :mod:`numpy` or :mod:`cupy`, that this SLM stores and processes
         data with. Selected by the ``gpu`` argument.
+
+        Important
+        ~~~~~~~~~
+        Every array an SLM owns lives on :attr:`xp`: :attr:`phase`, :attr:`display`,
+        :attr:`grid`, :attr:`aperture` (and so :attr:`aperture_mask`), and the arrays in
+        :attr:`source`, which are moved onto :attr:`xp` as they are stored. Phase
+        functions given the SLM (``blaze(slm, ...)``, ``zernike_sum(slm, ...)``, ...)
+        therefore evaluate on :attr:`xp` and return arrays there too --- which is what
+        makes a ``gpu=True`` SLM synthesize its patterns on the GPU rather than on a host
+        meshgrid and upload the result.
+
+        The consequence is that a ``gpu=True`` SLM hands back :mod:`cupy` arrays, and
+        :mod:`cupy` refuses to combine those with host arrays. Where host memory is
+        required --- plotting, :mod:`cv2`, :mod:`scipy`, or a Python scalar --- ask for it
+        explicitly with :meth:`slmsuite.misc.xp.as_numpy`.
     phase : numpy.ndarray OR cupy.ndarray
         Last displayed data in units of phase (radians), held on :attr:`xp`.
         If wavefront calibration (`phase_correct=True`) is used, this includes the
@@ -145,6 +160,8 @@ class SLM(_Common, ABC):
         "wav_design_um",
         "phase_scaling",
         "aperture",
+        "phase_correct",
+        "settle",
     ]
     _pickle_data = [
         "source",
@@ -192,6 +209,9 @@ class SLM(_Common, ABC):
         gpu : bool or None
             Whether to store and process data with :mod:`cupy` (see :attr:`xp`).
             ``None`` uses :mod:`cupy` if it is installed. Defaults to ``False``.
+            This governs the whole object --- grid, aperture, and source as well as the
+            phase buffers --- so a ``gpu=True`` SLM returns :mod:`cupy` arrays throughout;
+            see the note on :attr:`xp`.
         """
         # Choose the array backend that this SLM will hold all of its data in.
         if gpu is None:
@@ -220,8 +240,15 @@ class SLM(_Common, ABC):
         if self.bitdepth > 12:
             self.logger.warning(
                 "Bitdepth %s is greater than 12 and some features "
-                "(gamma/LUT, etc) may not be supported.", 
+                "(gamma/LUT, etc) may not be supported.",
                 self.bitdepth
+            )
+
+        # Default behavior is gpu=False for compatability, but warn the
+        # GPU-equipped user that this is slow.
+        if self.xp is np and cp is not np:
+            self.logger.warning(
+                "cupy is installed, but gpu=False, so this SLM runs (slowly) on the host. "
             )
 
         # Phase and display caches for user reference.
@@ -247,7 +274,7 @@ class SLM(_Common, ABC):
         xpix = (width  - 1) * np.linspace(-0.5, 0.5, width)
         ypix = (height - 1) * np.linspace(-0.5, 0.5, height)
         self._grid_base = [
-            g.astype(np.float32)
+            self.xp.asarray(g.astype(np.float32))
             for g in np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix)
         ]
         self._grid = None            # cache for the aperture-centered working grid
@@ -257,8 +284,8 @@ class SLM(_Common, ABC):
         # masks nothing until the user sets a real aperture). See set_aperture().
         self.aperture = toolbox.Aperture(self._grid_base, "cropped")
 
-        # Source profile dictionary
-        self.source = {}
+        # Source profile dictionary. Holds its arrays on self.xp; see _Source.
+        self.source = _Source(self)
 
         # Now inspect the _set_phase_hw() method to see if it supports the execute and
         # block arguments. We need to do this in init because inspect is expensive.
@@ -281,6 +308,10 @@ class SLM(_Common, ABC):
         (wavelengths), measured from the **aperture center**. This is the working
         coordinate frame that analytic phase functions (lenses, gratings, Zernike, ...)
         are generated in.
+
+        Held on :attr:`xp`, so this is a :mod:`cupy` meshgrid for a ``gpu=True`` SLM; pass
+        it through :meth:`slmsuite.misc.xp.as_numpy` where host memory is required. See the
+        note on :attr:`xp`.
         """
         center = (
             None if self.aperture.center is None
@@ -324,6 +355,41 @@ class SLM(_Common, ABC):
         which a single radius cannot describe.
         """
         return float(1.0 / (2.0 * self.aperture._isotropic_scale()))
+
+    def _unpickle(self, data):
+        """
+        Restores the pickled state which :meth:`__init__` does not take: the display
+        defaults, the :attr:`aperture`, the measured phase response, and the displayed
+        :attr:`phase`. See :meth:`~slmsuite._pickling._Picklable._unpickle`.
+
+        :attr:`phase_scaling` is not restored, as it is derived from the wavelengths
+        which the constructor already fixed. Neither are :attr:`gamma` and :attr:`lut`,
+        which are rebuilt from the pixel calibration that measured them; see
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM._pixel_calibration_apply_gamma`.
+        """
+        super()._unpickle(data)
+
+        if "settle_time_s" in data:
+            self.settle_time_s = float(data["settle_time_s"])
+        if "phase_correct" in data:
+            self.phase_correct = bool(data["phase_correct"])
+        if "settle" in data:
+            self.settle = bool(data["settle"])
+
+        # The pickled center is already in normalized grid units, so build the Aperture
+        # directly rather than through set_aperture(), which reads `center` as pixels.
+        aperture = data.get("aperture", None)
+        if aperture is not None:
+            self.aperture = toolbox.Aperture(
+                self._grid_base, aperture["spec"], center=aperture.get("center", None)
+            )
+            self._grid = None
+
+        # Last, as this renders through everything set above. The stored phase is
+        # already corrected, so it must not be corrected a second time.
+        phase = data.get("phase", None)
+        if phase is not None:
+            self.set_phase(phase, phase_correct=False, settle=False)
 
     @abstractmethod
     def close(self):
@@ -405,7 +471,7 @@ class SLM(_Common, ABC):
         """
         if not self.aperture.crops:
             return
-        mask = np.asarray(self.aperture_mask)
+        mask = as_numpy(self.aperture_mask)
         if not np.all(mask):
             ax.contour(
                 mask.astype(float),
@@ -442,9 +508,7 @@ class SLM(_Common, ABC):
         """
         if phase is None:
             phase = self.phase
-        if _xp(phase) is not np:
-            phase = phase.get()
-        phase = np.array(phase, copy=(False if np.__version__[0] == '1' else None))
+        phase = as_numpy(phase)
         phase = np.mod(phase, 2*np.pi) / np.pi
 
         (ax, cax, should_show) = self._plot(
@@ -563,9 +627,7 @@ class SLM(_Common, ABC):
         if lut_size < 1 or lut_size & (lut_size - 1):
             raise ValueError(f"Expected lut_size {lut_size} to be a positive power of two.")
 
-        if _xp(gamma) is not np:
-            gamma = gamma.get()
-        gamma = np.ravel(np.array(gamma, dtype=float))
+        gamma = np.ravel(np.array(as_numpy(gamma), dtype=float))
 
         if len(gamma) != self.bitresolution:
             raise ValueError(
@@ -941,9 +1003,7 @@ class SLM(_Common, ABC):
             self.phase.fill(0)
         else:
             # Move the data onto this SLM's backend; numpy cannot read GPU memory.
-            if xp is np and _xp(phase) is not np:
-                phase = phase.get()
-            phase = xp.asarray(phase)
+            phase = as_backend(phase, xp)
 
         # Pass integer data directly to the SLM (no quantize/wrapping).
         if phase is not None and np.issubdtype(phase.dtype, np.integer):
@@ -987,7 +1047,7 @@ class SLM(_Common, ABC):
             if phase_correct is None:
                 phase_correct = self.phase_correct
             if phase_correct and ("phase" in self.source):
-                self.phase += xp.asarray(self._get_source_phase())
+                self.phase += as_backend(self._get_source_phase(), xp)
 
             # Pass the data to self.display.
             # Turn the floats in phase space to integer data for the SLM.
@@ -1249,7 +1309,7 @@ class SLM(_Common, ABC):
             Sets the simulated source distribution if ``True`` or the approximate
             experimental source distribution (in absence of wavefront calibration)
             if ``False``.
-        phase_offset : float OR numpy.ndarray
+        phase_offset : float OR numpy.ndarray OR cupy.ndarray
             Additional phase (of shape :attr:`shape`) added to :attr:`source`.
         **kwargs
             Arguments passed to ``fit_function`` in addition to the SLM grid in the
@@ -1262,12 +1322,16 @@ class SLM(_Common, ABC):
         dict
             :attr:`~slmsuite.hardware.slms.slm.SLM.source`.
         """
+        # The fit functions are host-only (numpy rejects device arrays), so evaluate
+        # on the host grid and move the result onto this SLM's backend at the end.
+        grid = [as_numpy(g) for g in self.grid]
+
         # Wavelength normalized
         if units == "norm":
             scaling = (1,1)
         # Fractions of the display
         elif units == "frac":
-            scaling = [g.max() - g.min() for g in self.grid]
+            scaling = [g.max() - g.min() for g in grid]
         # Physical units
         else:
             if units in toolbox.LENGTH_FACTORS.keys():
@@ -1276,7 +1340,7 @@ class SLM(_Common, ABC):
                 raise RuntimeError("Did not recognize units '{}'".format(units))
             scaling = [factor / self.wav_um, factor / self.wav_um]
 
-        xy = [g / s for g,s in zip(self.grid, scaling)]
+        xy = [g / s for g,s in zip(grid, scaling)]
 
         if len(kwargs) == 0 and isinstance(fit_function, str) and fit_function == "gaussian2d":
             w = np.min([np.amax(xy[0]), np.amax(xy[1])]) / 2
@@ -1287,8 +1351,9 @@ class SLM(_Common, ABC):
 
         source = fit_function(xy, **kwargs)
 
+        # The fit ran on the host, so phase_offset joins it there 
         self.source["amplitude_sim" if sim else "amplitude"] = np.abs(source)
-        self.source["phase_sim" if sim else "phase"] = np.angle(source) + phase_offset
+        self.source["phase_sim" if sim else "phase"] = np.angle(source) + as_numpy(phase_offset)
 
         return self.source
 
@@ -1355,10 +1420,20 @@ class SLM(_Common, ABC):
             if spec is not None:
                 raise ValueError("Provide either spec or radius, not both.")
             spec = 1.0 / (2.0 * self._length_to_norm(radius, units))
+
+        # An Aperture may be passed directly; take its spec, and its (already
+        # normalized) center unless an explicit pixel ``center`` overrides it.
+        spec_center_norm = None
+        if isinstance(spec, toolbox.Aperture):
+            spec_center_norm = spec.center
+            spec = spec.spec
+
         if spec is None:
             spec = self.aperture.spec
 
-        center_norm = None if center is None else self._center_pix_to_norm(center)
+        center_norm = (
+            spec_center_norm if center is None else self._center_pix_to_norm(center)
+        )
 
         self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
         self._grid = None
@@ -1455,10 +1530,10 @@ class SLM(_Common, ABC):
                 # mutate the result without corrupting self.source["amplitude"].
                 return amp.copy()
         else:
-            amp = np.ones(self.shape)
+            amp = self.xp.ones(self.shape)
             if not self.aperture.crops:
                 return amp          # Already a fresh, independent array.
-        return amp * _xp(amp).asarray(self.aperture_mask)
+        return amp * as_backend(self.aperture_mask, get_array_module(amp))
 
     def _get_source_phase(self):
         """
@@ -1472,10 +1547,10 @@ class SLM(_Common, ABC):
                 # mutate the result without corrupting self.source["phase"].
                 return phase.copy()
         else:
-            phase = np.zeros(self.shape)
+            phase = self.xp.zeros(self.shape)
             if not self.aperture.crops:
                 return phase        # Already a fresh, independent array.
-        return phase * _xp(phase).asarray(self.aperture_mask)
+        return phase * as_backend(self.aperture_mask, get_array_module(phase))
 
     def plot_source(self, source=None, sim=False, power=False, aperture=True):
         """
@@ -1517,10 +1592,14 @@ class SLM(_Common, ABC):
         r2_full_shape = plot_r2 and source["r2"].shape == self.shape
         plot_r2_contour = plot_r2 and r2_full_shape and "r2_threshold" in source
 
+        phase_raw = as_numpy(source["phase_sim" if sim else "phase"])
+        amplitude_raw = as_numpy(source["amplitude_sim" if sim else "amplitude"])
+        r2_raw = as_numpy(source["r2"]) if plot_r2 else None
+
         def r2_contour(ax):
             if plot_r2_contour:
                 ax.contour(
-                    source["r2"],
+                    r2_raw,
                     levels=[source["r2_threshold"]],
                     colors="red",
                     linewidths=1,
@@ -1531,7 +1610,7 @@ class SLM(_Common, ABC):
 
         # Panel 1: Phase
         im = axs[0].imshow(
-            np.mod(source["phase_sim" if sim else "phase"], 2*np.pi),
+            np.mod(phase_raw, 2*np.pi),
             cmap=plt.get_cmap("twilight"),
             interpolation="none",
         )
@@ -1549,12 +1628,12 @@ class SLM(_Common, ABC):
         # Panel 2: Amplitude or Power
         if power:
             im = axs[1].imshow(
-                np.square(source["amplitude_sim" if sim else "amplitude"]),
+                np.square(amplitude_raw),
                 clim=(0, 1)
             )
             axs[1].set_title("Simulated Source Power" if sim else "Source Power")
         else:
-            im = axs[1].imshow(source["amplitude_sim" if sim else "amplitude"], clim=(0, 1))
+            im = axs[1].imshow(amplitude_raw, clim=(0, 1))
             axs[1].set_title("Simulated Source Amplitude" if sim else "Source Amplitude")
         r2_contour(axs[1])
         if aperture:
@@ -1567,7 +1646,7 @@ class SLM(_Common, ABC):
 
         # Panel 3: R^2
         if plot_r2:
-            im = axs[2].imshow(source["r2"], clim=(0, 1))
+            im = axs[2].imshow(r2_raw, clim=(0, 1))
             r2_contour(axs[2])
             axs[2].set_title("Cal Fitting $R^2$")
             if r2_full_shape:
@@ -1681,3 +1760,50 @@ class SLM(_Common, ABC):
             self.set_phase(orig_phase, phase_correct=False)
 
         return True
+
+class _Source(dict):
+    """
+    The :attr:`~slmsuite.hardware.slms.slm.SLM.source` dictionary, which holds every
+    stored array on its SLM's :attr:`~slmsuite.hardware.slms.slm.SLM.xp` backend.
+
+    An SLM's arrays all live on one backend (see :attr:`.SLM.xp`); ``source`` is the one
+    part of that state which arbitrary code writes into --- a wavefront calibration, a
+    vendor correction file, a reloaded ``.h5``, or the user. Coercing on write means a
+    caller can store a host array without stranding a later ``source["phase"] + zernike_sum(slm, ...)``
+    across two backends, which :mod:`cupy` refuses to evaluate.
+
+    Non-array values (``"r2_threshold"``, fit metadata, ...) pass through untouched.
+
+    Note
+    ~~~~
+    Every way of storing into a :class:`dict` has to be routed through
+    :meth:`__setitem__`: ``update`` and ``|=`` (``__ior__``) are C-level slots that would
+    otherwise write past the override and strand an array on the wrong backend.
+    """
+    def __init__(self, slm, *args, **kwargs):
+        super().__init__()
+        # Weak, so that the source does not keep its SLM alive through a reference cycle.
+        self._slm = weakref.ref(slm)
+        self.update(*args, **kwargs)
+
+    def _to_backend(self, value):
+        slm = self._slm()
+        if slm is None or not (isinstance(value, np.ndarray) or is_gpu_array(value)):
+            return value
+        return as_backend(value, slm.xp)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._to_backend(value))
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def __ior__(self, other):
+        self.update(other)
+        return self
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self[key] = default
+        return self[key]

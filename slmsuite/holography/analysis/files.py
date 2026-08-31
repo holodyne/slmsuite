@@ -24,6 +24,7 @@ from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
 from slmsuite.holography.toolbox import pad
+from slmsuite.misc.xp import as_numpy, is_gpu_array
 
 
 def _max_numeric_id(path, name, extension=None, kind="file", digit_count=5):
@@ -278,9 +279,8 @@ def save_h5(file_path, data, mode="w"):
             else:
                 # numpy cannot read GPU memory, so bring such data down first.
                 value = data[key]
-                if hasattr(value, "__cuda_array_interface__"):
-                    import cupy
-                    value = cupy.asnumpy(value)
+                if is_gpu_array(value):
+                    value = as_numpy(value)
                 try:
                     array = np.array(value)
                 except ValueError as e:

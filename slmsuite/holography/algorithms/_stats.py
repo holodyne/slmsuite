@@ -39,12 +39,9 @@ class _HologramStats(object):
             only the derived and compressed statistics.
         """
         # Downgrade to numpy if necessary
-        if xp == np and (hasattr(feedback_amp, "get") or hasattr(target_amp, "get")):
-            if hasattr(feedback_amp, "get"):
-                feedback_amp = feedback_amp.get()
-
-            if hasattr(target_amp, "get"):
-                target_amp = target_amp.get()
+        if xp == np and (is_gpu_array(feedback_amp) or is_gpu_array(target_amp)):
+            feedback_amp = as_numpy(feedback_amp)
+            target_amp = as_numpy(target_amp)
 
             if total is not None:
                 total = float(total)
@@ -211,10 +208,9 @@ class _HologramStats(object):
                     [np.nan for _ in range(diff)]
                 )
 
-            if hasattr(self.farfield, "get"):
-                farfield = self.farfield.get()
-            else:
-                farfield = self.farfield.copy()
+            # .copy() so the recorded stat never aliases the live farfield; as_numpy
+            # alone does not copy when self.farfield is already on the host.
+            farfield = as_numpy(self.farfield).copy()
 
             self.stats["raw_farfield"][self.iter] = farfield
 
@@ -277,10 +273,8 @@ class _HologramStats(object):
             for key in to_save_keys:
                 value = getattr(self, key)
 
-                if hasattr(value, "get") and not isinstance(value, dict):
-                    to_save[key] = value.get()
-                else:
-                    to_save[key] = value
+                # is_gpu_array, not hasattr(value, "get"): dicts have a .get() too.
+                to_save[key] = as_numpy(value) if is_gpu_array(value) else value
 
         # Save stats.
         to_save["stats"] = self.stats

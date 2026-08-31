@@ -490,9 +490,9 @@ def build_simulated_system(name, **overrides):
         slm.set_source_analytic(config["source_function"], units="frac", sim=True)
     if config["aberration"] is not None:
         (indices, weights) = config["aberration"]
-        slm.source["phase_sim"] = slm.source["phase_sim"] + phase.zernike_sum(
+        slm.source["phase_sim"] = slm.source["phase_sim"] + slm.xp.asarray(phase.zernike_sum(
             slm, indices, weights
-        )
+        ))
     cam = SimulatedCamera(
         slm,
         resolution=config["cam_resolution"],
@@ -1083,6 +1083,7 @@ def pytest_configure(config):
 
     # Capture everything, let handler set level
     logging.getLogger('slmsuite').setLevel(logging.DEBUG)
+    logging.getLogger('slmsuite').propagate = True
 
     print(f"\nTest output directory: {output_dir}")
 

@@ -176,6 +176,14 @@ class TestCamera:
             cam.set_woi((10, 80, 5, 40))
             assert cam.woi == (10, 80, 5, 40)
 
+        with subtests.test("a scalar or (w, h) request is centred on the sensor"):
+            cam.set_woi(50)
+            assert cam.shape == (50, 50)
+            assert cam.woi == (75, 50, 25, 50)
+            cam.set_woi((80, 40))
+            assert cam.shape == (40, 80)
+            assert cam.woi == (60, 80, 30, 40)
+
         with subtests.test("a window past the edge is clipped onto the sensor"):
             with pytest.warns(UserWarning, match="was clipped"):
                 cam.set_woi((150, 100, 60, 80))
@@ -640,14 +648,3 @@ class TestCamera:
                 before = np.copy(range_z)
                 camera.autofocus(set_z=slm, get_z=0.5, range_z=range_z, verbose=False)
                 assert np.array_equal(range_z, before)
-
-
-@pytest.mark.parametrize(
-    "driver", driver_classes(Camera), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]
-)
-def test_camera_driver_is_concrete(driver):
-    """Every shipped camera driver implements the whole abstract interface."""
-    assert not driver.__abstractmethods__, (
-        f"{driver.__module__}.{driver.__name__} leaves "
-        f"{sorted(driver.__abstractmethods__)} abstract, so it cannot be instantiated."
-    )

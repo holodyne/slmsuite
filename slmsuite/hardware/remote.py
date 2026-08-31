@@ -91,6 +91,7 @@ except ImportError:
     cp = None
 
 from slmsuite import __version__
+from slmsuite.misc.xp import as_numpy, is_gpu_array
 from slmsuite._logging import make_logger
 from slmsuite._pickling import _Picklable
 
@@ -130,8 +131,9 @@ def _recurse_decompress(msg):
 # https://codetinkering.com/numpy-encoder-json/
 class _NpEncoder(json.JSONEncoder):
     def default(self, obj):
-        if cp is not None and isinstance(obj, cp.ndarray):
-            obj = cp.asnumpy(obj)   # GPU arrays (e.g. a GPU SLM's display) -> numpy for serialization.
+        # GPU arrays (e.g. a GPU SLM's display) -> numpy for serialization.
+        if is_gpu_array(obj):
+            obj = as_numpy(obj)
         if isinstance(obj, np.bool_):
             return bool(obj)
         if isinstance(obj, np.floating): #, np.complexfloating

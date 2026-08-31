@@ -520,10 +520,8 @@ class Hologram(_HologramStats, _Loggable):
         Get the first and second order moments of the target in normalized knm space
         (knm integers divided by shape)
         """
-        # Grab the target.
-        target = self.target
-        if hasattr(target, "get"):
-            target = self.target.get()
+        # Grab the target. analysis is host-only here.
+        target = as_numpy(self.target)
 
         # Figure out the size of the target in knm space
         center_knm = analysis.image_positions(target, nansum=True)  # Note this is centered knm space.
@@ -544,10 +542,8 @@ class Hologram(_HologramStats, _Loggable):
         slm_shape = np.flip(self.slm_shape).astype(float)
         if np.ndim(self.amp) == 0:  # A scalar amp fills the SLM uniformly.
             std_amp = slm_shape / np.sqrt(12)
-        elif hasattr(self.amp, "get"):
-            std_amp = np.sqrt(analysis.image_variances(self.amp.get())[:2, 0])
         else:
-            std_amp = np.sqrt(analysis.image_variances(self.amp)[:2, 0])
+            std_amp = np.sqrt(analysis.image_variances(as_numpy(self.amp))[:2, 0])
         std_amp /= slm_shape
 
         center_knm_norm, std_knm_norm = self._get_target_moments_knm_norm()

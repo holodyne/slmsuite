@@ -3,7 +3,8 @@ A simulated SLM.
 """
 
 import numpy as np
-from slmsuite.hardware.slms.slm import SLM, _xp
+from slmsuite.hardware.slms.slm import SLM
+from slmsuite.misc.xp import as_backend, get_array_module
 
 class SimulatedSLM(SLM):
     r"""
@@ -25,6 +26,7 @@ class SimulatedSLM(SLM):
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibrate` measures, as
         opposed to the :attr:`~slmsuite.hardware.slms.slm.SLM.gamma` it recovers.
     """
+    _pickle_data = SLM._pickle_data + ["gamma_sim"]
 
     def __init__(self, resolution, pitch_um=(8,8), source=None, gamma_sim=None, **kwargs):
         r"""
@@ -42,7 +44,11 @@ class SimulatedSLM(SLM):
         pitch_um : (float, float)
             Pixel pitch in microns. Defaults to 8 micron square pixels.
         source : dict
-            See :attr:`source`. Defaults to uniform illumination with a flat phase if ``None``.
+            See :attr:`source`. Defaults to uniform illumination with a flat phase if
+            ``None``. A measured source (``"amplitude"``/``"phase"``, as a wavefront
+            calibration produces) is accepted in place of ``"amplitude_sim"`` and
+            ``"phase_sim"``: the measured phase is a *correction*, so the aberration
+            simulated is its negative, and an unmeasured half defaults to ideal.
         gamma_sim : array_like OR None
             See :attr:`gamma_sim`. Must span every one of the ``bitresolution`` levels;
             interpolate a sparse measurement with
@@ -56,23 +62,28 @@ class SimulatedSLM(SLM):
         self.gamma_sim = gamma_sim
 
         if not source:
-            self.source["amplitude_sim"] = np.ones_like(self.grid[0])
-            self.source["phase_sim"] = np.zeros_like(self.grid[0])
+            self.source["amplitude_sim"] = self.xp.ones_like(self.grid[0])
+            self.source["phase_sim"] = self.xp.zeros_like(self.grid[0])
         else:
             # assert np.all([source[kw].shape == self.shape for kw in source.keys()]
             # ), "The shape of the provided phase profile must match the SLM resolution!"
             self.source.update(source)
 
-            # Handle case where `source` only has real values from experiment
-            if "amplitude_sim" not in source.keys():
-                missing = [k for k in ("amplitude", "phase") if k not in self.source]
-                if missing:
-                    raise ValueError(
-                        f"source must contain 'amplitude_sim' and 'phase_sim', or {missing} "
-                        f"to derive them from."
-                    )
-                self.source["amplitude_sim"] = self.source["amplitude"]
-                self.source["phase_sim"] = -self.source["phase"]
+            # Handle case where `source` only has real values from experiment. A
+            # measured phase is the *correction* for an aberration, so the aberration
+            # this SLM simulates is its negative. Whichever half was never measured
+            # defaults to ideal illumination.
+            # source is a _Source, so anything stored above already landed on self.xp.
+            if "amplitude_sim" not in self.source:
+                amplitude = self.source.get("amplitude", None)
+                phase = self.source.get("phase", None)
+
+                self.source["amplitude_sim"] = (
+                    self.xp.ones_like(self.grid[0]) if amplitude is None else amplitude
+                )
+                self.source["phase_sim"] = (
+                    self.xp.zeros_like(self.grid[0]) if phase is None else -phase
+                )
 
         self.set_phase(None)
 
@@ -98,12 +109,27 @@ class SimulatedSLM(SLM):
 
         self._gamma_sim = gamma_sim
 
-    def _display2phase(self, display, dtype=float):
-        """Phase realized by the integer ``display``, including any simulated response."""
-        if self.gamma_sim is None:
-            return display.astype(dtype) * (self._gamma_sign * 2 * np.pi / self.bitresolution)
+    def _unpickle(self, data):
+        """
+        Restores :attr:`gamma_sim` alongside the base SLM state. Set before ``super()``,
+        which re-displays the pickled phase through this simulated response.
+        """
+        self.gamma_sim = data.get("gamma_sim", None)
+        super()._unpickle(data)
 
-        gamma_sim = _xp(display).asarray(self.gamma_sim, dtype=dtype)
+    def _display2phase(self, display, dtype=np.float32):
+        """
+        Converts integer display array to floating-point phase realizing the simulated
+        phase response (gamma_sim) or ideal linear response.
+        """
+        xp = get_array_module(display)
+        if self.gamma_sim is None:
+            return (
+                display.astype(dtype)
+                * (self._gamma_sign * 2 * np.pi / self.phase_scaling / self.bitresolution)
+            )
+
+        gamma_sim = as_backend(self.gamma_sim, xp).astype(dtype)
         return gamma_sim[display] * (self._gamma_sign * 2 * np.pi)
 
     def close(self):

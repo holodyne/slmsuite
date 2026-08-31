@@ -88,16 +88,18 @@ class ScreenMirrored(SLM):
     GPU Optimization
     ~~~~~~~~~~~~~~~~
     Grayscale data is expanded to RGBA and delivered to the display by whichever of the
-    following the hardware supports, in order of preference:
+    following is available, in order of preference:
 
     -   ``"interop"``, which writes into ``OpenGL`` memory mapped into ``CUDA`` and never
-        crosses PCIe. Requires an NVIDIA driver and ``OpenGL`` 3.0+.
+        crosses PCIe. Requires an NVIDIA driver and ``OpenGL`` 3.0+, and is only attempted
+        for a ``gpu=True`` SLM (see :meth:`.SLM.__init__`), since there is no device memory
+        to map otherwise.
     -   ``"pinned"``, page-locked host memory for fast DMA. Requires a ``CUDA`` device.
     -   ``"pageable"``, ordinary host memory, which always works.
 
-    See ``interop`` in :meth:`__init__` and :attr:`~slmsuite.hardware._pyglet._Window.mode`.
-    Constructing with ``gpu=True`` (see :meth:`.SLM.__init__`) additionally keeps the phase
-    pipeline on the GPU, avoiding a host round-trip before the expansion.
+    See :attr:`~slmsuite.hardware._pyglet._Window.mode`. Beyond the transport, ``gpu=True``
+    keeps the phase pipeline itself on the GPU, avoiding a host round-trip before the
+    expansion.
 
     Important
     ~~~~~~~~~
@@ -143,7 +145,6 @@ class ScreenMirrored(SLM):
         wav_um=1,
         pitch_um=(8,8),
         slm_resolution=None,
-        gpu=None,
         **kwargs
     ):
         """
@@ -192,13 +193,10 @@ class ScreenMirrored(SLM):
             different shape than the display. Note that different SLM and
             screen resolutions are not generally supported unless explicitly
             implemented in the associated SLM class.
-        gpu : bool or None
-            Whether to store and process data with :mod:`cupy` (see :attr:`xp`).
-            ``None`` uses :mod:`cupy` if it is installed. Defaults to ``False``.
-            If this feature is enabled, the SLM will attempt to use 
-            :mod:`cupy`-OpenGL interop if available.
         **kwargs
-            See :meth:`.SLM.__init__` for permissible options.
+            See :meth:`.SLM.__init__` for permissible options. Notably, ``gpu=True`` is
+            what enables the :mod:`cupy`-OpenGL interop described in the class
+            documentation.
         """
         if pyglet is None:
             raise ImportError("pyglet not installed. Install to use ScreenMirrored SLMs.")
@@ -248,16 +246,18 @@ class ScreenMirrored(SLM):
             bitdepth=bitdepth,
             wav_um=wav_um,
             pitch_um=pitch_um,
-            gpu=gpu,
             **kwargs
         )
-        gpu = self.xp is cp
+
+        # Interop maps cupy device memory into the OpenGL buffer, so it is only
+        # meaningful for an SLM whose phase pipeline is already on the device.
+        interop = self.xp is cp
 
         # Create the window on a dedicated background thread.
         try:
             time.sleep(0.2) # Short delay
             wm = _WindowManager.get_instance()
-            self._window_thread = wm.create_window(None, screen, self.name, interop=gpu)
+            self._window_thread = wm.create_window(None, screen, self.name, interop=interop)
             self.window = self._window_thread.window
         except Exception:
             self.logger.error("Window creation failed.")

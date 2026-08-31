@@ -14,6 +14,7 @@ import numpy as np
 import PIL
 
 from slmsuite.holography.analysis import _center, image_centroids, image_remove_field
+from slmsuite.misc.xp import as_numpy
 from slmsuite.misc.files import generate_path, save_h5
 
 _DISPLAY_BACKENDS = ("ipython", "pyglet")
@@ -327,8 +328,9 @@ class _ViewerObject:
         H, W = self.parent.shape[0], self.parent.shape[1]
         self.state["roi"] = [0.0, 0.0, float(W), float(H)]
 
-        image = self.parent.phase if self.parent.is_slm else self.parent.last_image
-        self.last_image = image.get() if hasattr(image, "get") else image
+        self.last_image = as_numpy(
+            self.parent.phase if self.parent.is_slm else self.parent.last_image
+        )
 
         self.widgets = {}
         self.state_keys = []
@@ -533,7 +535,7 @@ class _ViewerObject:
                 # Stored before anything that might not draw, so that a skipped frame
                 # costs a draw and not the data itself.
                 previous = None if self.last_image is None else self.last_image.shape
-                self.last_image = img.get() if hasattr(img, "get") else img
+                self.last_image = as_numpy(img)     # The renderers are host-only.
                 if previous is not None and self.last_image.shape != previous:
                     self._reset_roi()      # Else the crop points outside the new image.
 

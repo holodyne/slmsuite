@@ -18,6 +18,7 @@ from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.misc.xp import as_backend, as_numpy, is_gpu_array
 
 
 class Camera(_Common, ABC):
@@ -89,10 +90,11 @@ class Camera(_Common, ABC):
         of flips and 90 degree rotations, applied to raw camera frames before they are
         returned to the user. Built from the ``rot``, ``fliplr``, and ``flipud`` arguments
         to :meth:`__init__`.
-    last_image : numpy.ndarray OR None
+    last_image : numpy.ndarray OR cupy.ndarray OR None
         Last captured image. Note that this is a pointer to the same data that the user
         receives (to avoid copying overhead). Thus, if the user modifies the returned data,
-        then this data will be modified also.
+        then this data will be modified also. It sits on whichever backend the last
+        :meth:`get_image()` returned, i.e. the device if that call passed ``get=False``.
         This may be of :attr:`dtype`, or may be a float, depending on whether :attr:`hdr` is
         used and the type of :attr:`averaging`.
         Is ``None`` if no image has ever been taken.
@@ -438,10 +440,12 @@ class Camera(_Common, ABC):
 
         Parameters
         ----------
-        woi : (int, int, int, int) or None
-            ``(x0, w, y0, h)`` in **transformed, unbinned** pixel coordinates
-            (i.e. the camera's image orientation at full sensor resolution).
-            If ``None``, resets to the full sensor.
+        woi : int or (int, int) or (int, int, int, int) or None
+            Window of interest in **transformed, unbinned** pixel coordinates:
+            - ``None``: resets to the full sensor.
+            - ``int``: centered square window ``(size, size)`` on the sensor.
+            - ``(w, h)``: centered rectangular window ``(w, h)`` on the sensor.
+            - ``(x0, w, y0, h)``: explicitly placed window.
 
         Returns
         -------
@@ -452,6 +456,8 @@ class Camera(_Common, ABC):
         old_shape = self.shape
 
         binx, biny = self._binning[0], self._binning[1]
+        transformed_shape = self.transform.transform_shape(self._shape)
+        H, W = transformed_shape
 
         if woi is None:
             # Full sensor in untransformed, unbinned coordinates.
@@ -459,11 +465,28 @@ class Camera(_Common, ABC):
             # Full WOI in transformed, unbinned coordinates (the frame of self.woi)
             # for the realized-WOI comparison below. self.shape is binned, so using
             # it here spuriously trips the warning whenever binning != 1.
-            transformed_shape = self.transform.transform_shape(self._shape)
-            woi = (0, transformed_shape[1], 0, transformed_shape[0])
+            woi = (0, W, 0, H)
         else:
+            if isinstance(woi, (int, np.integer)):
+                (w, h) = (int(woi), int(woi))
+            elif isinstance(woi, (list, tuple, np.ndarray)):
+                if len(woi) == 2:
+                    (w, h) = (int(woi[0]), int(woi[1]))
+                elif len(woi) == 4:
+                    (w, h) = (None, None)
+                    woi = tuple(int(v) for v in woi)
+                else:
+                    raise ValueError(
+                        "Expected WOI as int, 2-tuple (w, h), or 4-tuple (x0, w, y0, h). "
+                        f"Got {woi}."
+                    )
+            else:
+                raise TypeError(f"Cannot interpret WOI of type {type(woi).__name__}.")
+
+            if w is not None:   # Center the (w, h) window on the sensor.
+                woi = (max(0, (W - w) // 2), w, max(0, (H - h) // 2), h)
+
             # Get the WOI in raw camera coordinates.
-            transformed_shape = self.transform.transform_shape(self._shape)
             woi_unt = self.transform.inverse_woi(woi, transformed_shape)
 
             # Clip to sensor bounds.
@@ -651,6 +674,15 @@ class Camera(_Common, ABC):
             self.logger.debug("Set exposure to %s s.", self._exposure_s)
 
         return self._exposure_s
+
+    def _unpickle(self, data):
+        """
+        Restores pickled state data not restored by constructor. See
+        :meth:`~slmsuite._pickling._Picklable._unpickle`. 
+        """
+        super()._unpickle(data)
+
+        self.set_exposure(data.get("exposure_s", 1))
 
     @abstractmethod
     def _get_exposure_hw(self):
@@ -963,10 +995,18 @@ class Camera(_Common, ABC):
         """
         err = None
         failures = 0
+        get = kwargs.pop("get", True)
 
         for _ in range(self.capture_attempts):
             try:
-                img = np.array(self._get_image_hw(*args, **kwargs))
+                raw = self._get_image_hw(*args, **kwargs)
+                if not get:
+                    img = raw
+                elif is_gpu_array(raw):
+                    img = raw.get()
+                else:
+                    # Copy, rather than view: a driver may reuse its frame buffer.
+                    img = np.array(raw)
 
                 if len(img.shape) == 2:     # All good!
                     pass
@@ -1008,10 +1048,12 @@ class Camera(_Common, ABC):
         """
         err = None
         failures = 0
+        get = kwargs.pop("get", True)
 
         for _ in range(self.capture_attempts):
             try:
-                imgs = np.asarray(self._get_images_hw(*args, **kwargs))
+                raw = self._get_images_hw(*args, **kwargs)
+                imgs = as_numpy(raw) if get else raw
 
                 if imgs.ndim == 4:      # Stack of color images; reduce to grayscale.
                     imgs = self._parse_color_image(imgs)
@@ -1030,7 +1072,7 @@ class Camera(_Common, ABC):
 
     # High-level capture methods.
 
-    def get_image(self, timeout_s=1, transform=True, hdr=None, averaging=None):
+    def get_image(self, timeout_s=1, transform=True, hdr=None, averaging=None, get=True):
         """
         Capture, process, and return images from a camera.
 
@@ -1088,9 +1130,26 @@ class Camera(_Common, ABC):
             This is done such that integer datatypes (useful for memory compactness) can still be returned,
             whereas a general mean would need to be floating point.
 
+        get : bool
+            If ``True`` (default), ensures returned array is a host :class:`numpy.ndarray`.
+            If ``False``, returns the driver or simulation array in its native device format
+            (e.g., :class:`cupy.ndarray` for simulated GPU cameras). This lets a feedback
+            loop against simulated hardware stay on the GPU. Ignored when ``hdr`` is
+            requested, as that analysis is host-only.
+
+            Note
+            ~~~~
+            The backend is chosen per call here, unlike an
+            :class:`~slmsuite.hardware.slms.slm.SLM`, which fixes one for the whole object
+            (see :attr:`~slmsuite.hardware.slms.slm.SLM.xp`). An SLM owns persistent arrays
+            that many callers read, so the backend has to be a property of the object; a
+            frame is a transient value with one consumer, and that consumer is the one who
+            knows whether it wants host or device memory. A physical camera also has no
+            device-native source --- its driver delivers host memory regardless.
+
         Returns
         -------
-        numpy.ndarray of int OR float
+        numpy.ndarray OR cupy.ndarray of int OR float
             Array of shape :attr:`~slmsuite.hardware.cameras.camera.Camera.shape`.
         """
         # Parse acquisition options.
@@ -1109,6 +1168,11 @@ class Camera(_Common, ABC):
             averaging_dtype = self.get_dtype(averaging=averaging)
 
             try:
+                if not get:
+                    # The batch method fills a host buffer, so it cannot serve a
+                    # device-native request; accumulate frame by frame instead.
+                    raise NotImplementedError
+
                 # Using the camera-specific batch method if available
                 imgs = self._get_images_hw_tolerant(
                     averaging, timeout_s=timeout_s + self.exposure_s
@@ -1118,15 +1182,20 @@ class Camera(_Common, ABC):
                 img = np.sum(imgs, axis=0, dtype=averaging_dtype)
             except NotImplementedError:
                 # Brute-force collection as a backup
-                img = np.zeros(self._hw_image_shape, dtype=averaging_dtype)
+                img = None
 
                 for _ in range(averaging):
-                    img += self._get_image_hw_tolerant(
-                        timeout_s=timeout_s + self.exposure_s
+                    # astype() copies, so the first frame is safe to accumulate into.
+                    frame = self._get_image_hw_tolerant(
+                        timeout_s=timeout_s + self.exposure_s, get=get
                     ).astype(averaging_dtype)
+                    if img is None:
+                        img = frame
+                    else:
+                        img += frame
         else:                   # Normal image
             img = self._get_image_hw_tolerant(
-                timeout_s=timeout_s + self.exposure_s
+                timeout_s=timeout_s + self.exposure_s, get=get
             )
 
         # Software WOI crop and/or binning (no-op when handled by hardware).
@@ -1517,7 +1586,8 @@ class Camera(_Common, ABC):
             image = self.get_image()
         if image is False:
             image = self.last_image
-        image = np.array(image, copy=(False if np.__version__[0] == '1' else None))
+        # as_numpy: last_image follows get_image(get=...), so it may be device-resident.
+        image = as_numpy(image)
 
         (ax, _, should_show) = self._plot(
             image, limits, title, ax=ax, cbar=cbar, labels=BLAZE_LABELS["ij"]
@@ -1737,17 +1807,16 @@ class Camera(_Common, ABC):
         if hasattr(set_z, 'set_phase'):
             # SLM passed; create lens phase setter.
             slm = set_z
-            phase = slm.phase
-            base_phase = np.array(phase.get() if hasattr(phase, "get") else phase)
-            base_correction = slm.source.get('phase', np.zeros_like(base_phase))
-            if hasattr(base_correction, "get"):
-                base_correction = base_correction.get()
+            base_phase = slm.phase.copy()
+            base_correction = slm.source.get('phase', None)
+            if base_correction is None:
+                base_correction = slm.xp.zeros_like(base_phase)
             base_phase -= base_correction
 
             def slm_set_z(z_val):
                 slm.source['phase'] = (
                     base_correction +
-                    zernike(slm, index=4, weight=z_val, use_mask=False)
+                    as_backend(zernike(slm, index=4, weight=z_val, use_mask=False), slm.xp)
                 )
                 slm.set_phase(
                     base_phase,

@@ -5,6 +5,7 @@ import numpy as np
 from scipy.special import jn_zeros
 from typing import Tuple, Union, Callable
 from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
+from slmsuite.misc.xp import get_array_module
 
 # Basic gratings.
 
@@ -32,10 +33,11 @@ def blaze(
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_array_module(x_grid)
 
     # Optimize phase construction based on context.
     if vector[0] == 0 and vector[1] == 0:
-        result = np.zeros_like(x_grid)
+        result = xp.zeros_like(x_grid)
     elif vector[1] == 0:
         result = (2 * np.pi * vector[0]) * x_grid
     elif vector[0] == 0:
@@ -44,7 +46,7 @@ def blaze(
         result = (2 * np.pi * vector[0]) * x_grid + (2 * np.pi * vector[1]) * y_grid
 
     if len(vector) > 2:
-        result += (np.pi * vector[2]) * (np.square(x_grid) + np.square(y_grid))
+        result = result + (np.pi * vector[2]) * (xp.square(x_grid) + xp.square(y_grid))
 
     return result
 
@@ -93,16 +95,18 @@ def triangle(
         The phase for this function.
     """
     duty_cycle = (float(np.clip(bias, -1, 1)) + 1) / 2
+    b_val = blaze(grid, vector)
+    xp = get_array_module(b_val)
 
     # Position within the period, on [0, 1).
-    t = np.mod(blaze(grid, vector) + shift, 2 * np.pi) / (2 * np.pi)
+    t = xp.mod(b_val + shift, 2 * np.pi) / (2 * np.pi)
 
     if duty_cycle <= 0:
         ramp = 1 - t
     elif duty_cycle >= 1:
         ramp = t
     else:
-        ramp = np.minimum(t / duty_cycle, (1 - t) / (1 - duty_cycle))
+        ramp = xp.minimum(t / duty_cycle, (1 - t) / (1 - duty_cycle))
 
     return (a - b) * ramp + b
 
