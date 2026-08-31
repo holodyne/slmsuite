@@ -384,7 +384,7 @@ def mathieu_gaussian(grid, r, q, w=None):
     if q == 0:
         # Circular limit: the elliptic coordinates degenerate to polar, and the Mathieu
         # functions reduce to ce_r -> cos(r nu), se_r -> sin(r nu), Je_r/Jo_r -> J_r.
-        mu = np.sqrt(np.square(x_grid) + np.square(y_grid)) / w
+        mu = 2 * np.sqrt(2) * np.sqrt(np.square(x_grid) + np.square(y_grid)) / w
         nu = np.arctan2(y_grid, x_grid)
         order = abs(r)
 

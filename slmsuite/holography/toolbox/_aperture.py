@@ -142,7 +142,9 @@ class Aperture:
         grid and so masks nothing; ``True`` otherwise. Lets callers skip masking work in
         the common no-aperture case without materializing :attr:`mask`.
         """
-        return self._spec != "cropped" or self._center is not None
+        # A str test, not ==: an ndarray spec compares elementwise and has no truth value.
+        cropped = isinstance(self._spec, str) and self._spec == "cropped"
+        return not cropped or self._center is not None
 
     @cached_property
     def scale(self):
@@ -169,7 +171,7 @@ class Aperture:
                 x_scale = 1 / rx
                 y_scale = 1 / ry
             elif spec == "circular":
-                x_scale = y_scale = 1 / np.amin([rx, ry])
+                x_scale = y_scale = 1 / min(rx, ry)
             elif spec == "cropped":
                 x_scale = y_scale = 1 / np.sqrt(rx**2 + ry**2)
             else:

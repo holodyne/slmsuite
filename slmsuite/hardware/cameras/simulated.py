@@ -12,7 +12,6 @@ except Exception:
     cp = np
     from scipy.ndimage import map_coordinates
 
-import matplotlib.pyplot as plt
 
 from slmsuite.hardware.cameras.camera import Camera
 from slmsuite.holography.algorithms import Hologram
@@ -97,13 +96,8 @@ class SimulatedCamera(Camera):
         # Store a reference to the SLM: we need this to compute the far-field camera images.
         self._slm = slm
 
-        # Don't interpolate (slower) by default unless required.
-        self._interpolate = False
-
         if resolution is None:
             resolution = slm.shape[::-1]
-        elif any([r != s for r, s in zip(resolution, slm.shape[::-1])]):
-            self._interpolate = True
 
         # dtype and other parameters are set here in init.
         super().__init__(resolution, pitch_um=pitch_um, **kwargs)
@@ -117,12 +111,6 @@ class SimulatedCamera(Camera):
         # Hidden: efficiency of each camera pixel; an image of shape ``_shape`` or None.
         self._aperture = None
 
-
-        # Compute the camera pixel grid in `basis` units (currently "ij")
-        self.grid = np.meshgrid(
-            np.arange(resolution[0]),
-            np.arange(resolution[1]),
-        )
 
         # Defaults to alignment with the SLM grid.
         self.set_affine(M, b)
@@ -294,7 +282,7 @@ class SimulatedCamera(Camera):
             Affine vector :math:`b`. Shape ``(1, 2)``.
         """
         if offset is None:
-            offset = np.flip(self.shape) / 2
+            offset = np.flip(self._shape) / 2
 
         return toolbox.build_affine(
             f_eff,
@@ -302,7 +290,7 @@ class SimulatedCamera(Camera):
             theta=theta,
             shear_angle=shear_angle,
             offset=offset,
-            cam_pitch_um=self.pitch_um,
+            cam_pitch_um=self._pitch_um,
             wav_um=self._slm.wav_um,
         )
 

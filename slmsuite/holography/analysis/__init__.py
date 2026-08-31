@@ -186,14 +186,15 @@ def take(
 
     if return_mask:
         if return_mask == 2:
-            canvas = np.full(shape[-2:], np.nan, dtype=float)
+            canvas = np.zeros_like(images, shape=shape[-2:], dtype=float)
+            canvas[:] = np.nan
             canvas[integration_y, integration_x] = images[integration_y, integration_x]
         else:
-            canvas = np.zeros(shape[-2:], dtype=bool)
+            canvas = np.zeros_like(images, shape=shape[-2:], dtype=bool)
             canvas[integration_y, integration_x] = True
 
         if plot >= 1:
-            plt.imshow(canvas)
+            plt.imshow(canvas.get() if hasattr(canvas, "get") else canvas)
             _slmsuite_plt_show(name="take")
 
         return canvas
@@ -341,7 +342,7 @@ def take_tile(images, shape=None):
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
 
-    result = np.zeros((M*N, sy, sx), images.dtype)
+    result = np.zeros_like(images, shape=(M*N, sy, sx))
     result[:img_count, :, :] = images[:img_count, :, :]
 
     return result.reshape(M, N, sy, sx).transpose(0, 2, 1, 3).reshape(M*sy, N*sx)
@@ -423,9 +424,10 @@ def image_remove_field(images, deviations=1, out=None):
     out_max = np.amax(out_, axis=(1, 2), keepdims=True)
 
     # Remove the field. This needs the float from before. Unsigned integer could underflow.
-    out_ -= threshold.astype(out_.dtype)
+    threshold = threshold.astype(out_.dtype)
+    out_ -= threshold
     out_[out_ < 0] = 0
-    out_[out_ > out_max - threshold] = 0
+    out_[out_ > (out_max - threshold)] = 0
 
     return out
 
@@ -710,7 +712,7 @@ def image_positions(images, grid=None, normalize=True, nansum=False):
             ``float`` or an anisotropic ``(float, float)``.
             This corresponds to the pixel's :math:`\Delta x`, :math:`\Delta y`.
         -   Providing lists of length ``w`` and ``h`` as a tuple as the grid dimension.
-        -   Providing full grids of shape ``(w, h)`` in each direction. Note that this
+        -   Providing full grids of shape ``(h, w)`` in each direction. Note that this
             case is the most general, and can lead to a rotated grid if a transformed
             grid is provided.
 
@@ -783,7 +785,7 @@ def image_variances(images, centers=None, grid=None, normalize=True, nansum=Fals
             ``float`` or an anisotropic ``(float, float)``.
             This corresponds to the pixel's :math:`\Delta x`, :math:`\Delta y`.
         -   Providing lists of length ``w`` and ``h`` as a tuple as the grid dimension.
-        -   Providing full grids of shape ``(w, h)`` in each direction. Note that this
+        -   Providing full grids of shape ``(h, w)`` in each direction. Note that this
             case is the most general, and can lead to a rotated grid if a transformed
             grid is provided.
 
@@ -1370,12 +1372,15 @@ def image_remove_vortices(phase_image, mask=None, return_vortices_negative=False
     xp = _get_module(phase_image)
 
     if mask is not None:
-        mask_eroded = binary_erosion(mask, np.ones((5,5)))
+        # scipy erodes on the host; the consumers are on the image's backend.
+        host_mask = mask.get() if hasattr(mask, "get") else mask
+        mask_eroded = xp.asarray(binary_erosion(host_mask, np.ones((5, 5))))
     else:
         mask_eroded = None
 
     coordinates, weights = image_vortices_coordinates(phase_image, mask=mask_eroded)
     grid = _generate_grid(phase_image.shape[1], phase_image.shape[0], integer=False)
+    grid = [xp.asarray(g) for g in grid]
 
     if return_vortices_negative:
         canvas = np.zeros_like(phase_image)
@@ -1431,9 +1436,16 @@ def image_remove_blaze(phase_image, mask=None, plot=0):
         dy_mean = np.nansum(dy * mask) / np.nansum(mask)
 
     # Subtract the gradient and re-mod.
-    x = np.arange(phase.shape[1])
-    y = np.arange(phase.shape[0])
-    X, Y = np.meshgrid(x, y)
+    if np.ndim(phase) != 2:
+        raise ValueError(
+            "image_remove_blaze expects a single 2D phase image; got shape {}."
+            .format(np.shape(phase))
+        )
+
+    # Counted from the image so the indices land on its own backend.
+    ones = np.ones_like(phase, dtype=float)
+    X = np.cumsum(ones, axis=1) - 1
+    Y = np.cumsum(ones, axis=0) - 1
     result = np.mod(phase - dx_mean * X - dy_mean * Y, 2 * np.pi)
 
     if plot >= 1:
@@ -1550,7 +1562,11 @@ def fit_affine(x, y, guess_affine=None, plot=0):
     """
     x = format_2vectors(x)
     y = format_2vectors(y)
-    assert x.shape == y.shape
+    if x.shape != y.shape:
+        raise ValueError(
+            "x and y must have the same shape; got {} and {}."
+            .format(x.shape, y.shape)
+        )
 
     # If the user does not provide a guess, compute one based on centroiding and moment matching.
     if guess_affine is None:
@@ -1613,7 +1629,9 @@ def fit_affine(x, y, guess_affine=None, plot=0):
 
         M = np.array([[p[0], p[1]], [p[2], p[3]]])
         b = format_2vectors([p[4], p[5]])
-    except Exception:     # Fail elegantly (warn the user?).
+    except Exception as e:
+        # Returning the caller's guess is a fallback, not a fit, and must say so.
+        logger.warning("fit_affine could not improve on the guess (%s); returning it.", e)
         M = M_guess
         b = b_guess
 
@@ -2538,13 +2556,15 @@ def blob_array_detect(
                     array_shape,
                     2 * np.max([1, int(0.2 * max_pitch)]) + 1,
                 )
-                assert best is not None
+                if best is None:
+                    raise IndexError("The orientation scorer found no candidate.")
 
                 M_fixed = np.matmul(
                     M_trial, OrientationTransform.from_code(best[0]).M()
                 )
                 parity_success = True
-            except Exception:
+            except IndexError as e:
+                logger.warning("Array parity could not be determined (%s).", e)
                 M_fixed = M_trial
                 parity_success = False
         else:
@@ -2564,6 +2584,10 @@ def blob_array_detect(
             index = int(results[1][3])
 
     orientation = {"M": results[index][2], "b": results[index][1]}
+    if not bool(results[index][3]):
+        logger.warning(
+            "Array orientation was not verified; the affine may be reflected or rotated."
+        )
 
     # Hone the center of our fit by averaging the positional deviations of spots.
     # We do this multiple times to allow outliers (1 std error above) to stabilize.

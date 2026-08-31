@@ -161,11 +161,17 @@ class SegmentedSLM(SLM):
             If ``None``, uses the value of ``self.refresh``, which is ``True``
             for the final segment of a segmented SLM by default.
         """
-        # Update the parent SLM's display data.
+        # Update the parent SLM's display and phase data.
         if self.subwindow is None:                  # Rectangular window case
             self.parent.display[tuple(self.extent_slice)] = display
+            if self.phase is not None:
+                self.parent.phase[tuple(self.extent_slice)] = self.phase
         else:                                       # Non-rectangular window case
             self.parent.display[tuple(self.extent_slice)][self.subwindow] = display[self.subwindow]
+            if self.phase is not None:
+                self.parent.phase[tuple(self.extent_slice)][self.subwindow] = (
+                    self.phase[self.subwindow]
+                )
 
         # Update the parent SLM's hardware if desired.
         if refresh is None:

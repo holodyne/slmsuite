@@ -290,10 +290,16 @@ class FourierSLM(
         if not "fourier" in self.calibrations:
             raise ValueError("Cannot simulate() a FourierSLM without a Fourier calibration.")
 
+        # Else writing to the clone's source writes through to the live SLM.
+        source = {
+            key: np.copy(value) if hasattr(value, "copy") else value
+            for (key, value) in self.slm.source.items()
+        }
+
         # Make a simulated SLM
         slm_sim = SimulatedSLM(
             self.slm.shape[::-1],
-            source=self.slm.source,
+            source=source,
             bitdepth=self.slm.bitdepth,
             name=self.slm.name+"_sim",
             wav_um=self.slm.wav_um,

@@ -58,6 +58,9 @@ class FeedbackHologram(Hologram):
         Measured with :meth:`.measure()`.
     """
 
+    # Camera feedback adds the experimental source. See Hologram._feedback_supported.
+    _feedback_supported = ("computational", "experimental")
+
     def __init__(
             self,
             shape,
@@ -485,20 +488,25 @@ class FeedbackHologram(Hologram):
             self.cameraslm.cam.flush()
             self.img_ij = np.array(self.cameraslm.cam.get_image(), copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype)
 
-            if basis == "knm":  # Compute the knm basis image.
-                # Window by the ROI, when there is one: the rest of the frame
-                # is outside the target and would only be uploaded to be
-                # discarded by the transform.
-                self.img_knm = self.ijcam_to_knmslm(
-                    self._roi_window(self.img_ij),
-                    out=self.img_knm,
-                    roi=self.target_ij_roi,
-                )
-                cp.sqrt(self.img_knm, out=self.img_knm)
-            else:  # The old image is outdated, erase it. FUTURE: memory concerns?
-                self.img_knm = None
+            try:
+                if basis == "knm":  # Compute the knm basis image.
+                    # Window by the ROI, when there is one: the rest of the frame
+                    # is outside the target and would only be uploaded to be
+                    # discarded by the transform.
+                    self.img_knm = self.ijcam_to_knmslm(
+                        self._roi_window(self.img_ij),
+                        out=self.img_knm,
+                        roi=self.target_ij_roi,
+                    )
+                    cp.sqrt(self.img_knm, out=self.img_knm)
+                else:  # The old image is outdated, erase it. FUTURE: memory concerns?
+                    self.img_knm = None
 
-            self.img_ij = np.sqrt(self.img_ij)  # Don't load to the GPU if not necessary.
+                self.img_ij = np.sqrt(self.img_ij)  # Don't load to the GPU if not necessary.
+            except BaseException:
+                # Else the cache holds intensity where every reader expects amplitude.
+                self.img_ij = self.img_knm = None
+                raise
         elif basis == "knm":
             if self.img_knm is None:
                 # Square the window, not the frame; img_ij is amplitude by this
@@ -649,6 +657,12 @@ class FeedbackHologram(Hologram):
                 raw="raw_stats" in self.flags and self.flags["raw_stats"],
             )
         if "experimental_ij" in stat_groups or "experimental" in stat_groups:
+            if self.target_ij is None:
+                raise ValueError(
+                    "Stat groups 'experimental' and 'experimental_ij' need a "
+                    "camera-referenced target; this hologram has none. "
+                    "Use 'experimental_knm' instead."
+                )
             self.measure("ij")  # Make sure data is there.
 
             # When the target was supplied as a sub-image, compare against the

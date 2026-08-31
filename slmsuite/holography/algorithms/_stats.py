@@ -62,7 +62,7 @@ class _HologramStats(object):
 
         # Normalize. Guard against an all-zero feedback/target (e.g. a blank target or a
         # dark first frame), which would otherwise divide by zero and poison every stat.
-        feedback_pwr_sum = xp.sum(feedback_pwr)
+        feedback_pwr_sum = xp.nansum(feedback_pwr)
         if feedback_pwr_sum > 0:
             feedback_pwr *= 1 / feedback_pwr_sum
             feedback_amp *= 1 / xp.sqrt(feedback_pwr_sum)
@@ -406,7 +406,7 @@ class _HologramStats(object):
                 amp = np.abs(source)
                 phase = np.angle(source)
 
-        if isinstance(amp, float):
+        if np.ndim(amp) == 0:
             im_amp = axs[0].imshow(
                 toolbox.pad(
                     amp * np.ones(self.slm_shape),

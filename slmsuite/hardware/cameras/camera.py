@@ -1,7 +1,6 @@
 """
 Abstract camera functionality.
 """
-import io
 import time
 import warnings
 from abc import ABC, abstractmethod
@@ -244,7 +243,11 @@ class Camera(_Common, ABC):
     def bitresolution(self) -> int:
         # This overwrites the _Common bitresolution, as averaging and software binning
         # both sum into a range wider than the bitdepth.
-        scale = self.averaging if self.averaging is not None else 1
+        return self._bitresolution(self.averaging)
+
+    def _bitresolution(self, averaging) -> int:
+        """:attr:`bitresolution` for a capture using ``averaging`` instead of the attribute."""
+        scale = averaging if averaging is not None else 1
         if self._software_binning:
             scale *= int(np.prod(self._binning))
         return (2**self.bitdepth) * scale
@@ -315,7 +318,7 @@ class Camera(_Common, ABC):
         if self._binning != binning:
             self.logger.warning("Attempted to set binning to %s, but realized %s.", target_binning, self.binning)
         else:
-            self.logger.debug("Set WOI to %s.", self.woi)
+            self.logger.debug("Set binning to %s.", self.binning)
 
         # Try and retain the same WOI in unbinned camera coordinates.
         if update_woi:
@@ -1298,7 +1301,10 @@ class Camera(_Common, ABC):
             The scale of the returned image is the same as the original exposure.
         """
         (exposures, exposure_power) = self._parse_hdr(exposures)
-        overexposure_threshold = self.bitresolution / 2
+        # In the units of the frames this call will actually capture.
+        overexposure_threshold = self._bitresolution(
+            self._parse_averaging(kwargs.get("averaging"))
+        ) / 2
 
         # Make empty data and grab the original exposure time.
         original_exposure = self.get_exposure()
@@ -1307,24 +1313,25 @@ class Camera(_Common, ABC):
         imgs = None
         exposure_times = np.zeros((exposures,), dtype=float)
 
-        for i in range(exposures):
-            # FUTURE: record the get_exposures and use these to do better analysis.
-            exposure_times[i] = self.set_exposure(int(exposure_power ** i) * original_exposure)
-            self.flush()    # Sometimes, cameras return bad frames after exposure change.
-            frame = self.get_image(hdr=False, **kwargs)
-            if imgs is None:
-                imgs = np.zeros((exposures,) + tuple(frame.shape), float)
-            imgs[i, :, :] = frame
+        try:
+            for i in range(exposures):
+                # FUTURE: record the get_exposures and use these to do better analysis.
+                exposure_times[i] = self.set_exposure(int(exposure_power ** i) * original_exposure)
+                self.flush()    # Sometimes, cameras return bad frames after exposure change.
+                frame = self.get_image(hdr=False, **kwargs)
+                if imgs is None:
+                    imgs = np.zeros((exposures,) + tuple(frame.shape), float)
+                imgs[i, :, :] = frame
 
-            # Terminate the loop if our image is entirely overexposed.
-            if np.all(imgs[i, :, :] > overexposure_threshold):
-                # Drop the unexposed tail so the stack only holds measured frames.
-                imgs = imgs[:i+1, :, :]
-                exposure_times = exposure_times[:i+1]
-                break
-
-        # Reset exposure.
-        self.set_exposure(original_exposure)
+                # Terminate the loop if our image is entirely overexposed.
+                if np.all(imgs[i, :, :] > overexposure_threshold):
+                    # Drop the unexposed tail so the stack only holds measured frames.
+                    imgs = imgs[:i+1, :, :]
+                    exposure_times = exposure_times[:i+1]
+                    break
+        finally:
+            # Else a failed capture strands the camera at the elevated exposure.
+            self.set_exposure(original_exposure)
 
         if return_raw:
             return imgs, exposure_times
@@ -1776,8 +1783,11 @@ class Camera(_Common, ABC):
         if hasattr(set_z, 'set_phase'):
             # SLM passed; create lens phase setter.
             slm = set_z
-            base_phase = slm.phase.copy()
+            phase = slm.phase
+            base_phase = np.array(phase.get() if hasattr(phase, "get") else phase)
             base_correction = slm.source.get('phase', np.zeros_like(base_phase))
+            if hasattr(base_correction, "get"):
+                base_correction = base_correction.get()
             base_phase -= base_correction
 
             def slm_set_z(z_val):

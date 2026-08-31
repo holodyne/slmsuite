@@ -176,13 +176,17 @@ class _WavefrontCalibrationZernike(object):
         # Helper function to fit a parabola to the result of the sweep.
         def fit_term(sweep, result, term, status):
             ddy = np.diff(result, n=2, axis=0)
-            a0 = .5 * np.mean(ddy, axis=0) / np.square(np.mean(np.diff(sweep)))
-            if True or np.mean(a0) >= 0:    # Determine whether the system has a + or - x^2 term. For now, we force +.
-                c0 = np.min(result, axis=0)
-                x0 = sweep[np.argmin(result, axis=0)]
-            else:
-                c0 = np.max(result, axis=0)
-                x0 = sweep[np.argmax(result, axis=0)]
+            with np.errstate(invalid="ignore"):
+                a0 = .5 * np.mean(ddy, axis=0) / np.square(np.mean(np.diff(sweep)))
+            c0 = np.min(result, axis=0)
+            x0 = sweep[np.argmin(result, axis=0)]
+
+            span = np.ptp(sweep)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                spread = np.nanmax(result, axis=0) - np.nanmin(result, axis=0)
+                floor = spread / np.square(span) if span > 0 else np.ones_like(spread)
+            floor = np.where(np.isfinite(floor) & (floor > 0), floor, np.finfo(float).tiny)
+            a0 = np.where(np.isfinite(a0) & (a0 > 0), a0, floor)
 
             def parabola(x, x0, a, c):
                 return c + a * np.square(x - x0)
@@ -190,6 +194,7 @@ class _WavefrontCalibrationZernike(object):
             g = np.zeros(result.shape[1])
             x = np.zeros(result.shape[1])
             dx = np.zeros(result.shape[1])
+            failures = []
 
             for i in range(result.shape[1]):
                 guess = (x0[i], a0[i], c0[i])
@@ -206,13 +211,23 @@ class _WavefrontCalibrationZernike(object):
                         )
                     )
                     perr = np.sqrt(np.diag(pcov))   # Single sigma error, which can be multiplied later.
-                except Exception:
+                except Exception as e:
+                    # Falling back to the sweep's extremum with zero uncertainty is a
+                    # guess, not a fit, and a whole term failing must not be silent.
+                    failures.append(str(e))
                     popt = guess
                     perr = np.zeros_like(guess)
 
                 g[i] = guess[0]
                 x[i] = popt[0]
                 dx[i] = perr[0]
+
+            if failures:
+                self.logger.warning(
+                    "%d of %d parabola fits failed for term %s and fell back to the "
+                    "sweep extremum with zero uncertainty (e.g. %s).",
+                    len(failures), result.shape[1], term, failures[0],
+                )
 
             x = np.clip(x, np.min(sweep), np.max(sweep))
             railed = np.sum(np.logical_or(x == np.min(sweep), x == np.max(sweep))) / float(len(x))
@@ -738,18 +753,13 @@ class _WavefrontCalibrationZernike(object):
 
     def _wavefront_calibrate_zernike_get_interpolator_2d(self):
         """
-        Get the interpolator mapping the coordinates in normalized ``"kxy"`` units 
+        Get the interpolator mapping the coordinates in normalized ``"kxy"`` units
         to their full Zernike vectors. Cached until the calibration changes.
         """
-        if not "wavefront_zernike" in self.calibrations:
+        if "wavefront_zernike" not in self.calibrations:
             raise RuntimeError("Could not find Zernike wavefront calibration.")
 
-        corrected_spots = self.calibrations["wavefront_zernike"]["corrected_spots"]
-
-        cache = getattr(self, "_wavefront_calibration_zernike_interpolator_2d", None)
-        if cache is not None and cache[0] is corrected_spots:   # TODO: hash/id?
-            return cache[1]
-
+        values = np.array(self.calibrations["wavefront_zernike"]["corrected_spots"])
         base = convert_vector(
             self.calibrations["wavefront_zernike"]["calibration_points_ij"],
             from_units="ij",
@@ -757,13 +767,21 @@ class _WavefrontCalibrationZernike(object):
             hardware=self,
         )
 
-        interpolator = RBFInterpolator(
-            base[:2, :].T, np.array(corrected_spots).T, kernel="linear", degree=1
-        )
-        self._wavefront_calibration_zernike_interpolator_2d = (corrected_spots, interpolator)
+        # The base coordinates also depend upon the Fourier calibration, so both are keyed.
+        cache = getattr(self, "_wavefront_calibration_zernike_interpolator_2d", None)
+        if cache is not None and np.array_equal(cache[0], base) and np.array_equal(cache[1], values):
+            return cache[2]
+
+        # The degree-1 tail reproduces the affine tilt map, including outside the calibration.
+        rbf = RBFInterpolator(base[:2, :].T, values.T, kernel="linear", degree=1)
 
         # Interpolator operates with swapped axes for 2D input.
-        return lambda v: interpolator(v).T
+        def interpolator(vectors):
+            return rbf(format_vectors(vectors, handle_dimension="crop").T).T
+
+        self._wavefront_calibration_zernike_interpolator_2d = (base, values, interpolator)
+
+        return interpolator
 
     def wavefront_calibrate_zernike_get(
         self,
@@ -775,7 +793,7 @@ class _WavefrontCalibrationZernike(object):
         Returns a set of vectors in the Zernike basis corresponding to calibrated points at
         the requested 2D coordinates given by ``vector``.
         The aberration measured by :meth:`wavefront_calibrate_zernike()` is interpolated in the plane
-        between the calibration points, such that the result can used as the
+        between the calibration points, such that the result can be used as the
         ``spot_vectors`` of a
         :class:`~slmsuite.holography.algorithms.CompressedSpotHologram` with the
         basis of calibration ``"zernike_indices"`` as the spot basis.
@@ -783,8 +801,7 @@ class _WavefrontCalibrationZernike(object):
         Parameters
         ----------
         vector : array_like
-            Position(s) to evaluate the calibration at, of shape ``(2, M)`` or ``(3, M)``.
-            A third dimension is added to the calibrated focus :math:`Z_4` term.
+            Position(s) to evaluate the calibration at, of shape ``(2, M)``.
             If ``vector`` is ``None``, the 2D interpolator is returned directly.
         from_units : str
             Units of ``vector``. See
@@ -795,19 +812,17 @@ class _WavefrontCalibrationZernike(object):
 
         Returns
         -------
-        numpy.ndarray
+        numpy.ndarray OR function
             Calibrated Zernike coefficients of shape ``(D, M)``.
+            If ``vector`` is ``None``, a function mapping ``"kxy"`` coordinates of shape
+            ``(2, M)`` to these coefficients.
         """
         data = self.calibrations["wavefront_zernike"]
-        zernike_indices = np.squeeze(data["zernike_indices"])
+        zernike_indices = data["zernike_indices"]
 
         interpolator = self._wavefront_calibrate_zernike_get_interpolator_2d()
 
         if vector is not None:
-            if vector.shape[0] > 2:
-                raise ValueError(
-                    "3D Zernike interpolation is not currently supported."
-                )
             vectors_kxy = convert_vector(
                 vector,
                 from_units=from_units,
@@ -815,17 +830,23 @@ class _WavefrontCalibrationZernike(object):
                 hardware=self,
             )
 
-            result = interpolator(vectors_kxy[:2, :])
+            if vectors_kxy.shape[0] > 2:
+                raise ValueError(
+                    "3D Zernike interpolation is not currently supported."
+                )
+
+            result = interpolator(vectors_kxy)
         else:
-            return interpolator
+            result = interpolator
 
         if plot >= 1:
-            points_ij = data["calibration_points_ij"]
+            points_ij = np.asarray(data["calibration_points_ij"])
+            corrected_spots = np.asarray(data["corrected_spots"])
             if vector is not None:
                 vectors_ij = convert_vector(
-                    vectors_kxy, 
-                    from_units="norm", 
-                    to_units="ij", 
+                    vectors_kxy,
+                    from_units="norm",
+                    to_units="ij",
                     hardware=self,
                 )
 
@@ -859,7 +880,7 @@ class _WavefrontCalibrationZernike(object):
                 )
                 # Control points.
                 ax.scatter(
-                    points_ij[0, :], points_ij[1, :], c=data["corrected_spots"][j, :],
+                    points_ij[0, :], points_ij[1, :], c=corrected_spots[j, :],
                     s=20, edgecolor="k", linewidths=.5, **kwargs
                 )
 

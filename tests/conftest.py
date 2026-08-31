@@ -926,7 +926,7 @@ def configure_matplotlib_for_testing(request):
                     filename = output_dir / f"{key}_fig{test_fig_counts[key]}.png"
                     fig.savefig(filename, dpi=150, bbox_inches='tight')
                     # Print relative path
-                    rel_path = filename.relative_to(Path("tests/output"))
+                    rel_path = filename.relative_to(get_test_run_output_dir().parent)
                     print(f"Saved plot: tests/output/{rel_path}")
 
             # Close figures to free memory
@@ -1044,7 +1044,7 @@ def pytest_configure(config):
     """Configure pytest with dynamic log file path and custom settings."""
     # Create output directory with timestamp for this test run
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_base = Path("tests/output")
+    output_base = Path(__file__).parent / "output"
     output_dir = output_base / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 

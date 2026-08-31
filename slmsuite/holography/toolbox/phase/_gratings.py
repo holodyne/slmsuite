@@ -247,9 +247,11 @@ def binary(
     # Check if we're in pixel period mode.
     if np.any(np.abs(vector) > 1):
         # This is not computationally efficient.
-        grid = (x_grid, y_grid) = np.meshgrid(
-            np.arange(x_grid.shape[1]).astype(float),
-            np.arange(x_grid.shape[0]).astype(float)
+        # Counted from the grid itself, so the indices land on its own backend.
+        ones = np.ones_like(x_grid, dtype=float)
+        grid = (x_grid, y_grid) = (
+            np.cumsum(ones, axis=1) - 1,
+            np.cumsum(ones, axis=0) - 1,
         )
         vector = (
             0 if vector[0] == 0 else 1. / vector[0],
@@ -263,7 +265,7 @@ def binary(
             decision = 0
         decision -= 2 * np.pi * duty_cycle
         phase = a if (decision < 0 and not np.isclose(decision, 0)) else b
-        return np.full(x_grid.shape, phase, dtype=dtype)
+        return np.full_like(x_grid, phase, dtype=dtype)
     elif vector[0] != 0 and vector[1] != 0:
         pass    # xor the next case.
     elif vector[0] == 0 or vector[1] == 0:

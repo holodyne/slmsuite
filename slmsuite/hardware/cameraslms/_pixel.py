@@ -717,7 +717,7 @@ class _PixelCalibration(object):
             ax.set_ylabel("SLM Response")
             tick_labels = [0, .5, 1]
             ax.set_yticks(tick_labels)
-            ax.set_yticklabels([f"${int(y*2)}\pi$" for y in tick_labels])
+            ax.set_yticklabels([rf"${int(y*2)}\pi$" for y in tick_labels])
             _slmsuite_plt_show(name="pixel_calibration_process_fit")
 
 

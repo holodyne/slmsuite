@@ -374,6 +374,12 @@ class MultiplaneHologram(Hologram):
 
     # Overload user functions with meta functionality.
 
+    @property
+    def _feedback_supported(self):
+        """Whatever any child can act on; the flags are pushed down to all of them."""
+        supported = set().union(*[set(h._feedback_supported) for h in self.holograms])
+        return tuple(sorted(supported)) if supported else ("computational",)
+
     def _update_flags(self, method, feedback, stat_groups, **kwargs):
         # First update the parent flags.
         super()._update_flags(method, feedback, stat_groups, **kwargs)

@@ -187,7 +187,7 @@ class _Common(_Viewable, _Loggable, ABC):
 
         ax.set_title(title)
 
-        if limits is not None and limits != 1:
+        if limits is not None and not np.array_equal(limits, 1):
             if np.isscalar(limits):
                 axlim = [ax.get_xlim(), ax.get_ylim()]
 

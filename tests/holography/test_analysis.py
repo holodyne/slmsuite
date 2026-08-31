@@ -1007,10 +1007,12 @@ def test_fit_affine(subtests):
         assert result["M"].shape == (2, 2)
         assert result["b"].shape == (2, 1)
 
-    with subtests.test("shape mismatch raises assertion"):
+    with subtests.test("shape mismatch raises"):
+        # ValueError, not AssertionError: an assert vanishes under python -O, which
+        # would drop the shape error into the fallback and return the guess as a fit.
         x = rng.uniform(-1, 1, size=(2, 5))
         y = rng.uniform(-1, 1, size=(2, 6))
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError):
             analysis.fit_affine(x, y)
 
     with subtests.test("optimizer failure falls back to guess"):

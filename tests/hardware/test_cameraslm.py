@@ -35,7 +35,10 @@ from conftest import (
 # Cases where fourier_calibrate with default-style arguments currently recovers the
 # correct affine. The remaining cases silently produce a *wrong* calibration (or
 # raise) --- this is the motivation for fourier_calibrate_auto().
-DEFAULT_CALIBRATION_OK = {"identity", "matched", "fov_much_larger", "fov_larger"}
+DEFAULT_CALIBRATION_OK = {
+    "identity", "matched", "fov_much_larger", "fov_larger",
+    "mirrored", "pitch_anisotropic", "defocus",
+}
 
 # Geometries that fourier_calibrate_auto() cannot yet handle, and why. Keyed by case
 # name, or by (case, source) where only one illumination is affected. All but the last
@@ -1079,7 +1082,7 @@ class TestFourierSLM:
         def peak_away_from(y, x):
             """The efficiency peak ignoring one pixel and everything the blur touched."""
             efficiency = np.array(fs.get_farfield_efficiency(fourier_crop=False))
-            efficiency[y-2:y+3, x-2:x+3] = 0
+            efficiency[max(0, y-2):y+3, max(0, x-2):x+3] = 0
             return np.nanmax(efficiency)
 
         with subtests.test("saturated pixel does not set the peak"):
@@ -1604,7 +1607,7 @@ class TestFourierSLM:
 
     def test_default_fourier_calibrate(
         self, simulated_system, simulated_system_name, simulated_system_source,
-        calibration_summary, calibration_plot_level,
+        calibration_summary, calibration_plot_level, request,
     ):
         fs = simulated_system
         (error, tolerance, note, failure) = _run_calibration(
@@ -1617,10 +1620,16 @@ class TestFourierSLM:
         )
 
         if simulated_system_name not in DEFAULT_CALIBRATION_OK:
-            pytest.xfail(
-                f"Fixed array_shape/array_pitch produce a wrong or failed calibration "
-                f"for this geometry ({note}); fourier_calibrate_auto() handles it."
-            )
+            # Strict, so a geometry that starts calibrating is reported rather than
+            # staying quietly green in the expected-failure column.
+            request.node.add_marker(pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    f"Fixed array_shape/array_pitch produce a wrong or failed "
+                    f"calibration for this geometry ({note}); "
+                    f"fourier_calibrate_auto() handles it."
+                ),
+            ))
 
         if failure is not None:
             raise failure
@@ -1631,12 +1640,16 @@ class TestFourierSLM:
 
     def test_fourier_calibrate_auto(
         self, simulated_system, simulated_system_name, simulated_system_source,
-        auto_summary, calibration_plot_level,
+        auto_summary, calibration_plot_level, request,
     ):
         fs = simulated_system
         (error, tolerance, note, failure) = _run_calibration(
             fs, simulated_system_name, simulated_system_source,
-            lambda system: system._fourier_calibrate_auto(plot=calibration_plot_level),
+            lambda system: system._fourier_calibrate_auto(
+                plot=calibration_plot_level,
+                # The dimmest of these geometries needs longer than the default ceiling.
+                farfield={"exposure_bounds_s": (0, 60)},
+            ),
             auto_summary, "auto_",
         )
 
@@ -1645,7 +1658,9 @@ class TestFourierSLM:
             AUTO_LIMITATIONS.get(simulated_system_name),
         )
         if limitation is not None:
-            pytest.xfail(f"{limitation} ({note})")
+            request.node.add_marker(
+                pytest.mark.xfail(strict=True, reason=f"{limitation} ({note})")
+            )
 
         if failure is not None:
             raise failure

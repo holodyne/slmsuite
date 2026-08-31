@@ -16,6 +16,9 @@ class _AbstractSpotHologram(FeedbackHologram):
     There are many parts of :class:`SpotHologram` with repetition and bloat that
     can be simplified with more modern features from other parts of :mod:`slmsuite`.
     """
+
+    # Spot feedback is weighted here. See Hologram._feedback_supported.
+    _feedback_supported = tuple(FEEDBACK_OPTIONS)
     def remove_vortices(self):
         """Spot holograms do not need to consider vortices."""
         pass
@@ -1341,7 +1344,7 @@ class SpotHologram(_AbstractSpotHologram):
         if basis == "ij" and null_region is not None:
             # Transformation order of zero to prevent nan-blurring in MRAF cases.
             self.null_region_knm = (
-                self.ijcam_to_knmslm(null_region, out=self.null_region_knm, order=0) != 0
+                self.ijcam_to_knmslm(null_region, order=0) != 0
             )
 
         # If we have an input for null_region_radius_frac, then force the null region to
@@ -1647,7 +1650,7 @@ class SpotHologram(_AbstractSpotHologram):
                     pwr_ff = cp.square(self.amp_ff)
                     pwr_feedback = analysis.take(
                         pwr_ff,
-                        self.spot_knm,
+                        self.spot_knm_rounded,
                         self.spot_integration_width_knm,
                         centered=True,
                         integrate=True,
@@ -1666,7 +1669,7 @@ class SpotHologram(_AbstractSpotHologram):
                     pwr_ff = np.square(self.amp_ff)
                     pwr_feedback = analysis.take(
                         pwr_ff,
-                        self.spot_knm,
+                        self.spot_knm_rounded,
                         self.spot_integration_width_knm,
                         centered=True,
                         integrate=True,

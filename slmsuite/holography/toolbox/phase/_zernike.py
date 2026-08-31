@@ -1050,9 +1050,6 @@ def zernike_pyramid_plot(
     a2.remove()
 
     # Grab all the phases as a stack.
-    grid_ = _process_grid(grid)
-    phases = np.zeros((len(indices_ansi), *grid_[0].shape))
-
     if noborder:
         if "use_mask" in kwargs and kwargs["use_mask"] is False:
             pass
@@ -1063,7 +1060,6 @@ def zernike_pyramid_plot(
         grid,
         indices_ansi[np.newaxis, :],
         np.diag(np.ones_like(indices_ansi)),
-        out=phases,
         **kwargs
     )
 
@@ -1077,7 +1073,8 @@ def zernike_pyramid_plot(
         axes.append(a)
 
         # Plot the phase.
-        plt.imshow(phases[i], cmap=cmap)
+        phase = phases[i]
+        plt.imshow(phase.get() if hasattr(phase, "get") else phase, cmap=cmap)
 
         # Construct the title.
         title = ""

@@ -386,15 +386,19 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
     nanmask = np.isnan(images)
     hasnan = np.any(nanmask)
     if hasnan:
+        images = np.array(images)
         images[nanmask] = 0
 
     # Convert images to integers scaled to the lut size.
     if normalize:
         images = np.rint(images * ((float(lut)-1) / np.max(images))).astype(int)
-        images = np.clip(images, 0, int(lut))
     elif isfloat:
         images = np.rint(images * (float(lut)-1)).astype(int)
-        images = np.clip(images, 0, int(lut))
+
+    # An out-of-range value would wrap in the final cast rather than saturate. The
+    # colormap is built with lut+1 entries; grayscale is bounded by its uint8 cast.
+    colormapped = isinstance(cmap, str) or hasattr(cmap, "N")
+    images = np.clip(images, 0, int(lut) if colormapped else 255)
 
     # Convert images to RGB.
     if isinstance(cmap, str) or hasattr(cmap, "N"):
@@ -420,10 +424,15 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
         # If border is a single numeric value, convert it to a list
         if np.isscalar(border):
             border = [border]
-        images[:,  0, :, :len(border)] = border
-        images[:, -1, :, :len(border)] = border
-        images[:, :,  0, :len(border)] = border
-        images[:, :, -1, :len(border)] = border
+        if images.ndim == 3:        # Grayscale never grew a channel axis to color.
+            border = border[0]
+            images[:,  0, :] = images[:, -1, :] = border
+            images[:, :,  0] = images[:, :, -1] = border
+        else:
+            images[:,  0, :, :len(border)] = border
+            images[:, -1, :, :len(border)] = border
+            images[:, :,  0, :len(border)] = border
+            images[:, :, -1, :len(border)] = border
 
     return images
 

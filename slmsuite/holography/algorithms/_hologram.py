@@ -214,6 +214,9 @@ class Hologram(_HologramStats, _Loggable):
         "propagation_kernel",
     ]
 
+    # Feedback sources this class can actually weight against.
+    _feedback_supported = ("computational",)
+
     def __init__(
         self,
         target,
@@ -884,10 +887,7 @@ class Hologram(_HologramStats, _Loggable):
         r"""
         Returns the current weights. Collects the current weights from the GPU if applicable.
         """
-        if cp != np:
-            return self.weights.get()
-        else:
-            return self.weights
+        return self.weights.get() if hasattr(self.weights, "get") else self.weights
 
     def get_farfield(self, shape=None, propagation_kernel=None, affine=None, get=True):
         r"""
@@ -1435,6 +1435,10 @@ class Hologram(_HologramStats, _Loggable):
         self.flags["method"] = method
 
         # 1) Parse flags:
+        # 1.0) Only Kim latches fixed_phase, and only mid-run; a user flag is set below.
+        if "Kim" not in method:
+            self.flags["fixed_phase"] = False
+
         # 1.1) Set defaults if not already set.
         for flag, value in ALGORITHM_DEFAULTS[method].items():
             if not flag in self.flags:
@@ -1461,6 +1465,15 @@ class Hologram(_HologramStats, _Loggable):
                 raise ValueError(
                     "Feedback '{}' not recognized as a feedback option.\n"
                     "Valid options: {}".format(feedback, FEEDBACK_OPTIONS)
+                )
+            # FEEDBACK_OPTIONS is what exists; this is what this class can act on.
+            # Anything else would be accepted and then never weight anything.
+            if feedback not in self._feedback_supported:
+                raise ValueError(
+                    "Feedback '{}' is not supported by {}.\n"
+                    "Supported options: {}".format(
+                        feedback, type(self).__name__, list(self._feedback_supported)
+                    )
                 )
             self.flags["feedback"] = feedback
 
@@ -1710,7 +1723,10 @@ class Hologram(_HologramStats, _Loggable):
             #         if mraf_factor is not None: cp.multiply(farfield, mraf_factor, _where=noise_region, out=farfield)
             #     cp.nan_to_num(farfield, copy=False, nan=0)
 
-            if not ("fixed_phase" in self.flags and self.flags["fixed_phase"]):
+            if (
+                not ("fixed_phase" in self.flags and self.flags["fixed_phase"])
+                or self.phase_ff is None
+            ):
                 self.phase_ff = cp.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
 
             if where_working:

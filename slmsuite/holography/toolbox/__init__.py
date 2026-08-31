@@ -371,6 +371,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units == "zernike" or to_units == "zernike":
         if slm is None:
+            logger.warning("slm is required for unit 'zernike'")
             zernike_scale = np.nan
         else:
             zernike_scale = 2 * np.pi * np.reciprocal(slm.aperture._isotropic_scale())
