@@ -34,6 +34,7 @@ def blaze(
     """
     (x_grid, y_grid) = _process_grid(grid)
     xp = get_array_module(x_grid)
+    vector = np.squeeze(vector)
 
     # Optimize phase construction based on context.
     if vector[0] == 0 and vector[1] == 0:

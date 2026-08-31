@@ -237,9 +237,8 @@ class Camera(_Common, ABC):
             is_slm=False,
         )
 
-        # Variable for storing the last capture.
-        # self.last_image = np.zeros(self.shape, dtype=self.get_dtype(averaging=1, hdr=False))
-        self.last_image = np.zeros(self.shape, dtype=self.dtype)
+        # Variable for storing the last capture; None until one is taken.
+        self.last_image = None
 
     @property
     def bitresolution(self) -> int:

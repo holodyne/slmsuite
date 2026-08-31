@@ -857,6 +857,9 @@ class _Window(__Window):
 
         self.dispatch_events()
 
+    def _uploaded(self):
+        """Hook run with the texture bound and current, before the draw samples it."""
+
     def _blit(self, source):
         """
         Upload ``source`` to the texture and draw it. See :meth:`render`.
@@ -878,6 +881,7 @@ class _Window(__Window):
                 gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
                 source
             )
+            self._uploaded()
 
         # Draw the quad.
         self.vertex_list.draw(gl.GL_TRIANGLE_STRIP)
@@ -1035,6 +1039,11 @@ class _ViewerWindow(_Window):
         # Else the letterbox margins alternate stale swap-chain contents at 60 Hz.
         gl.glClearColor(0., 0., 0., 1.)
 
+        # The window is meant to be watched while another has focus, and a compositor
+        # throttles an unfocused window's vertical blank, stalling flip() for far longer
+        # than a frame. Nothing here is animated finely enough to tear.
+        self.set_vsync(False)
+
         self._refresh()
 
     def _bring_to_front(self):
@@ -1095,14 +1104,16 @@ class _ViewerWindow(_Window):
         with self.current():
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
             self._blit(source)
-            if source is not None:
-                gl.glGenerateMipmap(gl.GL_TEXTURE_2D)   # _blit leaves the texture bound.
             self.flip()
 
     def render(self):
         """Upload the current frame to the texture and display it. See :meth:`_redraw`."""
         self._refresh()     # The viewer moves the region from its own thread, not this one.
         self._redraw(self.cframe)
+
+    def _uploaded(self):
+        """Refresh the mip chain, which a minified window samples instead of level 0."""
+        gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
 
     def _fraction(self, x, y):
         """Map window pixels to a ``(fx, fy)`` fraction of the displayed quad."""

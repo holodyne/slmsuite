@@ -353,6 +353,10 @@ class _ViewerObject:
         H, W = self.parent.shape[0], self.parent.shape[1]
         self.state["roi"] = [0.0, 0.0, float(W), float(H)]
 
+        # Else a camera that has not captured yet opens the viewer on black.
+        if not self.parent.is_slm and self.parent.last_image is None:
+            self.parent.get_image()
+
         self.last_image = as_numpy(
             self.parent._viewer_frame if self.parent.is_slm else self.parent.last_image
         )
@@ -573,7 +577,7 @@ class _ViewerObject:
             if not self.closed:     # A closed window tears the viewer down from _apply.
                 self.display.render()
         except Exception as e:
-            self._print(str(e))
+            self._print(f"{type(e).__name__}: {e}")
 
     def _post(self, request):
         """Queue a request from the window thread for the main thread, which owns the widgets."""
@@ -631,7 +635,7 @@ class _ViewerObject:
 
             self.render()
         except Exception as e:
-            self._print(str(e))
+            self._print(f"{type(e).__name__}: {e}")
 
     def live(self, event=None):
         if self.parent.is_slm:
@@ -736,7 +740,7 @@ class _ViewerObject:
                         f.write(self.display.png())
                 self._print(file_path)
         except Exception as e:
-            self._print(str(e))
+            self._print(f"{type(e).__name__}: {e}")
 
     def copy(self, event=None):
         """Copy the current view to the system clipboard."""
@@ -744,7 +748,7 @@ class _ViewerObject:
             _clipboard_image(self.display.png(), self.parent.name + "-view")
             self._print("Copied to clipboard.")
         except Exception as e:
-            self._print(str(e))
+            self._print(f"{type(e).__name__}: {e}")
 
     def _autorange(self):
         """Window the color scale to the extremes of the last image."""
@@ -1070,7 +1074,7 @@ class _ViewerDisplayIPython:
             elif etype == "click" and not viewer._dragged:
                 viewer._print(np.round(viewer._to_source(fx, fy)).astype(int))
         except Exception as e:
-            viewer._print(str(e))
+            viewer._print(f"{type(e).__name__}: {e}")
 
     def close(self):
         if self._events is not None:
@@ -1199,9 +1203,13 @@ class _ViewerDisplayPyglet:
             window.commit()
         self._future = self.thread.submit(window.render)
 
-        if opened:
-            # Else a caller that writes once, as an SLM does, never draws the frame.
-            self.thread.wait(self._future, timeout=10)
+        # Waited on here and not only at the head of the next frame: with nothing else
+        # asking for one, a frame would otherwise reach the screen no earlier than the
+        # user's next change, leaving the view a change behind.
+        try:
+            self.thread.wait(self._future, timeout=10 if opened else .2)
+        except TimeoutError:
+            pass    # Genuinely wedged; the next frame's wait picks this one up.
 
     def png(self):
         """The current view, cropped to the region of interest, as ``PNG`` bytes."""

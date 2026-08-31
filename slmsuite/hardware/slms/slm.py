@@ -816,8 +816,9 @@ class SLM(_Common, ABC):
 
     @property
     def _viewer_frame(self):
+        """The current phase in the gray levels that the viewer's color range spans."""
         factor = self.phase_scaling * self.bitresolution / (2 * np.pi)
-        return (as_numpy(self.phase) * factor).astype(self.dtype)
+        return (as_numpy(self.phase) * factor % self.bitresolution).astype(self.dtype)
 
     def set_phase(
         self,
