@@ -51,9 +51,6 @@ class _FourierCalibration(object):
         array_shape, array_pitch
             Passed to :meth:`~slmsuite.holography.algorithms.SpotHologram.make_rectangular_array()`
             **in the** ``"knm"`` **basis.**
-            If either ``array_shape`` or ``array_pitch`` is ``None``,
-            a series of calibrations are performed (Farfield and Fourier with different parameters) 
-            to find suitable values and autonomously calibrate the SLM.
         array_center
             Passed to :meth:`~slmsuite.holography.algorithms.SpotHologram.make_rectangular_array()`
             **in the** ``"knm"`` **basis.**  ``array_center`` is not passed directly, and is
