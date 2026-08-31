@@ -41,53 +41,15 @@ from conftest import (
 # view, a cropped one, rotation, and a 0th order steered off the sensor.
 GEOMETRY_CASES = ("matched", "fov_much_larger", "rotated", "zeroth_outside")
 
-# Geometries whose calibration depends on the random draw. A single seed hides that:
-# what passes at one draw can be silently wrong at the next.
-MARGINAL_CASES = ("offset", "zeroth_corner", "zeroth_outside", "anisotropic")
-
-# A farfield that fills the camera, one contained inside it, and one both rotated and
-# cropped: the three ways the measured efficiency map meets the aperture.
-FARFIELD_CASES = ("matched", "fov_larger", "rotated")
-
 BATTERY_ARRAY_SHAPE = 10
 BATTERY_ARRAY_PITCH = 10
 
 # Cases where fourier_calibrate with a fixed array recovers the correct affine. The
-# remaining cases silently produce a *wrong* calibration (or raise) --- this is the
-# motivation for fourier_calibrate_auto().
+# remaining cases silently produce a *wrong* calibration (or raise), and are held to
+# that with a strict xfail so that any of them starting to work is reported.
 DEFAULT_CALIBRATION_OK = {
     "identity", "matched", "fov_much_larger", "fov_larger",
     "mirrored", "pitch_anisotropic", "defocus",
-}
-
-# Geometries that fourier_calibrate_auto() cannot yet handle, and why. Keyed by case
-# name, or by (case, source) where only one illumination is affected. All but the last
-# refuse rather than returning a calibration, so the failure is loud.
-AUTO_LIMITATIONS = {
-    "zeroth_outside": (
-        "With the 0th order off-camera the array can only be placed relative to the "
-        "lit region, and every array that fits there is fitted wrongly, which "
-        "verification rejects"
-    ),
-    "fov_extreme": (
-        "The survey measures one scale for both axes, which a farfield three times "
-        "larger than the camera along one axis and three times smaller along the "
-        "other is not described by"
-    ),
-    ("noisy_severe", "gaussian2d"): (
-        "Severe noise on an apodized source leaves an unbounded fit residual, which the "
-        "calibration refuses rather than returning; the same noise on a uniform source "
-        "calibrates"
-    ),
-    # TODO: fourier_calibrate_auto should be able to move the center of the array.
-    ("zeroth_corner", "gaussian2d"): (
-        "A 0th order 2% of the way across the sensor leaves no room to place an array "
-        "around it, so most of it falls off the camera and too few spots remain to fit"
-    ),
-    ("noisy", "gaussian2d"): (
-        "A marginal draw rather than a broken geometry: most draws of this case "
-        "calibrate, and the seeded draw of this battery lands just outside tolerance"
-    ),
 }
 
 
@@ -121,14 +83,13 @@ def calibration_plot_level(request):
 
 @pytest.fixture(scope="module")
 def calibration_summaries(test_output_dir, request):
-    """Per-routine accumulators, each written at teardown as one montage of every case."""
-    summaries = {}
-    yield summaries
-    for (routine, results) in summaries.items():
-        _write_summary(results, test_output_dir, request, routine)
+    """Accumulator for the battery, written at teardown as one montage of every case."""
+    results = {}
+    yield results
+    _write_summary(results, test_output_dir, request)
 
 
-def _write_summary(results, test_output_dir, request, routine):
+def _write_summary(results, test_output_dir, request):
     """Montage of every case's calibration against the ground truth."""
     if not results or test_output_dir is None:
         return
@@ -164,16 +125,16 @@ def _write_summary(results, test_output_dir, request, routine):
         ax.axis("off")
 
     fig.suptitle(
-        f"{routine} vs ground truth\n"
-        f"circles = true spot positions, crosses = calibrated prediction"
+        "fourier_calibrate vs ground truth\n"
+        "circles = true spot positions, crosses = calibrated prediction"
     )
     fig.tight_layout()
-    fig.savefig(test_output_dir / f"{routine}_summary.png", dpi=150)
+    fig.savefig(test_output_dir / "fourier_calibrate_summary.png", dpi=150)
     plt.close(fig)
-    print(f"\nSaved summary: {test_output_dir / routine}_summary.png")
+    print(f"\nSaved summary: {test_output_dir / 'fourier_calibrate_summary.png'}")
 
 
-def _run_calibration(fs, case, source, calibrate, summaries, routine):
+def _run_calibration(fs, case, source, results, plot):
     """
     Calibrates, compares against ground truth, and records the diagnostics.
 
@@ -186,7 +147,10 @@ def _run_calibration(fs, case, source, calibrate, summaries, routine):
 
     failure = None
     try:
-        calibrate(fs)
+        fs.fourier_calibrate(
+            array_shape=BATTERY_ARRAY_SHAPE, array_pitch=BATTERY_ARRAY_PITCH,
+            plot=plot, verbose=False,
+        )
     except Exception as e:
         failure = e
 
@@ -208,10 +172,10 @@ def _run_calibration(fs, case, source, calibrate, summaries, routine):
     )
     img = fs.cam.last_image if fs.cam.last_image is not None else fs.cam.get_image()
     plot_calibration_diagnostic(
-        fs, img=img, spots_kxy=spots_kxy, name=f"{routine}_{name}", note=note,
+        fs, img=img, spots_kxy=spots_kxy, name=f"fourier_calibrate_{name}", note=note,
     )
 
-    summaries.setdefault(routine, {})[name] = {
+    results[name] = {
         "img": img,
         "truth": ground_truth_kxy_to_ij(fs, spots_kxy),
         "calibrated": (
@@ -766,194 +730,6 @@ class TestFourierSLM:
         with subtests.test("a coarser pitch asks for fewer points"):
             assert fs.wavefront_calibration_points(pitch=120).shape[1] < points.shape[1]
 
-    @pytest.mark.parametrize("name", FARFIELD_CASES)
-    def test_farfield_calibrate(self, simulated_system_factory, name, subtests):
-        """Test FourierSLM.farfield_calibrate, which fills the farfield with speckle and
-        captures the 0th order with a flat phase pattern."""
-        fs = simulated_system_factory(name)
-        install_ground_truth_calibration(fs)
-
-        with subtests.test("stores one raw frame per requested realization"):
-            cal = fs.farfield_calibrate(averaging=3)
-            assert cal["efficiency_raw"].shape == (3,) + fs.cam.shape
-            assert cal["exposure_zeroth"] > 0 and cal["exposure_raw"] > 0
-
-        with subtests.test("captures the 0th order at the offset of the affine"):
-            zeroth = fs.calibrations["farfield"]["zeroth"]
-            peak = np.flip(np.unravel_index(np.argmax(zeroth), zeroth.shape))
-            b = np.squeeze(ground_truth_affine(fs)[1])
-            assert np.linalg.norm(peak - b) < max(3.0, 2 * np.max(spot_size_ij(fs)))
-
-    @pytest.mark.parametrize("name", FARFIELD_CASES)
-    def test_farfield_calibration_process(self, simulated_system_factory, name, subtests):
-        """Test FourierSLM.farfield_calibration_process."""
-        fs = simulated_system_factory(name)
-        install_ground_truth_calibration(fs)
-        # Ten speckle realizations, blurred wider than their grain, else this maps speckle.
-        fs.farfield_calibrate()
-        efficiency = fs.farfield_calibration_process(size_blur=5)
-        mask = fs.get_farfield_extent(return_mask=True)
-        # Erode and dilate to stay clear of speckle blur at the aperture edge.
-        eroded = cv2.erode(mask.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
-        dilated = cv2.dilate(mask.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
-
-        with subtests.test("normalized to unity at the brightest usable pixel"):
-            # The 0th order is excluded from the normalization, so it may exceed unity.
-            (yy, xx) = np.indices(fs.cam.shape)
-            b = np.squeeze(ground_truth_affine(fs)[1])
-            usable = np.hypot(xx - b[0], yy - b[1]) > 5 * np.max(spot_size_ij(fs))
-
-            assert efficiency.shape == fs.cam.shape
-            assert np.nanmax(efficiency[usable]) == pytest.approx(1.0)
-            assert np.array_equal(efficiency, fs.get_farfield_efficiency(fourier_crop=False))
-
-        with subtests.test("dark outside the farfield the SLM can address"):
-            inside = efficiency[eroded].mean()
-            assert inside > 0, "the efficiency map is not illuminated."
-            if (~dilated).any():
-                outside = efficiency[~dilated].mean()
-                assert outside < 0.1 * inside, (
-                    f"efficiency outside the aperture ({outside:.3f}) should be far "
-                    f"below inside ({inside:.3f})."
-                )
-
-        with subtests.test("speckle averages away inside the farfield"):
-            values = efficiency[eroded]
-            cv = np.std(values) / np.mean(values)
-            assert cv < 0.5, f"the averaged efficiency map is too nonuniform (CV={cv:.2f})."
-
-        with subtests.test("raises without raw data, which is not saved to file"):
-            with pytest.raises(RuntimeError):
-                FourierSLM(fs.cam, fs.slm).farfield_calibration_process()
-
-    def test_farfield_calibration_process_saturation(self, simulated_system_factory, subtests):
-        """A railed pixel must not set the efficiency normalization."""
-        fs = simulated_system_factory("matched")
-        fs.farfield_calibrate(averaging=3)
-
-        # Averaging sums frames, so it lifts saturation as well as the bitresolution.
-        fs.cam.averaging = 16
-        saturation = fs.cam.bitresolution - fs.cam.averaging
-
-        efficiency = fs.calibrations["farfield"]["efficiency"]
-        (y, x) = np.unravel_index(np.argmin(np.abs(efficiency - 0.5)), fs.cam.shape)
-        raw = fs.calibrations["farfield"]["efficiency_raw"]
-        resolved = raw[:, y, x].copy()
-
-        def peak_away_from(y, x):
-            """The efficiency peak ignoring one pixel and everything the blur touched."""
-            efficiency = np.array(fs.get_farfield_efficiency(fourier_crop=False))
-            efficiency[max(0, y-2):y+3, max(0, x-2):x+3] = 0
-            return np.nanmax(efficiency)
-
-        with subtests.test("a saturated pixel does not set the peak"):
-            raw[:, y, x] = saturation
-            fs.farfield_calibration_process(size_blur=3)
-            assert peak_away_from(y, x) == pytest.approx(1.0)
-
-        with subtests.test("and is reported above unity"):
-            assert fs.get_farfield_efficiency(fourier_crop=False)[y, x] > 1
-
-        with subtests.test("saturating one realization is enough to exclude it"):
-            raw[:, y, x] = resolved
-            raw[0, y, x] = saturation
-            fs.farfield_calibration_process(size_blur=3)
-            assert peak_away_from(y, x) == pytest.approx(1.0)
-
-        with subtests.test("full saturation falls back to the whole frame"):
-            raw[:] = saturation
-            efficiency = fs.farfield_calibration_process(size_blur=3)
-            assert np.all(np.isfinite(efficiency))
-            assert np.nanmax(efficiency) == pytest.approx(1.0)
-
-    @pytest.mark.parametrize("name", ("fov_much_larger", "fov_larger"))
-    def test_get_farfield_efficiency(self, simulated_system_factory, name, subtests):
-        """Test FourierSLM.get_farfield_efficiency: the blind support measurement that
-        fourier_calibrate_auto() bootstraps from, and the crops applied to it."""
-        fs = simulated_system_factory(name)
-        fs.farfield_calibrate(averaging=3)
-        # Smoothing stays below the farfield itself, tens of pixels across when cropped.
-        fs.farfield_calibration_process(size_blur=3)
-
-        with subtests.test("the thresholded support matches the ground truth"):
-            assert "fourier" not in fs.calibrations, "the support is measured blind."
-            support = fs.get_farfield_efficiency(efficiency_threshold=0.1)
-            expected = farfield_support_mask(fs)
-            iou = (support & expected).sum() / (support | expected).sum()
-            assert iou > 0.8, f"support IoU {iou:.2f} too low."
-
-        with subtests.test("fourier_crop masks off everything outside the extent"):
-            install_ground_truth_calibration(fs)
-            mask = fs.get_farfield_extent(return_mask=True)
-            cropped = fs.get_farfield_efficiency(fourier_crop=True)
-            whole = fs.get_farfield_efficiency(fourier_crop=False)
-            assert np.array_equal(cropped[mask], whole[mask])
-            assert (~mask).any() and np.all(np.isnan(cropped[~mask]))
-
-        with subtests.test("raises before the calibration is processed"):
-            with pytest.raises(RuntimeError):
-                FourierSLM(fs.cam, fs.slm).get_farfield_efficiency()
-
-    def test_farfield_products(self, simulated_system_factory, temp_dir, subtests):
-        """The zeroth order, background, and file products of a farfield calibration:
-        get_farfield_zeroth, get_farfield_background, and save_calibration."""
-        fs = simulated_system_factory("fov_larger")
-        install_ground_truth_calibration(fs)
-        fs.farfield_calibrate(averaging=3)
-
-        with subtests.test("the background is bounded by the frames it came from"):
-            background = fs.get_farfield_background()
-            assert background.shape == fs.cam.shape
-            assert np.all(background >= 0)
-            raw = np.asarray(fs.calibrations["farfield"]["efficiency_raw"], float)
-            assert np.nanmax(background) <= np.nanmax(np.mean(raw, axis=0))
-
-        with subtests.test("raw stacks are not saved to file"):
-            path = fs.save_calibration("farfield", path=temp_dir, name="test_farfield")
-            fs.load_calibration("farfield", file_path=path)
-            loaded = fs.calibrations["farfield"]
-            assert "efficiency_raw" not in loaded and "background_raw" not in loaded
-            for key in ("efficiency", "background", "zeroth", "exposure_saturating"):
-                assert key in loaded
-
-        with subtests.test("a loaded calibration still serves its products"):
-            with pytest.raises(RuntimeError):
-                fs.farfield_calibration_process()
-            assert np.all(np.isfinite(fs.get_farfield_zeroth()))
-            assert np.all(np.isfinite(fs.get_farfield_background()))
-
-    def test_get_farfield_weights(self, simulated_system_factory):
-        """
-        Weights ask for more amplitude where the measured farfield delivers less
-        power, are bounded, and fall back to uniform when nothing was measured.
-        """
-        fs = simulated_system_factory("fov_larger")
-        install_ground_truth_calibration(fs)
-        fs.farfield_calibrate(averaging=1)
-        fs.farfield_calibration_process()
-
-        efficiency = fs.get_farfield_efficiency()
-        lit = np.argwhere(np.nan_to_num(efficiency) > 0)
-        assert len(lit) > 0, "The farfield calibration measured no efficiency."
-
-        # Brightest and dimmest measured pixels, in (x, y).
-        values = efficiency[lit[:, 0], lit[:, 1]]
-        ij = np.flip(lit[[np.argmax(values), np.argmin(values)]].T, axis=0)
-
-        weights = fs.get_farfield_weights(ij, np.ones(2))
-        assert weights.shape == (2,)
-        assert np.all(weights > 0) and np.max(weights) == pytest.approx(1.0)
-        assert weights[1] > weights[0], (
-            "The dimmer part of the farfield should be asked for more amplitude."
-        )
-        # Power goes as the square of amplitude, and is floored so that a dead
-        # region cannot ask for unbounded power.
-        assert np.max(weights) / np.min(weights) <= 1 / np.sqrt(0.05) + 1e-9
-
-        # An unmeasured farfield weights every spot the same rather than by NaN.
-        fs.calibrations["farfield"]["efficiency"] = np.zeros_like(efficiency)
-        assert np.array_equal(fs.get_farfield_weights(ij, np.ones(2)), np.ones(2))
-
     def test_pixel_calibrate(self, simulated_system_factory, caplog, subtests):
         """Test FourierSLM.pixel_calibrate on a crosstalk-free simulated system."""
         fs = simulated_system_factory("fov_much_smaller")
@@ -1330,29 +1106,17 @@ class TestFourierSLM:
         """fourier_calibrate with a fixed array, across every simulated geometry."""
         (error, tolerance, note, failure) = _run_calibration(
             simulated_system, simulated_system_name, simulated_system_source,
-            lambda system: system.fourier_calibrate(
-                array_shape=BATTERY_ARRAY_SHAPE, array_pitch=BATTERY_ARRAY_PITCH,
-                plot=calibration_plot_level, verbose=False,
-            ),
-            calibration_summaries, "fourier_calibrate",
+            calibration_summaries, calibration_plot_level,
         )
 
         if simulated_system_name not in DEFAULT_CALIBRATION_OK:
-            auto_fails_too = AUTO_LIMITATIONS.get(
-                (simulated_system_name, simulated_system_source),
-                AUTO_LIMITATIONS.get(simulated_system_name),
-            )
             # Strict, so a geometry that starts calibrating is reported rather than
             # staying quietly green in the expected-failure column.
             request.node.add_marker(pytest.mark.xfail(
                 strict=True,
                 reason=(
                     f"Fixed array_shape/array_pitch produce a wrong or failed "
-                    f"calibration for this geometry ({note}); "
-                    + (
-                        "fourier_calibrate_auto() does not rescue it either."
-                        if auto_fails_too else "fourier_calibrate_auto() handles it."
-                    )
+                    f"calibration for this geometry ({note})."
                 ),
             ))
 
@@ -1362,86 +1126,6 @@ class TestFourierSLM:
             f"Calibrated mapping is {error:.2f} px off ground truth "
             f"(tolerance {tolerance:.2f})."
         )
-
-    def test_fourier_calibrate_auto(
-        self, simulated_system, simulated_system_name, simulated_system_source,
-        calibration_summaries, calibration_plot_level, request,
-    ):
-        """fourier_calibrate_auto, which chooses its own array, across every geometry."""
-        (error, tolerance, note, failure) = _run_calibration(
-            simulated_system, simulated_system_name, simulated_system_source,
-            lambda system: system._fourier_calibrate_auto(plot=calibration_plot_level),
-            calibration_summaries, "fourier_calibrate_auto",
-        )
-
-        limitation = AUTO_LIMITATIONS.get(
-            (simulated_system_name, simulated_system_source),
-            AUTO_LIMITATIONS.get(simulated_system_name),
-        )
-        if limitation is not None:
-            request.node.add_marker(
-                pytest.mark.xfail(strict=True, reason=f"{limitation} ({note})")
-            )
-
-        if failure is not None:
-            raise failure
-        assert error < tolerance, (
-            f"fourier_calibrate_auto is {error:.2f} px off ground truth "
-            f"(tolerance {tolerance:.2f})."
-        )
-
-    def test_fourier_calibrate_auto_failure(
-        self, simulated_system_factory, monkeypatch, subtests
-    ):
-        """
-        A calibration that cannot be verified must not be installed, and must not destroy
-        a calibration that was already there: the alternative is a system that silently
-        uses a calibration its own check rejected, or one that loses a working
-        calibration because the beam was blocked during a re-run. Every failure is forced
-        rather than found, so that this tests the guarantee rather than whichever
-        geometry happens to be failing.
-        """
-        def calibrated():
-            """A system carrying the ground-truth calibration, and that calibration."""
-            fs = simulated_system_factory("matched")
-            install_ground_truth_calibration(fs)
-            return (fs, np.array(fs.calibrations["fourier"]["M"]))
-
-        def raise_injected(*args, **kwargs):
-            raise ValueError("injected failure")
-
-        with subtests.test("no light reaches the camera"):
-            (fs, existing) = calibrated()
-            fs.slm.source["amplitude_sim"] = np.zeros_like(fs.slm.source["amplitude_sim"])
-            with pytest.raises(RuntimeError):
-                fs._fourier_calibrate_auto()
-            assert np.array_equal(fs.calibrations["fourier"]["M"], existing)
-
-        with subtests.test("a calibration that fails verification is not installed"):
-            fs = simulated_system_factory("matched")
-            with pytest.raises(RuntimeError):
-                fs._fourier_calibrate_auto(tolerance=-1)
-            assert "fourier" not in fs.calibrations
-
-        with subtests.test("and does not displace the previous calibration"):
-            (fs, existing) = calibrated()
-            with pytest.raises(RuntimeError):
-                fs._fourier_calibrate_auto(tolerance=-1)
-            assert np.array_equal(fs.calibrations["fourier"]["M"], existing)
-
-        with subtests.test("an unexpected failure before any array is projected"):
-            (fs, existing) = calibrated()
-            fs.get_farfield_zeroth = raise_injected
-            with pytest.raises(ValueError):
-                fs._fourier_calibrate_auto()
-            assert np.array_equal(fs.calibrations["fourier"]["M"], existing)
-
-        with subtests.test("an unexpected failure after an array is installed"):
-            (fs, existing) = calibrated()
-            monkeypatch.setattr(analysis, "_score_array_orientation", raise_injected)
-            with pytest.raises(ValueError):
-                fs._fourier_calibrate_auto()
-            assert np.array_equal(fs.calibrations["fourier"]["M"], existing)
 
 
 @pytest.mark.parametrize("name", GEOMETRY_CASES)
@@ -1484,34 +1168,3 @@ def test_simulated_speckle_confined_to_farfield(simulated_system_factory, name):
     img = fs.cam.get_image().astype(float)
 
     assert img[mask].mean() > 100 * img[outside].mean(), "Speckle escaped the farfield."
-
-
-@pytest.mark.parametrize("seed", range(4))
-@pytest.mark.parametrize("name", MARGINAL_CASES)
-def test_fourier_calibrate_auto_survives_any_draw(
-    simulated_system_factory, simulated_system_source, name, seed
-):
-    """
-    A calibration that passes verification must be correct whatever the random draw.
-    Refusing is allowed --- returning a wrong affine that reports a sub-pixel
-    residual is the failure this whole routine exists to prevent.
-    """
-    fs = simulated_system_factory(name, source_function=simulated_system_source)
-    np.random.seed(seed)
-    try:
-        import cupy
-        cupy.random.seed(seed)
-    except ImportError:
-        pass
-
-    try:
-        fs._fourier_calibrate_auto()
-    except RuntimeError:
-        return
-
-    (error, tolerance) = _ground_truth_error(fs)
-    assert error < tolerance, (
-        f"seed {seed}: accepted a calibration {error:.1f} px off ground truth "
-        f"(tolerance {tolerance:.1f}), reporting "
-        f"{fs.calibrations['fourier']['array']['residual']:.2f} px residual."
-    )

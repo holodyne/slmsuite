@@ -18,7 +18,6 @@ from slmsuite.hardware.slms.simulated import SimulatedSLM
 
 # Import calibrations (separated into different files for readability).
 from slmsuite.hardware.cameraslms._fourier import _FourierCalibration
-from slmsuite.hardware.cameraslms._farfield import _FarfieldCalibration
 from slmsuite.hardware.cameraslms._pixel import _PixelCalibration
 from slmsuite.hardware.cameraslms._settle import _SettleCalibration
 from slmsuite.hardware.cameraslms._wavefront import _WavefrontCalibration
@@ -202,7 +201,6 @@ class NearfieldSLM(CameraSLM):
 class FourierSLM(
     CameraSLM,
     _FourierCalibration,
-    _FarfieldCalibration,
     _PixelCalibration,
     _SettleCalibration,
     _WavefrontCalibration,
@@ -221,14 +219,6 @@ class FourierSLM(
             See :meth:`~slmsuite.hardware.cameraslms.FourierSLM.fourier_calibrate()`.
 
             This data is critical for much of :mod:`slmsuite`'s functionality.
-        "farfield" : dict
-            Raw data measuring the diffraction efficiency over the farfield
-            (including aperture cropping) and the 0th order scatter.
-
-            See
-            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.farfield_calibrate()`.
-            Usable data is produced by running
-            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.farfield_calibration_process()`.
         "wavefront_superpixel" : dict
             Raw data for correcting aberrations in the optical system (``phase``) and
             measuring the optical amplitude distribution incident on the SLM (``amp``),

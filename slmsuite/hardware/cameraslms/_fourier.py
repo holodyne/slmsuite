@@ -19,8 +19,8 @@ class _FourierCalibration(object):
 
     def fourier_calibrate(
         self,
-        array_shape=None,
-        array_pitch=None,
+        array_shape=10,
+        array_pitch=10,
         array_center=None,
         plot=0,
         autofocus=False,
@@ -83,23 +83,15 @@ class _FourierCalibration(object):
         dict
             :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["fourier"]`
         """
-        if array_shape is None or array_pitch is None:
-            return self._fourier_calibrate_auto(
-                plot=plot,
-                autofocus=autofocus,
-                autoexpose=autoexpose,
-                **kwargs
-            )
-        else:
-            return self._fourier_calibrate_single(
-                array_shape=array_shape,
-                array_pitch=array_pitch,
-                array_center=array_center,
-                plot=plot,
-                autofocus=autofocus,
-                autoexpose=autoexpose,
-                **kwargs
-            )
+        return self._fourier_calibrate_single(
+            array_shape=array_shape,
+            array_pitch=array_pitch,
+            array_center=array_center,
+            plot=plot,
+            autofocus=autofocus,
+            autoexpose=autoexpose,
+            **kwargs
+        )
 
     def _fourier_calibrate_single(
         self,
@@ -205,268 +197,6 @@ class _FourierCalibration(object):
 
         return self.calibrations["fourier"]
 
-    ### Automatic Fourier Calibration ###
-
-    # Fraction of peak efficiency which counts as farfield the SLM can address.
-    _FOURIER_CAL_AUTO_EFF_THRESH = 0.1
-
-    # Dynamic range to aim a projected array at; above one blooms sub-pixel spots.
-    _FOURIER_CAL_AUTO_OVEREXPOSE = 8.0
-
-    def _fourier_calibrate_auto(
-        self,
-        tolerance=None,
-        max_attempts=6,
-        plot=0,
-        **kwargs,
-    ):
-        """
-        Fourier calibration without user-chosen array parameters.
-
-        Parameters
-        ----------
-        tolerance : float OR None
-            Residual in camera pixels which the calibration must reach to be accepted.
-            Defaults to the larger of two pixels and the spot size.
-        max_attempts : int
-            Arrays to try before giving up, each smaller and coarser than the last.
-        plot, **kwargs
-            Passed to :meth:`_fourier_calibrate_single()`.
-
-        Returns
-        -------
-        dict
-            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations` ``["fourier"]``.
-        """
-        # Held back until a new calibration verifies, else a failed run uncalibrates.
-        previous = self.calibrations.pop("fourier", None)
-        best = None
-
-        try:
-
-            # (0) Survey the farfield from its calibration, measuring one if absent.
-            if "efficiency" not in self.calibrations.get("farfield", {}):
-                self.farfield_calibrate()
-            support = self.get_farfield_efficiency(
-                fourier_crop=False,
-                efficiency_threshold=self._FOURIER_CAL_AUTO_EFF_THRESH
-            )
-
-            zeroth = self.get_farfield_zeroth()
-            zeroth_seen = np.any(zeroth > 1)
-
-            if not np.any(support):
-                raise RuntimeError(
-                    "The farfield survey found no light on the camera, so there is nothing "
-                    "to calibrate against. Check the source and the camera exposure."
-                )
-
-            aperture = np.mean(
-                1 / (np.flip(np.squeeze(self.slm.shape)) * np.squeeze(self.slm.pitch))
-            )
-            scale = np.sqrt(np.count_nonzero(support) * np.prod(self.slm.pitch))
-
-            # The lit area gives the scale exactly, unless the camera crops the farfield,
-            # where it only bounds it from below. A flat phase then paints the aperture's
-            # own uncropped spot, as long as the camera resolves it.
-            width = np.count_nonzero(zeroth > 0.5 * np.nanmax(zeroth))
-            if zeroth_seen and width > 1 and (
-                np.any(support[[0, -1], :]) or np.any(support[:, [0, -1]])
-            ):
-                scale = max(scale, np.sqrt(width) / aperture)
-
-            spot = max(1.0, scale * aperture)
-            if tolerance is None:
-                tolerance = max(2.0, spot)
-
-            shape = SpotHologram.get_padded_shape(self, padding_order=1, square_padding=True)
-            cell = 1 / (np.flip(np.squeeze(shape)) * np.squeeze(self.slm.pitch))
-            step = scale * np.mean(cell)                # Camera pixels per knm cell.
-            (y, x) = np.nonzero(support)
-            extent = np.array([np.ptp(x) + 1.0, np.ptp(y) + 1.0])
-
-            # (1) Project an initial array with the goal of seeing a lattice,
-            # even if the full grid is not in view.
-            pitch = int(np.clip(np.rint(
-                min(max(12.0, 8 * spot), max(np.min(extent) / 8, 5.0 * spot)) / step
-            ), 1, 64))
-
-            # Without the 0th order in view, fill the whole farfield rather than its extent.
-            count = 1.5 * np.max(extent) / (pitch * step) if zeroth_seen else np.inf
-
-            for retry in range(3):
-                try:
-                    array_shape = np.clip(count, 4, max(4, 0.9 * np.min(shape) / pitch))
-                    # Exposed on the array, not on the 0th order, which outshines it
-                    # wherever the zeroth exceeds what one spot of the array will hold.
-                    window = self.get_farfield_efficiency(
-                        fourier_crop=False,
-                        efficiency_threshold=self._FOURIER_CAL_AUTO_EFF_THRESH,
-                        zeroth_threshold=array_shape ** 2,
-                    )
-                    self._fourier_calibrate_single(
-                        array_shape=array_shape, array_pitch=pitch,
-                        autoexpose={
-                            "set_fraction": self._FOURIER_CAL_AUTO_OVEREXPOSE,
-                            "window": window if np.any(window) else None,
-                            "verbose": False,
-                        },
-                        plot=plot, verbose=False,
-                    )
-                    break
-                except RuntimeError:
-                    if retry == 2:
-                        raise
-                    (count, pitch) = (count / 2, 2 * pitch)
-
-            # The only exposure measured. Every later array follows it by spot count, as
-            # the same light divided between more spots leaves each of them dimmer.
-            exposure_per_spot = self.cam.get_exposure() / (array_shape ** 2)
-
-            M = self.fourier_affine.M
-            offset = (
-                format_2vectors(np.flip(np.unravel_index(np.argmax(zeroth), zeroth.shape)))
-                if zeroth_seen else self.kxyslm_to_ijcam([0, 0])
-            )
-
-            # (2) Now use the lattice information to position the array better.
-            corners = np.linalg.solve(M, np.vstack((x, y)).astype(float) - offset)
-            margin = np.abs(np.linalg.inv(M)) @ np.full(2, 2.0 + spot)
-            low = corners.min(axis=1) + margin
-            high = corners.max(axis=1) - margin
-            center = np.rint(0.5 * (low + high) / cell)
-
-            # Attempt zero is the array already projected above: if it found the center as
-            # well as the lattice, a second array has nothing left to add.
-            for attempt in range(int(max_attempts) + 1):
-                if attempt == 0:
-                    design = {
-                        "array_shape": (int(array_shape), int(array_shape)),
-                        "array_pitch": (pitch, pitch),
-                        "array_center": (0.0, 0.0),
-                    }
-                    exposure = self.cam.get_exposure()
-                else:
-                    # One pitch serves both axes, so an axes-swapped affine designs the
-                    # same array. A non-integer shape would be rounded up into an array
-                    # which no longer straddles the center it is designed around.
-                    span = np.maximum(high - low, 0) * (0.9 ** attempt)
-                    grid = np.full(2, int(max(1, np.max(np.rint(
-                        max(6.0, 4 * spot) * 1.5 ** (attempt - 1)
-                        / (np.linalg.norm(M, axis=0) * cell)
-                    )))))
-                    limit = 2 * (0.48 * np.flip(np.squeeze(shape)) - np.abs(center)) / grid
-                    design = {
-                        "array_shape": tuple(
-                            int(np.rint(np.clip(
-                                np.minimum(span / (grid * cell), limit)[axis], 3, 13
-                            )))
-                            for axis in range(2)
-                        ),
-                        "array_pitch": tuple(int(p) for p in grid),
-                        "array_center": tuple(float(c) for c in center),
-                    }
-
-                    # From scratch: last attempt's calibration would place this array.
-                    self.calibrations.pop("fourier", None)
-                    exposure = exposure_per_spot * np.prod(design["array_shape"])
-                    try:
-                        self.cam.set_exposure(exposure)
-                        self._fourier_calibrate_single(
-                            orientation={
-                                "M": M @ np.diag(grid * cell),
-                                "b": M @ format_2vectors(center * cell) + offset,
-                            },
-                            plot=plot,
-                            **design,
-                            **kwargs,
-                        )
-                    except Exception as e:
-                        self.logger.info(
-                            "fourier_calibrate_auto attempt %d failed: %s", attempt, e
-                        )
-                        continue
-
-                # Verify at a normal exposure, where the gaps between spots survive the bloom.
-                self.cam.set_exposure(exposure / self._FOURIER_CAL_AUTO_OVEREXPOSE)
-                self.cam.flush()
-                img = analysis.image_remove_field(self.cam.get_image(), deviations=None)
-                middle = np.array(design["array_center"])
-                pitch_kxy = np.array(design["array_pitch"]) * cell
-                lattice = self.fourier_affine.M @ np.diag(pitch_kxy)
-                found = analysis._score_array_orientation(
-                    img,
-                    lattice,
-                    self.kxyslm_to_ijcam(middle * cell),
-                    design["array_shape"],
-                    1 + 2 * int(np.clip(0.25 * np.min(np.linalg.norm(lattice, axis=0)), 1, 7)),
-                    threshold=0.05,
-                )
-
-                error = np.inf
-                if found is not None:
-                    (code, lit, dark, residual) = found
-
-                    # Relabeling pivots about the array, so b moves with M to hold it fixed.
-                    relabel = analysis.OrientationTransform.from_code(code).M()
-                    old = self.calibrations["fourier"]["M"]
-                    new = old @ np.diag(pitch_kxy) @ relabel @ np.diag(1 / pitch_kxy)
-                    self.calibrations["fourier"]["b"] += (old - new) @ (
-                        format_2vectors(middle * cell) - self.calibrations["fourier"]["a"]
-                    )
-                    self.calibrations["fourier"]["M"] = new
-
-                    # The 0th order was measured rather than inferred, so a calibration
-                    # which does not map it back to where it was seen is wrong however
-                    # well its spots line up.
-                    anchored = not zeroth_seen or np.linalg.norm(
-                        self.kxyslm_to_ijcam([0, 0]) - offset
-                    ) <= 2 * tolerance
-
-                    # A whole-lattice shift lights all but one row, so demand more than that.
-                    if (
-                        anchored
-                        and lit >= 1 - 0.5 / (np.prod(design["array_shape"]) - 2)
-                        and dark <= 0.5
-                    ):
-                        error = residual
-
-                self.logger.info(
-                    "fourier_calibrate_auto attempt %d: %.2f px residual.", attempt, error
-                )
-
-                if best is None or error < best[0]:
-                    best = (error, dict(self.calibrations["fourier"]))
-                if error <= tolerance:
-                    break
-
-            if best is None or best[0] > tolerance:
-                self.calibrations.pop("fourier", None)
-                raise RuntimeError(
-                    f"fourier_calibrate_auto left a "
-                    f"{np.inf if best is None else best[0]:.2f} px residual against a "
-                    f"{tolerance:.2f} px tolerance. Inspect the farfield with plot=2: "
-                    f"the array may be too dim, or the camera may see too little of "
-                    f"the farfield to calibrate."
-                )
-
-            # The loop may have ended on a worse attempt than the best.
-            self.calibrations["fourier"] = best[1]
-            self.calibrations["fourier"]["array"].update({
-                "support": support, "residual": best[0],
-            })
-
-            return self.calibrations["fourier"]
-        except BaseException:
-            # An unverified calibration is worse than none: discard whatever is half done.
-            self.calibrations.pop("fourier", None)
-            raise
-        finally:
-            # Any failure leaves the previous calibration in place, not destroyed.
-            if previous is not None and "fourier" not in self.calibrations:
-                self.calibrations["fourier"] = previous
-
-
     ### Fourier Calibration Helpers ###
 
     def fourier_grid_project(
@@ -490,9 +220,7 @@ class _FourierCalibration(object):
             processed as being relative to the center of ``"knm"`` space, the position
             of the 0th order.
         spot_amp : array_like OR None
-            Relative amplitude to ask of each spot, which
-            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.get_farfield_weights()`
-            can set from measured efficiency so that the spots arrive equally bright.
+            Relative amplitude to ask of each spot.
         **kwargs
             Passed to :meth:`~slmsuite.holography.algorithms.SpotHologram.optimize()`.
 
