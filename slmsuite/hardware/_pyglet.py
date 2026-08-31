@@ -2,6 +2,7 @@
 Hidden abstract classes for pyglet windowing in slmsuite.
 
 Provides :class:`_Window` (a :mod:`pyglet` window subclass for SLM display),
+:class:`_ViewerWindow` (a resizable :class:`_Window` for :meth:`.live`),
 :class:`_WindowThread` (a dedicated thread per window for event dispatch), and
 :class:`_WindowManager` (a singleton coordinating all window threads).
 
@@ -11,6 +12,7 @@ window's message queue is bound to the thread that created it). This prevents
 windows from freezing between :meth:`~slmsuite.hardware.slms.slm.SLM.set_phase`
 calls.
 """
+import contextlib
 import os
 import sys
 import time
@@ -24,6 +26,7 @@ from packaging.version import Version
 try:
     import pyglet
     import pyglet.gl as gl
+    from pyglet.window import key, mouse
     from pyglet.window import Window as __Window
 
     # Helper to get display/canvas depending on pyglet version
@@ -45,6 +48,7 @@ try:
 except Exception:
     pyglet = None
     gl = None
+    key = mouse = None
     __Window = object
     PYGLET_VERSION = None
     def get_pyglet_display():
@@ -61,6 +65,11 @@ except ImportError:
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
+
+# Window creation clears the process-global gl.current_context to build an unshared
+# context, and switch_to() restores it: both take this lock so that neither undoes the
+# other. Reentrant, since pyglet calls switch_to() from inside window creation.
+_creation_lock = threading.RLock()
 
 # CUDA driver API, for OpenGL interop; cupy exposes no interop bindings of its own.
 try:
@@ -567,11 +576,28 @@ class _Window(__Window):
 
         Also makes ``switch_to()`` a no-op after :meth:`close`, when the
         context has been destroyed.
+
+        Taken under the module's creation lock, since this is what writes the
+        process-global ``gl.current_context`` that window creation needs cleared.
         """
         context = getattr(self, "context", None)
         if context is None or context.canvas is None:
             return
-        super().switch_to()
+        with _creation_lock:
+            super().switch_to()
+
+    @contextlib.contextmanager
+    def current(self):
+        """
+        Hold this window's ``OpenGL`` context current for a whole draw.
+
+        ``gl.current_context`` is process-global, so another thread creating or
+        destroying a window mid-draw would clear it and every remaining call of the
+        draw would raise ``GLException``.
+        """
+        with _creation_lock:
+            self.switch_to()
+            yield
 
     def dispatch_events(self):
         """
@@ -716,15 +742,7 @@ class _Window(__Window):
 
     def _setup_context(self):
         """
-        Initialize the ``OpenGL`` context, buffers, and texture.
-
-        Detects the available ``OpenGL`` version and sets up the rendering
-        pipeline accordingly:
-
-        -   **GL 3.0+** (pyglet 2.0+): Programmable shader pipeline with
-            ``TRIANGLE_STRIP`` quad and the default pyglet blit shader.
-        -   **GL 2.0** (pyglet < 2.0): Fixed-function pipeline with
-            ``Projection2D``, power-of-2 padded textures, and ``QUADS``.
+        Sets up a ``TRIANGLE_STRIP`` quad drawn by the default :mod:`pyglet` blit shader.
 
         Raises
         ------
@@ -733,7 +751,7 @@ class _Window(__Window):
         """
         shape = self.shape
 
-        if gl.base.gl_info.have_version(3,0):       # Pyglet >= 2.0.0
+        if self.context.get_info().have_version(3, 0):
             # Channels: R+G+B+A=4
             B = 4
 
@@ -789,59 +807,8 @@ class _Window(__Window):
             # Cleanup.
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
             gl.glFlush()
-        elif gl.base.gl_info.have_version(2,0):     # Pyglet < 2.0.0
-            # Set the viewpoint.
-            proj = pyglet.window.Projection2D()
-            proj.set(shape[1], shape[0], shape[1], shape[0])
-
-            # Setup shapes.
-            texture_shape = tuple(
-                np.power(2, np.ceil(np.log2(shape))).astype(np.int64)
-            )
-            self.tex_shape_ratio = (
-                float(shape[0])/float(texture_shape[0]),
-                float(shape[1])/float(texture_shape[1])
-            )
-            B = 4
-
-            # Setup buffers (texbuffer is power of 2 padded to init the memory in OpenGL).
-            self._setup_frame(shape, B)
-
-            texbuffer = np.zeros(texture_shape + (B,), dtype=np.uint8)
-            Nt = int(texture_shape[0] * texture_shape[1] * B)
-            texcbuffer = (gl.GLubyte * Nt).from_buffer(texbuffer)
-
-            # Setup the texture.
-            gl.glEnable(gl.GL_TEXTURE_2D)
-            self.texture = gl.GLuint()
-            gl.glGenTextures(1, ctypes.byref(self.texture))
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
-
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_GENERATE_MIPMAP, gl.GL_FALSE)
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST)
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST)
-
-            # Malloc the OpenGL memory.
-            gl.glTexImage2D(
-                gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8,
-                texture_shape[1], texture_shape[0],
-                0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
-                texcbuffer
-            )
-
-            # Make sure we can write to a subset of the memory (as we will do in the future).
-            gl.glTexSubImage2D(
-                gl.GL_TEXTURE_2D, 0, 0, 0,
-                shape[1], shape[0],
-                gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
-                self.cframe
-            )
-
-            # Cleanup.
-            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-            gl.glFlush()
         else:
-            raise RuntimeError("Could not find a compatible GL context.")
+            raise RuntimeError("A compatible OpenGL 3.0+ context is required.")
 
     def render(self):
         """
@@ -849,7 +816,7 @@ class _Window(__Window):
 
         This method:
 
-        1.  Activates this window's ``OpenGL`` context via ``switch_to()``.
+        1.  Activates this window's ``OpenGL`` context via :meth:`current()`.
         2.  Uploads the frame to the GPU texture with ``glTexSubImage2D``.
         3.  Draws the textured quad to the back buffer.
         4.  Calls ``flip()`` to swap front/back buffers (blocks on vsync).
@@ -860,38 +827,43 @@ class _Window(__Window):
         Must be called from the same thread that created the window.
         Practically, this means calling from :meth:`~_WindowThread.submit`.
         """
-        self.switch_to()
-
-        # In interop the source is device memory, addressed as an offset into the bound buffer.
-        bound = self.pixel_buffer is not None
-        if bound:
-            gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.pixel_buffer.buffer.value)
-            source = 0
-        else:
-            source = self.cframe
-
-        try:
-            self._blit(source)
-        finally:
-            # A binding left behind would turn every later upload's pointer into an offset.
+        with self.current():
+            # In interop the source is device memory, addressed as an offset into the bound buffer.
+            bound = self.pixel_buffer is not None
             if bound:
-                gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
+                gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.pixel_buffer.buffer.value)
+                source = 0
+            else:
+                source = self.cframe
 
-        # Display the other side of the double buffer.
-        # (with vsync enabled, this will block until the next frame is ready to display).
-        self.flip()
+            try:
+                self._blit(source)
+            finally:
+                # A binding left behind would turn every later upload's pointer into an offset.
+                if bound:
+                    gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
+
+            # Display the other side of the double buffer.
+            # (with vsync enabled, this will block until the next frame is ready to display).
+            self.flip()
+
         self.dispatch_events()
 
     def _blit(self, source):
-        """Upload ``source`` to the texture and draw it. See :meth:`render`."""
+        """
+        Upload ``source`` to the texture and draw it. See :meth:`render`.
+
+        A ``None`` source redraws whatever the texture already holds, which is how
+        :meth:`_ViewerWindow._redraw` pans and zooms without touching host memory.
+        """
         shape = self.shape
 
-        if gl.base.gl_info.have_version(3,0):       # Pyglet >= 2.0.0
-            self.shader.use()
+        self.shader.use()
 
-            # Bind texture.
-            gl.glActiveTexture(gl.GL_TEXTURE0)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
+        # Bind texture.
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
+        if source is not None:
             gl.glTexSubImage2D(
                 gl.GL_TEXTURE_2D, 0, 0, 0,
                 shape[1], shape[0],
@@ -899,46 +871,8 @@ class _Window(__Window):
                 source
             )
 
-            # Draw the quad.
-            self.vertex_list.draw(gl.GL_TRIANGLE_STRIP)
-        elif gl.base.gl_info.have_version(2,0):     # Pyglet < 2.0.0
-            # Setup texture variables.
-            x1 = 0
-            y1 = 0
-            x2 = shape[1]
-            y2 = shape[0]
-
-            xa = 0
-            ya = 0
-            xb = self.tex_shape_ratio[1]
-            yb = self.tex_shape_ratio[0]
-
-            array = (gl.GLfloat * 32)(
-                xa, ya, 0., 1.,         # tex coord,
-                x1, y1, 0., 1.,         # real coord, ...
-                xb, ya, 0., 1.,
-                x2, y1, 0., 1.,
-                xb, yb, 0., 1.,
-                x2, y2, 0., 1.,
-                xa, yb, 0., 1.,
-                x1, y2, 0., 1.
-            )
-
-            # Update the texture with the frame.
-            gl.glEnable(gl.GL_TEXTURE_2D)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
-            gl.glTexSubImage2D(
-                gl.GL_TEXTURE_2D, 0, 0, 0,
-                shape[1], shape[0],
-                gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
-                source
-            )
-
-            # Blit the texture.
-            gl.glPushClientAttrib(gl.GL_CLIENT_VERTEX_ARRAY_BIT)
-            gl.glInterleavedArrays(gl.GL_T4F_V4F, 0, array)
-            gl.glDrawArrays(gl.GL_QUADS, 0, 4)
-            gl.glPopClientAttrib()
+        # Draw the quad.
+        self.vertex_list.draw(gl.GL_TRIANGLE_STRIP)
 
     @staticmethod
     def info(verbose=True):
@@ -1020,6 +954,204 @@ class _Window(__Window):
         return screen_list
 
 
+class _ViewerWindow(_Window):
+    """
+    A resizable :class:`_Window` displaying camera or SLM data for :meth:`.live`.
+
+    The whole image lives in the texture at its native resolution and the viewer's
+    region of interest is a texture-coordinate rectangle, so zoom and pan cost no host
+    work and the window is free to be any size. Mouse and keyboard input are forwarded
+    to the viewer rather than consumed.
+
+    Important
+    ~~~~~~~~~
+    Every method here runs on the window thread, including the input handlers, which
+    :class:`_WindowThread` dispatches. Requests that need the main thread (anything
+    touching widgets) are posted to the viewer instead of applied here.
+
+    Attributes
+    ----------
+    viewer : ~slmsuite.hardware._viewer._ViewerObject
+        Viewer whose state is displayed and edited.
+    shape : (int, int)
+        The ``(height, width)`` of the *image*, unlike :class:`_Window`, where it is
+        the size of the window.
+    """
+
+    def __init__(self, shape, screen=None, caption="", *, viewer, image_shape, **kwargs):
+        """
+        Create a window of ``shape`` pixels showing an ``image_shape`` texture.
+
+        Parameters
+        ----------
+        shape : (int, int)
+            Initial ``(height, width)`` of the window.
+        viewer : ~slmsuite.hardware._viewer._ViewerObject
+            Viewer to read the region of interest from and forward input to.
+        image_shape : (int, int)
+            ``(height, width)`` of the image, which sizes the texture.
+        **kwargs
+            See :meth:`_Window.__init__`, which also documents ``screen`` and ``caption``.
+        """
+        self.viewer = viewer
+        self.vertex_list = None
+        self._quad = (0., 0., 1., 1.)
+
+        kwargs["interop"] = False       # Frames are colorized on the host.
+        super().__init__(shape, screen, caption, **kwargs)
+
+        self.shape = (int(image_shape[0]), int(image_shape[1]))
+
+    def _setup_context(self):
+        """Set up the ``OpenGL`` context, then fit the quad to the window."""
+        super()._setup_context()
+
+        if not self.context.get_info().have_version(3, 0):
+            raise RuntimeError("The pyglet viewer requires OpenGL 3.0+.")
+
+        # A two-tap filter drops isolated spots when a sensor-sized image is minified
+        # into a small window, so the whole mip chain is averaged instead.
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
+        gl.glTexParameteri(
+            gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR
+        )
+        gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+        # Else the letterbox margins alternate stale swap-chain contents at 60 Hz.
+        gl.glClearColor(0., 0., 0., 1.)
+
+        self._refresh()
+
+    def _bring_to_front(self):
+        """Show the window and take focus, without pinning it above the notebook."""
+        self.set_visible(True)          # _Window hides windowed displays.
+        self.activate()
+
+    def _refresh(self):
+        """Letterbox the region of interest into the window and redraw."""
+        if self.vertex_list is None:
+            return
+
+        ih, iw = self.shape
+        x0, y0, x1, y1 = self.viewer.state["roi"]
+        width, height = self.get_size()
+
+        scale = min(width / (x1 - x0), height / (y1 - y0))
+        qw, qh = (x1 - x0) * scale, (y1 - y0) * scale
+        qx, qy = (width - qw) / 2, (height - qh) / 2
+        self._quad = (qx, qy, qw, qh)
+
+        self.vertex_list.position[:] = (
+            qx, qy + qh, 0.,    qx, qy, 0.,
+            qx + qw, qy + qh, 0.,   qx + qw, qy, 0.,
+        )
+        # v runs top-down, matching the top-left origin of the image.
+        u0, u1, v0, v1 = x0 / iw, x1 / iw, y0 / ih, y1 / ih
+        self.vertex_list.tex_coords[:] = (
+            u0, v0, 0.,     u0, v1, 0.,
+            u1, v0, 0.,     u1, v1, 0.,
+        )
+
+        self._redraw()
+
+    def _redraw(self, source=None):
+        """
+        Draw the texture, uploading ``source`` into it first if one is given.
+
+        Unlike :meth:`_Window.render`, this does not dispatch events. The handlers
+        that redraw are themselves called from :meth:`_Window.dispatch_events`, and a
+        nested pump would strand the outer one's messages until the next frame.
+        """
+        with self.current():
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+            self._blit(source)
+            if source is not None:
+                gl.glGenerateMipmap(gl.GL_TEXTURE_2D)   # _blit leaves the texture bound.
+            self.flip()
+
+    def render(self):
+        """Upload the current frame to the texture and display it. See :meth:`_redraw`."""
+        self._redraw(self.cframe)
+
+    def _fraction(self, x, y):
+        """Map window pixels to a ``(fx, fy)`` fraction of the displayed quad."""
+        qx, qy, qw, qh = self._quad
+        return (x - qx) / qw, 1. - (y - qy) / qh    # pyglet's y is bottom-origin.
+
+    @staticmethod
+    def _inside(fraction):
+        """Whether a :meth:`_fraction` falls on the image rather than the letterbox."""
+        return all(0 <= f <= 1 for f in fraction)
+
+    def on_expose(self):
+        """Redraw when the window is uncovered."""
+        self._redraw()
+        return True
+
+    def on_resize(self, width, height):
+        """Refit the quad; the viewport itself is pyglet's to update."""
+        self._refresh()
+        return True
+
+    def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
+        """Scroll-wheel zoom toward the cursor."""
+        fraction = self._fraction(x, y)
+        if scroll_y and self._inside(fraction):
+            self.viewer._zoom(*fraction, scroll_y > 0)
+            self._refresh()
+        return True
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        """Grab for a drag-pan, or restore the full image on a right-click."""
+        fraction = self._fraction(x, y)
+        if self._inside(fraction):
+            if button == mouse.RIGHT:
+                self.viewer._reset_roi()
+                self._refresh()
+            else:
+                self.viewer._grab(*fraction)
+        return True
+
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        """Click-drag pan. The cursor is not clamped to the quad, but the region is."""
+        if self.viewer._pan(*self._fraction(x, y)):
+            self._refresh()
+        return True
+
+    def on_mouse_release(self, x, y, button, modifiers):
+        """Print the source pixel under the cursor, unless the click was a drag."""
+        fraction = self._fraction(x, y)
+        if not self.viewer._dragged and self._inside(fraction):
+            self.viewer._post(("print", np.round(self.viewer._to_source(*fraction)).astype(int)))
+        self.viewer._release()
+        return True
+
+    def on_key_press(self, symbol, modifiers):
+        """
+        Shortcuts standing in for the widgets, which a plain script cannot host.
+
+        See :meth:`~slmsuite.hardware._viewer._Viewable.live` for the bindings. The
+        color scaling ones are camera-only, matching the widgets they stand in for.
+        """
+        if symbol == key.ESCAPE:
+            # Not _WindowThread.close(), which would join this very thread.
+            self.has_exit = True
+        elif symbol == key.R:
+            self.viewer._reset_roi()
+            self._refresh()
+        elif symbol == key.C:
+            self.viewer._post(("cmap",))
+        elif not self.viewer.parent.is_slm:
+            if symbol == key.X:
+                self.viewer._post(("crosshair",))
+            elif symbol == key.L:
+                self.viewer._post(("log",))
+            elif symbol == key.A:
+                self.viewer._post(("autorange",))
+        return True
+
+
 class _WindowThread(object):
     """
     Manages a dedicated :class:`~threading.Thread` for a single :class:`_Window`.
@@ -1050,7 +1182,7 @@ class _WindowThread(object):
         thread has finished initialization.
     """
 
-    def __init__(self, shape, screen, caption, manager=None, **kwargs):
+    def __init__(self, shape, screen, caption, manager=None, window_class=None, **kwargs):
         """
         Create a :class:`_Window` on a dedicated background thread.
 
@@ -1070,6 +1202,9 @@ class _WindowThread(object):
             The :class:`_WindowManager` that owns this thread. If provided,
             :meth:`close` will automatically remove this thread from the
             manager.
+        window_class : type or None
+            :class:`_Window` subclass to construct, e.g. :class:`_ViewerWindow`.
+            Defaults to :class:`_Window`.
         **kwargs
             See :meth:`_Window.__init__` for permissible options.
 
@@ -1089,6 +1224,7 @@ class _WindowThread(object):
         self._ready = threading.Event()
         self._error = None
         self._manager = manager
+        self._window_class = _Window if window_class is None else window_class
 
         # Store creation params; the device is sampled here, on the thread that writes frames.
         self._init_args = (shape, screen, caption)
@@ -1111,6 +1247,8 @@ class _WindowThread(object):
         self._thread.start()
 
         if not self._ready.wait(timeout=10.0):
+            # Else the half-built thread runs on, unregistered and so beyond atexit.
+            self.close()
             raise RuntimeError(
                 "Window thread failed to start within 10s: {}".format(self._error)
             )
@@ -1150,26 +1288,32 @@ class _WindowThread(object):
             #    (the main thread's context) via wglShareLists, which fails across
             #    threads. Fix: temporarily clear current_context so the new window
             #    creates an independent context.
-            _saved_have_context = None
-            try:
-                from pyglet.gl import gl_info as _gli
-                _saved_have_context = _gli._gl_info._have_context
-                _gli._gl_info._have_context = False
-            except AttributeError:
-                pass  # Non-WGL platform
+            # Both workarounds edit process-global state, so they are serialized
+            # against any other thread building a window.
+            with _creation_lock:
+                _saved_have_context = None
+                try:
+                    from pyglet.gl import gl_info as _gli
+                    _saved_have_context = _gli._gl_info._have_context
+                    _gli._gl_info._have_context = False
+                except AttributeError:
+                    pass  # Non-WGL platform
 
-            gl.current_context = None
+                gl.current_context = None
 
-            self._window = _Window(shape, screen, caption, **self._init_kwargs)
+                try:
+                    self._window = self._window_class(
+                        shape, screen, caption, **self._init_kwargs
+                    )
+                finally:
+                    # Else every later window in the process takes the non-ARB path.
+                    # gl.current_context stays as the new window left it: _setup_context
+                    # needs that context current to compile its shaders.
+                    if _saved_have_context is not None:
+                        _gli._gl_info._have_context = _saved_have_context
+                        _gli.set_active_context()
 
-            # Restore gl_info state. Do NOT restore gl.current_context —
-            # the new window's context is now current on this thread, and
-            # _setup_context() needs it to compile shaders.
-            if _saved_have_context is not None:
-                _gli._gl_info._have_context = _saved_have_context
-                _gli.set_active_context()
-
-            self._window._setup_context()
+                self._window._setup_context()
 
             # Bring window to front / set always-on-top (cross-platform).
             self._window._bring_to_front()
@@ -1282,7 +1426,7 @@ class _WindowThread(object):
         # Guard + enqueue atomically against the loop's stop/drain (see run() cleanup).
         # Also reject if the window has exited (e.g. user closed it).
         with self._submit_lock:
-            if not self._running or self._window.has_exit:
+            if not self.running:
                 raise RuntimeError("Window thread is not running.")
             self._command_queue.put((func, args, kwargs, future))
 
@@ -1324,6 +1468,11 @@ class _WindowThread(object):
     def window(self):
         """_Window or None: The managed window instance."""
         return self._window
+
+    @property
+    def running(self):
+        """bool: Whether the thread is still alive and willing to accept work."""
+        return self._running and self._window is not None and not self._window.has_exit
 
     def close(self):
         """
@@ -1393,7 +1542,8 @@ class _WindowManager(object):
         caption : str
             Window title.
         **kwargs
-            See :meth:`_Window.__init__` for permissible options.
+            See :meth:`_WindowThread.__init__` and :meth:`_Window.__init__` for
+            permissible options.
 
         Returns
         -------
