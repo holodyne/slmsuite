@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -82,6 +83,15 @@ class _Common(_Viewable, _Loggable, ABC):
             self.close()
         except Exception:
             pass
+
+    @contextmanager
+    def _test_step(self, name):
+        """Label one step of :meth:`test()`, so a failure names the step that broke."""
+        try:
+            yield
+        except Exception as error:
+            raise AssertionError(f"failed to {name}") from error
+        self.logger.info("%s: ok", name)
 
     @property
     def bitresolution(self):

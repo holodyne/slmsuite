@@ -7,7 +7,7 @@ import time
 import numpy as np
 import pytest
 
-from slmsuite.hardware._viewer import _ViewerObject, _viewer_palette
+from slmsuite.hardware._viewer import _ViewerObject
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
 
 try:
@@ -122,7 +122,7 @@ class TestViewer:
             nan[0, 0] = np.nan
             viewer.last_image = nan
             index = viewer.parse()
-            rgba = _viewer_palette(viewer.state["cmap"]).rgba
+            rgba = viewer._palette()
             assert rgba[index[0, 0]][3] == 0
             viewer.last_image = img
             assert (np.take(rgba, viewer.parse(), axis=0)[..., 3] == 255).all()
@@ -433,10 +433,10 @@ class TestViewerPyglet:
             assert viewer.state["roi"] == full
 
         with subtests.test("c cycles the colormap on the main thread"):
-            cmap = viewer.state["cmap"]
+            expected = viewer.state["cmap_options"][1]
             wait(submit(w.on_key_press, key.C, 0))
             viewer.render()
-            assert viewer.state["cmap"] != cmap
+            assert viewer.state["cmap"] == expected
 
     def test_slm_shortcuts(self, slm_small):
         """A phase display must not be re-ranged out from under its colormap."""

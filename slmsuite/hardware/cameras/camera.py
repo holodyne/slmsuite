@@ -1409,126 +1409,80 @@ class Camera(_Common, ABC):
 
     def test(self):
         """
-        Tests the core hardware methods of :class:`Camera`.
-        Validates that the camera is connected correctly and all hardware
-        features are supported.
+        Test that the hardware behind this :class:`Camera` responds to every core method.
+
+        Each step is named, so a failure reports which feature is broken. Correctness of
+        the returned data is the business of the test suite, not of a hardware check.
         """
-        print(f"Testing camera: {self.name}")
+        self.logger.info("Testing %s.", self.name)
 
-        # Test 1: Exposure methods (required)
-        print("  Testing exposure methods...")
-        current_exposure = self.get_exposure()
-        assert isinstance(current_exposure, REAL_TYPES)
-        assert current_exposure > 0
-
-        # Test setting exposure
-        new_exposure = current_exposure * 1.5
-        set_exposure = self.set_exposure(new_exposure)
-        assert isinstance(set_exposure, REAL_TYPES)
-
-        # Restore original exposure
-        self.set_exposure(current_exposure)
-
-        # Test 2: Capture methods (requires concrete implementation)
-        print("  Testing capture methods...")
-        orig_averaging = self.averaging
-        orig_hdr = self.hdr
-
-        self.averaging = None
-        self.hdr = None
-        self.last_image = None
+        (orig_averaging, orig_hdr) = (self.averaging, self.hdr)
+        (self.averaging, self.hdr, self.last_image) = (None, None, None)
+        exposure = None
 
         try:
-            # Test basic image capture
-            print("    Testing get_image...")
-            image = self.get_image(timeout_s=2)
-            assert isinstance(image, np.ndarray)
-            assert image.shape == self.shape
-            assert image.dtype == self.get_dtype()
+            with self._test_step("read and set the exposure"):
+                exposure = self.get_exposure()
+                assert exposure > 0, f"exposure is {exposure}"
+                self.set_exposure(exposure * 1.5)
 
-            # Test that last_image is updated
-            assert self.last_image is not None
-            if np.issubdtype(image.dtype, np.floating) or np.issubdtype(self.last_image.dtype, np.floating):
-                assert np.allclose(self.last_image, image)
-            else:
-                assert np.array_equal(self.last_image, image)
+            with self._test_step("capture a frame"):
+                self.get_image(timeout_s=2)
+                assert self.last_image is not None, "the capture was not retained"
 
-            # Test get_image with transform=False
-            image_no_transform = self.get_image(transform=False, timeout_s=2)
-            assert isinstance(image_no_transform, np.ndarray)
+            with self._test_step("capture without the transform applied"):
+                self.get_image(transform=False, timeout_s=2)
 
-            # Test averaging
-            print("    Testing averaging...")
-            image_avg = self.get_image(averaging=2, timeout_s=5)
-            assert isinstance(image_avg, np.ndarray)
-            assert image_avg.shape == self.shape
+            with self._test_step("capture an averaged frame"):
+                self.get_image(averaging=2, timeout_s=5)
 
-            # Test get_images
-            print("    Testing get_images...")
-            image_count = 3
-            images = self.get_images(image_count, timeout_s=2)
-            assert isinstance(images, np.ndarray)
-            assert images.shape == (image_count, self.shape[0], self.shape[1])
-            assert images.dtype == self.get_dtype()
+            with self._test_step("stack frames, into a given buffer"):
+                out = np.empty((3,) + self.shape, dtype=self.get_dtype())
+                self.get_images(3, timeout_s=2)
+                self.get_images(3, timeout_s=2, out=out)
 
-            # Test get_images with preallocated output
-            out = np.empty((image_count, self.shape[0], self.shape[1]), dtype=self.get_dtype())
-            images_out = self.get_images(image_count, timeout_s=2, out=out)
-            assert images_out.shape == out.shape
-            assert images_out.dtype == out.dtype
+            with self._test_step("flush pending frames"):
+                self.flush(timeout_s=2)
 
-            # Test flush method
-            print("    Testing flush...")
-            self.flush(timeout_s=2)
-
-            # Test HDR imaging
             try:
-                print("    Testing get_image_hdr...")
-                hdr_image = self.get_image_hdr(exposures=2, return_raw=False, timeout_s=3)
-                assert isinstance(hdr_image, np.ndarray)
-                assert hdr_image.shape == self.shape
-                assert np.issubdtype(hdr_image.dtype, np.floating)
+                with self._test_step("stitch exposures with get_image_hdr"):
+                    self.get_image_hdr(exposures=2, timeout_s=3)
+                    self.get_image_hdr(exposures=2, return_raw=True, timeout_s=3)
+            except AssertionError as error:
+                self.logger.warning("%s; treating HDR as unsupported.", error)
 
-                # Test HDR with return_raw=True
-                hdr_raw, exposure_times = self.get_image_hdr(exposures=2, return_raw=True, timeout_s=3)
-                assert isinstance(hdr_raw, np.ndarray)
-                assert isinstance(exposure_times, np.ndarray)
-                assert hdr_raw.shape[0] == 2
-                assert hdr_raw.shape[1:] == self.shape
-                assert len(exposure_times) == 2
-
-            except Exception as e:
-                print(f"      HDR testing skipped: {e}")
-
-            # Test 3: WOI and binning (hardware only)
             if not self._software_woi:
-                print("  Testing get_woi / set_woi...")
-                orig_woi = self.get_woi()
-                self.set_woi()                          # reset to full sensor
-                half_woi = (0, self.shape[1] // 2, 0, self.shape[0] // 2)
-                self.set_woi(half_woi)
-                assert self.get_image().shape == self.shape, "shape mismatch after set_woi"
-                self.set_woi(orig_woi)
-                assert self.get_woi() == orig_woi, "get_woi did not round-trip"
+                with self._test_step("window the sensor with set_woi"):
+                    orig_woi = self.get_woi()
+                    self.set_woi()
+                    self.set_woi((0, self.shape[1] // 2, 0, self.shape[0] // 2))
+                    assert self.get_image().shape == self.shape, "set_woi did not resize"
+                    self.set_woi(orig_woi)
+                    assert self.get_woi() == orig_woi, "set_woi did not round-trip"
 
             if not self._software_binning:
-                print("  Testing get_binning / set_binning...")
-                orig_binning = self.get_binning()
-                self.set_binning(1)
-                assert self.get_binning() == (1, 1), "get_binning mismatch after set_binning(1)"
-                assert self.get_image().shape == self.shape, "shape mismatch after set_binning"
-                self.set_binning(orig_binning)
+                with self._test_step("bin the sensor with set_binning"):
+                    orig_binning = self.get_binning()
+                    self.set_binning(1)
+                    assert self.get_binning() == (1, 1), "set_binning did not round-trip"
+                    assert self.get_image().shape == self.shape, "set_binning did not resize"
+                    self.set_binning(orig_binning)
 
-            # Test 4: Info method
-            print("  Testing info...")
-            result = self.info(verbose=False)
-            assert isinstance(result, list)
+            with self._test_step("enumerate the connected cameras with info"):
+                self.info(verbose=False)
+
+            count = 10
+            t0 = time.perf_counter()
+            for _ in range(count):
+                self.get_image(timeout_s=2)
+            elapsed = time.perf_counter() - t0
+            self.logger.info(
+                "get_image: %.1f Hz (%.2f ms/frame)", count / elapsed, 1e3 * elapsed / count
+            )
         finally:
-            # Restore the user's capture settings.
-            self.averaging = orig_averaging
-            self.hdr = orig_hdr
-
-        print("Camera test completed successfully!")
+            if exposure is not None:
+                self.set_exposure(exposure)
+            (self.averaging, self.hdr) = (orig_averaging, orig_hdr)
 
         return True
 

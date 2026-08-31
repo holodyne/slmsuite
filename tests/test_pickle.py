@@ -1,14 +1,13 @@
 """
 Unit tests for the _Picklable base class, which handles object serialization and saving.
 """
-import pytest
-import tempfile
 import os
 
-import h5py
+import pytest
 
-from slmsuite._pickling import _Picklable
 from slmsuite import __version__
+from slmsuite._pickling import _Picklable
+from slmsuite.misc.files import load_h5
 
 
 class _TestPicklableClass(_Picklable):
@@ -34,63 +33,48 @@ class TestPicklable:
     def _obj(self):
         self.obj = _TestPicklableClass()
 
-    def test_pickle_attributes(self, subtests):
-        """Test pickle output for different `attributes` values."""
-        with subtests.test("attributes=False keeps only _pickle"):
+    def test_pickle(self, subtests):
+        """Test pickle() attribute selection, metadata, and recursion."""
+        with subtests.test("attributes=False keeps only the baseline _pickle attrs"):
             result = self.obj.pickle(attributes=False, metadata=False)
+            assert result == {
+                "__class__": "_TestPicklableClass",
+                "basic_attr": 42,
+                "name": "test_object",
+            }
 
-            assert result["__class__"] == "_TestPicklableClass"
-            assert result["basic_attr"] == 42
-            assert result["name"] == "test_object"
-            assert "heavy_attr" not in result
-            assert "unpickled_attr" not in result
-
-        with subtests.test("attributes=True includes _pickle_data"):
+        with subtests.test("attributes=True adds _pickle_data"):
             result = self.obj.pickle(attributes=True, metadata=False)
+            assert result == {
+                "__class__": "_TestPicklableClass",
+                "basic_attr": 42,
+                "name": "test_object",
+                "heavy_attr": [1, 2, 3, 4, 5],
+            }
 
-            assert result["__class__"] == "_TestPicklableClass"
-            assert result["basic_attr"] == 42
-            assert result["name"] == "test_object"
-            assert result["heavy_attr"] == [1, 2, 3, 4, 5]
-            assert "unpickled_attr" not in result
-
-        with subtests.test("custom attribute list"):
+        with subtests.test("an explicit attribute list overrides _pickle/_pickle_data"):
             result = self.obj.pickle(attributes=["basic_attr"], metadata=False)
+            assert result == {"__class__": "_TestPicklableClass", "basic_attr": 42}
 
-            assert result["__class__"] == "_TestPicklableClass"
-            assert result["basic_attr"] == 42
-            assert "name" not in result
-            assert "heavy_attr" not in result
-
-        with subtests.test("__class__ is the real class name"):
-            result = self.obj.pickle(attributes=False, metadata=False)
-            assert result["__class__"] == "_TestPicklableClass"
-
-    def test_pickle_metadata(self, subtests):
-        """Test pickle metadata and version info."""
-        with subtests.test("metadata fields present"):
+        with subtests.test("metadata=True wraps the pickle with version and timestamp"):
             result = self.obj.pickle(attributes=False, metadata=True)
-
             assert result["__version__"] == __version__
             assert isinstance(result["__time__"], str)
             assert isinstance(result["__timestamp__"], float)
+            assert result["__meta__"] == {
+                "__class__": "_TestPicklableClass",
+                "basic_attr": 42,
+                "name": "test_object",
+            }
 
-            meta = result["__meta__"]
-            assert "__class__" in meta
-            assert "basic_attr" in meta
-            assert "name" in meta
-
-    def test_pickle_edge_cases(self, subtests):
-        """Test warnings, nested objects, and empty _pickle lists."""
-        with subtests.test("missing attribute warns"):
+        with subtests.test("a missing attribute warns and is skipped"):
             with pytest.warns(
                 UserWarning, match="Expected attribute 'nonexistent' not present"
             ):
                 result = self.obj.pickle(attributes=["nonexistent"], metadata=False)
-            assert "__class__" in result
+            assert result == {"__class__": "_TestPicklableClass"}
 
-        with subtests.test("nested Picklable is recursively pickled"):
-
+        with subtests.test("a nested Picklable is recursively pickled"):
             class _Nested(_Picklable):
                 _pickle = ["nested_value"]
 
@@ -102,13 +86,12 @@ class TestPicklable:
 
             self.obj.nested_obj = _Nested()
             result = self.obj.pickle(attributes=["nested_obj"], metadata=False)
-
-            nested = result["nested_obj"]
-            assert nested["__class__"] == "_Nested"
-            assert nested["nested_value"] == "nested"
+            assert result == {
+                "__class__": "_TestPicklableClass",
+                "nested_obj": {"__class__": "_Nested", "nested_value": "nested"},
+            }
 
         with subtests.test("empty _pickle lists yield only __class__"):
-
             class _Empty(_Picklable):
                 _pickle = []
                 _pickle_data = []
@@ -119,34 +102,28 @@ class TestPicklable:
                 def __str__(self):
                     return "EmptyPicklable"
 
-            result = _Empty().pickle(attributes=True, metadata=False)
-            assert "__class__" in result
-            assert "some_attr" not in result
+            assert _Empty().pickle(attributes=True, metadata=False) == {
+                "__class__": "_Empty"
+            }
 
-    def test_save(self, subtests):
-        """Test save method: default name, custom name, kwargs, and missing name."""
-        with subtests.test("default name from .name attribute"):
-            with tempfile.TemporaryDirectory() as d:
-                path = self.obj.save(path=d)
-                assert os.path.exists(path)
-                assert path.endswith(".h5")
-                assert "test_object-pickle" in path
+    def test_save(self, subtests, temp_dir):
+        """Test save() file naming, kwargs forwarding, and the .name requirement."""
+        with subtests.test("the default name comes from .name"):
+            path = self.obj.save(path=temp_dir)
+            assert os.path.exists(path)
+            assert os.path.basename(path).startswith("test_object-pickle")
+            assert path.endswith(".h5")
 
-        with subtests.test("custom name"):
-            with tempfile.TemporaryDirectory() as d:
-                path = self.obj.save(path=d, name="custom_name")
-                assert os.path.exists(path)
-                assert "custom_name" in path
+        with subtests.test("a name kwarg overrides the default"):
+            path = self.obj.save(path=temp_dir, name="custom_name")
+            assert os.path.basename(path).startswith("custom_name")
 
-        with subtests.test("kwargs forwarded to pickle"):
-            with tempfile.TemporaryDirectory() as d:
-                path = self.obj.save(path=d, attributes=True)
-                with h5py.File(path, "r") as f:
-                    assert "__meta__" in f
-                    assert "heavy_attr" in f["__meta__"]
+        with subtests.test("kwargs are forwarded to pickle()"):
+            path = self.obj.save(path=temp_dir, attributes=False)
+            saved = load_h5(path)
+            assert "heavy_attr" not in saved["__meta__"]
 
-        with subtests.test("no name attribute raises AttributeError"):
-
+        with subtests.test("no .name attribute raises AttributeError"):
             class _NoName(_Picklable):
                 _pickle = ["value"]
 
@@ -156,6 +133,5 @@ class TestPicklable:
                 def __str__(self):
                     return "NoNamePicklable"
 
-            with tempfile.TemporaryDirectory() as d:
-                with pytest.raises(AttributeError):
-                    _NoName().save(path=d)
+            with pytest.raises(AttributeError):
+                _NoName().save(path=temp_dir)

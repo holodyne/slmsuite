@@ -25,22 +25,21 @@ get_sphinx_examples = _examples_mod.get_sphinx_examples
 # FUTURE: add a fixture to test notebooks with or without cupy.
 @pytest.mark.slow
 def test_examples(subtests):
+    """Pins that every Sphinx-listed example notebook runs to completion without error."""
 
-    # First download the example notebooks (if not already downloaded)
     examples_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "_examples")
     download_example_notebooks(
         examples_path=examples_path,
-        images_path=None, # Don't download images
+        images_path=None,  # Don't download images.
     )
 
-    # Get the list of example notebooks.
     notebooks = get_sphinx_examples()
 
     for nb_name in notebooks:
         nb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", nb_name + ".ipynb")
         nb_path_run = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", nb_name + "_run.ipynb")
 
-        with subtests.test(f"testing {nb_name}"):
+        with subtests.test(nb_name):
             assert os.path.isfile(nb_path), "Notebook not found."
 
             with open(nb_path, "r", encoding="utf8") as f:
@@ -49,7 +48,6 @@ def test_examples(subtests):
             # Remove cells marked as requiring hardware not available in CI.
             nb.cells = [cell for cell in nb.cells if "slmsuite_experimental" not in cell.metadata]
 
-            # Execute the notebook.
             exec_result = execute_notebook(
                 nb,
                 cwd=os.path.dirname(nb_path),
@@ -60,6 +58,5 @@ def test_examples(subtests):
             with open(nb_path_run, "w", encoding="utf8") as f:
                 nbformat.write(exec_result.notebook, f)
 
-            # Fail the subtest if a cell raised an error.
             if exec_result.exec_error is not None:
                 raise exec_result.exec_error

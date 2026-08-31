@@ -1639,40 +1639,45 @@ class SLM(_Common, ABC):
 
     def test(self):
         """
-        Tests the core hardware methods of :class:`SLM`.
-        Validates that the SLM is connected correctly and all hardware
-        features are supported.
+        Test that the hardware behind this :class:`SLM` responds to every core method.
+
+        Each step is named, so a failure reports which feature is broken. Correctness of
+        the phase mapping is the business of the test suite, not of a hardware check.
         """
-        print(f"Testing SLM: {self.name}")
+        self.logger.info("Testing %s.", self.name)
 
-        print("  Testing set_phase...")
+        orig_phase = self.phase.copy()
+        count = 20
+        phase = np.random.rand(count, *self.shape) * 2 * np.pi
 
+        try:
+            with self._test_step("write a phase"):
+                self.set_phase(phase[0], phase_correct=False)
 
+            with self._test_step("write a wavefront-corrected phase"):
+                self.set_phase(phase[1], phase_correct=True)
 
-        # Benchmark set_phase.
-        n_iter = 20
-        phase = np.random.rand(n_iter, *self.shape) * 2 * np.pi
-        t0 = time.time()
-        for i in range(n_iter):
-            self.set_phase(phase[i,:,:], phase_correct=False)
-        elapsed = time.time() - t0
-        fps = n_iter / elapsed
-        print(f"    set_phase benchmark: {fps:.1f} Hz ({elapsed/n_iter*1e3:.2f} ms/frame)")
+            for trigger in (self.set_input_trigger, self.set_output_trigger):
+                try:
+                    with self._test_step(f"toggle {trigger.__name__}"):
+                        trigger(True)
+                        trigger(False)
+                except AssertionError as error:
+                    if not isinstance(error.__cause__, NotImplementedError):
+                        raise
+                    self.logger.info("%s; unsupported by this SLM.", error)
 
-        print("  Testing set_input_trigger...")
-        for val in [True, False]:
-            try:
-                self.set_input_trigger(val)
-                print(f"    set_input_trigger({val}): OK")
-            except NotImplementedError:
-                print(f"    set_input_trigger({val}): NotImplementedError (expected for base SLM)")
+            with self._test_step("enumerate the connected displays with info"):
+                self.info(verbose=False)
 
-        print("  Testing set_output_trigger...")
-        for val in [True, False]:
-            try:
-                self.set_output_trigger(val)
-                print(f"    set_output_trigger({val}): OK")
-            except NotImplementedError:
-                print(f"    set_output_trigger({val}): NotImplementedError (expected for base SLM)")
+            t0 = time.perf_counter()
+            for i in range(count):
+                self.set_phase(phase[i], phase_correct=False)
+            elapsed = time.perf_counter() - t0
+            self.logger.info(
+                "set_phase: %.1f Hz (%.2f ms/frame)", count / elapsed, 1e3 * elapsed / count
+            )
+        finally:
+            self.set_phase(orig_phase, phase_correct=False)
 
         return True
