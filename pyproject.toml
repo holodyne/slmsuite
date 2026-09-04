@@ -49,6 +49,7 @@ torch = ["torch"]
 slms = [
     "pyglet",
     "hidapi",
+    "pyyaml",
 ]
 cameras = [
     "pylablib",
@@ -114,7 +115,11 @@ version = { attr = "slmsuite.__version__" }
 include = ["slmsuite*"]
 
 [tool.setuptools.package-data]
-slmsuite = ["holography/toolbox/phase/cuda.cu"]
+slmsuite = [
+    "holography/toolbox/phase/cuda.cu",
+    "hardware/slms/texas_instruments.yaml",
+    "hardware/slms/meadowlark.csv",
+]
 
 [tool.uv]
 # pyqt5-qt5 >= 5.15.3 dropped Windows wheels; cap to last working version.
@@ -125,7 +130,6 @@ constraint-dependencies = ["pyqt5-qt5<=5.15.2"]
 include = [
     "slmsuite/*.py",
     "slmsuite/hardware/_common.py",
-    "slmsuite/hardware/_pickle.py",
     "slmsuite/hardware/remote.py",
     "slmsuite/hardware/cameraslms/*.py",
     "slmsuite/hardware/cameras/camera.py",
