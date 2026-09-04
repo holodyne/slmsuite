@@ -1089,7 +1089,7 @@ class SLM(_Common, ABC):
     ):
         "Backwards-compatibility alias for :meth:`set_phase()`."
         warnings.warn(
-            "The backwards-compatible alias SLM.write will be depreciated "
+            "The backwards-compatible alias SLM.write will be deprecated "
             "in favor of SLM.set_phase in a future release."
         )
 

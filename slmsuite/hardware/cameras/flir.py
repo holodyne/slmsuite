@@ -347,7 +347,7 @@ class FLIR(Camera):
         # Supported formats in descending bit depth order.
         # Only formats whose GetNDArray() returns a direct numpy array are listed;
         # packed formats (Mono12p, Mono10p) require ImageProcessor conversion and
-        # are omitted in favour of Mono16 with the matching ADC depth.
+        # are omitted in favor of Mono16 with the matching ADC depth.
         # Mono16 stores the ADC value left-shifted into the upper bits, so
         # _get_image_hw right-shifts the data back to the true ADC range.
         all_candidates = [
@@ -640,7 +640,7 @@ class FLIR(Camera):
 
             # Mono16 stores ADC values left-shifted into the upper bits of the
             # 16-bit word.  Right-shift back so that values span [0, 2**bitdepth)
-            # and normalisation by bitresolution is correct.
+            # and normalization by bitresolution is correct.
             if image_data.dtype == np.uint16 and self.bitdepth < 16:
                 image_data = np.right_shift(image_data, 16 - self.bitdepth)
 

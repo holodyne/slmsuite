@@ -719,7 +719,7 @@ class _StubCameraSLM:
         self.cam = SimpleNamespace(shape=cam_shape)
         self._calibrated = calibrated
         self.calibrations = {"fourier": {}} if calibrated else {}
-        # Anisotropic kxy -> ij scales, off-centre so the composite affine is not trivial.
+        # Anisotropic kxy -> ij scales, off-center so the composite affine is not trivial.
         self.fourier_affine = Affine(
             M=[[1.92e-4, 0.0], [0.0, 1.60e-4]],
             b=[[cam_shape[1] / 2 + 3], [cam_shape[0] / 2 - 4]],

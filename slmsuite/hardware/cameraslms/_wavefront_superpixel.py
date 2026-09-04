@@ -53,7 +53,7 @@ class _WavefrontCalibrationSuperpixel(object):
         Correction at many points over the plane permits a better understanding of the
         aberration and greater possibility of compensation.
 
-        Sets :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront"]`.
+        Sets :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront_superpixel"]`.
         Run :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibration_superpixel_process`
         afterwards to produce the usable calibration which can be written to the SLM.
 
@@ -163,7 +163,7 @@ class _WavefrontCalibrationSuperpixel(object):
         -------
         dict
             The contents of
-            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront"]`.
+            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront_superpixel"]`.
 
         Raises
         ------

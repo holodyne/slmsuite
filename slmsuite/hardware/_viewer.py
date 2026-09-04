@@ -82,7 +82,7 @@ def _ipython():
 
 
 def _save_dialog(file_path):
-    """Ask the user where to save, defaulting to ``file_path``. Empty if cancelled."""
+    """Ask the user where to save, defaulting to ``file_path``. Empty if canceled."""
     if sys.platform != "win32":
         raise NotImplementedError(f"No save dialog is implemented for '{sys.platform}'.")
 
@@ -99,7 +99,7 @@ def _save_dialog(file_path):
             Flags=win32con.OFN_OVERWRITEPROMPT,
         )[0]
     except Exception:
-        return ""       # The dialog raises rather than returns when cancelled.
+        return ""       # The dialog raises rather than returns when canceled.
 
 
 def _clipboard_image(png, name):

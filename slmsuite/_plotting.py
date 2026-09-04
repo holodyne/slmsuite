@@ -18,7 +18,7 @@ def _slmsuite_plt_show(name=None, *args, **kwargs):
     """
     import matplotlib.pyplot as plt
     if _current_handler is not None:
-        _current_handler(name=name, *args, **kwargs)
+        _current_handler(*args, name=name, **kwargs)
     else:
         plt.show(*args, **kwargs)
 

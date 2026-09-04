@@ -85,8 +85,8 @@ class ScreenMirrored(SLM):
     are closer to the pixels than OpenGL textures, so greater speed might be achievable (even without
     loading data to the GPU as a texture).
 
-    GPU Optimization
-    ~~~~~~~~~~~~~~~~
+    .. rubric:: GPU Optimization
+
     Grayscale data is expanded to RGBA and delivered to the display by whichever of the
     following is available, in order of preference:
 
@@ -109,8 +109,8 @@ class ScreenMirrored(SLM):
     This feature is similar to the ``isImageLock`` flag in :mod:`slmpy`, but is implemented a bit
     closer to the hardware.
 
-    Threading Model
-    ~~~~~~~~~~~~~~~
+    .. rubric:: Threading Model
+
     Each :class:`ScreenMirrored` window is created on its own dedicated background
     thread via :class:`~slmsuite.hardware._pyglet._WindowThread`. This allows
     the background threads to handle OS events and independent event

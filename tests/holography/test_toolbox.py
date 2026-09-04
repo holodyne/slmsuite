@@ -57,7 +57,7 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         # An SLM stores its grid in float32, hence the tolerance here and below.
         np.testing.assert_allclose(convert_vector(vec, "norm", "freq", **hw), cycles, rtol=1e-6)
 
-    with subtests.test("lpmm is the blaze's phase cycles per millimetre"):
+    with subtests.test("lpmm is the blaze's phase cycles per millimeter"):
         per_mm = cycles * 1000 / toolbox.format_2vectors(slm.pitch_um)
         np.testing.assert_allclose(convert_vector(vec, "norm", "lpmm", **hw), per_mm, rtol=1e-6)
 

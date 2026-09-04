@@ -545,14 +545,14 @@ class ZernikeBasis:
     @cached_property
     def grad_mask(self):
         """
-        Boolean ``(h, w)`` mask of pupil pixels whose four nearest neighbours are
+        Boolean ``(h, w)`` mask of pupil pixels whose four nearest neighbors are
         also inside the pupil. This is the pupil :attr:`mask` eroded by one pixel:
         the boundary ring is dropped because a central-difference gradient there
         would mix in-pupil values with the zeroed exterior.
         """
         m = self.mask.astype(bool)
         e = self._xp.zeros_like(m)
-        # Interior pixel kept iff it and all four neighbours are in-pupil.
+        # Interior pixel kept iff it and all four neighbors are in-pupil.
         e[1:-1, 1:-1] = (
             m[1:-1, 1:-1]
             & m[2:, 1:-1] & m[:-2, 1:-1]
@@ -1200,7 +1200,7 @@ def _zernike_coefficients(index):
                     else:
                         zernike_this[power_key] = factor
 
-        # Remove all factors that have cancelled out (== 0).
+        # Remove all factors that have canceled out (== 0).
         coefficients = {
             power_key: factor
             for power_key, factor in zernike_this.items()

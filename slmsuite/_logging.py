@@ -226,8 +226,6 @@ def make_logger(name, color="default"):
         extra={"log_name": name, "log_color": _LOGGER_COLORS.get(color, _LOGGER_COLORS["reset"])},
     )
 
-# Imported here to avoid a circular import: _pickling pulls in
-# misc/analysis/toolbox, which import make_logger above.
 from slmsuite._pickling import _Picklable
 
 

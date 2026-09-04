@@ -195,7 +195,7 @@ class TestSLM:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 slm.write(np.zeros(slm.shape), phase_correct=False)
-            assert any("depreciated" in str(w.message).lower() for w in caught)
+            assert any("deprecated" in str(w.message).lower() for w in caught)
 
         with subtests.test("execute and block reach the hardware which advertises them"):
             class Recording(SimulatedSLM):

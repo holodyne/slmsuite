@@ -79,7 +79,7 @@ class TestCamera:
             assert camera.bitresolution == 4 * 2 ** camera.bitdepth
 
     def test_set_binning(self, slm, caplog, subtests):
-        """set_binning() divides the shape, leaves the WOI unbinned, and honours the transform."""
+        """set_binning() divides the shape, leaves the WOI unbinned, and honors the transform."""
         cam = SimulatedCamera(slm, resolution=WIDE)
 
         with subtests.test("binning divides the shape"):
@@ -140,7 +140,7 @@ class TestCamera:
         try:
             for (label, request) in (
                 ("full sensor", (0, w_max, 0, h_max)),
-                ("centred half", (w_max // 4, w_max // 2, h_max // 4, h_max // 2)),
+                ("centered half", (w_max // 4, w_max // 2, h_max // 4, h_max // 2)),
                 ("patch against the far corner", (w_max - sw, sw, h_max - sh, sh)),
                 ("wide thin strip", (0, w_max, h_max * 2 // 5, h_max // 5)),
                 ("odd offsets, which stress the snapping",
@@ -176,7 +176,7 @@ class TestCamera:
             cam.set_woi((10, 80, 5, 40))
             assert cam.woi == (10, 80, 5, 40)
 
-        with subtests.test("a scalar or (w, h) request is centred on the sensor"):
+        with subtests.test("a scalar or (w, h) request is centered on the sensor"):
             cam.set_woi(50)
             assert cam.shape == (50, 50)
             assert cam.woi == (75, 50, 25, 50)
@@ -310,7 +310,7 @@ class TestCamera:
             assert camera.get_dtype(averaging=1, binning=(1, 1), hdr=2) == float
 
         with subtests.test("a negative count raises"):
-            with pytest.raises(ValueError, match="averaging must be positive"):
+            with pytest.raises(ValueError, match="Cannot have negative averaging"):
                 camera.get_dtype(averaging=-1)
 
     def test__get_dtype(self, camera, subtests):

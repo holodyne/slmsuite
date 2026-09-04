@@ -119,7 +119,7 @@ class Meadowlark(SLM):
             the path otherwise. Keep in mind that different versions of the SDK may not
             be compatible with given hardware (HDMI, PCIe, etc.).
             See the compatibility table at
-            :module:`slmsuite.hardware.slms.meadowlark` for more information.
+            :mod:`slmsuite.hardware.slms.meadowlark` for more information.
         lut_path : str OR None
             Passed to :meth:`load_lut`. Looks for the voltage 'look-up table' data
             which is necessary to run the SLM.

@@ -137,7 +137,7 @@ class _WavefrontCalibrationZernike(object):
         -------
         dict
             The contents of
-            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront"]`.
+            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront_zernike"]`.
 
         Raises
         ------

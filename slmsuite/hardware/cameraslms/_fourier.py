@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
+import warnings
 
 from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.algorithms import Hologram, SpotHologram
@@ -80,6 +81,12 @@ class _FourierCalibration(object):
         dict
             :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["fourier"]`
         """
+        if "autoexposure" in kwargs.keys():
+            autoexpose = kwargs.pop("autoexposure")
+            warnings.warn(
+                "fourier_calibrate(autoexposure=) was renamed fourier_calibrate(autoexpose=)."
+            )
+
         return self._fourier_calibrate_single(
             array_shape=array_shape,
             array_pitch=array_pitch,

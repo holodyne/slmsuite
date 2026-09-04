@@ -144,7 +144,7 @@ class CameraSLM(_Loggable):
         cbar : bool
             Also plot a colorbar.
         **kwargs
-            Passed to :meth:`set_phase()`
+            Passed to :meth:`~slmsuite.hardware.slms.slm.SLM.set_phase()`.
 
         Returns
         -------
@@ -233,10 +233,10 @@ class FourierSLM(
 
             This data is critical for crisp holography.
 
-            Note
-            ~~~~
-            Calibrations saved before this key was split in two are named ``"wavefront"``;
-            :meth:`wavefront_calibration_superpixel_process()` reads either.
+            .. note::
+                Calibrations saved before this key was split in two are named
+                ``"wavefront"``; :meth:`wavefront_calibration_superpixel_process()`
+                reads either.
         "wavefront_zernike" : dict
             Raw data for the same correction, measured instead by optimizing Zernike
             coefficients against a metric.
@@ -758,7 +758,7 @@ class FourierSLM(
     def write_calibration(self, calibration_type, path, name):
         "Backwards-compatibility alias for :meth:`save_calibration()`."
         warnings.warn(
-            "The backwards-compatible alias FourierSLM.write_calibration will be depreciated "
+            "The backwards-compatible alias FourierSLM.write_calibration will be deprecated "
             "in favor of FourierSLM.save_calibration in a future release."
         )
         self.save_calibration(calibration_type, path, name)
@@ -808,7 +808,7 @@ class FourierSLM(
     def read_calibration(self, calibration_type, file_path=None):
         "Backwards-compatibility alias for :meth:`load_calibration()`."
         warnings.warn(
-            "The backwards-compatible alias FourierSLM.read_calibration will be depreciated "
+            "The backwards-compatible alias FourierSLM.read_calibration will be deprecated "
             "in favor of FourierSLM.load_calibration in a future release."
         )
         self.load_calibration(calibration_type, file_path)

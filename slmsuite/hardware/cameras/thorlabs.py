@@ -76,8 +76,8 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
         except Exception:
             if DEFAULT_DLL_PATH == dll_path:
                 warnings.warn(
-                    f"thorlabs_tsi_sdk DLLs not found at default path. "
-                    "Resolve to use Thorlabs cameras.\nDefault path: '{DEFAULT_DLL_PATH}'"
+                    "thorlabs_tsi_sdk DLLs not found at default path. "
+                    f"Resolve to use Thorlabs cameras.\nDefault path: '{DEFAULT_DLL_PATH}'"
                 )
 
 _configure_tlcam_dll_path()

@@ -69,7 +69,7 @@ def convert_blaze_vector(*args, **kwargs):
     for backwards compatibility.
     """
     warnings.warn(
-        "The backwards-compatible alias convert_blaze_vector will be depreciated "
+        "The backwards-compatible alias convert_blaze_vector will be deprecated "
         "in favor of convert_vector in a future release."
     )
 
@@ -86,7 +86,7 @@ def convert_blaze_radius(*args, **kwargs):
     for backwards compatibility.
     """
     warnings.warn(
-        "The backwards-compatible alias convert_blaze_radius will be depreciated "
+        "The backwards-compatible alias convert_blaze_radius will be deprecated "
         "in favor of convert_radius in a future release."
     )
 
@@ -585,14 +585,16 @@ def window_slice(window, shape=None, centered=False, circular=False):
         slice_ = (slice(None), slice(None))
     # Case 1: (x, w, y, h) format
     elif len(window) == 4:
-        # Prepare helper vars
-        xi = int(window[0] - ((window[1] - 1) / 2 if centered else 0))
+        # Windows are indexed like an FFT: the center sits at offset w // 2.
+        (dx, dy) = (int(window[1]) // 2, int(window[3]) // 2)
+
+        xi = int(window[0]) - (dx if centered else 0)
         xf = xi + int(window[1])
-        yi = int(window[2] - ((window[3] - 1) / 2 if centered else 0))
+        yi = int(window[2]) - (dy if centered else 0)
         yf = yi + int(window[3])
 
-        xc = xi + int((window[1] - 1) / 2)
-        yc = yi + int((window[3] - 1) / 2)
+        xc = xi + dx
+        yc = yi + dy
 
         if shape is not None:
             [xi, xf] = np.clip([xi, xf], 0, shape[1])

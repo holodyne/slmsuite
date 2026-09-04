@@ -5,7 +5,6 @@ import warnings
 import datetime
 
 from slmsuite import __version__
-from slmsuite.misc.files import generate_path, save_h5
 
 class _Picklable(object):
     """
@@ -104,6 +103,9 @@ class _Picklable(object):
         str
             The file path that the pickled data was saved to.
         """
+        # Imported here to keep the analysis stack off the `import slmsuite` path.
+        from slmsuite.misc.files import generate_path, save_h5
+
         if name is None:
             name = self.name + '-pickle'
         file_path = generate_path(path, name, extension="h5")

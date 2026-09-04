@@ -717,7 +717,7 @@ class Camera(_Common, ABC):
                 averaging = 1
             else:
                 averaging = self.averaging
-        elif averaging is False:
+        elif isinstance(averaging, (bool, np.bool_)) and not averaging:
             averaging = 1
         else:
             averaging = int(averaging)
@@ -757,14 +757,7 @@ class Camera(_Common, ABC):
         if exposures > 1:
             return float
 
-        # Parse averaging (default to self.averaging, fall back to 1 if unset).
-        if averaging is False:
-            averaging = 1
-        elif averaging is None:
-            averaging = self.averaging if self.averaging is not None else 1
-        averaging = int(averaging)
-        if averaging <= 0:
-            raise ValueError("averaging must be positive.")
+        averaging = self._parse_averaging(averaging)
 
         # Parse software binning factor.
         if binning is None:
@@ -803,7 +796,7 @@ class Camera(_Common, ABC):
                 (exposures, exposure_power) = (1, 0)
             else:
                 (exposures, exposure_power) = self._parse_hdr(self.hdr)
-        elif exposures is False:
+        elif isinstance(exposures, (bool, np.bool_)) and not exposures:
             exposures = 1
             exposure_power = 0
         elif np.isscalar(exposures):

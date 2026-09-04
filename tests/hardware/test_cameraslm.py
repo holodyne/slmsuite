@@ -615,7 +615,7 @@ class TestFourierSLM:
 
     def test_wavefront_calibration_superpixel_process(self, simulated_system_factory, subtests):
         """
-        Superpixels below the r2 threshold are filled in from their neighbours, so a pure
+        Superpixels below the r2 threshold are filled in from their neighbors, so a pure
         diagonal ramp comes back out of the processor exactly. Only a lever arm carried
         along both axes at once separates a correct interpolation from a plausible one.
         """
