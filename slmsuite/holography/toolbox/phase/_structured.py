@@ -6,6 +6,7 @@ import numpy as np
 from scipy import special
 
 from slmsuite.holography.toolbox import _process_grid
+from slmsuite.holography.toolbox.phase._lenses import _parse_focal_length
 from slmsuite.holography.toolbox.phase._misc import _determine_source_radius
 from slmsuite.misc.xp import get_array_module, as_numpy
 
@@ -460,9 +461,7 @@ def airy(grid, f=(np.inf, np.inf), w=None):
 
     canvas = np.zeros_like(x_grid)
 
-    fx, fy = f
-    if fx == 0 or fy == 0:
-        raise ValueError("Cannot interpret a focal length of zero.")
+    (fx, fy) = _parse_focal_length(f)
 
     if np.isfinite(fx):
         canvas += (x_grid / (fx * w)) ** 3

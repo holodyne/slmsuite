@@ -23,9 +23,9 @@ ORIENTATIONS = (
     ("rot180", dict(rot="180"), False),
     ("rot270", dict(rot="270"), True),
     ("flip", dict(fliplr=True), False),
-    ("flip_rot90", dict(rot="90", fliplr=True), True),
-    ("flip_rot180", dict(rot="180", fliplr=True), False),
-    ("flip_rot270", dict(rot="270", fliplr=True), True),
+    ("rot90_flip", dict(rot="90", fliplr=True), True),
+    ("rot180_flip", dict(rot="180", fliplr=True), False),
+    ("rot270_flip", dict(rot="270", fliplr=True), True),
 )
 
 
@@ -232,9 +232,9 @@ class TestCamera:
             "rot180":      (w_bin - 1, h_bin - 1),
             "rot270":      (h_bin - 1, 0),
             "flip":        (w_bin - 1, 0),
-            "flip_rot90":  (0,         0),
-            "flip_rot180": (0,         h_bin - 1),
-            "flip_rot270": (h_bin - 1, w_bin - 1),
+            "rot90_flip":  (h_bin - 1, w_bin - 1),
+            "rot180_flip": (0,         h_bin - 1),
+            "rot270_flip": (0,         0),
         }
 
         for (label, kwargs, swapped) in ORIENTATIONS:

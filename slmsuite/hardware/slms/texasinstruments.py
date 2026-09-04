@@ -44,7 +44,6 @@ last example above) leaves whatever state the EVM was in, so phase written to
 the display can silently fail to reach the mirrors.
 """
 
-import yaml
 import os
 import time
 from enum import IntEnum
@@ -67,11 +66,28 @@ except ImportError:
     _hid = None
     HID_AVAILABLE = False
 
+# YAML availability (for the model database)
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 # PLM Constants
 MODEL_DB_PATH = os.path.join(os.path.dirname(__file__), "texas_instruments.yaml")
 DLPC900_VENDOR_ID = 0x0451
 DLPC900_PRODUCT_ID = 0xC900
 DLPC900_EXPOSURE_US = 694
+
+
+def _load_model_db():
+    """The model database read from ``texas_instruments.yaml``."""
+    if yaml is None:
+        raise ImportError(
+            "pyyaml is required to read the PLM model database. "
+            "Install it with `pip install slmsuite[slms]`."
+        )
+    with open(MODEL_DB_PATH, "r") as f:
+        return yaml.safe_load(f)
 
 class DisplayMode(IntEnum):
     """
@@ -322,8 +338,7 @@ class PLM(ScreenMirrored):
         ValueError
             If model not found in database
         """
-        with open(MODEL_DB_PATH, 'r') as f:
-            model_db = yaml.safe_load(f)
+        model_db = _load_model_db()
 
         if model_name not in model_db:
             available = list(model_db.keys())
@@ -962,8 +977,7 @@ class PLM(ScreenMirrored):
         list of str
             Model identifiers available in texas_instruments.yaml
         """
-        with open(MODEL_DB_PATH, 'r') as f:
-            model_db = yaml.safe_load(f)
+        model_db = _load_model_db()
 
         return list(model_db.keys())
 

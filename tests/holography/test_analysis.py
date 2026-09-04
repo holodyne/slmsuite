@@ -1028,11 +1028,21 @@ def test_get_orientation_transformation(subtests):
                 analysis.get_orientation_transformation(rot=steps)(image), np.rot90(image, steps)
             )
 
-    with subtests.test("flips are applied before the rotation"):
-        transform = analysis.get_orientation_transformation(rot="90", fliplr=True, flipud=True)
-        np.testing.assert_array_equal(
-            transform(image), np.rot90(np.flipud(np.fliplr(image)), 1)
-        )
+    with subtests.test("flips are applied after the rotation, for every combination"):
+        # Non-square, so an orientation that swaps the axes cannot hide.
+        wide = np.arange(40).reshape(5, 8)
+        for (rot, steps) in (("0", 0), ("90", 1), ("180", 2), ("270", 3)):
+            for fliplr in (False, True):
+                for flipud in (False, True):
+                    expected = np.rot90(wide, steps)
+                    if flipud:
+                        expected = np.flipud(expected)
+                    if fliplr:
+                        expected = np.fliplr(expected)
+                    np.testing.assert_array_equal(
+                        analysis.get_orientation_transformation(rot, fliplr, flipud)(wide),
+                        expected,
+                    )
 
 
 class TestAffine:

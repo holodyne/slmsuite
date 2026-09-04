@@ -24,7 +24,7 @@ from slmsuite.holography.toolbox.phase import (
     zernike_sum, laguerre_gaussian, ZernikeBasis, _zernike_get_basis,
 )
 from slmsuite.misc.math import REAL_TYPES
-from slmsuite.misc.xp import as_numpy, get_array_module
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
 from slmsuite._logging import make_logger
 logger = make_logger(__name__)
@@ -114,9 +114,9 @@ def take(
     plot : int OR bool
         Calls :meth:`take_plot()` to visualize the images regions.
     xp : module OR None
-        If ``images`` are :mod:`cupy` objects, then :mod:`cupy` must be passed as
-        ``xp``. Very useful to minimize the cost of moving data between the GPU and CPU.
-        If ``None``, defaults to :mod:`numpy`.
+        The array module to gather with, :mod:`numpy` or :mod:`cupy`. Keeping
+        :mod:`cupy` images on the GPU minimizes the cost of moving data to the host.
+        If ``None``, the module backing ``images`` is used.
         Indexing variables inside :meth:`take` still use :mod:`numpy` for speed, no
         matter what module is used.
 
@@ -142,7 +142,7 @@ def take(
     vectors = np.floor(format_2vectors(vectors)).astype(int)
 
     if xp is None:
-        xp = np
+        xp = get_array_module(images)
 
     # Prepare helper variables. Future: consider caching for speed, if not negligible.
     edge_x = np.floor(_coordinates(size[0], centered)).astype(int)
@@ -200,7 +200,7 @@ def take(
 
         return canvas
     else:
-        images = xp.array(images, copy=(False if np.__version__[0] == '1' else None))
+        images = as_backend(images, xp)
 
         # Take the data, depending on the shape of the images.
         if len(shape) == 2:
@@ -1120,7 +1120,7 @@ def _wrapped_gradient(phase_images, xp):
 
     Returns ``(dx, dy)``, the raw two-pixel central differences along the last
     and second-to-last axes, cropped to the interior (shapes ``(..., h, w-2)``
-    and ``(..., h-2, w)``). Each is reduced modulo :math:`2\pi` and centred on
+    and ``(..., h-2, w)``). Each is reduced modulo :math:`2\pi` and centered on
     zero, which folds out :math:`2\pi` phase wraps: where the true phase change
     over two pixels stays within :math:`(-\pi, \pi)` the result equals the true
     (unwrapped) central difference, so it is correct everywhere except across
@@ -1987,12 +1987,13 @@ def _score_array_orientation(image, M, b, array_shape, psf, threshold=0.2):
     (OrientationTransform.D_4, float, float, float) OR None
         The best orientation, the fraction of its spots that are lit, the power at
         its withheld pair relative to a spot, and the median distance from the spots
-        to their predictions. ``None`` if too little of the array is in view.
+        to their predictions. ``None`` if too little of the array is in view, or if the
+        two best orientations score alike.
     """
     centers = _array_indices(array_shape)
     b = format_2vectors(b)
     (h, w) = np.shape(image)
-    best = None
+    scored = []
 
     for code in OrientationTransform.D_4:
         predicted = (
@@ -2026,10 +2027,15 @@ def _score_array_orientation(image, M, b, array_shape, psf, threshold=0.2):
         shift = image_positions(windows) - (predicted - np.floor(predicted))
         residual = float(np.median(np.linalg.norm(shift[:, spots], axis=0)))
 
-        if best is None or lit - dark > best[1] - best[2]:
-            best = (code, lit, dark, residual)
+        scored.append((code, lit, dark, residual))
 
-    return best
+    # Two orientations that score alike decide nothing, so refuse rather than pick one.
+    scored.sort(key=lambda s: s[2] - s[1])
+
+    if not scored or (len(scored) > 1 and scored[1][1] - scored[1][2] == scored[0][1] - scored[0][2]):
+        return None
+
+    return scored[0]
 
 
 def _lattice_fourier(image, dft_threshold=100, dft_padding=0, k=8, tol=0.1, plot=0):
@@ -2402,6 +2408,8 @@ def blob_array_detect(
 
         - ``"M"`` : ``numpy.ndarray`` (2, 2).
         - ``"b"`` : ``numpy.ndarray`` (2, 1).
+        - ``"residual"`` : ``float``, the median distance in camera pixels between the
+          detected spots and the fitted array.
     """
     if len(np.shape(image)) != 2:
         raise RuntimeError(f"Cannot interpret image with shape {np.shape(image)}")
@@ -2554,26 +2562,27 @@ def blob_array_detect(
                 M_fixed = np.matmul(
                     M_trial, OrientationTransform.from_code(best[0]).M()
                 )
-                parity_success = True
+                (parity_success, parity_score) = (True, best[1] - best[2])
             except IndexError as e:
                 logger.warning("Array parity could not be determined (%s).", e)
                 M_fixed = M_trial
-                parity_success = False
+                (parity_success, parity_score) = (False, None)
         else:
             M_fixed = M_trial
-            parity_success = True
+            (parity_success, parity_score) = (True, None)
 
-        results.append((max_val, b_fixed, M_fixed, parity_success))
+        results.append((max_val, b_fixed, M_fixed, parity_success, parity_score))
 
     if len(results) == 1:
         index = 0
+    elif results[0][3] != results[1][3]:
+        # Index is the one that satisfied the parity check.
+        index = int(results[1][3])
+    elif results[0][4] is not None:
+        # Both passed: the fiducials separate the trials where spot power does not.
+        index = int(results[1][4] > results[0][4])
     else:
-        # Default to max_val if the parity check results in the same thing.
-        if results[0][3] == results[1][3]:
-            index = int(results[1][0] > results[0][0])
-        else:
-            # Index is the one that satisfied the parity check
-            index = int(results[1][3])
+        index = int(results[1][0] > results[0][0])
 
     orientation = {"M": results[index][2], "b": results[index][1]}
     if not bool(results[index][3]):
@@ -2610,6 +2619,17 @@ def blob_array_detect(
         # Locally fit an affine based on the measured positions.
         true_positions = guess_positions + shift
         orientation = fit_affine(centers, true_positions, orientation)
+
+    # How far the measured spots sit from the array that was fitted to them.
+    predicted = np.matmul(orientation["M"], centers) + orientation["b"]
+    orientation["residual"] = float(np.nanmedian(np.linalg.norm(predicted - true_positions, axis=0)))
+    min_pitch = float(np.min(np.linalg.norm(orientation["M"], axis=0)))
+    if min_pitch > 0 and orientation["residual"] > 0.1 * min_pitch:
+        logger.warning(
+            "Spots sit a median %.2f px from the fitted array, %.0f%% of its pitch. "
+            "The affine may be poor.",
+            orientation["residual"], 100 * orientation["residual"] / min_pitch,
+        )
 
     # Warn the user if the mask was >= (or close to) camera size.
     if np.any(mask.shape > 0.95 * np.array(image_8bit.shape)):
@@ -2775,10 +2795,10 @@ class OrientationTransform:
         Rotation in CCW degrees: ``"0"``, ``"90"``, ``"180"``, ``"270"`` or equivalently
         the :func:`numpy.rot90` step counts ``0``, ``1``, ``2``, ``3``.
     fliplr : bool
-        Apply a left-right flip *before* rotation. ``fliplr=True, flipud=True`` is
+        Apply a left-right flip *after* rotation. ``fliplr=True, flipud=True`` is
         equivalent to a 180° rotation and will be collapsed accordingly.
     flipud : bool
-        Apply an up-down flip *before* rotation.
+        Apply an up-down flip *after* rotation.
     """
     # Dihedral group elements.
     class D_4(enum.IntEnum):
@@ -2829,6 +2849,10 @@ class OrientationTransform:
             has_flip, extra_rot = True, 2
         else:
             has_flip, extra_rot = bool(fliplr), 0
+
+        # A flip applied after the rotation reverses it: F R^k = R^-k F.
+        if has_flip:
+            rot_steps = -rot_steps
 
         self.code = self.D_4((rot_steps + extra_rot) % 4 + (4 if has_flip else 0))
 
@@ -3041,9 +3065,9 @@ def get_orientation_transformation(rot="0", fliplr=False, flipud=False):
         Rotation in degrees: ``"0"``, ``"90"``, ``"180"``, ``"270"`` or
         :func:`numpy.rot90` step counts ``0``-``3``.
     fliplr : bool
-        Flip left-right before rotation.
+        Flip left-right after rotation.
     flipud : bool
-        Flip up-down before rotation.
+        Flip up-down after rotation.
 
     Returns
     -------

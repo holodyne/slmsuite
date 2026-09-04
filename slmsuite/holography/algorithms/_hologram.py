@@ -999,7 +999,7 @@ class Hologram(_HologramStats, _Loggable):
             # Define a function to use a callback.
             def remove_vortices_callback(holo):
                 if holo.iter % 10 == 9:     # Only remove vortices every 10 iterations.
-                    holo.remove_vortices()  # This method is slightly expensive, so calling every loop is not advised.
+                    holo._remove_vortices() # This method is slightly expensive, so calling every loop is not advised.
 
             # The function will be called during the loop.
             hologram.optimize(..., callback=remove_vortices_callback)
@@ -1356,7 +1356,6 @@ class Hologram(_HologramStats, _Loggable):
         verbose : bool OR int
             Whether to display :mod:`tqdm` progress bars.
             These bars are also not displayed for ``maxiter <= 1``.
-            If ``verbose`` is greater than 1, then flags are printed as a preamble.
         callback : callable OR None
             Same functionality as the equivalently-named parameter in
             :meth:`scipy.optimize.minimize()`. ``callback`` must accept a Hologram

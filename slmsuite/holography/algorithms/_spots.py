@@ -70,6 +70,7 @@ class _AbstractSpotHologram(FeedbackHologram):
         if img is None:
             self.measure(basis="ij")
             img = self.img_ij
+        img = as_numpy(img)
 
         # Take regions around each point from the given image.
         regions = analysis.take(
@@ -160,7 +161,8 @@ class _AbstractSpotHologram(FeedbackHologram):
         if "experimental_spot" in stat_groups:
             self.measure(basis="ij")
 
-            pwr_img = np.square(self.img_ij)
+            xp = get_array_module(self.img_ij)
+            pwr_img = xp.square(self.img_ij)
 
             pwr_feedback = analysis.take(
                 pwr_img,
@@ -171,11 +173,11 @@ class _AbstractSpotHologram(FeedbackHologram):
             )
 
             stats["experimental_spot"] = self._calculate_stats(
-                np.sqrt(pwr_feedback),
+                xp.sqrt(pwr_feedback),
                 self.spot_amp,
-                xp=np,
+                xp=xp,
                 efficiency_compensation=False,
-                total=np.sum(pwr_img),
+                total=xp.sum(pwr_img),
                 raw="raw_stats" in self.flags and self.flags["raw_stats"],
             )
 
@@ -952,8 +954,9 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         elif feedback == "experimental_spot":
             self.measure(basis="ij")
 
-            amp_feedback = np.sqrt(analysis.take(
-                np.square(np.array(self.img_ij, copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype)),
+            xp = get_array_module(self.img_ij)
+            amp_feedback = xp.sqrt(analysis.take(
+                xp.square(xp.asarray(self.img_ij, dtype=self.dtype)),
                 self.spot_ij,
                 self.spot_integration_width_ij,
                 centered=True,
@@ -1601,9 +1604,10 @@ class SpotHologram(_AbstractSpotHologram):
             elif feedback == "experimental_spot":
                 self.measure(basis="ij")
 
-                amp_feedback = np.sqrt(
+                xp = get_array_module(self.img_ij)
+                amp_feedback = xp.sqrt(
                     analysis.take(
-                        np.square(np.array(self.img_ij, copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype)),
+                        xp.square(xp.asarray(self.img_ij, dtype=self.dtype)),
                         self.spot_ij,
                         self.spot_integration_width_ij,
                         centered=True,

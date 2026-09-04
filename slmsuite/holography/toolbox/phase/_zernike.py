@@ -37,7 +37,7 @@ def _load_cuda():
 try:
     CUDA_KERNELS = _load_cuda()
 except Exception:
-    warnings.warn("Unable to load toolbox/cuda.cu; cannot use custom GPU kernels.")
+    warnings.warn("Unable to load toolbox/phase/cuda.cu; cannot use custom GPU kernels.")
     CUDA_KERNELS = None
 
 # Zernike.
