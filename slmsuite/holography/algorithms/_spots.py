@@ -86,6 +86,10 @@ class _AbstractSpotHologram(FeedbackHologram):
         regions = analysis.image_remove_field(regions, deviations=None)
         shift_vectors = analysis.image_positions(regions, nansum=True)
 
+        # take() floors its positions; undo that to measure from the spot, not its pixel.
+        spots_ij = self.spot_ij[[0, 1]]
+        shift_vectors -= spots_ij - np.floor(spots_ij)
+
         # Store the shift vector before we force_affine.
         sv1 = self.spot_ij[[0,1]] + shift_vectors
 
@@ -147,7 +151,8 @@ class _AbstractSpotHologram(FeedbackHologram):
                     self.spot_zernike[self.zernike_basis_cartesian, :] = spot_zernike_xy
             elif basis == "ij":
                 # Modify camera targets. Don't modify any k-vectors.
-                self.spot_ij[[0, 1]] = self.spot_ij[[0, 1]] + shift_vectors
+                self.spot_ij = self.spot_ij.astype(float)
+                self.spot_ij[[0, 1]] += shift_vectors
             else:
                 raise Exception("Unrecognized basis '{}'.".format(basis))
 
@@ -813,8 +818,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         else:
             return torch.conj(farfield)
 
-        # Normalize. This might need to be brought into torch?
-        farfield *= (1 / Hologram._norm(farfield, xp=torch if istorch else cp))
+        # Normalize.
+        farfield *= (1 / Hologram._norm(farfield, xp=cp))
 
         return farfield
 
@@ -1353,6 +1358,9 @@ class SpotHologram(_AbstractSpotHologram):
             # Build up the null region pattern if we have not already done the transform above.
             if self.null_region_knm is None:
                 self.null_region_knm = cp.zeros(self.shape, dtype=bool)
+            else:
+                # A copy, else the circle below writes into the caller's mask.
+                self.null_region_knm = cp.array(self.null_region_knm, dtype=bool)
 
             # Make a circle, outside of which the null_region is active.
             xl = cp.linspace(-1, 1, self.null_region_knm.shape[1])
@@ -1531,7 +1539,7 @@ class SpotHologram(_AbstractSpotHologram):
             # Second, zero the regions around the "null points".
             if self.null_knm is not None:
                 all_spots = np.hstack((self.null_knm, self.spot_knm))
-                w = int(2 * self.null_radius_knm + 1)
+                w = 2 * int(np.ceil(self.null_radius_knm)) + 1
 
                 for ii in range(all_spots.shape[1]):
                     toolbox.imprint(

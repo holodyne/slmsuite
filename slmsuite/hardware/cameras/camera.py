@@ -155,7 +155,7 @@ class Camera(_Common, ABC):
             Extra information about the pitch of a single pixel ``(dx_um, dy_um)``
             to use additional calibrations.
         name : str
-            Defaults to ``"camera"``.
+            Defaults to the class name.
         exposure_bounds_s : (float, float) OR None
             Exposure bounds in seconds for the camera. If ``None``, no software bounds are applied.
         averaging : int or None
@@ -244,11 +244,11 @@ class Camera(_Common, ABC):
     def bitresolution(self) -> int:
         # This overwrites the _Common bitresolution, as averaging and software binning
         # both sum into a range wider than the bitdepth.
-        return self._bitresolution(self.averaging)
+        return self._bitresolution(self._parse_averaging(self.averaging))
 
     def _bitresolution(self, averaging) -> int:
         """:attr:`bitresolution` for a capture using ``averaging`` instead of the attribute."""
-        scale = averaging if averaging is not None else 1
+        scale = averaging
         if self._software_binning:
             scale *= int(np.prod(self._binning))
         return (2**self.bitdepth) * scale
@@ -721,7 +721,7 @@ class Camera(_Common, ABC):
         averaging = int(averaging)
 
         if averaging <= 0:
-            raise ValueError("Cannot have negative averaging.")
+            raise ValueError("averaging must be positive.")
 
         return averaging
 

@@ -247,12 +247,8 @@ class FeedbackHologram(Hologram):
 
         Returns
         -------
-        matrix : cupy.ndarray
+        cupy.ndarray
             The augmented ``(2, 3)`` transformation.
-        fresh : bool
-            Whether this call built the entry rather than reusing a cached one.
-            Lets the caller run once-per-geometry validation without paying for
-            it every call.
         """
         slm = self.cameraslm.slm
         affine = self.cameraslm.fourier_affine
@@ -273,7 +269,7 @@ class FeedbackHologram(Hologram):
 
         matrix = _IJCAM_TO_KNMSLM_CACHE.get(key)
         if matrix is not None:
-            return (matrix, False)
+            return matrix
 
         # First transformation. FUTURE: make convert_basis to output a matrix
         # like here?
@@ -307,7 +303,7 @@ class FeedbackHologram(Hologram):
         matrix = _IJCAM_TO_KNMSLM_CACHE.put(
             key, cp.array(np.hstack([M_np, b_roi.reshape(2, 1)]))
         )
-        return (matrix, True)
+        return matrix
 
     def ijcam_to_knmslm(self, img, out=None, blur_ij=None, order=3, roi=None):
         """
@@ -382,7 +378,7 @@ class FeedbackHologram(Hologram):
 
         # The composite transformation is pure geometry, so it is derived once and
         # cached across the repeated calls made by set_target() and measure().
-        (matrix, fresh) = self._ijcam_to_knmslm_resampler(np.shape(img), roi)
+        matrix = self._ijcam_to_knmslm_resampler(np.shape(img), roi)
 
         cp_img = cp.array(img, dtype=self.dtype)
         cp.abs(cp_img, out=cp_img)
@@ -407,16 +403,11 @@ class FeedbackHologram(Hologram):
         target = cp.abs(target, out=target)
         norm = Hologram._norm(target)
 
-        # Only checked on a fresh geometry. A zero norm here means the camera
-        # basis does not overlap knm space at all -- a property of the
-        # transformation, which is fixed for the life of a cache entry, not of
-        # the image. Testing it on every call would cost a device
-        # synchronization to read `norm` back, which dominates this method in
-        # the feedback loop.
-        if fresh and float(norm) == 0:
+        # A dark frame has no norm to divide by.
+        if float(norm) == 0:
             raise ValueError(
-                "No power in hologram. Maybe target_ij is out of range of knm space? "
-                "Check transformations."
+                "No power in hologram. Either the camera saw no light, or target_ij is "
+                "out of range of knm space; check the beam and the transformations."
             )
 
         target *= 1 / norm
@@ -443,18 +434,33 @@ class FeedbackHologram(Hologram):
 
             # Then actually update the SLM.
             if should_update and self.cameraslm is not None:
-                self.cameraslm.slm.set_phase(self.get_phase(include_propagation=True), settle=True)
-                self._updated_slm = True
+                self._project_phase(cleanup_images)
 
-                # Erase images from the past loop.
-                if cleanup_images:
-                    self.img_ij = None
-                    self.img_knm = None
+    def _project_phase(self, cleanup_images=True):
+        """Write the current phase to the SLM, dropping the images it invalidates."""
+        self.cameraslm.slm.set_phase(self.get_phase(include_propagation=True), settle=True)
+        self._updated_slm = True
+
+        # Erase images from the past loop.
+        if cleanup_images:
+            self.img_ij = None
+            self.img_knm = None
+
+    def _invalidate_phase(self):
+        """Invalidate the projection and any measurement of the phase it replaces."""
+        self._updated_slm = False
+        self.img_ij = None
+        self.img_knm = None
 
     def _nearfield_extract(self):
-        """Invalidate the projection flag; the recomputed phase is not yet on the SLM."""
+        """Populate phase with data from nearfield."""
         super()._nearfield_extract()
-        self._updated_slm = False
+        self._invalidate_phase()
+
+    def reset_phase(self, *args, **kwargs):
+        """Randomize or set the phase."""
+        super().reset_phase(*args, **kwargs)
+        self._invalidate_phase()
 
     def measure(self, basis="ij"):
         """
@@ -480,10 +486,15 @@ class FeedbackHologram(Hologram):
                 "construct this hologram with cameraslm=... or set img_ij directly."
             )
 
-        # Make sure the SLM is updated before measurement (usually, the SLM should already be updated.
+        if basis != "ij" and basis != "knm":
+            raise ValueError(
+                f"Unrecognized measurement basis '{basis}'. Options are 'ij' or 'knm'"
+            )
+
+        # Make sure the SLM is updated before measurement, when the feedback calls for it.
         self._update_slm()
 
-        if self.img_ij is None and (basis == "knm" or basis == "ij"):
+        if self.img_ij is None:
             # Measure the result.
             self.cameraslm.cam.flush()
             # get=False so that a simulated camera's frame never crosses the bus.
@@ -526,10 +537,6 @@ class FeedbackHologram(Hologram):
                     roi=self.target_ij_roi,
                 )
                 cp.sqrt(self.img_knm, out=self.img_knm)
-        elif basis == "ij":
-            pass
-        else:
-            raise ValueError(f"Unrecognized measurement basis '{basis}'. Options are 'ij' or 'knm'")
 
     # Target update.
     def set_target(
@@ -585,7 +592,8 @@ class FeedbackHologram(Hologram):
 
         # Start from the user-provided null mask, if any.
         if null_region is not None:
-            null_region = cp.asarray(null_region, dtype=bool)
+            # A copy, else the radius fraction below writes into the caller's mask.
+            null_region = cp.array(null_region, dtype=bool)
 
         if null_region_radius_frac is None:
             null_region_radius_frac = np.sqrt(2)

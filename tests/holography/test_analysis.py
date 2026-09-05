@@ -1012,14 +1012,23 @@ def test_score_array_orientation(subtests):
     codes = list(analysis.OrientationTransform.D_4)
     centers = analysis._array_indices(array_shape)
 
-    def render(code, withhold=True, dark=(), sigma=0):
-        """Image of the array under ``code``, optionally dimming or keeping the fiducials."""
-        placed = np.matmul(
-            M, np.matmul(analysis.OrientationTransform.from_code(code).M(), centers)
+    def placement(code, shape=array_shape):
+        return np.matmul(
+            M,
+            np.matmul(
+                analysis.OrientationTransform.from_code(code).M(),
+                analysis._array_indices(shape),
+            ),
         ) + b
+
+    def render(code, withhold=True, dark=(), sigma=0, blank=(), shape=array_shape):
+        """Image of the array under ``code``, optionally dimming or keeping the fiducials."""
+        placed = placement(code, shape)
         count = placed.shape[1] - (2 if withhold else 0)
         image = np.zeros((300, 300))
         for i in range(count):
+            if i in blank:
+                continue
             (x, y) = np.rint(placed[:, i]).astype(int)
             image[y - 1 : y + 2, x - 1 : x + 2] = 20.0 if i in dark else 1000.0
         if sigma:
@@ -1031,11 +1040,19 @@ def test_score_array_orientation(subtests):
             best = analysis._score_array_orientation(render(code), M, b, array_shape, 5)
             assert best is not None and best[0] == code
 
-    with subtests.test("a full array is undecidable, with or without noise"):
+    with subtests.test("a withheld pair reads dark, so the orientation is verified"):
         for sigma in (0, 1, 5):
-            assert analysis._score_array_orientation(
+            best = analysis._score_array_orientation(
+                render(codes[0], sigma=sigma), M, b, array_shape, 5
+            )
+            assert best is not None and best[0] == codes[0] and best[2] < 0.5
+
+    with subtests.test("a full array leaves no pair dark, so no orientation is verified"):
+        for sigma in (0, 1, 5):
+            best = analysis._score_array_orientation(
                 render(codes[0], withhold=False, sigma=sigma), M, b, array_shape, 5
-            ) is None
+            )
+            assert best is not None and best[2] >= 0.5
 
     with subtests.test("dimmed spots do not prevent recovery"):
         for code in codes:
@@ -1043,6 +1060,28 @@ def test_score_array_orientation(subtests):
                 render(code, dark=(0, 4, 9)), M, b, array_shape, 5
             )
             assert best is not None and best[0] == code
+
+    with subtests.test("a non-square array is placed by how many spots land lit"):
+        # A rotation carries a non-square array off its own lattice, darkening its spots.
+        wide = (6, 4)
+        for code in codes:
+            best = analysis._score_array_orientation(
+                render(code, shape=wide), M, b, wide, 5
+            )
+            assert best is not None and best[0] == code
+
+    with subtests.test("an orientation is picked even when a rival's pair is dark too"):
+        # Blank the sites the flipped orientation withholds too, so both read dark.
+        identity = placement(codes[0])
+        flipped = placement(analysis.OrientationTransform.D_4.FLIP)
+        blank = {
+            int(np.argmin(np.linalg.norm(identity - site[:, np.newaxis], axis=0)))
+            for site in flipped.T[-2:]
+        }
+        best = analysis._score_array_orientation(
+            render(codes[0], blank=blank), M, b, array_shape, 5
+        )
+        assert best is not None and best[0] in (codes[0], analysis.OrientationTransform.D_4.FLIP)
 
 
 def test_get_orientation_transformation(subtests):

@@ -800,8 +800,7 @@ class Hologram(_HologramStats, _Loggable):
         else:
             self.target = cp.array(new_target, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
             cp.abs(self.target, out=self.target)
-            with warnings.catch_warnings():
-                self.target *= 1 / Hologram._norm(self.target)
+            self.target *= 1 / Hologram._norm(self.target)
 
         if reset_weights:
             self.reset_weights()
@@ -1561,7 +1560,7 @@ class Hologram(_HologramStats, _Loggable):
         self._populate_results()
 
         # Project the phase on the SLM if it is expected by the feedback method and stat groups.
-        self._update_slm(force=True, cleanup_images=False)
+        self._update_slm(force=True)
 
     def _mraf_helper_routines(self):
         # MRAF helper variables
@@ -1825,6 +1824,10 @@ class Hologram(_HologramStats, _Loggable):
 
         self.phase = cp.asarray(phase_torch.detach())
 
+        # The last optimizer step moved the phase past the projection at the top of the loop.
+        self._invalidate_phase()
+        self._update_slm(force=True)
+
         # Update the final farfield using phase and amp.
         self._populate_results()
 
@@ -1979,6 +1982,12 @@ class Hologram(_HologramStats, _Loggable):
     def _update_slm(self, force=False, cleanup_images=True):
         """
         Placeholder for `FeedbackHologram` SLM updates.
+        """
+        pass
+
+    def _invalidate_phase(self):
+        """
+        Placeholder for `FeedbackHologram` measurement invalidation.
         """
         pass
 

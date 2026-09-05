@@ -57,6 +57,30 @@ def _binary_grating(period, a, b, duty_cycle=.5):
     return np.where(np.arange(period) < round(period * duty_cycle), a, b)
 
 
+def _zernike_calibrated(factory):
+    """
+    A wavefront Zernike calibration small enough for the fast suite: a 3x3 grid of points
+    over tilt and focus, swept at five perturbations. Returns the system and the points.
+    """
+    fs = factory("matched")
+    install_ground_truth_calibration(fs)
+
+    center = np.flip(np.array(fs.cam.shape)) / 2
+    step = np.min(fs.cam.shape) / 5
+    (gx, gy) = np.meshgrid([-1.0, 0.0, 1.0], [-1.0, 0.0, 1.0])
+    points_ij = np.vstack([center[0] + step * gx.ravel(), center[1] + step * gy.ravel()])
+
+    fs.wavefront_calibrate_zernike(
+        calibration_points=convert_vector(points_ij, "ij", "zernike", hardware=fs),
+        zernike_indices=[2, 1, 4],
+        perturbation=[-0.5, -0.25, 0.0, 0.25, 0.5],
+        optimize_position=True,
+        optimize_weights=False,
+        plot=-1,
+    )
+    return (fs, points_ij)
+
+
 def _ground_truth_error(fs):
     """
     Largest disagreement between the installed calibration and the ground-truth affine,
@@ -711,6 +735,58 @@ class TestFourierSLM:
             cal = fourierslm_calibrated.calibrations["wavefront_zernike"]
             assert cal["corrected_spots"].shape[1] == calibration_points.shape[1]
 
+    def test_wavefront_calibrate_zernike_smooth(self, simulated_system_factory, subtests):
+        """Test FourierSLM.wavefront_calibrate_zernike_smooth."""
+        (fs, _) = _zernike_calibrated(simulated_system_factory)
+        spots = fs.calibrations["wavefront_zernike"]["corrected_spots"]
+
+        with subtests.test("a smoothed copy is returned, leaving the calibration alone"):
+            identity = fs.wavefront_calibrate_zernike_smooth(smoothing=0, smoothing_xy=0)
+            assert identity.shape == spots.shape
+            assert fs.calibrations["wavefront_zernike"]["corrected_spots"] is spots
+            assert np.allclose(identity, spots)
+
+        with subtests.test("full smoothing replaces a term with its neighborhood"):
+            # At smoothing=1 a coordinate is entirely its neighbors' average.
+            spots[2, 4] = 5.0
+            high = fs.wavefront_calibrate_zernike_smooth(smoothing=1, smoothing_xy=0)
+            spots[2, 4] = -5.0
+            low = fs.wavefront_calibrate_zernike_smooth(smoothing=1, smoothing_xy=0)
+
+            assert high[2, 4] == pytest.approx(low[2, 4])
+            assert abs(high[2, 4]) < 1.0
+            assert np.allclose(high[:2], spots[:2])     # Tilt is left to smoothing_xy.
+
+        with subtests.test("a factor outside [0, 1] raises"):
+            for kwargs in ({"smoothing": 1.5}, {"smoothing_xy": -0.1}):
+                with pytest.raises(ValueError):
+                    fs.wavefront_calibrate_zernike_smooth(**kwargs)
+
+        with subtests.test("focus smoothing is not implemented"):
+            with pytest.raises(RuntimeError):
+                fs.wavefront_calibrate_zernike_smooth(smoothing_z=0.5)
+
+    def test_wavefront_calibrate_zernike_get(self, simulated_system_factory, subtests):
+        """Test FourierSLM.wavefront_calibrate_zernike_get."""
+        (fs, points_ij) = _zernike_calibrated(simulated_system_factory)
+        indices = np.ravel(fs.calibrations["wavefront_zernike"]["zernike_indices"])
+
+        with subtests.test("a vector yields one coefficient per index per point"):
+            coefficients = fs.wavefront_calibrate_zernike_get(points_ij[:, :3], from_units="ij")
+            assert np.shape(coefficients) == (len(indices), 3)
+            assert np.all(np.isfinite(coefficients))
+
+        with subtests.test("no vector yields the interpolator itself"):
+            interpolator = fs.wavefront_calibrate_zernike_get()
+            assert callable(interpolator)
+
+        with subtests.test("the interpolator agrees with evaluating directly"):
+            kxy = fs.ijcam_to_kxyslm(points_ij[:, :3])
+            assert np.allclose(
+                interpolator(kxy),
+                fs.wavefront_calibrate_zernike_get(points_ij[:, :3], from_units="ij"),
+            )
+
     def test_wavefront_calibration_points(self, fourierslm_calibrated, subtests):
         """Test FourierSLM.wavefront_calibration_points."""
         fs = fourierslm_calibrated
@@ -729,6 +805,72 @@ class TestFourierSLM:
 
         with subtests.test("a coarser pitch asks for fewer points"):
             assert fs.wavefront_calibration_points(pitch=120).shape[1] < points.shape[1]
+
+        with subtests.test("turning the avoidance rules off keeps the points they removed"):
+            assert fs.wavefront_calibration_points(
+                pitch=60, field_exclusion=0, avoid_mirrors=False, avoid_nyquist=False, plot=1
+            ).shape[1] > points.shape[1]
+
+    def test_wavefront_calibration_points_parse(self, fourierslm_calibrated, subtests):
+        """How the calibration routines turn a count, a list, or nothing into camera points."""
+        fs = fourierslm_calibrated
+        generated = np.rint(fs.wavefront_calibration_points(pitch=60)).astype(int)
+
+        with subtests.test("None takes every generated point"):
+            np.testing.assert_array_equal(
+                fs._wavefront_calibration_points_parse(None, pitch=60), generated
+            )
+
+        with subtests.test("an integer takes that many of them"):
+            np.testing.assert_array_equal(
+                fs._wavefront_calibration_points_parse(2, pitch=60), generated[:, :2]
+            )
+            assert fs._wavefront_calibration_points_parse(
+                2 * generated.shape[1], pitch=60
+            ).shape[1] == generated.shape[1], "a count beyond the grid asks for no more"
+
+        with subtests.test("a count must be positive"):
+            for count in (0, -3):
+                with pytest.raises(ValueError, match="must be positive"):
+                    fs._wavefront_calibration_points_parse(count, pitch=60)
+
+        with subtests.test("points are rounded to whole camera pixels"):
+            parsed = fs._wavefront_calibration_points_parse([[60.4], [70.6]])
+            np.testing.assert_array_equal(parsed, [[60], [71]])
+
+        with subtests.test("points off the sensor are refused"):
+            (h, w) = fs.cam.shape
+            with pytest.raises(ValueError, match="field of view"):
+                fs._wavefront_calibration_points_parse([[w + 10], [h + 10]])
+
+    def test_wavefront_calibrate(self, fourierslm_calibrated, monkeypatch, subtests):
+        """The dispatcher in front of the superpixel and Zernike implementations."""
+        fs = fourierslm_calibrated
+        forwarded = {}
+
+        for method in ("superpixel", "zernike"):
+            monkeypatch.setattr(
+                type(fs), f"wavefront_calibrate_{method}",
+                lambda self, method=method, **kwargs: forwarded.setdefault(method, kwargs),
+            )
+
+        with subtests.test("an unknown method raises"):
+            with pytest.raises(ValueError, match="not recognized"):
+                fs.wavefront_calibrate(method="nonsense")
+
+        with subtests.test("the method chooses the implementation, superpixel by default"):
+            fs.wavefront_calibrate(calibration_points=3)
+            assert forwarded["superpixel"] == {"calibration_points": 3}
+
+            fs.wavefront_calibrate(method="zernike", calibration_points=3)
+            assert forwarded["zernike"] == {"calibration_points": 3}
+
+        with subtests.test("the retired point arguments warn and forward under the new name"):
+            for retired in ("interference_point", "calibration_point"):
+                forwarded.clear()
+                with pytest.warns(UserWarning, match="deprecated"):
+                    fs.wavefront_calibrate(method="superpixel", **{retired: [[60], [70]]})
+                assert forwarded["superpixel"] == {"calibration_points": [[60], [70]]}
 
     def test_pixel_calibrate(self, simulated_system_factory, caplog, subtests):
         """Test FourierSLM.pixel_calibrate on a crosstalk-free simulated system."""
@@ -1074,7 +1216,7 @@ class TestFourierSLM:
         with subtests.test("plots"):
             simulate(grating_25, a_pix=.5, a_minus_pix=.05, plot=True)
 
-    def test_settle_calibration_process(self, fourierslm, subtests):
+    def test_settle_calibration_process(self, fourierslm, caplog, subtests):
         """The settle fit returns positive, in-range times matching a planted response."""
         times = np.linspace(0, .2, 201)
 
@@ -1098,6 +1240,32 @@ class TestFourierSLM:
                 assert result["settle_time"] == pytest.approx(
                     communication + 4 * relaxation, rel=.02
                 )
+
+        with subtests.test("a flat frame has no step to fit"):
+            fourierslm.calibrations["settle"] = {"times": times, "data": np.zeros_like(times)}
+            with pytest.raises(RuntimeError, match="no signal"):
+                fourierslm.settle_calibration_process()
+
+        with subtests.test("a response slower than the sweep is reported as unresolved"):
+            fourierslm.calibrations["settle"] = {
+                "times": times, "data": 1 - np.exp(-times / (10 * np.ptp(times))),
+            }
+            with caplog.at_level(logging.WARNING):
+                result = fourierslm.settle_calibration_process(plot=1)
+
+            assert result["settle_time"] > np.max(times)
+            assert "outside the swept range" in caplog.text
+
+    def test_settle_calibrate(self, fourierslm_calibrated):
+        """The sweep writes both the raw response and the fit into the calibration."""
+        fs = fourierslm_calibrated
+        calibration = fs.settle_calibrate(times=3, settle_time_s=0, plot=-1)
+
+        assert calibration is fs.calibrations["settle"]
+        np.testing.assert_allclose(calibration["times"], [0, 0.5, 1])
+        assert len(calibration["data"]) == 3
+        assert np.all(calibration["data"] > 0), "the blazed spot should reach the camera"
+        assert {"settle_time", "relax_time", "communication_time"} <= set(calibration)
 
     def test_fourier_calibrate_geometries(
         self, simulated_system, simulated_system_name, simulated_system_source,

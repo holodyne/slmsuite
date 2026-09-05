@@ -123,8 +123,6 @@ class ThorCam(Camera):
         serial : str
             Serial number of the camera to open. If empty, defaults to the first camera in the list
             returned by :meth:`TLCameraSDK.discover_available_cameras()`.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
 
@@ -158,7 +156,7 @@ class ThorCam(Camera):
             serial = camera_list[0]
         elif serial not in camera_list:
             raise RuntimeError(
-                f"Serial '{serial}' not found by TLCameraSDK. Availible: {camera_list}"
+                f"Serial '{serial}' not found by TLCameraSDK. Available: {camera_list}"
             )
 
         logger.debug("ThorCam sn '%s' initializing...", serial)

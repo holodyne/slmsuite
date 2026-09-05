@@ -1987,8 +1987,8 @@ def _score_array_orientation(image, M, b, array_shape, psf, threshold=0.2):
     (OrientationTransform.D_4, float, float, float) OR None
         The best orientation, the fraction of its spots that are lit, the power at
         its withheld pair relative to a spot, and the median distance from the spots
-        to their predictions. ``None`` if too little of the array is in view, or if the
-        two best orientations score alike.
+        to their predictions. ``None`` if too little of the array is in view. A ``dark``
+        approaching a spot's brightness means the orientation is unverified.
     """
     centers = _array_indices(array_shape)
     b = format_2vectors(b)
@@ -2029,17 +2029,10 @@ def _score_array_orientation(image, M, b, array_shape, psf, threshold=0.2):
 
         scored.append((code, lit, dark, residual))
 
-    # Only an orientation whose withheld pair reads dark can be the true one, and two of
-    # those that score alike decide nothing.
-    candidates = sorted((s for s in scored if s[2] < threshold), key=lambda s: s[2] - s[1])
+    # Rank by the contrast between the spots and the withheld pair.
+    scored.sort(key=lambda s: s[2] - s[1])
 
-    if not candidates or (
-        len(candidates) > 1
-        and candidates[1][1] - candidates[1][2] == candidates[0][1] - candidates[0][2]
-    ):
-        return None
-
-    return candidates[0]
+    return scored[0] if scored else None
 
 
 def _lattice_fourier(image, dft_threshold=100, dft_padding=0, k=8, tol=0.1, plot=0):
@@ -2413,7 +2406,9 @@ def blob_array_detect(
         - ``"M"`` : ``numpy.ndarray`` (2, 2).
         - ``"b"`` : ``numpy.ndarray`` (2, 1).
         - ``"residual"`` : ``float``, the median distance in camera pixels between the
-          detected spots and the fitted array.
+          detected spots and the fitted array, or ``nan`` when no spot was measurable.
+          This gauges how tightly the spots fit the returned lattice, not whether that
+          lattice is the right one: a fit locked onto the wrong site scores near zero.
     """
     if len(np.shape(image)) != 2:
         raise RuntimeError(f"Cannot interpret image with shape {np.shape(image)}")
@@ -2566,26 +2561,26 @@ def blob_array_detect(
                 M_fixed = np.matmul(
                     M_trial, OrientationTransform.from_code(best[0]).M()
                 )
-                (parity_success, parity_score) = (True, best[1] - best[2])
+                # Only the true orientation leaves the withheld pair dark; a pair as bright
+                # as the spots means the orientation is a guess, not a measurement.
+                parity_success = best[2] < 0.5
             except IndexError as e:
-                logger.warning("Array parity could not be determined (%s).", e)
+                logger.debug("Array parity could not be determined (%s).", e)
                 M_fixed = M_trial
-                (parity_success, parity_score) = (False, None)
+                parity_success = False
         else:
             M_fixed = M_trial
-            (parity_success, parity_score) = (True, None)
+            parity_success = True
 
-        results.append((max_val, b_fixed, M_fixed, parity_success, parity_score))
+        results.append((max_val, b_fixed, M_fixed, parity_success))
 
     if len(results) == 1:
         index = 0
     elif results[0][3] != results[1][3]:
         # Index is the one that satisfied the parity check.
         index = int(results[1][3])
-    elif results[0][4] is not None:
-        # Both passed: the fiducials separate the trials where spot power does not.
-        index = int(results[1][4] > results[0][4])
     else:
+        # Fall back to the collected spot power, which compares across trials.
         index = int(results[1][0] > results[0][0])
 
     orientation = {"M": results[index][2], "b": results[index][1]}
@@ -2637,10 +2632,12 @@ def blob_array_detect(
             np.nanmedian(np.linalg.norm(predicted - true_positions, axis=0))
         )
     min_pitch = float(np.min(np.linalg.norm(orientation["M"], axis=0)))
-    if min_pitch > 0 and orientation["residual"] > 0.1 * min_pitch:
+    if np.isnan(orientation["residual"]):
+        logger.warning("No spot was measurable, so the array fit was never honed.")
+    elif min_pitch > 0 and orientation["residual"] > 0.1 * min_pitch:
         logger.warning(
             "Spots sit a median %.2f px from the fitted array, %.0f%% of its pitch. "
-            "The affine may be poor.",
+            "The fit is loose.",
             orientation["residual"], 100 * orientation["residual"] / min_pitch,
         )
 

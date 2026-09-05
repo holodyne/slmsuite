@@ -500,11 +500,9 @@ class _Client(_Picklable):
         try:
             sock.connect((host, port))
         except (TimeoutError, ConnectionRefusedError):
-            raise ValueError(
-                f"An slmsuite server is not active at {host}:{port}."
+            raise TimeoutError(
+                f"An slmsuite server is not responsive at {host}:{port}."
             )
-        except Exception as e:
-            raise e
 
 
         # Send the message.
@@ -565,8 +563,6 @@ class _Client(_Picklable):
         """
         try:
             hardware = _Client.__com(None, host, port, timeout, command="ping")
-        except (TimeoutError, ConnectionRefusedError):
-            raise TimeoutError(f"Did not find a server at {host}:{port}.")
         except Exception as e:
             raise e
 

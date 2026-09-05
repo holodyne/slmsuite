@@ -512,6 +512,21 @@ class MultiplaneHologram(Hologram):
         if extract:
             self._nearfield_extract()
 
+    def _invalidate_phase(self):
+        """Invalidate every child's cached measurement; the children share the meta phase."""
+        for h in self.holograms:
+            h._invalidate_phase()
+
+    def _nearfield_extract(self):
+        """Extract the meta phase; the children share it, so their measurements go too."""
+        super()._nearfield_extract()
+        self._invalidate_phase()
+
+    def reset_phase(self, *args, **kwargs):
+        """Randomize or set the meta phase."""
+        super().reset_phase(*args, **kwargs)
+        self._invalidate_phase()
+
     def _nearfield2farfield_batched(self):
         """Batched FFT2 across child planes. See `_can_batch` for preconditions."""
         self._refresh_batched_kernels()

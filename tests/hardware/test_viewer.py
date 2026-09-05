@@ -23,6 +23,7 @@ needs_display = pytest.mark.skipif(not HAS_DISPLAY, reason="No display to open a
 @pytest.fixture
 def viewer(camera_small):
     """A widget-free viewer drawing into the notebook display."""
+    pytest.importorskip("ipywidgets")
     view = _ViewerObject(camera_small, None, "ipython")
     yield view
     view.close()

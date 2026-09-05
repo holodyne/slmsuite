@@ -282,7 +282,7 @@ class TestCamera:
             assert camera._parse_averaging(5) == 5
 
         with subtests.test("a negative count raises"):
-            with pytest.raises(ValueError, match="Cannot have negative averaging"):
+            with pytest.raises(ValueError, match="averaging must be positive"):
                 camera._parse_averaging(-1)
 
     def test_get_dtype(self, camera, subtests):
@@ -310,7 +310,7 @@ class TestCamera:
             assert camera.get_dtype(averaging=1, binning=(1, 1), hdr=2) == float
 
         with subtests.test("a negative count raises"):
-            with pytest.raises(ValueError, match="Cannot have negative averaging"):
+            with pytest.raises(ValueError, match="averaging must be positive"):
                 camera.get_dtype(averaging=-1)
 
     def test__get_dtype(self, camera, subtests):
@@ -648,6 +648,28 @@ class TestCamera:
                 before = np.copy(range_z)
                 camera.autofocus(set_z=slm, get_z=0.5, range_z=range_z, verbose=False)
                 assert np.array_equal(range_z, before)
+
+        with subtests.test("a custom metric is followed to its own peak"):
+            stage = {"z": 0.0}
+            peak = 0.37     # Off the 0.2-spaced sweep, so only the fit can land on it.
+
+            def set_z(z):
+                stage["z"] = z
+
+            def peaked(_image):
+                return 1.0 / (1.0 + ((stage["z"] - peak) / 0.3) ** 2)
+
+            found = camera.autofocus(set_z, get_z=0.0, range_z=1.0, metric=peaked, plot=True)
+            assert found == pytest.approx(peak, abs=1e-3)
+            assert found not in np.linspace(-1, 1, 11), "the fit interpolates between samples"
+            assert stage["z"] == pytest.approx(found), "the stage is left at the optimum"
+
+        with subtests.test("a stage that never moves leaves nothing to fit"):
+            def jammed(_z):
+                raise RuntimeError("stage jammed")
+
+            with pytest.raises(RuntimeError, match="no valid images"):
+                camera.autofocus(jammed, get_z=0.0, range_z=1.0)
 
     @pytest.mark.parametrize(
         "driver", driver_classes(Camera), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]

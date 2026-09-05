@@ -2,10 +2,11 @@
 slmsuite logging.
 
 A single package-level logger owns all handlers (a :class:`_BufferHandler`
-for :func:`get_log`/h5 capture, and an opt-in console handler via
-:func:`configure_logging`. Each :class:`_Loggable` instance logs through a
-:class:`logging.LoggerAdapter` tagged with a unique ``log_uid``, so
-:meth:`_Loggable.get_log` returns only that instance's records.
+for :func:`get_log`/h5 capture, and a console handler that importing
+:mod:`slmsuite` installs at ``INFO`` via :func:`configure_logging`). Each
+:class:`_Loggable` instance logs through a :class:`logging.LoggerAdapter`
+tagged with a unique ``log_uid``, so :meth:`_Loggable.get_log` returns only
+that instance's records.
 """
 import collections
 import itertools
@@ -184,8 +185,9 @@ def get_log():
 def configure_logging(level: "int | str | None" = _DEFAULT_LEVEL, stream=None):
     """Enable or adjust slmsuite console logging.
 
-    slmsuite is silent by default (records are still captured for :func:`get_log` and
-    pickling). Call this once to turn on colored console output.
+    Importing :mod:`slmsuite` calls this at ``INFO``, so colored console output is on from
+    the start. Call it again to change the verbosity, redirect the stream, or pass ``None``
+    to remove the console handler; capture for :func:`get_log` and pickling is unaffected.
 
     Parameters
     ----------

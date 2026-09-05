@@ -19,6 +19,7 @@ from slmsuite.holography.toolbox.phase import zernike_sum
 from conftest import driver_classes
 
 
+
 def _quadratic_gamma(bitresolution):
     """A monotonic but distinctly non-uniform phase response."""
     levels = np.arange(bitresolution)
@@ -377,6 +378,7 @@ class TestSLM:
 
     def test_gamma_matches_plm_quantize_lut(self, subtests):
         """set_gamma generalizes PLM._init_quantize_lut, which it must reproduce exactly."""
+        pytest.importorskip("yaml", reason="the PLM model database needs pyyaml")
         from slmsuite.hardware.slms.texasinstruments import PLM
 
         for model in PLM.get_model_list():
