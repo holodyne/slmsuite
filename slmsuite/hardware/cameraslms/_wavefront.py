@@ -80,17 +80,37 @@ class _WavefrontCalibration(
                 num_points = min(calibration_points_.shape[1], calibration_points)
             calibration_points = calibration_points_[:, :num_points]
 
+            # A patch that is a large fraction of the addressable area leaves nowhere to
+            # put a point, once the pitch/2 margins at the sensor edge and at the edge of
+            # the first Nyquist zone plus the field exclusion are all honored. 
+            if calibration_points.shape[1] == 0:
+                zone = np.ptp(self.nyquist_zone_ij, axis=1)
+                raise ValueError(
+                    f"No calibration points fit at pitch={kwargs.get('pitch')} (the width "
+                    f"of one calibration patch). Each point needs its whole patch inside "
+                    f"both the camera {tuple(self.cam.shape[::-1])} and the SLM's first "
+                    f"Nyquist zone, which spans only {tuple(np.rint(zone).astype(int))} "
+                    f"px of it, and outside the field exclusion around the zeroth order. "
+                    f"Shrink the patch -- for wavefront diversity, lower 'site_width_ij' "
+                    f"or 'sites_per_point'."
+                )
+
         calibration_points = np.rint(format_2vectors(calibration_points)).astype(int)
 
         # Error check that the calibration points are within the camera's field of view.
         # If pitch is passed to kwargs, then camera should accommodate points within pitch/2 of the edge.
         pitch = kwargs.get("pitch", 0)
+        # Per-axis pitches must compare per axis; a raw (2, 1) would broadcast the
+        # comparison into a (2, N) truth table and mix the axes together.
+        (pitch_x, pitch_y) = (
+            (pitch, pitch) if np.isscalar(pitch) else np.ravel(pitch)[:2]
+        )
 
         outside_fov_mask = (
-            (calibration_points[0,:] < pitch/2) +
-            (calibration_points[1,:] < pitch/2) +
-            (calibration_points[0,:] > self.cam.shape[1] - pitch/2) +
-            (calibration_points[1,:] > self.cam.shape[0] - pitch/2)
+            (calibration_points[0,:] < pitch_x/2) +
+            (calibration_points[1,:] < pitch_y/2) +
+            (calibration_points[0,:] > self.cam.shape[1] - pitch_x/2) +
+            (calibration_points[1,:] > self.cam.shape[0] - pitch_y/2)
         ) > 0
 
         if np.any(outside_fov_mask):
@@ -189,12 +209,62 @@ class _WavefrontCalibration(
         plane = format_2vectors(self.cam.shape[::-1])
         if not np.isscalar(pitch):
             pitch = format_2vectors(pitch)
-        grid = np.ceil(plane / pitch - .5)
-        spacing = np.floor(plane / (grid + (.5 if avoid_mirrors else 0))).astype(int)
+        # A calibration point owns a patch of width ``pitch`` centered on it, so centers
+        # live in ``[pitch/2, plane - pitch/2]``
+        margin = pitch / 2.
+
+        # Bounds for the point *centers*, in both domains that can clip a patch: the
+        # sensor, and the SLM's first Nyquist zone. Intersecting the two *before* choosing
+        # the lattice keeps the points evenly spread, symmetrically, over what is actually
+        # addressable. 
+        (low, high) = (np.broadcast_to(margin, (2, 1)).astype(float).copy(), plane - margin)
+
+        if avoid_nyquist:
+            # Every center in these bounds owns a whole ``pitch``-wide patch inside the
+            # first Nyquist zone, which is what the calibration pattern actually tiles.
+            (zone_low, zone_high) = self.nyquist_zone_bounds_ij(margin)
+            low = np.maximum(low, zone_low)
+            high = np.minimum(high, zone_high)
+
+        usable = np.maximum(high - low, 0)
+
+        # Points land on integer pixels, so the realized spacing is a whole number and has
+        # to be rounded *up* to clear a fractional pitch. Size the lattice against that
+        # integer step throughout.
+        step = np.ceil(pitch)
+
+        # ``floor(usable/step) + 1`` points fit at >= ``step`` spacing; the count must round
+        # *down*, or the realized spacing falls below the ``pitch`` this method documents.
+        # ``avoid_mirrors`` takes one fewer per axis, reserving half a spacing to slide the
+        # lattice off the mirror lattice below.
+        reserve = .5 if avoid_mirrors else 1.
+        grid = np.maximum(np.floor(usable / step + reserve), 1)
+        spacing = np.maximum(
+            np.floor(usable / np.maximum(grid - reserve, .5)), step
+        ).astype(int)
+
+        # Room left over to slide the whole lattice within the usable span.
+        slack = np.maximum(usable - (grid - 1) * spacing, 0)
+
         if avoid_mirrors:
-            base_point = spacing * (np.remainder(zeroth_order / spacing - .5, 1) + .25)
+            # A point's mirror (-1) order lands at ``2*zeroth_order - point``, so the
+            # mirror lattice shares ``spacing`` at offset ``2*zeroth_order - base_point``.
+            # Mirrors coincide with points iff ``base_point == zeroth_order`` modulo
+            # *half* a spacing, so a quarter-spacing offset (taken mod half a spacing)
+            # puts them maximally between points and fits in the slack reserved above.
+            # Clamp anyway for a degenerate single-point axis, where no neighbor pins
+            # ``spacing`` down.
+            base_point = low + np.minimum(
+                np.remainder(zeroth_order + spacing / 4. - low, spacing / 2.), slack
+            )
         else:
-            base_point = spacing / 2
+            # Center the lattice in the usable span, so the points sit symmetrically about
+            # the addressable region rather than piling against one edge of it.
+            base_point = low + slack / 2.
+
+        # Points are rounded to integer pixels downstream, so round the lattice origin up
+        # here: a half-integer origin rounds to a spacing one pixel short of ``pitch``.
+        base_point = np.ceil(base_point)
 
         # In ij coordinates.
         calibration_points = fit_3pt(
@@ -206,23 +276,14 @@ class _WavefrontCalibration(
             x2=None
         )
 
-        if avoid_nyquist:
-            # knm basis with shape (1,1) maps the first Nyquist zone to 0 -> 1.
-            calibration_points_knm = convert_vector(
-                calibration_points,
-                from_units="ij",
-                to_units="knm",
-                hardware=self,
-                shape=[1,1]
-            )
-
-            outside_first_nyquist_zone = (
-                (calibration_points_knm[0] < 0) +
-                (calibration_points_knm[1] < 0) +
-                (calibration_points_knm[0] > 1) +
-                (calibration_points_knm[1] > 1)
-            ) > 0
-            calibration_points = np.delete(calibration_points, outside_first_nyquist_zone, axis=1)
+        # Prune against the same ``[low, high]`` the lattice was laid out in, which already
+        # holds both bounding domains. Two things can push a point back out of it: the
+        # ``ceil`` on the origin above, and ``avoid_mirrors`` placing that origin only a
+        # quarter spacing in. 
+        rounded = np.rint(calibration_points)
+        calibration_points = calibration_points[
+            :, np.all((rounded >= low) & (rounded <= high), axis=0)
+        ]
 
         # Sort by proximity to the center, avoiding the 0th order.
         distance = np.sum(np.square(calibration_points - zeroth_order), axis=0)

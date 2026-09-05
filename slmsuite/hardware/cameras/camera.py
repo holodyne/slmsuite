@@ -110,6 +110,7 @@ class Camera(_Common, ABC):
         "averaging",
         "hdr",
         "woi",
+        "binning",
         "_shape",
         "_software_woi",
         "_software_binning",
@@ -366,6 +367,18 @@ class Camera(_Common, ABC):
         pass  # derived from _woi and _binning; _Common.__init__ sets this
 
     @property
+    def sensor_shape(self):
+        """
+        Returns ``(height, width)`` of the **full sensor**, in the same transformed,
+        unbinned coordinate frame that :attr:`woi` and :meth:`set_woi` use.
+
+        Distinct from :attr:`shape`, which describes the image currently being returned
+        and therefore shrinks when a WOI is set. Sizing or centering a window must be done
+        against this, not against :attr:`shape`.
+        """
+        return self.transform.transform_shape(self._shape)
+
+    @property
     def origin(self):
         """
         Returns the ``(x, y)`` coordinate of the upper-left corner of the image in pixels,
@@ -446,6 +459,10 @@ class Camera(_Common, ABC):
             - ``(w, h)``: centered rectangular window ``(w, h)`` on the sensor.
             - ``(x0, w, y0, h)``: explicitly placed window.
 
+            Caution
+            ~~~~~~~
+            The explicit form is in full-sensor coordinates (like :attr:`sensor_shape`).
+
         Returns
         -------
         (int, int, int, int)
@@ -455,7 +472,7 @@ class Camera(_Common, ABC):
         old_shape = self.shape
 
         binx, biny = self._binning[0], self._binning[1]
-        transformed_shape = self.transform.transform_shape(self._shape)
+        transformed_shape = self.sensor_shape
         H, W = transformed_shape
 
         if woi is None:
@@ -682,6 +699,24 @@ class Camera(_Common, ABC):
         super()._unpickle(data)
 
         self.set_exposure(data.get("exposure_s", 1))
+
+        # pickle() records the window, so a reloaded camera should deliver the same
+        # frame rather than silently reverting to the full sensor. 
+        if data.get("binning", None) is not None:
+            try:
+                self.set_binning(tuple(data["binning"]))
+            except NotImplementedError:
+                pass
+            except Exception as e:
+                self.logger.warning("Could not restore binning: %s", e)
+
+        if data.get("woi", None) is not None:
+            try:
+                self.set_woi(tuple(data["woi"]))
+            except NotImplementedError:
+                pass
+            except Exception as e:
+                self.logger.warning("Could not restore woi: %s", e)
 
     @abstractmethod
     def _get_exposure_hw(self):
@@ -1514,7 +1549,8 @@ class Camera(_Common, ABC):
                 with self._test_step("window the sensor with set_woi"):
                     orig_woi = self.get_woi()
                     self.set_woi()
-                    self.set_woi((0, self.shape[1] // 2, 0, self.shape[0] // 2))
+                    (sh, sw) = self.sensor_shape
+                    self.set_woi((0, sw // 2, 0, sh // 2))
                     assert self.get_image().shape == self.shape, "set_woi did not resize"
                     self.set_woi(orig_woi)
                     assert self.get_woi() == orig_woi, "set_woi did not round-trip"

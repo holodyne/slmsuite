@@ -19,6 +19,124 @@ class _AbstractSpotHologram(FeedbackHologram):
 
     # Spot feedback is weighted here. See Hologram._feedback_supported.
     _feedback_supported = tuple(FEEDBACK_OPTIONS)
+
+    # Camera integration windows.
+
+    @property
+    def spot_integration_width_ij(self):
+        """
+        Width in camera pixels of the square region integrated around each spot for
+        ``"experimental_spot"`` feedback. ``None`` when the spots are not located on a
+        camera.
+
+        Setting this re-runs :meth:`_check_spots_in_frame()`, because the constructor's
+        bounds check was made against the width it chose, not against a width assigned
+        afterwards (as :meth:`wavefront_calibrate_zernike` does).
+        """
+        return self._spot_integration_width_ij
+
+    @spot_integration_width_ij.setter
+    def spot_integration_width_ij(self, value):
+        self._spot_integration_width_ij = None if value is None else int(value)
+        self._check_spots_in_frame()
+
+    def _check_spots_in_frame(self, cameraslm=None, raise_error=False):
+        """
+        Checks that every spot's integration region fits inside the camera image.
+
+        A region that hangs off the edge is not fatal --- :meth:`take` clips it --- but
+        the spot then integrates fewer pixels than its neighbours, biasing feedback and
+        any metric computed from it. The constructors raise on this; later assignments
+        only warn, so that widening the window as a measurement aperture (see
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_zernike`)
+        stays possible.
+
+        Parameters
+        ----------
+        cameraslm : object OR None
+            Source of the camera. Defaults to :attr:`cameraslm`, which the constructors
+            have not yet set when they call this.
+        raise_error : bool
+            Whether an out-of-frame region raises :exc:`ValueError` instead of warning.
+
+        Returns
+        -------
+        bool
+            Whether every region fits.
+        """
+        spot_ij = getattr(self, "spot_ij", None)
+        width = getattr(self, "_spot_integration_width_ij", None)
+        if cameraslm is None:
+            cameraslm = getattr(self, "cameraslm", None)
+
+        if spot_ij is None or width is None or cameraslm is None:
+            return True
+
+        cam_shape = cameraslm.cam.shape
+        half = width / 2
+
+        outside = (
+            (spot_ij[0] < half) | (spot_ij[1] < half) |
+            (spot_ij[0] >= cam_shape[1] - half) | (spot_ij[1] >= cam_shape[0] - half)
+        )
+
+        if not np.any(outside):
+            return True
+
+        message = (
+            "Spots outside camera bounds!\nSpots:\n{}\nBounds: {} with "
+            "integration width {}".format(spot_ij[:, outside], cam_shape, width)
+        )
+
+        if raise_error:
+            raise ValueError(message)
+
+        self.logger.warning(
+            "%s of %s integration regions extend past the %s camera image and will be "
+            "clipped, biasing their feedback. Reduce spot_integration_width_ij or move "
+            "the spots inward. Regions:\n%s",
+            int(np.sum(outside)), spot_ij.shape[1], cam_shape, spot_ij[:, outside],
+        )
+        return False
+
+    def _integrate_spots_ij(self, dtype=None):
+        """
+        Integrates the power in each spot's camera window, on whichever backend the
+        camera delivered :attr:`img_ij` on. Staying there avoids a host copy every
+        iteration, which :mod:`cupy` refuses to make implicitly in any case.
+
+        Assumes :meth:`measure()` has already refreshed :attr:`img_ij`.
+
+        Parameters
+        ----------
+        dtype : type OR None
+            Datatype to cast the image to before squaring. ``None`` leaves it as-is.
+
+        Returns
+        -------
+        (module, numpy.ndarray OR cupy.ndarray, numpy.ndarray OR cupy.ndarray)
+            The array module of :attr:`img_ij`, the power in the whole image, and the
+            power in each spot's window. The whole-image power is returned rather than
+            recomputed by the caller which needs it, as squaring is a full pass.
+        """
+        xp_ij = get_array_module(self.img_ij)
+        image = self.img_ij if dtype is None else xp_ij.asarray(self.img_ij, dtype=dtype)
+        power_image = xp_ij.square(image)
+
+        return (
+            xp_ij,
+            power_image,
+            analysis.take(
+                power_image,
+                self.spot_ij,
+                self.spot_integration_width_ij,
+                centered=True,
+                integrate=True,
+                clip=True,
+                xp=xp_ij,
+            ),
+        )
+
     def remove_vortices(self):
         """Spot holograms do not need to consider vortices."""
         pass
@@ -153,6 +271,8 @@ class _AbstractSpotHologram(FeedbackHologram):
                 # Modify camera targets. Don't modify any k-vectors.
                 self.spot_ij = self.spot_ij.astype(float)
                 self.spot_ij[[0, 1]] += shift_vectors
+                # The spots just moved, so the constructor's bounds check is stale.
+                self._check_spots_in_frame()
             else:
                 raise Exception("Unrecognized basis '{}'.".format(basis))
 
@@ -166,23 +286,14 @@ class _AbstractSpotHologram(FeedbackHologram):
         if "experimental_spot" in stat_groups:
             self.measure(basis="ij")
 
-            xp = get_array_module(self.img_ij)
-            pwr_img = xp.square(self.img_ij)
-
-            pwr_feedback = analysis.take(
-                pwr_img,
-                self.spot_ij,
-                self.spot_integration_width_ij,
-                centered=True,
-                integrate=True,
-            )
+            (xp_ij, pwr_img, pwr_feedback) = self._integrate_spots_ij()
 
             stats["experimental_spot"] = self._calculate_stats(
-                xp.sqrt(pwr_feedback),
+                xp_ij.sqrt(pwr_feedback),
                 self.spot_amp,
-                xp=xp,
+                xp=xp_ij,
                 efficiency_compensation=False,
-                total=xp.sum(pwr_img),
+                total=xp_ij.sum(pwr_img),
                 raw="raw_stats" in self.flags and self.flags["raw_stats"],
             )
 
@@ -474,24 +585,12 @@ class CompressedSpotHologram(_AbstractSpotHologram):
                     "The expected camera spot point-spread-function is too large. "
                     "Clipping to a smaller integration width."
                 )
-            self.spot_integration_width_ij = np.clip(2 * psf_ij, 3, dist_ij)
-            self.spot_integration_width_ij =  int(2 * np.floor(self.spot_integration_width_ij / 2) + 1)
+            width = np.clip(2 * psf_ij, 3, dist_ij)
+            self._spot_integration_width_ij = int(2 * np.floor(width / 2) + 1)
 
-            cam_shape = cameraslm.cam.shape
-
-            if (
-                np.any(self.spot_ij[0] < self.spot_integration_width_ij / 2) or
-                np.any(self.spot_ij[1] < self.spot_integration_width_ij / 2) or
-                np.any(self.spot_ij[0] >= cam_shape[1] - self.spot_integration_width_ij / 2) or
-                np.any(self.spot_ij[1] >= cam_shape[0] - self.spot_integration_width_ij / 2)
-            ):
-                raise ValueError(
-                    "Spots outside camera bounds!\nSpots:\n{}\nBounds: {}".format(
-                        self.spot_ij, cam_shape
-                    )
-                )
+            self._check_spots_in_frame(cameraslm, raise_error=True)
         else:
-            self.spot_integration_width_ij = None
+            self._spot_integration_width_ij = None
 
         # Initialize target/etc with fake shape.
         super().__init__(shape=None, target_ij=None, cameraslm=cameraslm, **kwargs)
@@ -959,14 +1058,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         elif feedback == "experimental_spot":
             self.measure(basis="ij")
 
-            xp = get_array_module(self.img_ij)
-            amp_feedback = xp.sqrt(analysis.take(
-                xp.square(xp.asarray(self.img_ij, dtype=self.dtype)),
-                self.spot_ij,
-                self.spot_integration_width_ij,
-                centered=True,
-                integrate=True
-            ))
+            (xp_ij, _, pwr_feedback) = self._integrate_spots_ij(dtype=self.dtype)
+            amp_feedback = xp_ij.sqrt(pwr_feedback)
         elif feedback == "external_spot":
             amp_feedback = self.external_spot_amp
         else:
@@ -1295,12 +1388,10 @@ class SpotHologram(_AbstractSpotHologram):
 
         if self.spot_ij is not None:
             dist_ij = np.max([toolbox.smallest_distance(self.spot_ij) / 1.5, min_psf])
-            self.spot_integration_width_ij = np.clip(N * psf_ij, min_psf, dist_ij)
-            self.spot_integration_width_ij = int(
-                2 * np.floor(self.spot_integration_width_ij / 2) + 1
-            )
+            width = np.clip(N * psf_ij, min_psf, dist_ij)
+            self._spot_integration_width_ij = int(2 * np.floor(width / 2) + 1)
         else:
-            self.spot_integration_width_ij = None
+            self._spot_integration_width_ij = None
 
         # Check to make sure spots are within relevant camera and SLM shapes.
         if (
@@ -1319,20 +1410,7 @@ class SpotHologram(_AbstractSpotHologram):
                 )
             )
 
-        if self.spot_ij is not None:
-            cam_shape = cameraslm.cam.shape
-
-            if (
-                np.any(self.spot_ij[0] < self.spot_integration_width_ij / 2)
-                or np.any(self.spot_ij[1] < self.spot_integration_width_ij / 2)
-                or np.any(self.spot_ij[0] >= cam_shape[1] - self.spot_integration_width_ij / 2)
-                or np.any(self.spot_ij[1] >= cam_shape[0] - self.spot_integration_width_ij / 2)
-            ):
-                raise ValueError(
-                    "Spots outside camera bounds!\nSpots:\n{}\nBounds: {}".format(
-                        self.spot_ij, cam_shape
-                    )
-                )
+        self._check_spots_in_frame(cameraslm, raise_error=True)
 
         # Decide the null_radius (if necessary)
         if self.null_knm is not None:
@@ -1573,7 +1651,7 @@ class SpotHologram(_AbstractSpotHologram):
         ~~~~
         The :attr:`target` and :attr:`weights` matrices are modified in-place for speed,
         unlike :class:`.Hologram` or :class:`.FeedbackHologram` which make new matrices.
-        This is because spot positions are expected to be corrected using :meth:`refine_offsets()`.
+        This is because spot positions are expected to be corrected using :meth:`refine_offset()`.
 
         Parameters
         ----------
@@ -1612,16 +1690,8 @@ class SpotHologram(_AbstractSpotHologram):
             elif feedback == "experimental_spot":
                 self.measure(basis="ij")
 
-                xp = get_array_module(self.img_ij)
-                amp_feedback = xp.sqrt(
-                    analysis.take(
-                        xp.square(xp.asarray(self.img_ij, dtype=self.dtype)),
-                        self.spot_ij,
-                        self.spot_integration_width_ij,
-                        centered=True,
-                        integrate=True,
-                    )
-                )
+                (xp_ij, _, pwr_feedback) = self._integrate_spots_ij(dtype=self.dtype)
+                amp_feedback = xp_ij.sqrt(pwr_feedback)
             elif feedback == "external_spot":
                 amp_feedback = self.external_spot_amp
             else:

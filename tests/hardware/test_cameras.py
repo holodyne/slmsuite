@@ -219,6 +219,22 @@ class TestCamera:
                 rotated.set_woi(None)
                 assert rotated.shape == (full_h, full_w)
 
+    def test_woi_survives_a_pickle_round_trip(self, slm):
+        """
+        pickle() records the window and the binning, so a reloaded camera must deliver
+        the same frame rather than silently reverting to the full sensor.
+        """
+        cam = SimulatedCamera(slm, resolution=WIDE, pitch_um=(5, 5))
+        cam.set_binning(2)
+        cam.set_woi((20, 80, 10, 60))
+        expected = (cam.woi, cam.binning, cam.shape)
+
+        restored = SimulatedCamera(slm, resolution=WIDE, pitch_um=(5, 5))
+        restored._unpickle(cam.pickle(attributes=True, metadata=False))
+
+        assert (restored.woi, restored.binning, restored.shape) == expected
+        assert restored.get_image().shape == cam.shape
+
     def test_get_ijraw_to_ijcam(self, slm, subtests):
         """The raw-sensor to camera-image affine places the WOI corners and inverts exactly."""
         woi = (20, 80, 10, 60)      # (x0, w, y0, h) in raw sensor pixels

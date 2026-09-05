@@ -24,7 +24,7 @@ from slmsuite.holography.toolbox.phase import (
     zernike_sum, laguerre_gaussian, ZernikeBasis, _zernike_get_basis,
 )
 from slmsuite.misc.math import REAL_TYPES
-from slmsuite.misc.xp import as_backend, as_numpy, get_array_module
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
 from slmsuite._logging import make_logger
 logger = make_logger(__name__)
@@ -108,15 +108,17 @@ def take(
         the valid area, setting the invalid region to ``np.nan``
         (or zero if the array datatype does not support ``np.nan``).
         ``False`` throws an error upon out of range. Defaults to ``False``.
+        When combined with ``integrate``, the blanked pixels are omitted from the sum.
     return_mask : bool
         If ``True``, returns a boolean mask corresponding to the regions which are taken
         from. Defaults to ``False``. The average user will ignore this.
     plot : int OR bool
         Calls :meth:`take_plot()` to visualize the images regions.
     xp : module OR None
-        The array module to gather with, :mod:`numpy` or :mod:`cupy`. Keeping
-        :mod:`cupy` images on the GPU minimizes the cost of moving data to the host.
-        If ``None``, the module backing ``images`` is used.
+        The array module to take with, and the module of the returned data. Keeping
+        :mod:`cupy` ``images`` on the GPU minimizes the cost of moving data to the host.
+        If ``None``, the module backing ``images`` is used. Passing :mod:`numpy` for
+        device ``images`` copies them to the host rather than raising.
         Indexing variables inside :meth:`take` still use :mod:`numpy` for speed, no
         matter what module is used.
 
@@ -144,6 +146,10 @@ def take(
     if xp is None:
         xp = get_array_module(images)
 
+    # Move to cpu for numpy processing
+    if xp is np and is_gpu_array(images):
+        images = as_numpy(images)
+
     # Prepare helper variables. Future: consider caching for speed, if not negligible.
     edge_x = np.floor(_coordinates(size[0], centered)).astype(int)
     edge_y = np.floor(_coordinates(size[1], centered)).astype(int)
@@ -161,29 +167,40 @@ def take(
         shape = (int(images[0]), int(images[1]))
         return_mask = True
 
-    if clip:  # Prevent out-of-range errors by clipping.
+    # Check if everything fits in the image. If so, skip the clip! 
+    span_x = span_y = None
+    if vectors.shape[1]:
+        (lo, hi) = (np.min(vectors, axis=1), np.max(vectors, axis=1))
+        span_x = (int(lo[0] + edge_x[0]), int(hi[0] + edge_x[-1]))
+        span_y = (int(lo[1] + edge_y[0]), int(hi[1] + edge_y[-1]))
+
+    fits = span_x is None or (
+        span_x[0] >= 0 and span_x[1] < shape[-1] and
+        span_y[0] >= 0 and span_y[1] < shape[-2]
+    )
+
+    if fits:
+        clip = False    # Everything fits; nothing to blank.
+    elif clip:          # Prevent out-of-range errors by clipping.
         mask = (
             (integration_x < 0) | (integration_x >= shape[-1]) |
             (integration_y < 0) | (integration_y >= shape[-2])
         )
 
-        if np.any(mask):
-            # Clip these indices to prevent errors.
-            np.clip(integration_x, 0, shape[-1] - 1, out=integration_x)
-            np.clip(integration_y, 0, shape[-2] - 1, out=integration_y)
-        else:
-            # No clipping needed.
-            clip = False
-    else:   # The edges are sorted, so the extreme regions are those of the extreme vectors.
-        (lo, hi) = (np.min(vectors, axis=1), np.max(vectors, axis=1))
-        if (
-            lo[0] + edge_x[0] < 0 or hi[0] + edge_x[-1] >= shape[-1] or
-            lo[1] + edge_y[0] < 0 or hi[1] + edge_y[-1] >= shape[-2]
-        ):
-            raise IndexError(
-                "Integration regions extend past the image of shape {}. "
-                "Pass clip=True to blank the out-of-range pixels.".format(tuple(shape[-2:]))
+        # Clip these indices to prevent errors.
+        np.clip(integration_x, 0, shape[-1] - 1, out=integration_x)
+        np.clip(integration_y, 0, shape[-2] - 1, out=integration_y)
+    else:
+        raise IndexError(
+            "Integration regions of size {} about {} vector(s) span x {} and y {}, "
+            "which extends past the image of shape {}. "
+            "Pass clip=True to blank the out-of-range pixels. "
+            "If the regions were expected to be inside the image, check that the "
+            "vectors are in the same coordinate frame as the image; a camera window "
+            "of interest offsets the image relative to the raw sensor.".format(
+                size, vectors.shape[1], span_x, span_y, tuple(shape[-2:])
             )
+        )
 
     if return_mask:
         if return_mask == 2:
@@ -232,7 +249,9 @@ def take(
                 final_shape = (vectors.shape[1],)
             elif len(shape) == 3:
                 final_shape = (shape[0], vectors.shape[1],)
-            return xp.sum(result.astype(float), axis=-1).reshape(final_shape)
+            # Clipped regions were blanked with nan above
+            summer = xp.nansum if clip else xp.sum
+            return summer(result.astype(float), axis=-1).reshape(final_shape)
         else:           # Reshape the integration axis.
             return xp.reshape(result, crop_shape)
 
@@ -457,6 +476,58 @@ def image_relative_strehl(images):
         images = np.reshape(images, (1, images.shape[0], images.shape[1]))
 
     return np.amax(images, axis=(1,2)) / np.sum(images, axis=(1,2))
+
+
+def image_strehl(images, reference):
+    r"""
+    Computes the `Strehl ratio <https://en.wikipedia.org/wiki/Strehl_ratio>`_ of a stack
+    of images against a diffraction-limited ``reference``.
+
+    .. math:: S = \left. \frac{\max_{x,y} I}{\sum_{x,y} I}
+                  \middle/ \frac{\max_{x,y} I_0}{\sum_{x,y} I_0} \right.
+
+    Normalizing each image by its own total makes the ratio independent of exposure,
+    gain, and bitdepth, such that only the *concentration* of the light is compared.
+    The ``reference`` is an unaberrated point spread function windowed identically to
+    ``images``: on a simulated system,
+    :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.render()` of a flat
+    phase yields one directly.
+
+    Caution
+    ~~~~~~~
+    ``images`` and ``reference`` must be cropped to the **same** window about the
+    **same** point, otherwise the differing truncation of the point spread function's
+    wings biases the result. Additionally, ``images`` should be background-subtracted
+    (see :meth:`image_remove_field()`) and free of saturated pixels: a pedestal inflates
+    :math:`\sum I` and saturation caps :math:`\max I`, both of which depress :math:`S`.
+    A window that clips the aberrated halo but not the ideal core biases :math:`S` high.
+
+    Caution
+    ~~~~~~~
+    :math:`\max I` is the brightest *pixel*, not the true peak, so this is only the
+    Strehl ratio insofar as the camera resolves the point spread function. A pixel
+    integrates over its own footprint, blunting the sharp ideal core more than a broad
+    aberrated one, so an under-sampled :math:`S` reads high -- increasingly so as the
+    aberration grows. See
+    :meth:`~slmsuite.hardware.cameraslms.FourierSLM.get_farfield_spot_size()`, which
+    reports the sampling.
+
+    Parameters
+    ----------
+    images : numpy.ndarray
+        A matrix in the style of the output of :meth:`take()`, with shape
+        ``(image_count, h, w)``. A single image of shape ``(h, w)`` is interpreted
+        correctly as ``(1, h, w)``.
+    reference : numpy.ndarray
+        The diffraction-limited point spread function, of shape ``(h, w)`` to compare
+        every image against, or ``(image_count, h, w)`` to compare pairwise.
+
+    Returns
+    -------
+    numpy.ndarray
+        The Strehl ratio evaluated for every image, of size ``(image_count,)``.
+    """
+    return image_relative_strehl(images) / image_relative_strehl(reference)
 
 
 def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=True, nansum=False):

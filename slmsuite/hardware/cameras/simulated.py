@@ -14,7 +14,7 @@ except Exception:
 
 
 from slmsuite.hardware.cameras.camera import Camera
-from slmsuite.misc.xp import get_array_module
+from slmsuite.misc.xp import as_numpy, get_array_module
 from slmsuite.holography.algorithms import Hologram
 from slmsuite.holography import toolbox
 
@@ -432,6 +432,29 @@ class SimulatedCamera(Camera):
             img = toolbox.unpad(intensity, self._shape)
 
         return img
+
+    def render(self):
+        """
+        The noiseless farfield intensity on this camera's pixels, before the sensor
+        response (:attr:`exposure_s`, :attr:`gain`, noise, clipping, and quantization)
+        is applied. Each pixel integrates over its own footprint in :math:`k`-space.
+
+        Unlike :meth:`get_image()`, the result is floating point and unclipped, so it is
+        usable as a photometric reference, for instance as the diffraction-limited
+        reference of :meth:`~slmsuite.holography.analysis.image_strehl()`.
+        The underlying farfield carries unit total power, so the absolute scale is
+        arbitrary; use ratios such as peak-over-total.
+
+        The window, binning, and orientation are applied as :meth:`get_image()` applies
+        them, so the two are pixel-for-pixel comparable. Only the sensor response
+        separates them.
+
+        Returns
+        -------
+        numpy.ndarray
+            Array of shape :attr:`shape`.
+        """
+        return as_numpy(self.transform(self._crop_to_woi(self._render())))
 
     def _apply_response(self, img):
         """

@@ -100,7 +100,10 @@ class RemoteCamera(_Client, Camera):
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`."""
         if self.server_attributes["__meta__"].get("_software_woi", True):
-            return self._woi        # The server crops in software; it has no hardware WOI.
+            # The server crops in software; it has no hardware WOI. Report in
+            # the binned coordinates since Camera.get_woi() multiplies the
+            # result back up by the binning.
+            return self._woi_untransformed_binned
         return tuple(self._com(command="_get_woi_hw"))
 
     def _set_binning_hw(self, binning):

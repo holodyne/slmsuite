@@ -1480,7 +1480,7 @@ class SLM(_Common, ABC):
             self._grid = None
             return self.aperture
 
-        amp = np.abs(self.source["amplitude"])
+        amp = np.abs(as_numpy(self.source["amplitude"]))
 
         if method == "fit":
             result = analysis.image_fit(amp, plot=False)

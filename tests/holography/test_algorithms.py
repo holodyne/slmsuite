@@ -1,6 +1,8 @@
 """
 Unit tests for slmsuite.holography.algorithms module.
 """
+import logging
+
 import pytest
 import numpy as np
 from types import SimpleNamespace
@@ -830,6 +832,46 @@ class TestCompressedSpotHologram:
             method="WGS-Kim", maxiter=10, verbose=False, stat_groups=["computational_spot"]
         )
         assert h.stats["stats"]["computational_spot"]["uniformity"][-1] > 0.5
+
+    def test_spot_integration_width_ij_rechecks_the_frame(
+        self, simulated_system_factory, subtests, caplog
+    ):
+        """
+        The constructor bounds-checks against the width it chose. Callers that widen
+        the window afterwards --- wavefront_calibrate_zernike does --- must be told when
+        the regions no longer fit, rather than finding out inside take().
+        """
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+
+        h = CompressedSpotHologram(
+            view_kxy_grid(fs, count=2, frac=0.4), basis="kxy", cameraslm=fs, cuda=False
+        )
+
+        with subtests.test("a width that still fits is quiet"):
+            with caplog.at_level(logging.WARNING):
+                caplog.clear()
+                h.spot_integration_width_ij = 5
+            assert h.spot_integration_width_ij == 5
+            assert "outside camera bounds" not in caplog.text.lower()
+
+        with subtests.test("a width that overruns the frame warns"):
+            with caplog.at_level(logging.WARNING):
+                caplog.clear()
+                h.spot_integration_width_ij = 4 * max(fs.cam.shape)
+            assert "extend past" in caplog.text
+
+        with subtests.test("...and is still usable, since take() clips"):
+            # Before clip=True reached these paths this raised IndexError; before
+            # nansum it returned nan and poisoned every weight.
+            h.optimize(
+                method="WGS-Kim", feedback="experimental_spot", maxiter=3,
+                verbose=False, stat_groups=["experimental_spot"],
+            )
+            spot_stats = h.stats["stats"]["experimental_spot"]
+            assert np.all(np.isfinite(spot_stats["efficiency"]))
+            assert np.all(np.isfinite(spot_stats["uniformity"]))
+            assert np.all(np.isfinite(h.get_weights()))
 
     def test_refine_offset(self, simulated_system_factory, subtests):
         """Camera frames are integers, and spots can sit against the sensor edge."""

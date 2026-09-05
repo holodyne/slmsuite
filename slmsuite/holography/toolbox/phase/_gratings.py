@@ -5,7 +5,7 @@ import numpy as np
 from scipy.special import jn_zeros
 from typing import Tuple, Union, Callable
 from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
-from slmsuite.misc.xp import get_array_module
+from slmsuite.misc.xp import as_numpy, get_array_module
 
 # Basic gratings.
 
@@ -35,6 +35,9 @@ def blaze(
     (x_grid, y_grid) = _process_grid(grid)
     xp = get_array_module(x_grid)
     vector = np.squeeze(vector)
+
+    # Flatten to plain scalars to avoid numpy * cupy
+    vector = np.ravel(as_numpy(vector)).astype(float)
 
     # Optimize phase construction based on context.
     if vector[0] == 0 and vector[1] == 0:

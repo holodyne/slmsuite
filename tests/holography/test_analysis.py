@@ -158,6 +158,33 @@ def test_take(subtests, benchmark):
             with pytest.raises(IndexError):
                 analysis.take(np.zeros((50, 50)), vectors=vector, size=10, centered=True)
 
+    with subtests.test("...and the error localizes the regions it could not take"):
+        # A frame mismatch (e.g. vectors on the raw sensor, image inside a camera
+        # window) is only diagnosable if the message says where the regions landed.
+        with pytest.raises(IndexError) as excinfo:
+            analysis.take(np.zeros((50, 50)), vectors=[120, 130], size=10, centered=True)
+        message = str(excinfo.value)
+        assert "(115, 124)" in message and "(125, 134)" in message
+        assert "(50, 50)" in message
+
+    with subtests.test("clip=True integrates only the pixels it measured"):
+        # Summing nan would poison a whole spot's feedback because part of its window
+        # hung off the frame.
+        result = analysis.take(
+            np.ones((50, 50)), vectors=[0, 0], size=3, centered=True,
+            integrate=True, clip=True,
+        )
+        assert result[0] == pytest.approx(4)     # the 2x2 corner that exists
+
+    with subtests.test("clip=True is a no-op for an in-range region, integrated too"):
+        # The in-range fast path must not allocate the index mask, and must agree
+        # exactly with clip=False.
+        np.testing.assert_array_equal(
+            analysis.take(image, vectors=[50, 40], size=10, centered=True,
+                          integrate=True, clip=True),
+            analysis.take(image, vectors=[50, 40], size=10, centered=True, integrate=True),
+        )
+
     with subtests.test("more than three image dimensions raises"):
         with pytest.raises(RuntimeError):
             analysis.take(np.zeros((2, 3, 50, 50)), vectors=[25, 25], size=10)
@@ -543,6 +570,36 @@ def test_image_ellipticity_angle(subtests):
         points[0, 55, 60] = points[0, 45, 40] = 1.0
         angles = analysis.image_ellipticity_angle(analysis.image_variances(points))
         assert angles[0] == pytest.approx(np.arctan2(5.0, 10.0))
+
+
+def test_image_strehl(subtests):
+    """Test image_strehl() against a diffraction-limited reference."""
+    (x, y) = np.meshgrid(np.arange(-16, 16), np.arange(-16, 16))
+    r2 = x ** 2 + y ** 2
+    narrow = np.exp(-r2 / (2 * 1.5 ** 2))
+    broad = np.exp(-r2 / (2 * 3.0 ** 2))
+
+    with subtests.test("an image against itself is unity"):
+        np.testing.assert_allclose(analysis.image_strehl(narrow, narrow), 1)
+
+    with subtests.test("insensitive to exposure and gain"):
+        # Each image is normalized by its own total, so a scale factor cancels.
+        np.testing.assert_allclose(
+            analysis.image_strehl(1e4 * broad, narrow),
+            analysis.image_strehl(broad, narrow),
+        )
+
+    with subtests.test("a broadened spot is below unity"):
+        # A Gaussian's peak fraction goes as 1/width^2, so twice the width is a
+        # quarter the Strehl.
+        np.testing.assert_allclose(
+            analysis.image_strehl(broad, narrow), (1.5 / 3.0) ** 2, rtol=1e-3
+        )
+
+    with subtests.test("a stack against one reference"):
+        strehl = analysis.image_strehl(np.stack((narrow, broad)), narrow)
+        assert strehl.shape == (2,)
+        np.testing.assert_allclose(strehl, [1, (1.5 / 3.0) ** 2], rtol=1e-3)
 
 
 def test_image_fit(subtests, benchmark, caplog):

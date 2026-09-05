@@ -636,8 +636,13 @@ class FourierSLM(
         if "fourier" in calibrations:
             cam_data = {k: v for (k, v) in cam_data.items() if k not in ("M", "b")}
 
-        # Restore the exposure and the simulated detector characteristics.
-        cam._unpickle(cam_data)
+        # Restore the exposure and the simulated detector characteristics. Not the
+        # window or the binning: this camera was rebuilt *as* the delivered image, so
+        # it is already the window. _load_place_camera() reads them off cam_data below
+        # to subtract the offset out of the Fourier calibration instead.
+        cam._unpickle({
+            k: v for (k, v) in cam_data.items() if k not in ("woi", "binning")
+        })
 
         fs = cls._load_class(data["__meta__"])(cam, slm, mag=data["__meta__"]["mag"])
         fs.name = data["__meta__"]["name"]
@@ -885,5 +890,72 @@ class FourierSLM(
 
     def _get_calibration_metadata(self):
         return self.pickle(attributes=False, metadata=True)      # Pickle without heavy data.
+
+    def _get_calibration_frame(self, key):
+        """
+        The camera frame --- ``(woi, shape)`` --- that calibration ``key`` was taken in,
+        or ``None`` if the calibration does not record it.
+
+        ``woi`` fixes the window's offset on the sensor and ``shape`` the delivered image
+        size, so together they detect any change of WOI, binning, or orientation.
+        """
+        try:
+            cam = self.calibrations[key]["__meta__"]["cam"]
+            return (
+                tuple(int(v) for v in np.ravel(cam["woi"])),
+                tuple(int(v) for v in np.ravel(cam["shape"])),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _check_calibration_frame(self, key, raise_error=False):
+        """
+        Checks that the camera still delivers images in the frame that calibration
+        ``key`` was taken in.
+
+        Unlike the Fourier calibration --- which is stored against the raw sensor and so
+        survives a :meth:`~slmsuite.hardware.cameras.camera.Camera.set_woi()` --- several
+        calibrations hold camera-image quantities (positions in ``"ij"``, or whole
+        frames). Those silently mean something else once the window, binning, or
+        orientation changes.
+
+        Parameters
+        ----------
+        key : str
+            Key into :attr:`calibrations`.
+        raise_error : bool
+            Whether a mismatch raises :exc:`RuntimeError` instead of warning. Use for
+            calibrations holding whole frames, where the shapes must agree.
+
+        Returns
+        -------
+        bool
+            Whether the frame still matches (also ``True`` when unknown).
+        """
+        recorded = self._get_calibration_frame(key)
+        if recorded is None:
+            return True
+
+        current = (
+            tuple(int(v) for v in self.cam.woi),
+            tuple(int(v) for v in self.cam.shape),
+        )
+        if recorded == current:
+            return True
+
+        message = (
+            "The '{}' calibration was taken with the camera window {} delivering shape "
+            "{}, but the camera now uses window {} delivering shape {}. This calibration "
+            "is stated in camera image coordinates and does not follow the window; "
+            "restore the window or re-run the calibration.".format(
+                key, recorded[0], recorded[1], current[0], current[1]
+            )
+        )
+
+        if raise_error:
+            raise RuntimeError(message)
+
+        self.logger.warning(message)
+        return False
 
 FourierSLM.fourier_calibration_build.__doc__ = SimulatedCamera.build_affine.__doc__

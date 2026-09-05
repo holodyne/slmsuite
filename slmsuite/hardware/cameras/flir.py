@@ -120,6 +120,7 @@ class FLIR(Camera):
             pass
 
         # Configure camera properties
+        self._trigger_is_software = False
         try:
             # Turn off automatic modes for manual control
             if self.cam.GainAuto.GetAccessMode() == PySpin.RW:
@@ -170,9 +171,6 @@ class FLIR(Camera):
             # Configure pixel format
             bitdepth = self._configure_adc_depth(bitdepth=bitdepth)
 
-            # Configure frame rate
-            self._configure_frame_rate()
-
             # Set a reasonable default exposure so _get_dtype's test capture
             # doesn't time out waiting for the camera's power-on default
             # (which can be as long as 30 s on some models).
@@ -194,6 +192,13 @@ class FLIR(Camera):
                 self.cam.TriggerSelector.SetValue(PySpin.TriggerSelector_FrameStart)
             else:
                 logger.warning("TriggerSelector is not writable; could not set to FrameStart.")
+
+            # Cache the trigger configuration to avoid per-frame access.
+            self._trigger_is_software = self._read_trigger_is_software()
+
+            # Configure frame rate. This has to follow the trigger configuration
+            # above, because the rate limiter is only meaningful when free-running.
+            self._configure_frame_rate()
 
         except PySpin.SpinnakerException as ex:
             logger.warning(f"Failed to configure camera: {ex}")
@@ -380,16 +385,57 @@ class FLIR(Camera):
         logger.warning("Could not set preferred pixel format; using current setting.")
         return _read_adc_depth()
 
-    def _configure_frame_rate(self):
+    def _read_trigger_is_software(self):
         """
-        Set camera frame rate to maximum. Called during init and after WOI changes,
-        since the maximum allowed frame rate depends on the current resolution.
+        Read whether the camera is currently configured for software triggering.
+
+        Cached into :attr:`_trigger_is_software` during initialization; call this
+        again if the trigger configuration is changed outside this class. The cache
+        exists because ``TriggerMode.GetValue()`` is a ~200 us device round-trip
+        (unlike ``TriggerSource``, which GenICam serves from cache in under a
+        microsecond), and :meth:`._get_image_hw` runs in the feedback loop.
+
+        Returns
+        -------
+        bool
+            ``True`` only if ``TriggerMode`` is on *and* ``TriggerSource`` is
+            software. FLIR cameras report ``TriggerSource_Software`` even when
+            ``TriggerMode`` is off, so the source alone is not sufficient.
         """
         try:
+            return bool(
+                self.cam.TriggerMode.GetValue() == PySpin.TriggerMode_On
+                and self.cam.TriggerSource.GetValue() == PySpin.TriggerSource_Software
+            )
+        except PySpin.SpinnakerException:
+            return False
+
+    def _configure_frame_rate(self):
+        """
+        Configure the acquisition frame rate. Called during init and after WOI changes,
+        since the maximum allowed frame rate depends on the current resolution.
+        """
+        # From the cache, not the device: __init__ reads the trigger configuration once
+        # and this is also reached from set_woi() on every window change.
+        triggered = self._trigger_is_software
+
+        try:
             if self.cam.AcquisitionFrameRateEnable.GetAccessMode() == PySpin.RW:
-                self.cam.AcquisitionFrameRateEnable.SetValue(True)
+                self.cam.AcquisitionFrameRateEnable.SetValue(not triggered)
+            elif triggered and self.cam.AcquisitionFrameRateEnable.GetValue():
+                # Read-only *and* still enabled: the limiter is stuck on and will
+                # cost latency on every triggered capture. Worth surfacing, unlike
+                # the common case where the node is simply not applicable.
+                logger.warning(
+                    "AcquisitionFrameRateEnable is enabled but not writable; the "
+                    "frame rate limiter may add latency to each triggered capture."
+                )
         except PySpin.SpinnakerException:
             pass  # Not all cameras have this node
+
+        if triggered:
+            logger.debug("Frame rate limiter disabled (software-triggered).")
+            return
 
         try:
             if self.cam.AcquisitionFrameRate.GetAccessMode() == PySpin.RW:
@@ -619,8 +665,10 @@ class FLIR(Camera):
 
         try:
             # Only fire software trigger if in software trigger mode; an externally
-            # triggered camera must not be force-triggered here.
-            if self.cam.TriggerSource.GetValue() == PySpin.TriggerSource_Software:
+            # triggered camera must not be force-triggered here. Read from the cache
+            # rather than the device: the check needs TriggerMode, which costs ~200 us
+            # per query, and this runs once per feedback iteration.
+            if self._trigger_is_software:
                 self.cam.TriggerSoftware.Execute()
 
             # Get image (software-triggered or externally triggered).

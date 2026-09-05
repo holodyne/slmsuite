@@ -13,6 +13,7 @@ from slmsuite.holography import toolbox
 from slmsuite.holography.algorithms import CompressedSpotHologram
 from slmsuite.holography.toolbox import format_vectors, smallest_distance, convert_vector
 from slmsuite.holography.toolbox.phase import _zernike_indices_parse, zernike, zernike_sum
+from slmsuite.misc.xp import as_backend, get_array_module
 
 class _WavefrontCalibrationZernike(object):
     """
@@ -153,6 +154,10 @@ class _WavefrontCalibrationZernike(object):
             N = len(sweep)
             M = None
 
+            # ``term`` follows the SLM's backend while ``pattern`` comes off
+            # Hologram.get_phase(); convert
+            pattern = as_backend(pattern, get_array_module(term))
+
             iterable = list(enumerate(sweep))
             if plot >= 0:
                 iterable = tqdm(iterable, desc=desc, position=0, leave=False)
@@ -277,6 +282,10 @@ class _WavefrontCalibrationZernike(object):
             if "wavefront_zernike" in self.calibrations:
                 dat = self.calibrations["wavefront_zernike"]
                 calibration_points = np.copy(dat["corrected_spots"])
+                # "calibration_points_ij" is in camera image coordinates and is used
+                # verbatim below, bypassing the projection through the Fourier
+                # calibration that would have followed a window change.
+                self._check_calibration_frame("wavefront_zernike")
                 calibration_points_ij = np.copy(dat["calibration_points_ij"])
                 spot_integration_width_ij = np.copy(dat["spot_integration_width_ij"])
 
@@ -323,7 +332,11 @@ class _WavefrontCalibrationZernike(object):
         if np.isscalar(calibration_points):
             requested = int(calibration_points)
             pitch = np.sqrt(np.prod(self.cam.shape) / calibration_points)
-            calibration_points = self.wavefront_calibration_points(pitch, plot=plot)
+            # Via the parser, not the generator directly, so the points are checked
+            # against the camera's field of view as they are on the superpixel path.
+            calibration_points = self._wavefront_calibration_points_parse(
+                None, pitch=pitch, plot=plot
+            )
             if np.shape(calibration_points)[1] < 2:
                 raise ValueError(
                     f"Requesting {requested} calibration points produced "
@@ -467,8 +480,9 @@ class _WavefrontCalibrationZernike(object):
                     hologram.spot_integration_width_ij,
                     centered=True,
                     integrate=False,
+                    clip=True,
                 )
-                max = np.max(take)
+                max = np.nanmax(take)   # Clipped pixels are nan; ignore them.
 
                 if max >= self.cam.bitresolution-1:
                     self.logger.warning("Image is overexposed.")
@@ -481,12 +495,9 @@ class _WavefrontCalibrationZernike(object):
                 self.cam.plot(img, title="Zernike Calibration Status")
 
                 if plot >= 2:
-
                     plt.figure(figsize=(12, 12))
-                    # plt.imshow(tiled)
-                    analysis.take_plot(take, separate_axes=False)
                     plt.title("Zernike Calibration Status (Zoom)")
-                    _slmsuite_plt_show(name="wavefront_calibrate_zernike")
+                    analysis.take_plot(take, separate_axes=False)
 
             return hologram
 

@@ -400,21 +400,15 @@ class _HologramStats(object):
                 amp = np.abs(source)
                 phase = np.angle(source)
 
+        # A uniform amplitude is stored as a scalar; broadcast it to the full SLM shape.
         if np.ndim(amp) == 0:
-            im_amp = axs[0].imshow(
-                toolbox.pad(
-                    amp * np.ones(self.slm_shape),
-                    self.shape if padded else self.slm_shape,
-                ),
-                vmin=0,
-                vmax=amp,
-            )
-        else:
-            im_amp = axs[0].imshow(
-                toolbox.pad(amp, self.shape if padded else self.slm_shape),
-                vmin=0,
-                vmax=np.amax(amp),
-            )
+            amp = amp * np.ones(self.slm_shape)
+
+        im_amp = axs[0].imshow(
+            toolbox.pad(amp, self.shape if padded else self.slm_shape),
+            vmin=0,
+            vmax=np.amax(amp),
+        )
 
         im_phase = axs[1].imshow(
             toolbox.pad(np.mod(phase, 2 * np.pi) / np.pi, self.shape if padded else self.slm_shape),

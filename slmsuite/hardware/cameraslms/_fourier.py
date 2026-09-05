@@ -285,9 +285,12 @@ class _FourierCalibration(object):
         Sets the Fourier calibration to a user-supplied affine transformation.
 
         ``M`` and ``b`` define the mapping :math:`\vec{y} = M\vec{x} + \vec{b}`
-        from SLM Fourier space (``"kxy"``) to raw camera sensor coordinates
-        (before WOI offset, binning, or orientation transform).
-        When none of those transforms are active, raw coordinates equal image coordinates.
+        from SLM Fourier space (``"kxy"``) to **camera image** coordinates (``"ij"``),
+        i.e. the WOI'd, binned, oriented frame that
+        :meth:`~slmsuite.hardware.cameras.camera.Camera.get_image()` returns and that
+        :meth:`kxyslm_to_ijcam` speaks. The calibration is stored internally in raw
+        sensor coordinates, so it remains valid if the WOI, binning, or orientation
+        later change; the conversion is done here.
 
         See :meth:`fourier_calibration_build` to construct ``M`` and ``b`` analytically
         from a known focal length.
@@ -295,9 +298,9 @@ class _FourierCalibration(object):
         Parameters
         ----------
         M : array_like
-            2×2 affine matrix mapping kxy → raw camera pixels.
+            2×2 affine matrix mapping kxy → camera image pixels.
         b : array_like
-            Length-2 translation vector (raw camera pixel coordinates).
+            Length-2 translation vector (camera image pixel coordinates).
 
         Returns
         -------
@@ -311,16 +314,18 @@ class _FourierCalibration(object):
         a = format_2vectors([0,0])
         b = format_2vectors(b)
 
-        self.calibrations["fourier"] = {
-            "M": M,
-            "b": b,
-            "a": a
-        }
+        # kxyslm -> ijcam -> ijraw, as in _fourier_calibrate_single().
+        kxyslm_to_ijraw = self.cam._get_ijcam_to_ijraw() @ Affine(M, b, a)
+        self.calibrations["fourier"] = kxyslm_to_ijraw.to_dict()
         self.calibrations["fourier"].update(self._get_calibration_metadata())
 
-        # Set the camera's virtual calibration if it is not already set.
+        # Set the camera's virtual calibration if it is not already set. A simulated
+        # camera renders its full raw sensor and windows afterwards, so its affine is
+        # the raw one, not the image-frame one the user passed.
         if hasattr(self.cam, "set_affine") and getattr(self.cam, "M", None) is None:
-            self.cam.set_affine(M, b)
+            self.cam.set_affine(
+                self.calibrations["fourier"]["M"], self.calibrations["fourier"]["b"]
+            )
 
         return self.calibrations["fourier"]
 
@@ -349,13 +354,17 @@ class _FourierCalibration(object):
         shear_angle : float
             Shear angle in radians.
         offset : array_like or None
-            Camera-space offset of the optical axis. Defaults to the camera center.
+            Offset of the optical axis in camera image (``"ij"``) coordinates.
+            Defaults to the center of the current image, i.e. of the WOI if one is set.
 
         Returns
         -------
         (M, b) : tuple of numpy.ndarray
-            Affine parameters suitable for :meth:`fourier_calibrate_analytic`.
+            Affine parameters in the camera image (``"ij"``) frame,
+            suitable for :meth:`fourier_calibrate_analytic`.
         """
+        # Both this offset and cam.pitch_um (used for M, below) are stated in the
+        # camera's image frame, which is the frame fourier_calibrate_analytic expects.
         if offset is None:
             offset = np.flip(self.cam.shape) / 2
         return toolbox.build_affine(
@@ -447,6 +456,97 @@ class _FourierCalibration(object):
             return np.vstack((ij, self._kxyslm_to_ijcam_depth(kxy[[2], :])))
         else:
             return ij
+
+    @property
+    def zeroth_order_ij(self):
+        """
+        The ``(x, y)`` position of the optical axis (the undiffracted zeroth order)
+        in the current camera image, of shape ``(2, 1)``.
+
+        Equivalent to ``kxyslm_to_ijcam([0, 0])`` and therefore in the same
+        WOI/binned/oriented frame as :meth:`~slmsuite.hardware.cameras.camera.Camera.get_image()`.
+
+        Caution
+        ~~~~~~~
+        This is **not** ``calibrations["fourier"]["b"]``, which is stored in raw sensor
+        coordinates (see :attr:`fourier_affine`). The two agree only when the camera has
+        no WOI, binning, or orientation transform.
+
+        Raises
+        ------
+        RuntimeError
+            If the Fourier calibration does not exist.
+        """
+        return self.kxyslm_to_ijcam([0, 0])
+
+    @property
+    def nyquist_zone_ij(self):
+        """
+        The four corners of the SLM's first Nyquist zone --- the farfield region the SLM
+        can actually diffract into --- in camera image (``"ij"``) coordinates, of shape
+        ``(2, 4)``.
+
+        The zone is a rectangle in ``"kxy"``, so it is a general *parallelogram* in
+        ``"ij"`` whenever the Fourier calibration rotates or shears. See
+        :meth:`nyquist_zone_bounds_ij` for an axis-aligned box that fits inside it.
+        """
+        # The ``"knm"`` basis with shape (1,1) *is* the first Nyquist zone mapped to the
+        # unit square, per axis. Inverting that mapping keeps this consistent with the
+        # tests elsewhere that go the other way, and honors an anisotropic pixel pitch,
+        # which a single scalar ``kmax`` would not.
+        return toolbox.convert_vector(
+            np.array([[0., 1., 0., 1.], [0., 0., 1., 1.]]),
+            from_units="knm",
+            to_units="ij",
+            hardware=self,
+            shape=[1, 1],
+        )[:2]
+
+    def nyquist_zone_bounds_ij(self, margin=0.):
+        """
+        The largest axis-aligned box inscribed in :attr:`nyquist_zone_ij`, inset by
+        ``margin``, as ``(low, high)`` of shape ``(2, 1)`` each.
+
+        The zone's own bounding box is too generous under rotation or shear, so a lattice
+        laid out against it spills points outside the addressable farfield. This returns
+        bounds every point of which is addressable.
+
+        Parameters
+        ----------
+        margin : float OR (float, float)
+            Inset applied to each side, in camera pixels. Pass half the width of whatever
+            patch each point owns, so that the whole patch is addressable, not just its
+            center.
+
+        Returns
+        -------
+        (numpy.ndarray, numpy.ndarray)
+            Lower and upper bounds in ``"ij"``, each of shape ``(2, 1)``.
+        """
+        zone_ij = self.nyquist_zone_ij
+
+        # ``knm = A @ ij + b`` is affine, so a box of half-widths ``h`` about the zone
+        # center maps inside the unit square exactly when ``abs(A) @ h <= 0.5`` --- worst
+        # case over the corners' sign choices. Recover ``abs(A)`` by mapping the origin
+        # and the two unit vectors together, then differencing.
+        probe_knm = toolbox.convert_vector(
+            np.array([[0., 1., 0.], [0., 0., 1.]]),
+            from_units="ij",
+            to_units="knm",
+            hardware=self,
+            shape=[1, 1],
+        )[:2]
+        jacobian = np.abs(probe_knm[:, 1:] - probe_knm[:, [0]])
+
+        # Scale the zone's bounding box down by the largest feasible factor, keeping its
+        # aspect ratio. The zone is symmetric about ``kxy = 0``, so its center is the
+        # zeroth order.
+        center = self.zeroth_order_ij
+        half = np.ptp(zone_ij, axis=1).reshape(2, 1) / 2.
+        half = half * np.min(0.5 / np.maximum(jacobian @ half, 1e-12))
+
+        margin = np.broadcast_to(np.reshape(margin, (-1, 1)), (2, 1)).astype(float)
+        return (center - half + margin, center + half - margin)
 
     def ijcam_to_kxyslm(self, ij):
         r"""

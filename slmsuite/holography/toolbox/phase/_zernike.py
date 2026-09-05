@@ -648,6 +648,8 @@ def _zernike_sum_from_basis(basis, weights, out=None):
     if out is not None:
         if not xp.issubdtype(out.dtype, xp.inexact):
             raise ValueError(f"out must be a floating-point or complex buffer, got {out.dtype}.")
+        if get_array_module(out) is not xp:
+            raise ValueError("out and grid must both be cupy arrays if one is.")
         # Normalize a possibly-flattened out buffer to (N, h, w).
         out = out.reshape((N,) + basis.grid_shape)
         out[...] = result.reshape((N,) + basis.grid_shape)
@@ -1043,19 +1045,20 @@ def zernike_pyramid_plot(
     a1.remove()
     a2.remove()
 
-    # Grab all the phases as a stack.
+    # Grab all the phases as a stack. Let zernike_sum allocate, so the stack lands on
+    # whichever backend the grid is on rather than forcing a host buffer onto a GPU grid.
     if noborder:
         if "use_mask" in kwargs and kwargs["use_mask"] is False:
             pass
         else:
             kwargs["use_mask"] = np.nan
 
-    phases = zernike_sum(
+    phases = as_numpy(zernike_sum(
         grid,
         indices_ansi[np.newaxis, :],
         np.diag(np.ones_like(indices_ansi)),
         **kwargs
-    )
+    ))
 
     axes = []
 
@@ -1067,8 +1070,7 @@ def zernike_pyramid_plot(
         axes.append(a)
 
         # Plot the phase.
-        phase = phases[i]
-        plt.imshow(as_numpy(phase), cmap=cmap)
+        plt.imshow(phases[i], cmap=cmap)
 
         # Construct the title.
         title = ""
