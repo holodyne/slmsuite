@@ -713,17 +713,15 @@ class Camera(_Common, ABC):
         if averaging is None:
             if preserve_none:
                 return None
-            if self.averaging is None:
-                averaging = 1
-            else:
-                averaging = self.averaging
-        elif isinstance(averaging, (bool, np.bool_)) and not averaging:
-            averaging = 1
-        else:
-            averaging = int(averaging)
+            averaging = 1 if self.averaging is None else self.averaging
 
-            if averaging <= 0:
-                raise ValueError("Cannot have negative averaging.")
+        if isinstance(averaging, (bool, np.bool_)) and not averaging:
+            return 1
+
+        averaging = int(averaging)
+
+        if averaging <= 0:
+            raise ValueError("Cannot have negative averaging.")
 
         return averaging
 

@@ -1004,6 +1004,47 @@ def test_make_8bit(subtests):
         np.testing.assert_array_equal(converted, 0)
 
 
+def test_score_array_orientation(subtests):
+    """Test _score_array_orientation()'s recovery of an array's orientation."""
+    array_shape = (5, 5)
+    M = np.array([[22.0, 0.0], [0.0, 22.0]])
+    b = np.array([[150.0], [150.0]])
+    codes = list(analysis.OrientationTransform.D_4)
+    centers = analysis._array_indices(array_shape)
+
+    def render(code, withhold=True, dark=(), sigma=0):
+        """Image of the array under ``code``, optionally dimming or keeping the fiducials."""
+        placed = np.matmul(
+            M, np.matmul(analysis.OrientationTransform.from_code(code).M(), centers)
+        ) + b
+        count = placed.shape[1] - (2 if withhold else 0)
+        image = np.zeros((300, 300))
+        for i in range(count):
+            (x, y) = np.rint(placed[:, i]).astype(int)
+            image[y - 1 : y + 2, x - 1 : x + 2] = 20.0 if i in dark else 1000.0
+        if sigma:
+            image = image + np.random.default_rng(0).normal(0, sigma, image.shape)
+        return analysis.image_remove_field(image, deviations=None)
+
+    with subtests.test("every orientation is recovered from its withheld pair"):
+        for code in codes:
+            best = analysis._score_array_orientation(render(code), M, b, array_shape, 5)
+            assert best is not None and best[0] == code
+
+    with subtests.test("a full array is undecidable, with or without noise"):
+        for sigma in (0, 1, 5):
+            assert analysis._score_array_orientation(
+                render(codes[0], withhold=False, sigma=sigma), M, b, array_shape, 5
+            ) is None
+
+    with subtests.test("dimmed spots do not prevent recovery"):
+        for code in codes:
+            best = analysis._score_array_orientation(
+                render(code, dark=(0, 4, 9)), M, b, array_shape, 5
+            )
+            assert best is not None and best[0] == code
+
+
 def test_get_orientation_transformation(subtests):
     """Test get_orientation_transformation() composition of rotate/flip operations."""
     image = np.arange(9).reshape(3, 3)

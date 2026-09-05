@@ -2029,13 +2029,17 @@ def _score_array_orientation(image, M, b, array_shape, psf, threshold=0.2):
 
         scored.append((code, lit, dark, residual))
 
-    # Two orientations that score alike decide nothing, so refuse rather than pick one.
-    scored.sort(key=lambda s: s[2] - s[1])
+    # Only an orientation whose withheld pair reads dark can be the true one, and two of
+    # those that score alike decide nothing.
+    candidates = sorted((s for s in scored if s[2] < threshold), key=lambda s: s[2] - s[1])
 
-    if not scored or (len(scored) > 1 and scored[1][1] - scored[1][2] == scored[0][1] - scored[0][2]):
+    if not candidates or (
+        len(candidates) > 1
+        and candidates[1][1] - candidates[1][2] == candidates[0][1] - candidates[0][2]
+    ):
         return None
 
-    return scored[0]
+    return candidates[0]
 
 
 def _lattice_fourier(image, dft_threshold=100, dft_padding=0, k=8, tol=0.1, plot=0):
@@ -2595,6 +2599,7 @@ def blob_array_detect(
     # FUTURE: Use a more physics-based psf, optimize for speed, maybe remove_field.
     hone_count = 3
     region_fraction = 1
+    true_positions = None
     for _ in range(hone_count):
         guess_positions = np.matmul(orientation["M"], centers) + orientation["b"]
 
@@ -2611,9 +2616,12 @@ def blob_array_detect(
         # Get the first order moment rint each of the guess windows.
         shift = image_positions(regions) - (guess_positions - np.floor(guess_positions))
 
-        # Remove outliers.
+        # Remove outliers. An empty window has no centroid to contribute.
+        shift[:, np.nansum(regions, axis=(1, 2)) <= 0] = np.nan
         shift_error = np.sqrt(np.square(shift[0, :]) + np.square(shift[1, :]))
-        thresh = np.mean(shift_error) + np.std(shift_error)
+        if not np.any(np.isfinite(shift_error)):
+            break       # No window holds a spot, so there is nothing to hone against.
+        thresh = np.nanmean(shift_error) + np.nanstd(shift_error)
         shift[:, shift_error > thresh] = np.nan
 
         # Locally fit an affine based on the measured positions.
@@ -2621,8 +2629,13 @@ def blob_array_detect(
         orientation = fit_affine(centers, true_positions, orientation)
 
     # How far the measured spots sit from the array that was fitted to them.
-    predicted = np.matmul(orientation["M"], centers) + orientation["b"]
-    orientation["residual"] = float(np.nanmedian(np.linalg.norm(predicted - true_positions, axis=0)))
+    if true_positions is None:
+        orientation["residual"] = float("nan")
+    else:
+        predicted = np.matmul(orientation["M"], centers) + orientation["b"]
+        orientation["residual"] = float(
+            np.nanmedian(np.linalg.norm(predicted - true_positions, axis=0))
+        )
     min_pitch = float(np.min(np.linalg.norm(orientation["M"], axis=0)))
     if min_pitch > 0 and orientation["residual"] > 0.1 * min_pitch:
         logger.warning(
@@ -2638,8 +2651,10 @@ def blob_array_detect(
             "calibration results may be improperly centered as a result."
         )
     # Also warn if computed positions approach camera FOV boundary.
-    elif np.any(np.nanmax(true_positions, axis=1) > 0.95 * np.flip(np.array(image_8bit.shape))) or \
-         np.any(np.nanmin(true_positions, axis=1) < 0.05 * np.flip(np.array(image_8bit.shape))):
+    elif true_positions is not None and (
+        np.any(np.nanmax(true_positions, axis=1) > 0.95 * np.flip(np.array(image_8bit.shape))) or
+        np.any(np.nanmin(true_positions, axis=1) < 0.05 * np.flip(np.array(image_8bit.shape)))
+    ):
         logger.warning(
             "The fitted spot array approaches or exceeds the camera FOV; "
             "calibration results may be improperly centered as a result."
@@ -2788,6 +2803,11 @@ class OrientationTransform:
 
     The group elements are combinations of 90 deg rotations and flips.
     All image transforms are zero-copy numpy view operations.
+
+    .. note::
+        ``D_4`` names each element in the order it composes, flip first, while these
+        parameters apply the flip last. The two orders invert the rotation between them, so
+        ``rot="90", fliplr=True`` is ``D_4.FLIP_ROT270``.
 
     Parameters
     ----------

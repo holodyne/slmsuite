@@ -568,7 +568,8 @@ def window_slice(window, shape=None, centered=False, circular=False):
         The (height, width) of the array that the window is a view into.
         If not ``None``, indices beyond those allowed by ``shape`` will be clipped.
     centered : bool
-        See ``window``.
+        See ``window``. The window is indexed like an FFT, so ``(x,y)`` lands at
+        offset ``w // 2``; an even-width window is not symmetric about it.
     circular : bool
         See ``window``.
 

@@ -13,6 +13,8 @@ import logging
 import logging.config
 import sys
 
+from slmsuite._pickling import _Picklable
+
 _DEFAULT_LEVEL = logging.INFO
 _BUFFER_CAPACITY = 10000
 
@@ -225,8 +227,6 @@ def make_logger(name, color="default"):
         logging.getLogger(f"slmsuite.{name}"),
         extra={"log_name": name, "log_color": _LOGGER_COLORS.get(color, _LOGGER_COLORS["reset"])},
     )
-
-from slmsuite._pickling import _Picklable
 
 
 class _Loggable(_Picklable):
