@@ -81,7 +81,7 @@ class _WavefrontCalibration(
             calibration_points = calibration_points_[:, :num_points]
 
             if calibration_points.shape[1] == 0:
-                zone = np.ptp(self.nyquist_zone_ij, axis=1)
+                zone = np.ptp(self.get_farfield_extent(), axis=1)
                 raise ValueError(
                     f"No calibration points fit at pitch={kwargs.get('pitch')} (the width "
                     f"of one calibration patch). Each point needs its whole patch inside "
@@ -213,10 +213,11 @@ class _WavefrontCalibration(
         (low, high) = (np.broadcast_to(margin, (2, 1)).astype(float).copy(), plane - margin)
 
         if avoid_nyquist:
-            # Every center in these bounds owns a whole ``pitch``-wide patch inside the zone.
-            (zone_low, zone_high) = self.nyquist_zone_bounds_ij(margin)
-            low = np.maximum(low, zone_low)
-            high = np.minimum(high, zone_high)
+            # Every center in these bounds owns a whole ``pitch``-wide patch inside the
+            # first Nyquist zone, which is what the calibration pattern actually tiles.
+            zone_ij = self.get_farfield_extent(inscribe=True, margin=margin)
+            low = np.maximum(low, np.min(zone_ij, axis=1, keepdims=True))
+            high = np.minimum(high, np.max(zone_ij, axis=1, keepdims=True))
 
         usable = np.maximum(high - low, 0)
 

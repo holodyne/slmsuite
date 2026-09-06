@@ -477,72 +477,6 @@ class _FourierCalibration(object):
         """
         return self.kxyslm_to_ijcam([0, 0])
 
-    @property
-    def nyquist_zone_ij(self):
-        """
-        The four corners of the SLM's first Nyquist zone --- the farfield region the SLM
-        can actually diffract into --- in camera image (``"ij"``) coordinates, of shape
-        ``(2, 4)``.
-
-        The zone is a rectangle in ``"kxy"``, so it is a general *parallelogram* in
-        ``"ij"`` whenever the Fourier calibration rotates or shears. See
-        :meth:`nyquist_zone_bounds_ij` for an axis-aligned box that fits inside it.
-        """
-        # The ``"knm"`` basis with shape (1,1) maps the first Nyquist zone onto the unit
-        # square, per axis, and so honors an anisotropic pixel pitch.
-        return toolbox.convert_vector(
-            np.array([[0., 1., 0., 1.], [0., 0., 1., 1.]]),
-            from_units="knm",
-            to_units="ij",
-            hardware=self,
-            shape=[1, 1],
-        )[:2]
-
-    def nyquist_zone_bounds_ij(self, margin=0.):
-        """
-        The largest axis-aligned box inscribed in :attr:`nyquist_zone_ij`, inset by
-        ``margin``, as ``(low, high)`` of shape ``(2, 1)`` each.
-
-        The zone's own bounding box is too generous under rotation or shear, so a lattice
-        laid out against it spills points outside the addressable farfield. This returns
-        bounds every point of which is addressable.
-
-        Parameters
-        ----------
-        margin : float OR (float, float)
-            Inset applied to each side, in camera pixels. Pass half the width of whatever
-            patch each point owns, so that the whole patch is addressable, not just its
-            center.
-
-        Returns
-        -------
-        (numpy.ndarray, numpy.ndarray)
-            Lower and upper bounds in ``"ij"``, each of shape ``(2, 1)``.
-        """
-        zone_ij = self.nyquist_zone_ij
-
-        # ``knm = A @ ij + b`` is affine, so half-widths ``h`` about the zone center fit
-        # inside the unit square exactly when ``abs(A) @ h <= 0.5``, worst case over the
-        # corners' signs. Recover ``abs(A)`` by mapping the origin and the unit vectors.
-        probe_knm = toolbox.convert_vector(
-            np.array([[0., 1., 0.], [0., 0., 1.]]),
-            from_units="ij",
-            to_units="knm",
-            hardware=self,
-            shape=[1, 1],
-        )[:2]
-        jacobian = np.abs(probe_knm[:, 1:] - probe_knm[:, [0]])
-
-        # Scale the zone's bounding box down by the largest feasible factor, keeping its
-        # aspect ratio. The zone is symmetric about ``kxy = 0``, so its center is the
-        # zeroth order.
-        center = self.zeroth_order_ij
-        half = np.ptp(zone_ij, axis=1).reshape(2, 1) / 2.
-        half = half * np.min(0.5 / np.maximum(jacobian @ half, 1e-12))
-
-        margin = np.broadcast_to(np.reshape(margin, (-1, 1)), (2, 1)).astype(float)
-        return (center - half + margin, center + half - margin)
-
     def ijcam_to_kxyslm(self, ij):
         r"""
         Converts camera pixel space (``"ij"``) to SLM Fourier space (``"kxy"``).
@@ -776,11 +710,16 @@ class _FourierCalibration(object):
 
     # Helper functions to plot the rectangles of the camera and SLM farfield onto each other.
 
-    def get_farfield_extent(self, return_mask=False):
+    def get_farfield_extent(self, return_mask=False, inscribe=False, margin=0.):
         """
-        Find the extent of the SLM's farfield **in the coordinates of the camera**:
+        Find the extent of the SLM's farfield --- the first Nyquist zone, the region the
+        SLM can actually diffract into --- **in the coordinates of the camera**:
         either the corners in ``ij`` units
         or as a boolean mask of the camera's shape.
+
+        The farfield is a rectangle in ``"kxy"``, so it is a general *parallelogram* in
+        ``"ij"`` whenever the Fourier calibration rotates or shears. Pass ``inscribe`` for
+        an axis-aligned box that fits inside it.
 
         Parameters
         ----------
@@ -789,11 +728,30 @@ class _FourierCalibration(object):
             in camera pixel space (closed polygon with camera origin repeated).
             If ``True``, returns a boolean mask of shape ``cam.shape`` that is ``True``
             where the SLM farfield falls on the camera.
+        inscribe : bool
+            If ``True``, returns the largest axis-aligned box inscribed in the farfield
+            instead of the farfield itself. The farfield's own bounding box is too
+            generous under rotation or shear, so a lattice laid out against it spills
+            points outside the addressable region; every point of the inscribed box is
+            addressable.
+        margin : float OR (float, float)
+            Inset applied to each side of the inscribed box, in camera pixels. Pass half
+            the width of whatever patch each point owns, so that the whole patch is
+            addressable, not just its center. Requires ``inscribe``, as insetting a
+            sheared parallelogram is not well defined.
 
         Returns
         -------
         numpy.ndarray
+
+        Raises
+        ------
+        ValueError
+            If ``margin`` is nonzero without ``inscribe``.
         """
+        if not inscribe and np.any(np.array(margin) != 0):
+            raise ValueError("margin requires inscribe=True.")
+
         ll = [0, 0]
         lr = [1, 0]
         ur = [1, 1]
@@ -811,6 +769,35 @@ class _FourierCalibration(object):
                 shape=(1,1),
             )
         )
+
+        if inscribe:
+            # ``knm = A @ ij + b`` is affine, so a box of half-widths ``h`` about the
+            # farfield center maps inside the unit square exactly when
+            # ``abs(A) @ h <= 0.5`` --- worst case over the corners' sign choices.
+            # Recover ``abs(A)`` by mapping the origin and the two unit vectors together,
+            # then differencing.
+            probe_knm = toolbox.convert_vector(
+                np.array([[0., 1., 0.], [0., 0., 1.]]),
+                from_units="ij",
+                to_units="knm",
+                hardware=self,
+                shape=[1, 1],
+            )[:2]
+            jacobian = np.abs(probe_knm[:, 1:] - probe_knm[:, [0]])
+
+            # Scale the farfield's bounding box down by the largest feasible factor,
+            # keeping its aspect ratio.
+            center = np.mean(corners_ij[:, :4], axis=1, keepdims=True)
+            half = np.ptp(corners_ij, axis=1).reshape(2, 1) / 2.
+            half = half * np.min(0.5 / np.maximum(jacobian @ half, 1e-12))
+
+            margin = np.broadcast_to(np.reshape(margin, (-1, 1)), (2, 1)).astype(float)
+            (low, high) = (center - half + margin, center + half - margin)
+
+            corners_ij = np.array([
+                [low[0, 0], high[0, 0], high[0, 0], low[0, 0], low[0, 0]],
+                [low[1, 0], low[1, 0], high[1, 0], high[1, 0], low[1, 0]],
+            ])
 
         if not return_mask:
             return corners_ij
