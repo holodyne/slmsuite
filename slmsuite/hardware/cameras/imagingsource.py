@@ -209,7 +209,8 @@ class ImagingSource(Camera):
         for i in range(0, devicecount):
             serial_list.append(tis.D(ImagingSource.sdk.IC_GetUniqueNamefromList(i)))
 
-        if verbose: print(serial_list)
+        if verbose: 
+            print(serial_list)
 
         return serial_list
 

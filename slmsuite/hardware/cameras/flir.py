@@ -289,12 +289,9 @@ class FLIR(Camera):
                 model = node_model.GetValue() if PySpin.IsReadable(node_model) else "unknown"
                 serial_list.append(sn)
                 if verbose:
-                    print(f"  {i}: {sn} ({model})")
+                    print(f"{sn} ('{model}')")
                 # Don't hold references to individual cameras
                 del cam
-
-            if verbose and not serial_list:
-                print("  No cameras found.")
 
             # Clear camera list
             camera_list.Clear()

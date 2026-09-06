@@ -176,9 +176,8 @@ class Basler(Camera):
         serial_list = [cam.GetSerialNumber() for cam in camera_list]
 
         if verbose:
-            print('Basler cameras:')
             for serial in serial_list:
-                print("\"{}\"".format(serial))
+                print(serial)
 
         if close_sdk:
             Basler.close_sdk()

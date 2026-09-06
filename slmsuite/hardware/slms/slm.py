@@ -5,6 +5,7 @@ Abstract functionality for SLMs.
 import os
 import time
 
+from lark import logger
 import numpy as np
 
 try:
@@ -248,10 +249,13 @@ class SLM(_Common, ABC):
                 self.bitdepth
             )
 
-        if self.xp is np and cp is not np:
-            self.logger.warning(
-                "cupy is installed, but gpu=False, so this SLM runs (slowly) on the host (numpy)."
-            )
+        if cp is not np:
+            if self.xp is np:
+                self.logger.warning(
+                    "cupy is installed, but gpu=False, so this SLM runs (slowly) on the host (numpy)."
+                )
+            else:
+                logger.info("Using GPU (cupy) backend.")
 
         # Phase and display caches for user reference.
         self.phase = self.xp.zeros(self.shape, dtype=np.float32)

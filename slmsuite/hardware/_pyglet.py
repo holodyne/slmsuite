@@ -284,7 +284,8 @@ def _screen_id(screen):
                 device_name,
                 0,
                 ctypes.byref(device),
-                _EDD_GET_DEVICE_INTERFACE_NAME):
+                _EDD_GET_DEVICE_INTERFACE_NAME
+            ):
                 # e.g. '\\?\DISPLAY#DLP03C9#5&4c0ed3&1&UID4353#{e6f07b5f-ee97-...}'
                 # Drop interface GUID.
                 device_id = device.DeviceID.split("#{")[0]      

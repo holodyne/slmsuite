@@ -309,10 +309,6 @@ class Santec(SLM):
         # Check for the SLM parameters and save them
         display_list = []
 
-        if verbose:
-            print("Displays detected by Santec")
-            print("display_number, display_name:")
-
         for display_number in range(1, 9):
             width = ctypes.c_ushort(0)
             height = ctypes.c_ushort(0)
@@ -326,7 +322,7 @@ class Santec(SLM):
             name = display_name.value.decode("mbcs")
             if len(name) > 0:
                 if verbose:
-                    print("{},  {}".format(display_number, name))
+                    print("{} ({})".format(display_number, name))
 
                 display_list.append((display_number, name))
 

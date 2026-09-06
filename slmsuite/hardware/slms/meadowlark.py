@@ -305,13 +305,15 @@ class Meadowlark(SLM):
             )
             for board in range(1, Meadowlark._number_of_boards[mode] + 1)
         ]
+
         if verbose:
-            print(f"Using {_SDK_MODE_NAMES[mode]} SDK at '{Meadowlark._sdk_path[mode]}'")
+            print(f"SLMs detected using {_SDK_MODE_NAMES[mode]} SDK at '{Meadowlark._sdk_path[mode]}':")
             if len(info):
                 for board, dims in info:
-                    print(f"SLM {board}: {dims}")
+                    print(f"{board} ({dims})")
             else:
                 print("No boards found.")
+
         return info
 
     @staticmethod

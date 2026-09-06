@@ -158,7 +158,7 @@ class MindVision(Camera):
 
         if verbose:
             for cam in camera_list:
-                print(f"'{cam.GetSn()}': {cam.GetFriendlyName()} ({cam.GetPortType()})")
+                print(f"{cam.GetSn()} ({cam.GetFriendlyName()}, {cam.GetPortType()})")
 
         return serial_list
 

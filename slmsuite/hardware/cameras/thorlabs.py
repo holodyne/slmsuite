@@ -231,9 +231,8 @@ class ThorCam(Camera):
         camera_list = ThorCam.sdk.discover_available_cameras()
 
         if verbose:
-            print("ThorCam serials:")
             for serial in camera_list:
-                print(f"'{serial}'")
+                print(serial)
 
         if close_sdk:
             ThorCam.close_sdk()

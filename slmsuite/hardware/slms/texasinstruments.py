@@ -73,14 +73,14 @@ except ImportError:
     yaml = None
 
 # PLM Constants
-MODEL_DB_PATH = os.path.join(os.path.dirname(__file__), "texas_instruments.yaml")
+MODEL_DB_PATH = os.path.join(os.path.dirname(__file__), "texasinstruments.yaml")
 DLPC900_VENDOR_ID = 0x0451
 DLPC900_PRODUCT_ID = 0xC900
 DLPC900_EXPOSURE_US = 694
 
 
 def _load_model_db():
-    """The model database read from ``texas_instruments.yaml``."""
+    """The model database read from ``texasinstruments.yaml``."""
     if yaml is None:
         raise ImportError(
             "pyyaml is required to read the PLM model database. "
@@ -145,7 +145,7 @@ class PLM(ScreenMirrored):
     Attributes
     ----------
     model_config : dict
-        Model configuration from texas_instruments.yaml.
+        Model configuration from texasinstruments.yaml.
     dlpc900 : DLPC900 or None
         USB interface to DLPC900 EVM, if configured.
     electrode_layout : ndarray
@@ -176,7 +176,7 @@ class PLM(ScreenMirrored):
         Parameters
         ----------
         model_name : str
-            Model identifier from ``texas_instruments.yaml`` (e.g., ``"p47"``, ``"p67"``).
+            Model identifier from ``texasinstruments.yaml`` (e.g., ``"p47"``, ``"p67"``).
             Available models can be queried with :meth:`get_model_list()`.
         display_number : int OR None
             Monitor number for display.
@@ -227,14 +227,18 @@ class PLM(ScreenMirrored):
             self.dlpc900 = DLPC900(
                 vendor_id=usb_vendor_id,
                 product_id=usb_product_id,
-                device_number=usb_device_number
+                device_number=usb_device_number,
             )
 
             # Note the currently attached displays to detect the new one 
             known_ids = _screen_ids()
 
-            PLM._usb_pre_configure(self.dlpc900, video_input, pixel_mode,
-                                   display_number)
+            PLM._usb_pre_configure(
+                self.dlpc900, 
+                video_input, 
+                pixel_mode,
+                display_number,
+            )
 
             # If display_number isn't provided, find it.
             if display_number is None:
@@ -276,8 +280,6 @@ class PLM(ScreenMirrored):
             name=kwargs.pop("name", model_name),
             **kwargs
         )
-
-        logger.debug("PLM using %s backend", "GPU (cupy)" if self.xp is not np else "CPU (numpy)")
 
         # Calculate display shape after electrode mapping
         elec_shape = self._electrode_layout_raw.shape
@@ -321,7 +323,7 @@ class PLM(ScreenMirrored):
     @staticmethod
     def load_model_config(model_name):
         """
-        Load model configuration from texas_instruments.yaml.
+        Load model configuration from texasinstruments.yaml.
 
         Parameters
         ----------
@@ -438,7 +440,7 @@ class PLM(ScreenMirrored):
         Parameters
         ----------
         model_name : str
-            Model identifier from ``texas_instruments.yaml`` (e.g. ``"p47"``,
+            Model identifier from ``texasinstruments.yaml`` (e.g. ``"p47"``,
             ``"p67"``), applied to every PLM. See :meth:`get_model_list`.
         display_numbers : list of int OR None
             Display number driven by each EVM, in device order. When given, the
@@ -975,7 +977,7 @@ class PLM(ScreenMirrored):
         Returns
         -------
         list of str
-            Model identifiers available in texas_instruments.yaml
+            Model identifiers available in texasinstruments.yaml
         """
         model_db = _load_model_db()
 
@@ -1110,17 +1112,13 @@ class DLPC900:
         """
         devices = DLPC900._enumerate(vendor_id, product_id)
 
-        if verbose:
-            print("DLPC900 Devices:")
-            print("#,  Path")
-
         device_list = []
 
         for device_number, device in enumerate(devices):
             path = device["path"].decode()
 
             if verbose:
-                print(f"{device_number},  {path}")
+                print(f"{device_number} ({path})")
 
             device_list.append((device_number, path))
 

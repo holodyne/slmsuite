@@ -219,9 +219,8 @@ class AlliedVision(Camera):
         serial_list = [cam.get_serial() for cam in camera_list]
 
         if verbose:
-            print(f"{vimba_name} serials:")
             for serial in serial_list:
-                print(f"'{serial}'")
+                print(serial)
 
         if close_sdk:
             AlliedVision.close_sdk()

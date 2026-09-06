@@ -119,7 +119,7 @@ include = ["slmsuite*"]
 [tool.setuptools.package-data]
 slmsuite = [
     "holography/toolbox/phase/cuda.cu",
-    "hardware/slms/texas_instruments.yaml",
+    "hardware/slms/texasinstruments.yaml",
     "hardware/slms/meadowlark.csv",
 ]
 
