@@ -766,40 +766,6 @@ class PLM(ScreenMirrored):
             )
         return super().set_gamma(gamma, lut_size)
 
-    def _init_quantize_lut(self, displacement_ratios=None):
-        """
-        Pre-compute a quantization lookup table (LUT) that maps discretized
-        phase values directly to phase state indices.
-
-        Replaces per-frame float modulo and ``searchsorted`` or ``digitize``
-        with a single array index at runtime. The LUT has 2^16 entries (64 KB),
-        built once from the model's non-uniform displacement ratios.
-        """
-        if displacement_ratios is None:
-            displacement_ratios = np.array(self.model_config["displacement_ratios"])
-        else:
-            if len(displacement_ratios) != self.bitresolution:
-                raise ValueError(
-                    f"Expected {self.bitresolution} displacement ratios, "
-                    f"got {len(displacement_ratios)}."
-                )
-
-        # Scale displacement ratios to (bitresolution - 1) / bitresolution
-        ratio_scale = (self.bitresolution - 1) / self.bitresolution
-
-        # Map displacement ratios to phase values in [0, 2pi)
-        phase_disp = displacement_ratios * ratio_scale * (2 * np.pi)
-        phase_disp = np.concatenate([phase_disp, [2 * np.pi]])
-
-        # Bucket boundaries (midpoints between adjacent phase levels)
-        phase_buckets = (phase_disp[:-1] + phase_disp[1:]) / 2
-
-        # Build LUT: map each of the uniformly-spaced phase values to a state
-        grid = np.arange(LUT_SIZE, dtype=np.float64) * (2 * np.pi / LUT_SIZE)
-        lut = np.searchsorted(phase_buckets, grid, side='right')
-        lut = (lut & (self.bitresolution - 1)).astype(np.uint8)
-        self._quantize_lut = self.xp.asarray(lut)
-
     def _quantize(self, phase_map):
         """
         Quantize continuous phase (in any range) to discrete phase state indices via

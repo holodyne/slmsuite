@@ -986,7 +986,7 @@ class Hologram(_HologramStats, _Loggable):
             self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
         self.phase_ff = cp.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
 
-    def _remove_vortices(self, plot=False):
+    def remove_vortices(self, plot=False):
         """
         Removes the computed phase vortices in the farfield where the target amplitude is positive.
         Useful for smoothing out the pattern and reducing speckle.
@@ -998,7 +998,7 @@ class Hologram(_HologramStats, _Loggable):
             # Define a function to use a callback.
             def remove_vortices_callback(holo):
                 if holo.iter % 10 == 9:     # Only remove vortices every 10 iterations.
-                    holo._remove_vortices() # This method is slightly expensive, so calling every loop is not advised.
+                    holo.remove_vortices() # This method is slightly expensive, so calling every loop should be avoided.
 
             # The function will be called during the loop.
             hologram.optimize(..., callback=remove_vortices_callback)

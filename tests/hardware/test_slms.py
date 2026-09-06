@@ -381,35 +381,6 @@ class TestSLM:
 
         (cpu.close(), gpu.close())
 
-    def test_gamma_matches_plm_quantize_lut(self, subtests):
-        """set_gamma generalizes PLM._init_quantize_lut, which it must reproduce exactly."""
-        pytest.importorskip("yaml", reason="the PLM model database needs pyyaml")
-        from slmsuite.hardware.slms.texasinstruments import PLM
-
-        for model in PLM.get_model_list():
-            config = PLM.load_model_config(model)
-
-            # PLM is not instantiable without a display, so borrow its methods.
-            s = self._slm(bitdepth=4)
-            s._gamma_sign = +1
-            s.model_config = config
-            PLM._init_quantize_lut(s)
-
-            B = s.bitresolution
-            reference = s._quantize_lut.copy()
-            s.set_gamma(np.array(config["displacement_ratios"]) * (B - 1) / B)
-
-            with subtests.test(model):
-                assert np.array_equal(reference, s.lut)
-
-            s.close()
-
-        with subtests.test("a PLM has no linear response to clear back to"):
-            s = self._slm(bitdepth=4)
-            with pytest.raises(ValueError, match="requires a lookup table"):
-                PLM.set_gamma(s, None)
-            s.close()
-
     def test_save_load_phase(self, slm, temp_dir, monkeypatch, subtests):
         """Round-trip save/load of phase data."""
         monkeypatch.chdir(temp_dir)

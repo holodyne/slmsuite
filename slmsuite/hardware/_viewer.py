@@ -140,6 +140,7 @@ class _Viewable:
     def live(self, activate=None, widgets=True, backend="ipython", **kwargs):
         """
         Creates and displays a live viewer.
+
           - When used with a camera, the viewer displays the last image:
             the result of :meth:`get_image()` or the last image of :meth:`get_images()`
             **whenever these methods are called**.
@@ -166,8 +167,7 @@ class _Viewable:
         However, note that any user-execution will block the monitoring loop.
         Regardless, any image polling during the blocked period will still update the viewer,
         which provides useful active feedback for what is happening during the
-        execution.
-        ``Live`` mode is ignored for SLMs.
+        execution. ``Live`` mode is ignored for SLMs.
 
         The viewer also supports zooming into a region of interest. With the ``Zoom``
         widget enabled, scroll the mouse wheel to zoom in/out toward the cursor,
@@ -241,6 +241,13 @@ class _Viewable:
                 f"'{widgets}' not recognized; "
                 f"the .live() widget backend must be one of {_WIDGET_BACKENDS}."
             )
+        
+        if backend == "pyglet":
+            try:
+                import pyglet     # noqa: F401
+            except ImportError:
+                self.logger.warn("pyglet is not installed; falling back to ipython backend.")
+                backend = "ipython"
 
         if _ipython() is None:
             if backend == "ipython":
