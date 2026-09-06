@@ -67,6 +67,10 @@ the user can install selectively.
 
 - GPU ``pip install -e ".[gpu]"``
     - `cupy <https://cupy.dev/>`_, highly recommended for GPU-accelerated holography.
+      Once installed, :mod:`slmsuite` uses GPU acceleration by default ---
+      algorithms, simulated hardware, and true hardware all run on :mod:`cupy`
+      unless ``gpu=False`` is passed during instantiation. Without :mod:`cupy`,
+      :mod:`numpy` is used as a backup.
       Sometimes, installation is made complicated by a pre-installed version of CUDA.
       You can find the CUDA version with ``nvcc --version`` in a terminal, and then
       install an installation of :mod:`cupy` specific to CUDA version ``YY`` with

@@ -22,6 +22,7 @@ from slmsuite.hardware.slms.remote import RemoteSLM
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.hardware.cameras.remote import RemoteCamera
 from slmsuite.holography.toolbox.phase import blaze
+from slmsuite.misc.xp import as_numpy
 
 
 # The server is IPv4-only, and "localhost" can offer it ::1 first.
@@ -313,7 +314,7 @@ class TestRemoteSLM:
 
         assert len(received) == 1
         assert received[0].dtype == remote.display.dtype
-        np.testing.assert_array_equal(received[0], remote.display)
+        np.testing.assert_array_equal(as_numpy(received[0]), as_numpy(remote.display))
 
 
 class TestRemoteCamera:

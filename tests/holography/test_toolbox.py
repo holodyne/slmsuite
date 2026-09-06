@@ -11,6 +11,7 @@ from scipy.spatial import distance
 from slmsuite.holography import toolbox
 from slmsuite.holography.toolbox import *
 from slmsuite.holography.toolbox import phase
+from slmsuite.misc.xp import as_numpy
 
 
 def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
@@ -47,7 +48,7 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         np.testing.assert_allclose(convert_vector(vec * 1000, "mrad", "deg"), vec * 180 / np.pi)
 
     # The blaze this vector describes, against which the grating units are measured.
-    ramp = phase.blaze(slm, (vec[0, 0], vec[1, 0]))
+    ramp = as_numpy(phase.blaze(slm, (vec[0, 0], vec[1, 0])))
     cycles = np.array([
         [(ramp[0, -1] - ramp[0, 0]) / (width - 1)],
         [(ramp[-1, 0] - ramp[0, 0]) / (height - 1)],
@@ -80,7 +81,7 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         tilt = phase.zernike_sum(
             slm, indices=(2, 1), weights=(coeff[0, 0], coeff[1, 0]), use_mask=False
         )
-        np.testing.assert_allclose(tilt, ramp, atol=1e-3)
+        np.testing.assert_allclose(as_numpy(tilt), ramp, atol=1e-3)
 
     with subtests.test("every unit inverts back to norm"):
         for unit in ["kxy", "rad", "mrad", "deg", "freq", "lpmm", "zernike", "knm"]:
@@ -221,7 +222,7 @@ def test_imprint(slm, subtests, benchmark):
         mat = np.zeros(slm.shape)
         imprint(mat, win, phase.blaze, grid=slm, vector=vector)
         np.testing.assert_allclose(
-            mat[sl], phase.blaze((slm.grid[0][sl], slm.grid[1][sl]), vector)
+            mat[sl], as_numpy(phase.blaze((slm.grid[0][sl], slm.grid[1][sl]), vector))
         )
 
     with subtests.test("centered puts (x, y) at the middle of the window"):

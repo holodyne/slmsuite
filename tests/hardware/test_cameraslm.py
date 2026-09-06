@@ -17,6 +17,7 @@ from slmsuite.holography import analysis
 from slmsuite.holography.algorithms import SpotHologram
 from slmsuite.holography.toolbox import convert_vector
 from slmsuite.holography.toolbox.phase import blaze, zernike_sum
+from slmsuite.misc.xp import as_numpy
 
 from conftest import (
     SIMULATED_SYSTEM_CASES,
@@ -670,7 +671,7 @@ class TestFourierSLM:
         for vector in ((0.013, 0.021), (0.005, 0.009), (0.041, 0.033)):
             with subtests.test(f"kxy={vector}"):
                 truth = 2 * np.pi * (
-                    vector[0] * np.asarray(x_grid) + vector[1] * np.asarray(y_grid)
+                    vector[0] * as_numpy(x_grid) + vector[1] * as_numpy(y_grid)
                 )
                 fs.calibrations["wavefront_superpixel"] = ramp_data(vector)
                 phase = fs.wavefront_calibration_superpixel_process(
@@ -983,7 +984,7 @@ class TestFourierSLM:
             # The sweep measures a handful of levels; the SLM carries all of them.
             assert len(gamma) < B
             assert fs.slm.gamma.shape == (B,)
-            np.testing.assert_allclose(fs.slm.gamma, np.arange(B) / B, atol=.02)
+            np.testing.assert_allclose(as_numpy(fs.slm.gamma), np.arange(B) / B, atol=.02)
 
         with subtests.test("apply=False leaves the SLM alone"):
             fs.slm.set_gamma(None)
@@ -1048,7 +1049,7 @@ class TestFourierSLM:
 
             uncorrected = error((-np.rint(target * B / (2 * np.pi)).astype(int)) % B)
             corrected = error(
-                np.asarray(fs.slm.lut)[np.floor(target * fs.slm._phase_to_lut).astype(int)]
+                as_numpy(fs.slm.lut)[np.floor(target * fs.slm._phase_to_lut).astype(int)]
             )
             assert corrected < uncorrected / 8
 

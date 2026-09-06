@@ -112,7 +112,8 @@ class SLM(_Common, ABC):
 
     xp : module
         The array backend, :mod:`numpy` or :mod:`cupy`, that this SLM stores and processes
-        data with. Selected by the ``gpu`` argument.
+        data with. Selected by the ``gpu`` argument, which defaults to :mod:`cupy`
+        whenever it is installed.
 
         Important
         ~~~~~~~~~
@@ -121,13 +122,14 @@ class SLM(_Common, ABC):
         :attr:`source`, which are moved onto :attr:`xp` as they are stored. Phase
         functions given the SLM (``blaze(slm, ...)``, ``zernike_sum(slm, ...)``, ...)
         therefore evaluate on :attr:`xp` and return arrays there too --- which is what
-        makes a ``gpu=True`` SLM synthesize its patterns on the GPU rather than on a host
-        meshgrid and upload the result.
+        lets a :mod:`cupy`-backed SLM synthesize its patterns on the GPU rather than on a
+        host meshgrid and upload the result.
 
-        The consequence is that a ``gpu=True`` SLM hands back :mod:`cupy` arrays, and
+        The consequence is that a :mod:`cupy`-backed SLM hands back :mod:`cupy` arrays, and
         :mod:`cupy` refuses to combine those with host arrays. Where host memory is
         required --- plotting, :mod:`cv2`, :mod:`scipy`, or a Python scalar --- ask for it
-        explicitly with :meth:`slmsuite.misc.xp.as_numpy`.
+        explicitly with :meth:`slmsuite.misc.xp.as_numpy`. Pass ``gpu=False`` to keep the
+        SLM on :mod:`numpy` instead.
     phase : numpy.ndarray OR cupy.ndarray
         Last displayed data in units of phase (radians), held on :attr:`xp`.
         If wavefront calibration (`phase_correct=True`) is used, this includes the
@@ -180,7 +182,7 @@ class SLM(_Common, ABC):
         wav_design_um=None,
         pitch_um=(8,8),
         settle_time_s=0.3,
-        gpu=False,
+        gpu=None,
     ):
         """
         Initialize SLM.
@@ -208,10 +210,12 @@ class SLM(_Common, ABC):
             See :attr:`settle_time_s`.
         gpu : bool or None
             Whether to store and process data with :mod:`cupy` (see :attr:`xp`).
-            ``None`` uses :mod:`cupy` if it is installed. Defaults to ``False``.
+            Defaults to ``None``, which uses :mod:`cupy` if it is installed and
+            :mod:`numpy` otherwise. ``gpu=False`` forces host (:mod:`numpy`) arrays;
+            ``gpu=True`` forces :mod:`cupy` and raises if it is not installed.
             This governs the whole object --- grid, aperture, and source as well as the
-            phase buffers --- so a ``gpu=True`` SLM returns :mod:`cupy` arrays throughout;
-            see the note on :attr:`xp`.
+            phase buffers --- so a :mod:`cupy`-backed SLM returns :mod:`cupy` arrays
+            throughout; see the note on :attr:`xp`.
         """
         # Choose the array backend that this SLM will hold all of its data in.
         if gpu is None:
@@ -244,11 +248,9 @@ class SLM(_Common, ABC):
                 self.bitdepth
             )
 
-        # Default behavior is gpu=False for compatability, but warn the
-        # GPU-equipped user that this is slow.
         if self.xp is np and cp is not np:
             self.logger.warning(
-                "cupy is installed, but gpu=False, so this SLM runs (slowly) on the host. "
+                "cupy is installed, but gpu=False, so this SLM runs (slowly) on the host (numpy)."
             )
 
         # Phase and display caches for user reference.
@@ -309,9 +311,9 @@ class SLM(_Common, ABC):
         coordinate frame that analytic phase functions (lenses, gratings, Zernike, ...)
         are generated in.
 
-        Held on :attr:`xp`, so this is a :mod:`cupy` meshgrid for a ``gpu=True`` SLM; pass
-        it through :meth:`slmsuite.misc.xp.as_numpy` where host memory is required. See the
-        note on :attr:`xp`.
+        Held on :attr:`xp`, so this is a :mod:`cupy` meshgrid for a :mod:`cupy`-backed SLM;
+        pass it through :meth:`slmsuite.misc.xp.as_numpy` where host memory is required.
+        See the note on :attr:`xp`.
         """
         center = (
             None if self.aperture.center is None
@@ -1372,9 +1374,13 @@ class SLM(_Common, ABC):
             factor = 1.0
         elif units == "frac":
             # Fraction of the half-extent (the smaller of the two half-dimensions).
-            factor = float(np.min([
-                np.nanmax(self._grid_base[0]), np.nanmax(self._grid_base[1])
-            ]))
+            # Reduce on the grid's own backend, then compare as Python floats: numpy
+            # cannot reduce over a list of device scalars.
+            xp = self.xp
+            factor = min(
+                float(xp.nanmax(self._grid_base[0])),
+                float(xp.nanmax(self._grid_base[1])),
+            )
         elif units in toolbox.LENGTH_FACTORS:
             factor = toolbox.LENGTH_FACTORS[units] / self.wav_um
         else:

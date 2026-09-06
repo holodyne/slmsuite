@@ -115,6 +115,11 @@ for |numpy|_ and |scipy|_, which are used as a backup if a GPU is not present.
 We repeatably measure around two orders of magnitude speedup for standard
 optimization when using |cupy|_, compared with the |numpy|_ equivalent.
 
+|slmsuite|_ uses GPU acceleration by default whenever |cupy|_ is installed:
+algorithms, simulated hardware, and true hardware all store and process their
+data with |cupy|_. |numpy|_ is used as a backup if |cupy|_ is not installed, or
+if the user passes ``gpu=False``.
+
 .. Linked modules
 
 .. |numpy| replace:: :mod:`numpy`

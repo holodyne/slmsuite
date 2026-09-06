@@ -572,10 +572,8 @@ class FourierSLM(
         gpu : bool OR None
             Whether to store and process data with :mod:`cupy` on the GPU
             (see :attr:`~slmsuite.hardware.slms.slm.SLM.xp`). Defaults to ``None``, using
-            :mod:`cupy` whenever it is installed --- deliberately unlike
-            :meth:`~slmsuite.hardware.slms.slm.SLM.__init__`, which defaults to ``False``.
-            There is no hardware here to match, and what is rebuilt is a simulation, whose
-            phase synthesis and rendering are the parts that benefit from the GPU. Pass
+            :mod:`cupy` whenever it is installed, as
+            :meth:`~slmsuite.hardware.slms.slm.SLM.__init__` does. Pass
             ``gpu=False`` for host arrays throughout.
 
         Returns

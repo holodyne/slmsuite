@@ -15,6 +15,7 @@ from slmsuite.hardware.slms.segmented import SegmentedSLM
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
 from slmsuite.holography.toolbox import Aperture
 from slmsuite.holography.toolbox.phase import zernike_sum
+from slmsuite.misc.xp import as_numpy
 
 from conftest import driver_classes
 
@@ -42,7 +43,7 @@ class TestSLM:
             assert slm.test() is True
 
         with subtests.test("the displayed phase is restored"):
-            np.testing.assert_array_equal(slm.phase, before)
+            np.testing.assert_array_equal(as_numpy(slm.phase), as_numpy(before))
 
         with subtests.test("a failing test() still restores the phase"):
             slm.info = lambda verbose=True: 1 / 0
@@ -51,7 +52,7 @@ class TestSLM:
                     slm.test()
             finally:
                 del slm.info
-            np.testing.assert_array_equal(slm.phase, before)
+            np.testing.assert_array_equal(as_numpy(slm.phase), as_numpy(before))
 
     def test_init(self, slm, monkeypatch, subtests):
         """Validate constructor-derived attributes and conventions."""
@@ -79,7 +80,7 @@ class TestSLM:
         with subtests.test("the grid is measured from the aperture center"):
             (cx, cy) = (slm.shape[1] // 3, slm.shape[0] // 3)
             slm.set_aperture(radius=0.3, units="frac", center=(cx, cy))
-            assert all(g[cy, cx] == pytest.approx(0) for g in slm.grid)
+            assert all(float(g[cy, cx]) == pytest.approx(0) for g in slm.grid)
             assert all(g.dtype == np.float32 for g in slm.grid)
             slm.set_aperture("cropped")
 
@@ -100,12 +101,16 @@ class TestSLM:
 
     def test_phase2gray(self, slm, subtests, benchmark):
         """_phase2gray wraps phase and quantizes it onto grayscale levels."""
+        # _phase2gray is private and works in-place on the SLM's own backend; the
+        # public set_phase() is what coerces a host array. So feed it slm.xp arrays.
+        xp = slm.xp
+
         with subtests.test("benchmark"):
-            phase = np.random.uniform(0, 2 * np.pi, slm.shape).astype(np.float32)
+            phase = xp.asarray(np.random.uniform(0, 2 * np.pi, slm.shape).astype(np.float32))
             benchmark(slm._phase2gray, phase)
 
         with subtests.test("zero phase is the maximum level (sign convention)"):
-            assert np.all(slm._phase2gray(np.zeros(slm.shape)) == slm.bitresolution - 1)
+            assert np.all(as_numpy(slm._phase2gray(xp.zeros(slm.shape))) == slm.bitresolution - 1)
 
         with subtests.test("a ramp of one level per level descends the staircase, wrapping"):
             for bitdepth in (5, 8):
@@ -114,15 +119,15 @@ class TestSLM:
                 k = np.arange(-2 * B, 2 * B)
                 phase = np.zeros(s.shape, dtype=np.float32)
                 phase.ravel()[: k.size] = k * (2 * np.pi / B)
-                gray = s._phase2gray(phase)
+                gray = as_numpy(s._phase2gray(s.xp.asarray(phase)))
                 np.testing.assert_array_equal(gray.ravel()[: k.size], (B - 1 - k) % B)
                 s.close()
 
         with subtests.test("large phase gives the same gray as its wrap"):
             for p in (-1e4, 10 * np.pi, 1e4):
                 np.testing.assert_array_equal(
-                    slm._phase2gray(np.full(slm.shape, p)),
-                    slm._phase2gray(np.full(slm.shape, np.mod(p, 2 * np.pi))),
+                    as_numpy(slm._phase2gray(xp.full(slm.shape, p))),
+                    as_numpy(slm._phase2gray(xp.full(slm.shape, np.mod(p, 2 * np.pi)))),
                 )
 
         s = self._slm()
@@ -189,7 +194,7 @@ class TestSLM:
             offset = 2 * np.pi / slm.bitresolution
             slm.source["phase"] = np.full(slm.shape, offset)
             slm.set_phase(np.zeros(slm.shape), phase_correct=True)
-            np.testing.assert_allclose(slm.phase, offset, rtol=1e-6)
+            np.testing.assert_allclose(as_numpy(slm.phase), offset, rtol=1e-6)
             del slm.source["phase"]
 
         with subtests.test("write() is a deprecated alias"):
@@ -420,21 +425,25 @@ class TestSLM:
             assert os.path.exists(path)
             slm.set_phase(None, phase_correct=False)
             slm.load_phase(None)
-            np.testing.assert_array_equal(slm.display, saved_display)
+            np.testing.assert_array_equal(as_numpy(slm.display), as_numpy(saved_display))
 
     def test_set_source_analytic(self, slm, subtests):
         """set_source_analytic fills source from an analytic profile."""
         with subtests.test("units scale the grid the profile is fit to"):
-            norm = slm.set_source_analytic(units="norm")["amplitude"].copy()
+            norm = as_numpy(slm.set_source_analytic(units="norm")["amplitude"]).copy()
             for units in ("um", "mm"):
                 np.testing.assert_allclose(
-                    slm.set_source_analytic(units=units)["amplitude"], norm, atol=1e-6
+                    as_numpy(slm.set_source_analytic(units=units)["amplitude"]), norm, atol=1e-6
                 )
             # "frac" scales each axis by its own extent, so it alone is anisotropic.
-            assert not np.allclose(slm.set_source_analytic(units="frac")["amplitude"], norm)
+            assert not np.allclose(
+                as_numpy(slm.set_source_analytic(units="frac")["amplitude"]), norm
+            )
 
         with subtests.test("a real profile carries phase_offset as its phase"):
-            np.testing.assert_allclose(slm.set_source_analytic(phase_offset=0.3)["phase"], 0.3)
+            np.testing.assert_allclose(
+                as_numpy(slm.set_source_analytic(phase_offset=0.3)["phase"]), 0.3
+            )
 
         with subtests.test("sim stores a separate distribution"):
             src = slm.set_source_analytic(sim=True)
@@ -442,7 +451,7 @@ class TestSLM:
 
         with subtests.test("a fit_function may be passed directly"):
             src = slm.set_source_analytic(fit_function=lambda xy, a=1: a * np.ones_like(xy[0]))
-            np.testing.assert_allclose(src["amplitude"], 1.0)
+            np.testing.assert_allclose(as_numpy(src["amplitude"]), 1.0)
 
         with subtests.test("unrecognized units raise"):
             with pytest.raises(RuntimeError, match="Did not recognize"):
@@ -452,11 +461,11 @@ class TestSLM:
         """fit_aperture sets the aperture from the measured source amplitude."""
         with subtests.test("the fit recovers the 1/e radius and center of a known source"):
             # A fifth of the smaller extent leaves the Gaussian tails well inside the SLM.
-            w = np.amin([np.amax(g) for g in slm.grid]) / 5
+            w = np.amin([float(g.max()) for g in slm.grid]) / 5
             slm.set_source_analytic(x0=0, y0=0, a=1, c=0, wx=w, wy=w)
             assert isinstance(slm.fit_aperture(method="moments"), Aperture)
             assert slm.source_radius == pytest.approx(np.sqrt(2) * w)
-            assert np.allclose(slm.aperture.center, 0)
+            assert np.allclose(as_numpy(slm.aperture.center), 0)
 
         with subtests.test("an unmeasured source guesses a quarter of the smallest extent"):
             slm.source.pop("amplitude", None)
@@ -501,7 +510,7 @@ class TestSLM:
                 slm.set_aperture(**spec)
                 assert Aperture.resolve(slm) is slm.aperture
                 assert np.array_equal(
-                    np.asarray(slm.aperture_mask), np.asarray(Aperture.resolve(slm).mask)
+                    as_numpy(slm.aperture_mask), as_numpy(Aperture.resolve(slm).mask)
                 )
 
         with subtests.test("spec and radius are mutually exclusive"):
@@ -515,8 +524,8 @@ class TestSLM:
 
         with subtests.test("zernike_sum masks a centered aperture consistently"):
             slm.set_aperture(radius=0.3, units="frac", center=(cx, cy))
-            outside = np.isnan(np.asarray(zernike_sum(slm, [4], [1.0], use_mask=np.nan)))
-            assert np.array_equal(outside, ~np.asarray(slm.aperture_mask))
+            outside = np.isnan(as_numpy(zernike_sum(slm, [4], [1.0], use_mask=np.nan)))
+            assert np.array_equal(outside, ~as_numpy(slm.aperture_mask))
 
     def test_get_source_amplitude(self, slm, subtests):
         """_get_source_amplitude falls back to unity and applies the aperture."""
@@ -530,9 +539,9 @@ class TestSLM:
             amp = np.random.rand(*slm.shape)
             slm.source["amplitude"] = amp.copy()
             got = slm._get_source_amplitude()
-            np.testing.assert_array_equal(got, amp)
+            np.testing.assert_array_equal(as_numpy(got), amp)
             got *= 2.0
-            np.testing.assert_array_equal(slm.source["amplitude"], amp)
+            np.testing.assert_array_equal(as_numpy(slm.source["amplitude"]), amp)
 
         with subtests.test("an aperture masks the source to its own support"):
             slm.source.pop("amplitude", None)
@@ -625,7 +634,7 @@ class TestSLM:
                 axs = slm.plot_source(**kwargs)
                 assert axs[1].get_title() == title
                 np.testing.assert_allclose(
-                    np.asarray(axs[1].get_images()[0].get_array()), expected
+                    np.asarray(axs[1].get_images()[0].get_array()), as_numpy(expected)
                 )
                 plt.close("all")
 
@@ -642,24 +651,27 @@ class TestSLM:
     def test_get_point_spread_function_knm(self, slm, subtests):
         """The PSF transforms the source amplitude, conserving its power."""
         slm.set_source_analytic()
-        power = np.sum(np.square(slm._get_source_amplitude()))
+        power = float(np.sum(np.square(as_numpy(slm._get_source_amplitude()))))
 
+        # Power is conserved exactly in exact arithmetic, but these are float32 FFTs, so
+        # the sum only agrees to float32 precision -- and the summation order (and so the
+        # last bits) differs between the numpy and cupy backends.
         with subtests.test("an unpadded PSF has the SLM's shape"):
             psf = slm.get_point_spread_function_knm()
             assert psf.shape == slm.shape
-            assert np.sum(np.square(psf)) == pytest.approx(power)
+            assert float(np.sum(np.square(as_numpy(psf)))) == pytest.approx(power, rel=1e-5)
 
         with subtests.test("padding changes the resolution, not the power"):
             psf = slm.get_point_spread_function_knm(padded_shape=(2048, 2048))
             assert psf.shape == (2048, 2048)
-            assert np.sum(np.square(psf)) == pytest.approx(power)
+            assert float(np.sum(np.square(as_numpy(psf)))) == pytest.approx(power, rel=1e-5)
 
     def test_get_spot_radius_kxy(self, slm):
         """The farfield spot radius is reciprocal to the source radius."""
         slm.set_aperture(radius=0.3, units="frac")
-        radius = slm.get_spot_radius_kxy()
+        radius = float(slm.get_spot_radius_kxy())
         slm.set_aperture(radius=0.6, units="frac")
-        assert slm.get_spot_radius_kxy() == pytest.approx(radius / 2)
+        assert float(slm.get_spot_radius_kxy()) == pytest.approx(radius / 2)
 
     @pytest.mark.parametrize(
         "driver", driver_classes(SLM), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]
@@ -751,8 +763,8 @@ class TestSegmentedSLM:
             assert child.subwindow is None
             assert child.shape == (24, 32)
             np.testing.assert_array_equal(
-                child.source["amplitude"],
-                parent.source["amplitude"][tuple(child.extent_slice)],
+                as_numpy(child.source["amplitude"]),
+                as_numpy(parent.source["amplitude"][tuple(child.extent_slice)]),
             )
 
         with subtests.test("a non-rectangular window keeps a subwindow of its extent"):
@@ -786,7 +798,8 @@ class TestSegmentedSLM:
             covered = np.zeros(parent.shape, dtype=int)
             for child in children:
                 np.testing.assert_array_equal(
-                    parent.display[tuple(child.extent_slice)], child.display
+                    as_numpy(parent.display[tuple(child.extent_slice)]),
+                    as_numpy(child.display),
                 )
                 covered[tuple(child.extent_slice)] += 1
             assert np.all(covered == 1)
@@ -837,21 +850,24 @@ class TestSegmentedSLM:
             assert second._phase_to_lut == parent._phase_to_lut
 
         with subtests.test("gamma tracks the parent alongside the lut"):
-            np.testing.assert_array_equal(first.gamma, parent.gamma)
+            np.testing.assert_array_equal(as_numpy(first.gamma), as_numpy(parent.gamma))
             level = np.full(first.shape, 100, dtype=first.dtype)
             first.set_phase(level, phase_correct=False)
             expected = np.mod(
-                first._gamma_sign * 2 * np.pi * np.asarray(parent.gamma)[100], 2 * np.pi
+                first._gamma_sign * 2 * np.pi * as_numpy(parent.gamma)[100], 2 * np.pi
             )
-            np.testing.assert_allclose(first.phase, expected)
+            np.testing.assert_allclose(as_numpy(first.phase), expected)
 
         with subtests.test("segments write the parent's mapping into its display"):
+            xp = parent.xp
             phase = np.linspace(0, 2 * np.pi, first.shape[0] * first.shape[1])
             phase = phase.reshape(first.shape)
             first.set_phase(phase.copy(), phase_correct=False)
             np.testing.assert_array_equal(
-                parent.display[first.extent_slice],
-                parent._phase2gray(phase.copy(), out=np.zeros(first.shape, dtype=parent.dtype)),
+                as_numpy(parent.display[first.extent_slice]),
+                as_numpy(parent._phase2gray(
+                    xp.asarray(phase), out=xp.zeros(first.shape, dtype=parent.dtype)
+                )),
             )
 
         parent.close()
