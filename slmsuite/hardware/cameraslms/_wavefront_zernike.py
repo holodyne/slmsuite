@@ -154,8 +154,7 @@ class _WavefrontCalibrationZernike(object):
             N = len(sweep)
             M = None
 
-            # ``term`` follows the SLM's backend while ``pattern`` comes off
-            # Hologram.get_phase(); convert
+            # ``pattern`` comes off Hologram.get_phase(); match the backend of ``term``.
             pattern = as_backend(pattern, get_array_module(term))
 
             iterable = list(enumerate(sweep))
@@ -282,9 +281,7 @@ class _WavefrontCalibrationZernike(object):
             if "wavefront_zernike" in self.calibrations:
                 dat = self.calibrations["wavefront_zernike"]
                 calibration_points = np.copy(dat["corrected_spots"])
-                # "calibration_points_ij" is in camera image coordinates and is used
-                # verbatim below, bypassing the projection through the Fourier
-                # calibration that would have followed a window change.
+                # "calibration_points_ij" is used verbatim below, in camera image coordinates.
                 self._check_calibration_frame("wavefront_zernike")
                 calibration_points_ij = np.copy(dat["calibration_points_ij"])
                 spot_integration_width_ij = np.copy(dat["spot_integration_width_ij"])
@@ -332,8 +329,7 @@ class _WavefrontCalibrationZernike(object):
         if np.isscalar(calibration_points):
             requested = int(calibration_points)
             pitch = np.sqrt(np.prod(self.cam.shape) / calibration_points)
-            # Via the parser, not the generator directly, so the points are checked
-            # against the camera's field of view as they are on the superpixel path.
+            # Through the parser, so the points are checked against the camera's field of view.
             calibration_points = self._wavefront_calibration_points_parse(
                 None, pitch=pitch, plot=plot
             )

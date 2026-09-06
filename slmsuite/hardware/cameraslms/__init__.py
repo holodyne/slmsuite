@@ -636,10 +636,9 @@ class FourierSLM(
         if "fourier" in calibrations:
             cam_data = {k: v for (k, v) in cam_data.items() if k not in ("M", "b")}
 
-        # Restore the exposure and the simulated detector characteristics. Not the
-        # window or the binning: this camera was rebuilt *as* the delivered image, so
-        # it is already the window. _load_place_camera() reads them off cam_data below
-        # to subtract the offset out of the Fourier calibration instead.
+        # Restore the exposure and the simulated detector characteristics, but not the
+        # window or binning: this camera is rebuilt *as* the delivered image, and
+        # _load_place_camera() consumes them below.
         cam._unpickle({
             k: v for (k, v) in cam_data.items() if k not in ("woi", "binning")
         })

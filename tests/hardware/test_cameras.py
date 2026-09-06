@@ -220,10 +220,7 @@ class TestCamera:
                 assert rotated.shape == (full_h, full_w)
 
     def test_woi_survives_a_pickle_round_trip(self, slm):
-        """
-        pickle() records the window and the binning, so a reloaded camera must deliver
-        the same frame rather than silently reverting to the full sensor.
-        """
+        """pickle() records the window and the binning, so a reload delivers the same frame."""
         cam = SimulatedCamera(slm, resolution=WIDE, pitch_um=(5, 5))
         cam.set_binning(2)
         cam.set_woi((20, 80, 10, 60))

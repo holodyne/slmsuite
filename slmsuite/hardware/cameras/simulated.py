@@ -441,13 +441,10 @@ class SimulatedCamera(Camera):
 
         Unlike :meth:`get_image()`, the result is floating point and unclipped, so it is
         usable as a photometric reference, for instance as the diffraction-limited
-        reference of :meth:`~slmsuite.holography.analysis.image_strehl()`.
-        The underlying farfield carries unit total power, so the absolute scale is
-        arbitrary; use ratios such as peak-over-total.
-
-        The window, binning, and orientation are applied as :meth:`get_image()` applies
-        them, so the two are pixel-for-pixel comparable. Only the sensor response
-        separates them.
+        reference of :meth:`~slmsuite.holography.analysis.image_strehl()`. The underlying
+        farfield carries unit total power, so the scale is arbitrary; use ratios such as
+        peak-over-total. The window, binning, and orientation are applied as
+        :meth:`get_image()` applies them, so the two are pixel-for-pixel comparable.
 
         Returns
         -------

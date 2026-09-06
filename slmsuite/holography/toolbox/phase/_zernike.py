@@ -1045,8 +1045,7 @@ def zernike_pyramid_plot(
     a1.remove()
     a2.remove()
 
-    # Grab all the phases as a stack. Let zernike_sum allocate, so the stack lands on
-    # whichever backend the grid is on rather than forcing a host buffer onto a GPU grid.
+    # Grab all the phases as a stack, letting zernike_sum allocate on the grid's backend.
     if noborder:
         if "use_mask" in kwargs and kwargs["use_mask"] is False:
             pass

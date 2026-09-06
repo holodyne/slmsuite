@@ -118,7 +118,7 @@ def take(
         The array module to take with, and the module of the returned data. Keeping
         :mod:`cupy` ``images`` on the GPU minimizes the cost of moving data to the host.
         If ``None``, the module backing ``images`` is used. Passing :mod:`numpy` for
-        device ``images`` copies them to the host rather than raising.
+        device ``images`` copies them to the host.
         Indexing variables inside :meth:`take` still use :mod:`numpy` for speed, no
         matter what module is used.
 
@@ -146,7 +146,7 @@ def take(
     if xp is None:
         xp = get_array_module(images)
 
-    # Move to cpu for numpy processing
+    # Move to the host for numpy processing.
     if xp is np and is_gpu_array(images):
         images = as_numpy(images)
 
@@ -167,7 +167,7 @@ def take(
         shape = (int(images[0]), int(images[1]))
         return_mask = True
 
-    # Check if everything fits in the image. If so, skip the clip! 
+    # The edges are sorted, so the extremes bound every region; if they fit, nothing is clipped.
     span_x = span_y = None
     if vectors.shape[1]:
         (lo, hi) = (np.min(vectors, axis=1), np.max(vectors, axis=1))
@@ -249,7 +249,7 @@ def take(
                 final_shape = (vectors.shape[1],)
             elif len(shape) == 3:
                 final_shape = (shape[0], vectors.shape[1],)
-            # Clipped regions were blanked with nan above
+            # Clipped regions were blanked with nan above.
             summer = xp.nansum if clip else xp.sum
             return summer(result.astype(float), axis=-1).reshape(final_shape)
         else:           # Reshape the integration axis.

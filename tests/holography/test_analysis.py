@@ -159,8 +159,7 @@ def test_take(subtests, benchmark):
                 analysis.take(np.zeros((50, 50)), vectors=vector, size=10, centered=True)
 
     with subtests.test("...and the error localizes the regions it could not take"):
-        # A frame mismatch (e.g. vectors on the raw sensor, image inside a camera
-        # window) is only diagnosable if the message says where the regions landed.
+        # A frame mismatch is only diagnosable if the message says where the regions landed.
         with pytest.raises(IndexError) as excinfo:
             analysis.take(np.zeros((50, 50)), vectors=[120, 130], size=10, centered=True)
         message = str(excinfo.value)
@@ -168,8 +167,7 @@ def test_take(subtests, benchmark):
         assert "(50, 50)" in message
 
     with subtests.test("clip=True integrates only the pixels it measured"):
-        # Summing nan would poison a whole spot's feedback because part of its window
-        # hung off the frame.
+        # A window hanging off the frame must not poison the whole spot with nan.
         result = analysis.take(
             np.ones((50, 50)), vectors=[0, 0], size=3, centered=True,
             integrate=True, clip=True,
@@ -177,8 +175,7 @@ def test_take(subtests, benchmark):
         assert result[0] == pytest.approx(4)     # the 2x2 corner that exists
 
     with subtests.test("clip=True is a no-op for an in-range region, integrated too"):
-        # The in-range fast path must not allocate the index mask, and must agree
-        # exactly with clip=False.
+        # The in-range fast path must agree exactly with clip=False.
         np.testing.assert_array_equal(
             analysis.take(image, vectors=[50, 40], size=10, centered=True,
                           integrate=True, clip=True),
@@ -590,8 +587,7 @@ def test_image_strehl(subtests):
         )
 
     with subtests.test("a broadened spot is below unity"):
-        # A Gaussian's peak fraction goes as 1/width^2, so twice the width is a
-        # quarter the Strehl.
+        # A Gaussian's peak fraction goes as 1/width^2: twice the width, a quarter the Strehl.
         np.testing.assert_allclose(
             analysis.image_strehl(broad, narrow), (1.5 / 3.0) ** 2, rtol=1e-3
         )

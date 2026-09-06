@@ -836,11 +836,7 @@ class TestCompressedSpotHologram:
     def test_spot_integration_width_ij_rechecks_the_frame(
         self, simulated_system_factory, subtests, caplog
     ):
-        """
-        The constructor bounds-checks against the width it chose. Callers that widen
-        the window afterwards --- wavefront_calibrate_zernike does --- must be told when
-        the regions no longer fit, rather than finding out inside take().
-        """
+        """A width widened after construction warns when the regions leave the frame."""
         fs = simulated_system_factory("matched")
         install_ground_truth_calibration(fs)
 
@@ -862,8 +858,6 @@ class TestCompressedSpotHologram:
             assert "extend past" in caplog.text
 
         with subtests.test("...and is still usable, since take() clips"):
-            # Before clip=True reached these paths this raised IndexError; before
-            # nansum it returned nan and poisoned every weight.
             h.optimize(
                 method="WGS-Kim", feedback="experimental_spot", maxiter=3,
                 verbose=False, stat_groups=["experimental_spot"],

@@ -36,7 +36,7 @@ def blaze(
     xp = get_array_module(x_grid)
     vector = np.squeeze(vector)
 
-    # Flatten to plain scalars to avoid numpy * cupy
+    # Flatten to plain scalars; an array-valued vector would not broadcast onto a cupy grid.
     vector = np.ravel(as_numpy(vector)).astype(float)
 
     # Optimize phase construction based on context.

@@ -196,8 +196,7 @@ class FLIR(Camera):
             # Cache the trigger configuration to avoid per-frame access.
             self._trigger_is_software = self._read_trigger_is_software()
 
-            # Configure frame rate. This has to follow the trigger configuration
-            # above, because the rate limiter is only meaningful when free-running.
+            # Configure frame rate, which depends on the trigger configuration above.
             self._configure_frame_rate()
 
         except PySpin.SpinnakerException as ex:
@@ -389,11 +388,10 @@ class FLIR(Camera):
         """
         Read whether the camera is currently configured for software triggering.
 
-        Cached into :attr:`_trigger_is_software` during initialization; call this
-        again if the trigger configuration is changed outside this class. The cache
-        exists because ``TriggerMode.GetValue()`` is a ~200 us device round-trip
-        (unlike ``TriggerSource``, which GenICam serves from cache in under a
-        microsecond), and :meth:`._get_image_hw` runs in the feedback loop.
+        Cached into :attr:`_trigger_is_software` during initialization, as
+        ``TriggerMode`` is a device round-trip and :meth:`._get_image_hw` runs in the
+        feedback loop; call this again if the trigger configuration is changed outside
+        this class.
 
         Returns
         -------
@@ -415,17 +413,13 @@ class FLIR(Camera):
         Configure the acquisition frame rate. Called during init and after WOI changes,
         since the maximum allowed frame rate depends on the current resolution.
         """
-        # From the cache, not the device: __init__ reads the trigger configuration once
-        # and this is also reached from set_woi() on every window change.
         triggered = self._trigger_is_software
 
         try:
             if self.cam.AcquisitionFrameRateEnable.GetAccessMode() == PySpin.RW:
                 self.cam.AcquisitionFrameRateEnable.SetValue(not triggered)
             elif triggered and self.cam.AcquisitionFrameRateEnable.GetValue():
-                # Read-only *and* still enabled: the limiter is stuck on and will
-                # cost latency on every triggered capture. Worth surfacing, unlike
-                # the common case where the node is simply not applicable.
+                # Stuck on, unlike the common read-only case of a node that is simply off.
                 logger.warning(
                     "AcquisitionFrameRateEnable is enabled but not writable; the "
                     "frame rate limiter may add latency to each triggered capture."
@@ -665,9 +659,7 @@ class FLIR(Camera):
 
         try:
             # Only fire software trigger if in software trigger mode; an externally
-            # triggered camera must not be force-triggered here. Read from the cache
-            # rather than the device: the check needs TriggerMode, which costs ~200 us
-            # per query, and this runs once per feedback iteration.
+            # triggered camera must not be force-triggered here.
             if self._trigger_is_software:
                 self.cam.TriggerSoftware.Execute()
 

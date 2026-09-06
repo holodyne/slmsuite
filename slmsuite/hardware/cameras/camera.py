@@ -700,8 +700,7 @@ class Camera(_Common, ABC):
 
         self.set_exposure(data.get("exposure_s", 1))
 
-        # pickle() records the window, so a reloaded camera should deliver the same
-        # frame rather than silently reverting to the full sensor. 
+        # pickle() records the window and the binning; restore them so the frame matches.
         if data.get("binning", None) is not None:
             try:
                 self.set_binning(tuple(data["binning"]))

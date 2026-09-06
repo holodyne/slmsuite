@@ -298,7 +298,7 @@ class _FourierCalibration(object):
         Parameters
         ----------
         M : array_like
-            2×2 affine matrix mapping kxy → camera image pixels.
+            2x2 affine matrix mapping ``"kxy"`` to camera image pixels.
         b : array_like
             Length-2 translation vector (camera image pixel coordinates).
 
@@ -320,8 +320,7 @@ class _FourierCalibration(object):
         self.calibrations["fourier"].update(self._get_calibration_metadata())
 
         # Set the camera's virtual calibration if it is not already set. A simulated
-        # camera renders its full raw sensor and windows afterwards, so its affine is
-        # the raw one, not the image-frame one the user passed.
+        # camera renders its full raw sensor, so its affine is the raw one.
         if hasattr(self.cam, "set_affine") and getattr(self.cam, "M", None) is None:
             self.cam.set_affine(
                 self.calibrations["fourier"]["M"], self.calibrations["fourier"]["b"]
@@ -363,8 +362,7 @@ class _FourierCalibration(object):
             Affine parameters in the camera image (``"ij"``) frame,
             suitable for :meth:`fourier_calibrate_analytic`.
         """
-        # Both this offset and cam.pitch_um (used for M, below) are stated in the
-        # camera's image frame, which is the frame fourier_calibrate_analytic expects.
+        # Both this offset and cam.pitch_um (for M) are in the ``"ij"`` frame expected below.
         if offset is None:
             offset = np.flip(self.cam.shape) / 2
         return toolbox.build_affine(
@@ -490,10 +488,8 @@ class _FourierCalibration(object):
         ``"ij"`` whenever the Fourier calibration rotates or shears. See
         :meth:`nyquist_zone_bounds_ij` for an axis-aligned box that fits inside it.
         """
-        # The ``"knm"`` basis with shape (1,1) *is* the first Nyquist zone mapped to the
-        # unit square, per axis. Inverting that mapping keeps this consistent with the
-        # tests elsewhere that go the other way, and honors an anisotropic pixel pitch,
-        # which a single scalar ``kmax`` would not.
+        # The ``"knm"`` basis with shape (1,1) maps the first Nyquist zone onto the unit
+        # square, per axis, and so honors an anisotropic pixel pitch.
         return toolbox.convert_vector(
             np.array([[0., 1., 0., 1.], [0., 0., 1., 1.]]),
             from_units="knm",
@@ -525,10 +521,9 @@ class _FourierCalibration(object):
         """
         zone_ij = self.nyquist_zone_ij
 
-        # ``knm = A @ ij + b`` is affine, so a box of half-widths ``h`` about the zone
-        # center maps inside the unit square exactly when ``abs(A) @ h <= 0.5`` --- worst
-        # case over the corners' sign choices. Recover ``abs(A)`` by mapping the origin
-        # and the two unit vectors together, then differencing.
+        # ``knm = A @ ij + b`` is affine, so half-widths ``h`` about the zone center fit
+        # inside the unit square exactly when ``abs(A) @ h <= 0.5``, worst case over the
+        # corners' signs. Recover ``abs(A)`` by mapping the origin and the unit vectors.
         probe_knm = toolbox.convert_vector(
             np.array([[0., 1., 0.], [0., 0., 1.]]),
             from_units="ij",

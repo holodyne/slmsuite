@@ -29,9 +29,10 @@ class _AbstractSpotHologram(FeedbackHologram):
         ``"experimental_spot"`` feedback. ``None`` when the spots are not located on a
         camera.
 
-        Setting this re-runs :meth:`_check_spots_in_frame()`, because the constructor's
-        bounds check was made against the width it chose, not against a width assigned
-        afterwards (as :meth:`wavefront_calibrate_zernike` does).
+        Setting this re-runs :meth:`_check_spots_in_frame()`, as a width assigned after
+        construction (as
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_zernike`
+        does) can push the integration regions off the frame.
         """
         return self._spot_integration_width_ij
 
@@ -45,7 +46,7 @@ class _AbstractSpotHologram(FeedbackHologram):
         Checks that every spot's integration region fits inside the camera image.
 
         A region that hangs off the edge is not fatal --- :meth:`take` clips it --- but
-        the spot then integrates fewer pixels than its neighbours, biasing feedback and
+        the spot then integrates fewer pixels than its neighbors, biasing feedback and
         any metric computed from it. The constructors raise on this; later assignments
         only warn, so that widening the window as a measurement aperture (see
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_zernike`)
@@ -101,9 +102,8 @@ class _AbstractSpotHologram(FeedbackHologram):
 
     def _integrate_spots_ij(self, dtype=None):
         """
-        Integrates the power in each spot's camera window, on whichever backend the
-        camera delivered :attr:`img_ij` on. Staying there avoids a host copy every
-        iteration, which :mod:`cupy` refuses to make implicitly in any case.
+        Integrates the power in each spot's camera window, on whichever backend
+        :attr:`img_ij` lives on, avoiding a host copy every iteration.
 
         Assumes :meth:`measure()` has already refreshed :attr:`img_ij`.
 
@@ -116,8 +116,7 @@ class _AbstractSpotHologram(FeedbackHologram):
         -------
         (module, numpy.ndarray OR cupy.ndarray, numpy.ndarray OR cupy.ndarray)
             The array module of :attr:`img_ij`, the power in the whole image, and the
-            power in each spot's window. The whole-image power is returned rather than
-            recomputed by the caller which needs it, as squaring is a full pass.
+            power in each spot's window.
         """
         xp_ij = get_array_module(self.img_ij)
         image = self.img_ij if dtype is None else xp_ij.asarray(self.img_ij, dtype=dtype)
