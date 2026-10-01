@@ -242,12 +242,19 @@ class _AbstractSpotHologram(FeedbackHologram):
         if basis is not None:
             if basis == "kxy" or basis == "knm":
                 # Modify k-space targets. Don't modify any camera spots.
-                self.spot_kxy[[0, 1]] = self.spot_kxy[[0, 1]] - (
+                shift_kxy = (
                     self.cameraslm.ijcam_to_kxyslm(shift_vectors)
                     - self.cameraslm.ijcam_to_kxyslm((0, 0))
                 )
+                self.spot_kxy[[0, 1], :] = self.spot_kxy[[0, 1], :] - shift_kxy
+                distance_kxy = np.linalg.norm(shift_kxy, axis=1)
+                self.logger.info(
+                    "Refine offset: avergage shift %f kxy distance.",
+                    float(distance_kxy.mean())
+                )
 
                 if hasattr(self, "spot_knm"):
+                    before = self.spot_knm.copy()
                     self.spot_knm = toolbox.convert_vector(
                         self.spot_kxy,
                         from_units="kxy",
@@ -256,6 +263,12 @@ class _AbstractSpotHologram(FeedbackHologram):
                         shape=self.shape
                     )
                     self.set_target(reset_weights=True)
+                    shift_knm = self.spot_knm - before
+                    distance_knm = np.linalg.norm(shift_knm, axis=1)
+                    self.logger.info(
+                        "Refine offset: average shift %f knm pixel distance.",
+                        float(distance_knm.mean()),
+                    )
 
                 if hasattr(self, "spot_zernike"):
                     spot_zernike_xy = toolbox.convert_vector(
@@ -270,6 +283,13 @@ class _AbstractSpotHologram(FeedbackHologram):
                 # Modify camera targets. Don't modify any k-vectors.
                 self.spot_ij = self.spot_ij.astype(float)
                 self.spot_ij[[0, 1]] += shift_vectors
+                distance_ij = np.linalg.norm(shift_vectors, axis=1)
+
+                self.logger.info(
+                    "Refine offset: average shift %f ij pixel distance.",
+                    float(distance_ij.mean()),
+                )
+                
                 # The spots just moved, so the constructor's bounds check is stale.
                 self._check_spots_in_frame()
             else:

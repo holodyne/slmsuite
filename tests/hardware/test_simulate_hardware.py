@@ -484,6 +484,7 @@ class TestSimulatedHardware:
             assert (center is None) == (center_sim is None)
             if center is not None:
                 assert np.allclose(center_sim, center)
+            assert fs_sim.slm._source_radius == fs.slm._source_radius
 
         with subtests.test("editing the clone does not touch the hardware"):
             before = _host(fs.slm.source["amplitude"]).copy()

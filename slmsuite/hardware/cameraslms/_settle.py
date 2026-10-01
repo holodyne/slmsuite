@@ -2,7 +2,7 @@ import time
 import matplotlib.pyplot as plt
 from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
-from tqdm.auto import tqdm
+from slmsuite import tqdm
 from scipy import optimize
 
 from slmsuite.holography import analysis
@@ -16,7 +16,13 @@ class _SettleCalibration(object):
     ### Settle Time Calibration ###
 
     def settle_calibrate(
-        self, vector=(.005, .005), size=None, times=None, settle_time_s=1, plot=0
+        self, 
+        vector=(.005, .005), 
+        size=None, 
+        times=None, 
+        settle_time_s=None, 
+        autoexpose=True,
+        plot=0
     ):
         """
         Approximates the :math:`1/e` settle time of the SLM.
@@ -39,6 +45,10 @@ class _SettleCalibration(object):
         settle_time_s : float OR None
             Time between measurements to allow the SLM to re-settle. If ``None``, uses the
             current default in the SLM.
+        autoexpose : bool OR dict
+            Whether or not to automatically set the camera exposure on the projected
+            array. If a dictionary is passed, it is passed to
+            :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexpose()`.
         plot : int OR bool
             If ``>= 1``, shows a debug plot with the exponential fit.
             If ``< 0``, also suppresses the progress bar.
@@ -55,6 +65,38 @@ class _SettleCalibration(object):
                 hardware=self
             )
         size = int(size)
+
+        # Create mask.
+        mask = analysis.take(
+            self.cam.shape, point, size, centered=True, clip=True, return_mask=True
+        )
+
+        # Optional step -- expose
+        self.slm.set_phase(blaze, phase_correct=False, settle=settle_time_s)
+        
+        if autoexpose or isinstance(autoexpose, dict):
+            self.cam.autoexpose(
+                window=mask,
+                **(autoexpose if isinstance(autoexpose, dict) else {})
+            )
+        exposure_s = self.cam.get_exposure()
+
+        if plot >= 2:
+            fig, ax = plt.subplots()
+            self.cam.plot(ax=ax, title="Target (phase=blaze)")
+            ax.contour(mask, levels=[0.5], colors="r")
+
+            _slmsuite_plt_show("settle_calibrate_target")
+            
+        self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
+
+        if plot >= 2:
+            fig, ax = plt.subplots()
+            self.cam.plot(ax=ax, title="Zeroth Order (phase=None)")
+            ax.contour(mask, levels=[0.5], colors="r")
+
+            _slmsuite_plt_show("settle_calibrate_none")
+            
 
         # Parse times.
         if times is None:
@@ -73,8 +115,9 @@ class _SettleCalibration(object):
         iterations = tqdm(times) if plot >= 0 else times
 
         # Collect data
+        self.cam.flush()
+        
         for t in iterations:
-            self.cam.flush()
 
             # Reset the pattern and wait for it to settle
             self.slm.set_phase(None, settle=False, phase_correct=False)
@@ -91,7 +134,8 @@ class _SettleCalibration(object):
 
         self.calibrations["settle"] = {
             "times" : times,
-            "data" : np.array(results)
+            "data" : np.array(results),
+            "exposure_s" : exposure_s,
         }
         self.calibrations["settle"].update(self._get_calibration_metadata())
 
@@ -117,29 +161,33 @@ class _SettleCalibration(object):
         times = self.calibrations["settle"]["times"]
         results = np.ravel(self.calibrations["settle"]["data"])
 
-        # Estimate the step location from the data.
+        # Estimate the step location and pre-step footer from the data.
         plateau = np.median(results[results > .5 * np.max(results)])
         on = np.flatnonzero(results > .05 * plateau)
         if len(on) == 0:
             raise RuntimeError("Settle calibration measured no signal.")
-        x0 = times[on[0] - 1] if on[0] > 0 else times[0]
+        x0_guess = times[on[0] - 1] if on[0] > 0 else times[0]
+        before = times < x0_guess
+        footer_guess = np.median(results[before]) if np.any(before) else 0
 
-        # Function to interpolate, with only the smooth parameters free.
-        def exponential(x, a, b, c):
-            return c - a*np.exp(-(x-x0) / b)
-
-        mask = times >= x0
+        # Function to interpolate: flat footer before the step,
+        # exponential relaxation to the plateau after.
+        def exponential(x, x0, a, b, c):
+            return np.where(x < x0, (c-a), c - a*np.exp(-(x-x0) / b))
 
         # Fit the data with the function
         params, _ = optimize.curve_fit(
             exponential,
-            times[mask],
-            results[mask],
-            p0=(plateau, np.ptp(times)/10, plateau),
-            bounds=((0, 1e-6, 0), (np.inf, np.ptp(times), np.inf)),
+            times,
+            results,
+            p0=(x0_guess, plateau - footer_guess, np.ptp(times)/10, plateau),
+            bounds=(
+                (np.min(times), 0, 1e-6, 0),
+                (np.max(times), np.inf, np.ptp(times), np.inf)
+            ),
             maxfev=10000
         )
-        a, b, c = params
+        x0, a, b, c = params
         self.logger.debug("settle fit params: %s", params)
 
         relax_time = b
@@ -156,7 +204,7 @@ class _SettleCalibration(object):
         if plot >= 1:
             # Evaluate the fitting function in the interval
             x_interp = np.linspace(min(times), max(times), 100)
-            y_interp = np.where(x_interp >= x0, exponential(x_interp, *params), 0)
+            y_interp = exponential(x_interp, *params)
 
             title = (
                 f"Communication time: {int((1e3*com_time))} ms\n"

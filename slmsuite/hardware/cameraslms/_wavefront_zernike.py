@@ -1,11 +1,12 @@
 import copy
 import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import optimize
 from scipy.interpolate import RBFInterpolator
 from scipy.spatial import Delaunay
-from tqdm.auto import tqdm
+from slmsuite import tqdm
 import warnings
 
 from slmsuite.holography import analysis
@@ -289,8 +290,15 @@ class _WavefrontCalibrationZernike(object):
                 if zernike_indices is None:
                     zernike_indices = np.copy(dat["zernike_indices"])
                 else:
-                    if np.isscalar(zernike_indices) and zernike_indices < calibration_points.shape[0]:
-                            zernike_indices = calibration_points.shape[0]
+                    if np.isscalar(zernike_indices):
+                        # A number of terms keeps the stored basis, in its own order (which
+                        # need not be the default), extended with any further terms requested.
+                        stored_zi = np.copy(dat["zernike_indices"])
+                        extra = [
+                            i for i in _zernike_indices_parse(int(zernike_indices), None)
+                            if i not in stored_zi
+                        ][:int(np.maximum(int(zernike_indices) - len(stored_zi), 0))]
+                        zernike_indices = np.concatenate((stored_zi, extra)).astype(int)
 
                     zernike_indices = _zernike_indices_parse(
                         zernike_indices,
@@ -869,7 +877,7 @@ class _WavefrontCalibrationZernike(object):
             D = len(zernike_indices)
             W = int(np.ceil(np.sqrt(D)))
             H = int(np.ceil(D / W))
-            _, axs = plt.subplots(H, W, figsize=(2.5*W, 2.5*H), squeeze=False)
+            fig, axs = plt.subplots(H, W, figsize=(3*W, 2.5*H), squeeze=False)
 
             for j, ax in enumerate(axs.ravel()):
                 if j >= D:
@@ -877,10 +885,10 @@ class _WavefrontCalibrationZernike(object):
                     continue
 
                 lim = np.max(np.abs(field[j, :]))
-                kwargs = {"cmap": "seismic", "vmin": -lim, "vmax": lim}
+                kwargs = {"cmap": "twilight_shifted", "vmin": -lim, "vmax": lim}
 
                 # Interpolated field.
-                ax.imshow(
+                im = ax.imshow(
                     field[j, :].reshape(N, N),
                     extent=(0, self.cam.shape[1], self.cam.shape[0], 0),
                     **kwargs
@@ -898,6 +906,10 @@ class _WavefrontCalibrationZernike(object):
                 ax.set_title("$Z_{" + str(zernike_indices[j]) + "}$")
                 ax.set_xticks([])
                 ax.set_yticks([])
+
+                cax = make_axes_locatable(ax).append_axes("right", size="5%", pad=0.05)
+                cbar = fig.colorbar(im, cax=cax, orientation="vertical")
+                cbar.ax.set_ylabel("[rad]")
 
             plt.tight_layout()
             _slmsuite_plt_show(name="wavefront_calibrate_zernike_get")

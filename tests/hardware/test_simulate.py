@@ -510,8 +510,9 @@ class TestSaveLoadRoundTrip:
         fs._pixel_calibration_apply_gamma()
 
         # Off-center, so that a dropped aperture center is caught as well as its spec.
+        # Set by radius, so that the stored source radius must survive too.
         (height, width) = fs.slm.shape
-        fs.slm.set_aperture(0.35, center=(0.45 * width, 0.55 * height))
+        fs.slm.set_aperture(radius=1 / 0.7, center=(0.45 * width, 0.55 * height))
 
         fs_sim = fs.simulate(
             background=np.full(fs.cam.shape, 3.0) if background else None
@@ -553,6 +554,8 @@ class TestSaveLoadRoundTrip:
         with subtests.test("aperture"):
             assert slm.aperture.spec == fs_sim.slm.aperture.spec
             assert np.allclose(slm.aperture.center, fs_sim.slm.aperture.center)
+            assert slm._source_radius == pytest.approx(1 / 0.7)
+            assert slm._source_radius == fs_sim.slm._source_radius
 
         with subtests.test("displayed phase"):
             assert np.allclose(as_numpy(slm.phase), as_numpy(fs_sim.slm.phase))

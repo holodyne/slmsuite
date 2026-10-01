@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
-from tqdm.auto import tqdm
+from slmsuite import tqdm
 
 from slmsuite.holography import analysis
 from slmsuite.holography import toolbox
@@ -709,15 +709,17 @@ class _PixelCalibration(object):
             plt.tight_layout()
 
             _slmsuite_plt_show(name="pixel_calibration_process_residuals")
+
         if plot >= 1:
             fig, ax = plt.subplots(1, 1)
-            ax.plot(levels, gamma, "o-", label="calibrated")
-            ax.set_title(f"Pixel Calibration Gamma (R^2: {r_squared:.3f})")
-            ax.set_xlabel("SLM Level $i$")
-            ax.set_ylabel("SLM Response")
-            tick_labels = [0, .5, 1]
-            ax.set_yticks(tick_labels)
-            ax.set_yticklabels([rf"${int(y*2)}\pi$" for y in tick_labels])
+
+            self.slm.plot_gamma(
+                s=100, marker="o", facecolors='none', edgecolors="k", 
+                ax=ax, zorder=10, label="Previous gamma"
+            )
+            self.slm.plot_gamma(gamma, ax=ax, zorder=20, label="New gamma")
+            plt.legend()
+
             _slmsuite_plt_show(name="pixel_calibration_process_fit")
 
 
@@ -750,7 +752,7 @@ class _PixelCalibration(object):
             return
 
         self.slm.set_gamma(
-            self.slm.interpolate_gamma(cal["gamma"], cal["levels"])
+            self.slm._interpolate_gamma(cal["gamma"], cal["levels"])
         )
 
     @staticmethod

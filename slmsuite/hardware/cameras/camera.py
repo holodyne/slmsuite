@@ -648,7 +648,7 @@ class Camera(_Common, ABC):
         self._exposure_s = float(self._get_exposure_hw())
         return self._exposure_s
 
-    def set_exposure(self, exposure_s):
+    def set_exposure(self, exposure_s, suppress_warning=False):
         """
         Set the frame integration time in seconds.
         Used in :meth:`.autoexpose()`.
@@ -657,6 +657,10 @@ class Camera(_Common, ABC):
         ----------
         exposure_s : float
             The integration time in seconds.
+        suppress_warning : bool
+            If ``True``, suppresses the warning when the 
+            requested exposure does not match the realized exposure (the warning is demoted to debug).
+            Otherwise, a warning is logged if the exposures differ by more than 1%.
 
         Returns
         -------
@@ -681,7 +685,7 @@ class Camera(_Common, ABC):
 
         # Report to the logger.
         if not np.isclose(self._exposure_s, exposure_s): 
-            if abs(self._exposure_s - exposure_s) / self._exposure_s > 0.01:
+            if not suppress_warning and abs(self._exposure_s - exposure_s) / self._exposure_s > 0.01:
                 warn = self.logger.warning
             else:
                 warn = self.logger.debug
@@ -1582,7 +1586,7 @@ class Camera(_Common, ABC):
 
     # Display method.
 
-    def plot(self, image=None, limits=None, title="Image", ax=None, cbar=True):
+    def plot(self, image=None, limits=None, title="Image", ax=None, cbar=True, clim=None):
         """
         Plots the provided image.
 
@@ -1615,7 +1619,7 @@ class Camera(_Common, ABC):
         image = as_numpy(image)
 
         (ax, _, should_show) = self._plot(
-            image, limits, title, ax=ax, cbar=cbar, labels=BLAZE_LABELS["ij"]
+            image, limits, title, ax=ax, cbar=cbar, clim=clim, labels=BLAZE_LABELS["ij"]
         )
 
         if should_show:
@@ -1702,6 +1706,7 @@ class Camera(_Common, ABC):
 
         # Initialize loop
         set_val = 0.5 * self.bitresolution
+        maxcount = self.bitresolution - (self.averaging if self.averaging is not None else 1)
         exp = self.get_exposure()
         self.flush()
         img = self.get_image(hdr=False)
@@ -1733,7 +1738,7 @@ class Camera(_Common, ABC):
                 # Otherwise, prepare to do so next loop.
                 is_railed = True
 
-            self.set_exposure(exp)
+            self.set_exposure(exp, suppress_warning=True)   # Don't warn about differing exposures.
             exp = self.get_exposure()
             if exp_prev == exp:
                 # If already railed, handle failure cases (TODO).
@@ -1749,11 +1754,15 @@ class Camera(_Common, ABC):
             status = metric(img[sliced])
             err = np.abs(status - set_val) / self.bitresolution
 
-            self.logger.log(
-                logging.INFO if verbose else logging.DEBUG,
-                "Autoexpose: %.2e s - %s/%s",
-                exp, status, self.bitresolution - (self.averaging if self.averaging is not None else 1),
+            self.logger.debug(
+                "Autoexpose: %.2e s - %s/%s", exp, status, maxcount
             )
+
+        # Summarize the converged result.
+        self.logger.log(
+            logging.INFO if verbose else logging.DEBUG,
+            "Autoexpose: %.2e s - %s/%s", exp, status, maxcount,
+        )
 
         # The loop targets 50% of resolution.
         # Now set the final exposure if different (TODO, improve).

@@ -44,7 +44,7 @@ class Aperture:
     Anisotropic scaling can lead to unexpected behavior. For instance, an isotropic
     quadratic phase is a circular lens, but under anisotropic scaling it becomes an
     elliptical lens on the SLM which may not behave as expected. (The same applies to the
-    :math:`Z_4 = Z_2^0 = 1 - 2x^2 - 2y^2` Zernike focusing term.)
+    :math:`Z_4 = Z_2^0 = 2x^2 + 2y^2 - 1` Zernike focusing term.)
 
     Note
     ~~~~

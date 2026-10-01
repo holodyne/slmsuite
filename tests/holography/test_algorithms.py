@@ -13,9 +13,6 @@ from slmsuite.holography import toolbox
 from slmsuite.holography.algorithms import (
     Hologram, SpotHologram, CompressedSpotHologram, MultiplaneHologram, FeedbackHologram
 )
-from slmsuite.holography.algorithms._feedback import (
-    _IJCAM_TO_KNMSLM_CACHE, clear_ijcam_to_knmslm_cache
-)
 from slmsuite.holography.algorithms._header import cp_affine_transform, cp as xp
 from slmsuite.holography.analysis import Affine
 from slmsuite.holography.analysis.files import load_h5
@@ -1398,32 +1395,36 @@ class TestFeedbackHologram:
                 _np(h.ijcam_to_knmslm(canvas, order=order)), _np(reference), equal_nan=True
             )
 
-    def test_ijcam_to_knmslm_cache(self, subtests):
-        """The cache holds per-geometry device arrays sized like a hologram, so it needs a
-        bound and a way to release what it holds."""
-        clear_ijcam_to_knmslm_cache()
+    def test_ijcam_to_knmslm_memo(self, subtests):
+        """The resampler memo is keyed on calibration *contents*: a stale affine does not
+        raise, it silently mis-maps every feedback image onto the knm grid."""
         canvas = np.zeros(self.CAM_SHAPE, dtype=np.float32)
         canvas[24:44, 34:54] = 1.0
+        stub = _StubCameraSLM(self.CAM_SHAPE)
+        h = FeedbackHologram((32, 32), target_ij=canvas, cameraslm=stub)
 
-        with subtests.test("repeated calls reuse one entry"):
-            h = FeedbackHologram(
-                (32, 32), target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE)
-            )
-            n = len(_IJCAM_TO_KNMSLM_CACHE)
+        with subtests.test("repeated calls reuse one matrix"):
+            first = h._resampler_memo[1]
             for _ in range(3):
                 h.set_target(canvas)
-            assert len(_IJCAM_TO_KNMSLM_CACHE) == n
+            assert h._resampler_memo[1] is first
 
-        with subtests.test("evicts past capacity"):
-            for size in range(8, 8 + 2 * (_IJCAM_TO_KNMSLM_CACHE.maxsize + 4), 2):
-                FeedbackHologram(
-                    (size, size), target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE)
-                )
-            assert len(_IJCAM_TO_KNMSLM_CACHE) <= _IJCAM_TO_KNMSLM_CACHE.maxsize
+        with subtests.test("holograms do not share"):
+            other = FeedbackHologram(
+                (32, 32), target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE)
+            )
+            assert other._resampler_memo[1] is not first
 
-        with subtests.test("clear releases everything"):
-            clear_ijcam_to_knmslm_cache()
-            assert len(_IJCAM_TO_KNMSLM_CACHE) == 0
+        with subtests.test("recalibrating in place invalidates"):
+            stub.fourier_affine.M[0, 0] *= 2        # Same object, new contents.
+            h.set_target(canvas)
+            assert not np.allclose(_np(h._resampler_memo[1]), _np(first))
+
+            # What it now holds must be what a cold build produces.
+            memoized = _np(h._resampler_memo[1])
+            h._resampler_memo = None
+            h.set_target(canvas)
+            assert np.allclose(_np(h._resampler_memo[1]), memoized)
 
     def test_measure(self, subtests):
         """`measure("knm")` must land on the same knm grid whether the hologram was given a

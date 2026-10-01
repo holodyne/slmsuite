@@ -3,29 +3,6 @@ from slmsuite.holography.algorithms._hologram import Hologram
 from slmsuite.misc.xp import as_numpy, get_array_module, is_gpu_array
 
 
-# Transparent cache of the ``"ij"`` -> ``"knm"`` transformation, keyed on
-# everything it depends on: the hologram shape, the Fourier calibration
-# contents, the SLM pitch/shape, and the ROI origin. All are fixed across the
-# repeated calls made by set_target() and measure(), which would otherwise
-# redo the host-side composition and its upload every time. Keyed on
-# calibration *contents* rather than identity, because `fourier_affine` builds
-# a fresh object on every access; that also means recalibrating invalidates
-# itself. Mirrors the ``_ZERNIKE_BASIS_CACHE`` idiom in
-# `toolbox.phase._zernike`.
-_IJCAM_TO_KNMSLM_CACHE = LRUCache(8)
-
-
-def clear_ijcam_to_knmslm_cache():
-    """
-    Empty the transparent transformation cache used by
-    :meth:`~slmsuite.holography.algorithms.FeedbackHologram.ijcam_to_knmslm`.
-    The cache is keyed on the *contents* of the Fourier calibration, so
-    recalibrating does not require this call; it exists mainly so tests can
-    start from a known state.
-    """
-    _IJCAM_TO_KNMSLM_CACHE.clear()
-
-
 class FeedbackHologram(Hologram):
     """
     Experimental holography aided by camera feedback.
@@ -138,6 +115,8 @@ class FeedbackHologram(Hologram):
         super().__init__(target=shape, amp=amp, **kwargs)
 
         self._updated_slm = False
+        # (key, matrix) memo; keyed on calibration contents, so recalibration invalidates it.
+        self._resampler_memo = None
         self.img_ij = None
         self.img_knm = None
         self.target_ij_roi = None       
@@ -233,7 +212,7 @@ class FeedbackHologram(Hologram):
         Return the (cached) composite ``"knm"`` -> ``"ij"`` transformation for
         this hologram's current geometry, as the augmented ``(2, 3)`` device
         matrix that :func:`cupyx.scipy.ndimage.affine_transform` accepts in
-        place of a separate ``offset``. See :data:`_IJCAM_TO_KNMSLM_CACHE`.
+        place of a separate ``offset``.
 
         Handed a device array as ``offset``, ``affine_transform`` converts it
         elementwise with ``float()``, synchronizing once per element on every
@@ -255,9 +234,7 @@ class FeedbackHologram(Hologram):
         roi = self._validate_roi(roi, src_shape)
         roi_key = (0, 0) if roi is None else roi
 
-        # Everything the composite transformation is derived from. `order` and
-        # `src_shape` are absent deliberately: the geometry does not depend on
-        # either, so the resampling and measurement paths share one entry.
+        # `order` and `src_shape` are absent: the geometry depends on neither.
         key = (
             tuple(np.ravel(self.shape).tolist()),
             tuple(np.ravel(affine.M).tolist()),
@@ -267,9 +244,9 @@ class FeedbackHologram(Hologram):
             roi_key,
         )
 
-        matrix = _IJCAM_TO_KNMSLM_CACHE.get(key)
-        if matrix is not None:
-            return matrix
+        memo = self._resampler_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
 
         # First transformation. FUTURE: make convert_basis to output a matrix
         # like here?
@@ -300,9 +277,8 @@ class FeedbackHologram(Hologram):
         # be rebased onto it.
         b_roi = b_np - np.asarray(roi_key, dtype=float)
 
-        matrix = _IJCAM_TO_KNMSLM_CACHE.put(
-            key, cp.array(np.hstack([M_np, b_roi.reshape(2, 1)]))
-        )
+        matrix = cp.array(np.hstack([M_np, b_roi.reshape(2, 1)]))
+        self._resampler_memo = (key, matrix)
         return matrix
 
     def ijcam_to_knmslm(self, img, out=None, blur_ij=None, order=3, roi=None):
@@ -616,7 +592,7 @@ class FeedbackHologram(Hologram):
         if reset_weights:
             self.reset_weights()
 
-    def refine_offset(self, img, basis="kxy"):
+    def refine_offset(self, img=None, basis="kxy"):
         """
         **(NotImplemented)**
         Hones the position of the produced image to the desired target image to compensate for

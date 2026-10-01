@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import enum
-from scipy.optimize import curve_fit, minimize
-from scipy.ndimage import binary_erosion, maximum_filter
+from scipy.optimize import curve_fit, least_squares, minimize
+from scipy.ndimage import binary_erosion, gaussian_filter, map_coordinates, maximum_filter
 from scipy.fft import next_fast_len
 
 import warnings
@@ -256,7 +256,7 @@ def take(
             return xp.reshape(result, crop_shape)
 
 
-def take_plot(images, shape=None, separate_axes=False, cbar=True):
+def take_plot(images, shape=None, separate_axes=False, cbar=True, figsize=None):
     """
     Plots non-integrated results of :meth:`.take()` in a square array of subplots.
 
@@ -272,12 +272,28 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
         If ``False``, uses :meth:`take_tile()` to plot all images on a single axes.
     cbar : bool
         Whether to include a colorbar. Currently only applies if ``separate_axes`` is ``False``.
+    figsize : (float, float) OR float OR None
+        Size of the figure in inches. A scalar is interpreted as the larger dimension,
+        with the other dimension set by the aspect ratio of the tiled images.
+        If ``None``, the current figure is reshaped to the aspect ratio of the tiled
+        images, preserving its area.
     """
     # Gather helper variables and set the min and max of all the subplots.
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
 
     images = as_numpy(images)
+
+    # Shape the figure to the aspect ratio of the tiled images such that the
+    # (equal-aspect) images fill the figure instead of being letterboxed.
+    fig = plt.gcf()
+    aspect = float(N * sx) / float(M * sy)
+    if figsize is None:                                 # Preserve the current area.
+        area = np.prod(fig.get_size_inches())
+        figsize = (np.sqrt(area * aspect), np.sqrt(area / aspect))
+    elif np.isscalar(figsize):                          # Scalar sets the larger dimension.
+        figsize = (figsize, figsize / aspect) if aspect > 1 else (figsize * aspect, figsize)
+    fig.set_size_inches(figsize)
 
     if separate_axes:
         sx = sx / 2.0 - 0.5
@@ -1179,6 +1195,295 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=0):
             ax2.set_title("Result")
 
             _slmsuite_plt_show(name="image_fit")
+
+    return result
+
+
+# Geometry of the ray cast by _aperture_edge_points(), in pixels: how finely each ray is
+# sampled, and the smallest radius at which an edge may be found.
+_APERTURE_STEP = 0.5
+_APERTURE_MIN_RADIUS = 5.0
+
+# How close the fitted center must come to the center the rays were cast from, in pixels,
+# for image_aperture_fit() to stop iterating. See the note at its use.
+_APERTURE_CONVERGENCE = 0.2
+
+
+def _aperture_edge_points(power, center, theta, step, drop, floor, edge_level):
+    """
+    Helper for :meth:`image_aperture_fit()`: casts rays from ``center`` across the smoothed
+    ``power`` and returns, for each ray with a qualifying edge, the ``(2, N)`` pixel
+    coordinates of its steepest descent and of where its power falls to ``edge_level``.
+    """
+    (h, w) = power.shape
+    radii = np.arange(0, np.hypot(h, w), step)
+    rows = np.arange(len(theta))
+
+    x = center[0] + np.outer(np.cos(theta), radii)
+    y = center[1] + np.outer(np.sin(theta), radii)
+    inside = (x >= 0) & (x <= w - 1) & (y >= 0) & (y <= h - 1)
+
+    # Each ray is only usable up to where it first leaves the image.
+    length = np.where(inside.all(axis=1), radii.size, np.argmin(inside, axis=1))
+    profiles = map_coordinates(power, [y.ravel(), x.ravel()], order=1, mode="nearest")
+    profiles = profiles.reshape(x.shape)
+    slope = np.gradient(profiles, axis=1)
+
+    # The candidate edge is the steepest descent which leaves room to compare the power
+    # at 0.8-0.9 of its radius against 1.1-1.2 of its radius, inside the image.
+    index = np.arange(radii.size)[np.newaxis, :]
+    searchable = (index * step >= _APERTURE_MIN_RADIUS) & (
+        np.ceil(1.2 * index) + 1 < length[:, np.newaxis]
+    )
+    k = np.argmin(np.where(searchable, slope, np.inf), axis=1)
+    valid = searchable[rows, k]
+
+    cumulative = np.concatenate((np.zeros((len(theta), 1)), np.cumsum(profiles, axis=1)), axis=1)
+
+    def window_mean(lo, hi):
+        lo = np.floor(lo).astype(int)
+        hi = np.clip(np.ceil(hi).astype(int), lo + 1, radii.size)
+        return (cumulative[rows, hi] - cumulative[rows, lo]) / (hi - lo)
+
+    inner = window_mean(0.8 * k, 0.9 * k)
+    outer = window_mean(1.1 * k, 1.2 * k)
+    valid &= (inner > floor) & (inner - outer >= drop * inner)
+
+    # Refine the steepest descent to a fraction of a sample with a parabola.
+    kc = np.clip(k, 1, radii.size - 2)
+    (s0, s1, s2) = (slope[rows, kc - 1], slope[rows, kc], slope[rows, kc + 1])
+    curvature = s0 - 2 * s1 + s2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        offset = np.where(curvature > 0, 0.5 * (s0 - s2) / curvature, 0)
+    edge = (kc + np.clip(offset, -0.5, 0.5)) * step
+
+    # Beyond the steepest descent, find where the power falls to edge_level of the way from
+    # the background (the lowest power further along the ray) to the power inside the edge.
+    beyond = (index >= k[:, np.newaxis]) & (index < length[:, np.newaxis])
+    background = np.min(np.where(beyond, profiles, np.inf), axis=1)
+    with np.errstate(invalid="ignore"):
+        threshold = background + edge_level * (inner - background)
+    j = np.argmax(beyond & (profiles <= threshold[:, np.newaxis]), axis=1)
+    jm = np.maximum(j - 1, 0)
+    (p0, p1) = (profiles[rows, jm], profiles[rows, j])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fraction = np.where(p0 > p1, (p0 - threshold) / (p0 - p1), 0)
+    level = (jm + np.clip(fraction, 0, 1)) * step
+
+    def coordinates(radius):
+        return np.vstack((
+            center[0] + radius[valid] * np.cos(theta[valid]),
+            center[1] + radius[valid] * np.sin(theta[valid]),
+        ))
+
+    return (coordinates(edge), coordinates(level))
+
+
+def _aperture_circle_fit(points, tolerance, smooth, max_radius, seed, trials=1000):
+    """
+    Helper for :meth:`image_aperture_fit()`: RANSAC circle over ``(2, N)`` edge ``points``,
+    refined by least squares on the consensus. Returns ``(center, radius, inliers)``, or
+    ``None`` if no circle is found.
+    """
+    pts = points.T
+    n = len(pts)
+    rng = np.random.default_rng(seed)
+
+    # Circles through random triplets of points.
+    triplets = np.argsort(rng.random((trials, n)), axis=1)[:, :3]
+    (p1, p2, p3) = (pts[triplets[:, 0]], pts[triplets[:, 1]], pts[triplets[:, 2]])
+    (a, b) = (2 * (p2 - p1), 2 * (p3 - p1))
+    det = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+    (c1, c2) = (np.sum(p2**2 - p1**2, axis=1), np.sum(p3**2 - p1**2, axis=1))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cx = (c1 * b[:, 1] - a[:, 1] * c2) / det
+        cy = (a[:, 0] * c2 - c1 * b[:, 0]) / det
+    r = np.hypot(p1[:, 0] - cx, p1[:, 1] - cy)
+    plausible = np.isfinite(r) & (r > 0) & (r < max_radius)
+    if not np.any(plausible):
+        return None
+
+    def tolerance_of(radius):
+        """The consensus half-width of a circle of this ``radius``, shaped like it."""
+        if tolerance is not None:
+            return np.broadcast_to(float(tolerance), np.shape(radius))
+        return np.maximum(1.5 * smooth, 0.025 * radius)
+
+    def consensus(center, radius):
+        """Boolean mask of the points which belong to the single circle ``(center, radius)``."""
+        return np.abs(np.hypot(*(pts - center).T) - radius) < tolerance_of(radius)
+
+    # The candidate with the most points inside its consensus wins.
+    (cx, cy, r) = (cx[plausible], cy[plausible], r[plausible])
+    distance = np.hypot(pts[:, 0] - cx[:, np.newaxis], pts[:, 1] - cy[:, np.newaxis])
+    counts = np.sum(np.abs(distance - r[:, np.newaxis]) < tolerance_of(r)[:, np.newaxis], axis=1)
+    best = int(np.argmax(counts))
+    circle = np.array([cx[best], cy[best], r[best]])
+
+    # Refine on the consensus, then refresh the consensus about the refined circle.
+    for _ in range(2):
+        inliers = consensus(circle[:2], circle[2])
+        if np.sum(inliers) < 3:
+            return None
+        q = pts[inliers]
+        circle = least_squares(
+            lambda c: np.hypot(q[:, 0] - c[0], q[:, 1] - c[1]) - c[2], circle
+        ).x
+
+    return (circle[:2], float(circle[2]), consensus(circle[:2], circle[2]))
+
+
+def image_aperture_fit(
+    image,
+    center=None,
+    edge_level=0.1,
+    smooth=None,
+    drop=0.5,
+    floor=0.05,
+    tolerance=None,
+    rays=720,
+    min_points=20,
+    min_coverage=90,
+    iterations=10,
+    seed=0,
+    plot=False,
+):
+    r"""
+    Fits a circle to the rolloff of an illuminated aperture in a 2D power ``image``.
+
+    The power centroid of a clipped beam is pulled toward whatever is brightest inside the
+    aperture. Instead, this function locates the edge of the aperture directly:
+
+    #.  The image is smoothed by a Gaussian of width ``smooth`` pixels.
+    #.  Rays are cast outward from the current center. Along each, the edge candidate is the
+        steepest descent of power. It is kept only if the mean power at :math:`1.1`-:math:`1.2`
+        of its radius is at least ``drop`` below the mean power at :math:`0.8`-:math:`0.9`,
+        and the latter exceeds ``floor`` of the image maximum. This comparison scales with the
+        radius, so the gradual falloff of a Gaussian beam (:math:`\approx 26\%` across this span
+        at its steepest) is not mistaken for an edge, while non-uniform power inside the
+        aperture does not move the edge. Rays which leave the image before the comparison can
+        be made are skipped, so the border of the image is never mistaken for the aperture.
+    #.  A circle is fit to the edge points with RANSAC (deterministic for a given ``seed``),
+        which rejects edges that do not belong to the circle, such as a straight clip. The
+        consensus circle is then refined by least squares.
+    #.  Steps 2 and 3 repeat from the new center until it settles, which takes two or three
+        passes.
+    #.  Along each consensus ray, the power is followed past the steepest descent to where it
+        falls to ``edge_level`` of the way from the background to the power inside the edge.
+        The radius is the median distance of these points from the center.
+
+    Parameters
+    ----------
+    image : array_like
+        2D power (intensity) image.
+    center : (float, float) OR None
+        ``(x, y)`` pixel coordinate to cast rays from at first.
+        If ``None``, starts from the power centroid.
+    edge_level : float
+        Where on the rolloff to place the radius, as a fraction in :math:`(0, 1)` of the way
+        from the background to the power inside the edge. Smaller values give a larger radius
+        which includes more of the rolloff; values near :math:`0.5` place it near the steepest
+        descent. The center does not depend on ``edge_level``.
+    smooth : float OR None
+        Width in pixels of the Gaussian smoothing.
+        If ``None``, defaults to ``max(1, min(image.shape) / 200)``.
+    drop : float
+        Minimum fractional drop in power across an edge.
+    floor : float
+        Minimum power just inside an edge, as a fraction of the (smoothed) image maximum.
+    tolerance : float OR None
+        RANSAC consensus distance in pixels. If ``None``, defaults to the larger of
+        ``1.5 * smooth`` and 2.5% of the circle's radius.
+    rays : int
+        Number of rays to cast.
+    min_points : int
+        Minimum number of consensus edge points for a fit.
+    min_coverage : float
+        Minimum arc, in degrees, that the consensus edge points must span for a fit.
+    iterations : int
+        Maximum number of detect-and-fit passes.
+    seed : int
+        Seed for the RANSAC sampling.
+    plot : bool
+        Whether to plot the image with the detected edge points and the fit.
+
+    Returns
+    -------
+    (numpy.ndarray, float) OR None
+        The ``center`` of the circle as an ``(x, y)`` pixel coordinate, and its ``radius`` in
+        pixels at ``edge_level``. ``None`` if no aperture edge is found, for instance for an
+        unclipped Gaussian beam.
+    """
+    image = np.asarray(as_numpy(image), dtype=float)
+    if image.ndim != 2:
+        raise ValueError(f"image_aperture_fit expects a 2D image; got shape {image.shape}.")
+    if not 0 < edge_level < 1:
+        raise ValueError(f"edge_level must be in (0, 1); got {edge_level}.")
+    (h, w) = image.shape
+
+    if smooth is None:
+        smooth = max(1.0, min(h, w) / 200)
+    power = gaussian_filter(image, smooth)
+    peak = float(np.max(power))
+
+    if center is None:
+        # image_positions is relative to the image center at (N - 1) / 2.
+        center = np.squeeze(image_positions(image)) + (np.array([w, h]) - 1) / 2
+    center = np.array(center, dtype=float).ravel()
+
+    theta = np.linspace(0, 2 * np.pi, int(rays), endpoint=False)
+    (points, levels) = (np.zeros((2, 0)), np.zeros((2, 0)))
+    fit = None
+
+    if np.isfinite(peak) and peak > 0 and np.all(np.isfinite(center)):
+        for _ in range(int(iterations)):
+            (points, levels) = _aperture_edge_points(
+                power, center, theta, _APERTURE_STEP, drop, floor * peak, edge_level
+            )
+            fit = None
+            if points.shape[1] < min_points:
+                break
+            fit = _aperture_circle_fit(points, tolerance, smooth, 2 * np.hypot(h, w), seed)
+            if fit is None:
+                break
+            moved = np.hypot(*(fit[0] - center))
+            center = fit[0]
+            # Re-casting the rays from the new center shifts the fit by a fraction of a
+            # percent of its radius, so stop at that scale: a tighter tolerance is below
+            # what the fit can repeat, and the loop would run out its iterations instead.
+            if moved < max(_APERTURE_CONVERGENCE, 0.005 * fit[1]):
+                break
+
+    result = None
+    if fit is not None:
+        (center, _, inliers) = fit
+        # The consensus must span a wide enough arc to pin the circle down.
+        angles = np.sort(np.arctan2(*(points[::-1, inliers] - center[::-1, np.newaxis])) % (2 * np.pi))
+        gaps = np.diff(np.concatenate((angles, [angles[0] + 2 * np.pi]))) if angles.size else [2 * np.pi]
+        coverage = np.degrees(2 * np.pi - np.max(gaps))
+        if np.sum(inliers) >= min_points and coverage >= min_coverage:
+            radius = float(np.median(np.hypot(*(levels[:, inliers] - center[:, np.newaxis]))))
+            result = (center, radius)
+
+    if plot:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.imshow(image)
+        if result is None:
+            ax.scatter(*points, s=4, c="r", label="rejected edges")
+            ax.set_title("No aperture edge found")
+        else:
+            ax.scatter(*levels[:, ~inliers], s=4, c="r", label="rejected edges")
+            ax.scatter(*levels[:, inliers], s=4, c="w", label="aperture edges")
+            ax.add_patch(plt.Circle(center, radius, fill=False, color="c", lw=1.5, label="fit"))
+            ax.plot(*center, "c+", ms=12)
+            ax.set_title(
+                "Aperture fit: center ({:.1f}, {:.1f}), radius {:.1f} at edge_level {:g}"
+                .format(*center, radius, edge_level)
+            )
+        ax.set_xlim(-0.5, w - 0.5)
+        ax.set_ylim(h - 0.5, -0.5)
+        ax.legend(loc="lower right")
+        _slmsuite_plt_show(name="image_aperture_fit")
 
     return result
 

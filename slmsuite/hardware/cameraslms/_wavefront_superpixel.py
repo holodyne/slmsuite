@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import optimize
-from tqdm.auto import tqdm
+from slmsuite import tqdm
 
 from slmsuite import __version__
 from slmsuite.holography import analysis
@@ -794,7 +794,7 @@ class _WavefrontCalibrationSuperpixel(object):
                         if focus is None:
                             focus = i
                         points.append(reference_superpixels_coords[:, i] * superpixel_size + center_offset)
-                        if schedule is not None: points.append((index2coord(schedule[i]) * superpixel_size + center_offset).ravel())
+                        if schedule is not None: points.append(index2coord(schedule[i]).ravel() * superpixel_size + center_offset)
                         if num_points > 1:
                             labels.append("{}".format(i))
                             if schedule is not None: labels.append("{}".format(i))
@@ -944,6 +944,14 @@ class _WavefrontCalibrationSuperpixel(object):
             result = analysis.image_fit(imgs, function=_sinc2d_nomod, guess=guess) #, plot=True)
 
             centers = result[:, 1:3].T
+
+            # Get rid of poor or failed fits
+            half = np.array([[imgs.shape[2]], [imgs.shape[1]]]) / 2
+            lost = np.logical_or(
+                np.any(np.logical_not(np.abs(centers) < half), axis=0),
+                np.logical_not(result[:, 0] > .5),      # R^2 of the fit; nan if it failed.
+            )
+            centers[:, lost] = 0
 
             # if not fit:
             return centers + calibration_points

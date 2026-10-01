@@ -212,7 +212,7 @@ class FLIR(Camera):
             (self.cam.WidthMax.GetValue(), self.cam.HeightMax.GetValue()),
             bitdepth=bitdepth,
             pitch_um=pitch_um,
-            name=serial,
+            name=kwargs.pop("name", serial),
             **kwargs
         )
 

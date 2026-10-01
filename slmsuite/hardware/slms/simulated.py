@@ -52,7 +52,7 @@ class SimulatedSLM(SLM):
         gamma_sim : array_like OR None
             See :attr:`gamma_sim`. Must span every one of the ``bitresolution`` levels;
             interpolate a sparse measurement with
-            :meth:`~slmsuite.hardware.slms.slm.SLM.interpolate_gamma` first.
+            :meth:`~slmsuite.hardware.slms.slm.SLM._interpolate_gamma` first.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
         """

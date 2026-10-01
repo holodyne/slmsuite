@@ -430,6 +430,7 @@ class FourierSLM(
         # the source in use. Both SLMs share a grid (same shape, pitch, and wavelength),
         # so the aperture transfers as-is.
         slm_sim.set_aperture(self.slm.aperture)
+        slm_sim._source_radius = self.slm._source_radius
 
         # Defaults for set_phase().
         slm_sim.phase_correct = self.slm.phase_correct
