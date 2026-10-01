@@ -46,6 +46,7 @@ _REMEMBERED = ("cmap", "scale", "zoom", "crosshair", "log", "range", "geometry")
 # Mouse events are throttled to this period, roughly the rate at which frames can be
 # drawn: a megapixel frame takes tens of milliseconds to encode.
 _RENDER_PERIOD_S = .033
+_LIVE_PERIOD_S = 0.01
 
 # Frames are encoded as 8-bit palette PNGs: the colormap is sent once as a palette
 # and each pixel is a single index, which is what keeps mouse zoom and pan tracking
@@ -665,9 +666,30 @@ class _ViewerObject:
             self.task = loop.create_task(self.live_loop())
 
     async def live_loop(self):
-        while self.state["live"]:
-            self.parent.get_image()     # SLMs are not allowed to have gotten here.
-            await asyncio.sleep(0.01)
+        try:
+            while self.state["live"]:
+                self.parent.get_image()     # SLMs are not allowed to have gotten here.
+                await asyncio.sleep(_LIVE_PERIOD_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Else the loop dies silently and the viewer looks live while it is not.
+            # Thus we need to cleanup!
+            self.state["live"] = False
+            widget = self.widgets.get("live")
+
+            try:
+                if widget is not None:
+                    widget.unobserve(self.live, "value")
+                    try:
+                        widget.value = False
+                        widget.button_style = "danger"
+                    finally:
+                        widget.observe(self.live, "value")
+            except Exception:
+                pass
+
+            self._print(f"Live stopped. {type(e).__name__}: {e}")
 
     def _to_source(self, fx, fy):
         """Map a fraction of the view to ``(sx, sy)`` source-image pixels."""
