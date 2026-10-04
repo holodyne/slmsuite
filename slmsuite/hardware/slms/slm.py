@@ -838,6 +838,62 @@ class SLM(_Common, ABC):
 
         return out
 
+    def _gray2phase(self, gray):
+        r"""
+        The inverse of :meth:`_phase2gray`: the phase, in :math:`[0, 2\pi)`, that
+        :meth:`_phase2gray` maps onto each grayscale level in ``gray``.
+
+        Parameters
+        ----------
+        gray : numpy.ndarray or cupy.ndarray
+            Integer grayscale levels.
+
+        Returns
+        -------
+        numpy.ndarray or cupy.ndarray
+            Float32 phase in radians, on the SLM's backend.
+        """
+        xp = self.xp
+        if self.lut is not None:
+            level_phase = self._gamma_sign * 2 * np.pi * xp.asarray(self.gamma, dtype=xp.float32)
+            return xp.mod(level_phase, 2 * np.pi)[gray]
+
+        gray = xp.asarray(gray).astype(xp.float32)
+        if self.phase_scaling == 1:
+            # _phase2gray shifts by one level so that phase zero lands on the top level.
+            realized = (gray + 1) * (self._gamma_sign * 2 * np.pi / self.bitresolution)
+        else:
+            realized = (gray - (self.bitresolution - 1)) * (
+                -2 * np.pi / (self.bitresolution * self.phase_scaling)
+            )
+        return xp.mod(realized, 2 * np.pi).astype(xp.float32)
+
+    def get_realized_phase(self, phase=None):
+        r"""
+        The phase the SLM shows for ``phase``: quantized to its :attr:`bitresolution`
+        levels exactly as :meth:`set_phase` quantizes it (through :attr:`lut` when a
+        gamma is set), in radians wrapped to :math:`[0, 2\pi)`.
+
+        A 4-bit SLM realizes only 16 phases; this is what it displays, where
+        :attr:`phase` is what was asked of it.
+
+        Parameters
+        ----------
+        phase : array_like OR None
+            Phase in radians, of any shape. Defaults to :attr:`phase`, the last phase
+            written (including any wavefront correction).
+
+        Returns
+        -------
+        numpy.ndarray OR cupy.ndarray
+            Float32 phase in radians, on the SLM's backend.
+        """
+        xp = self.xp
+        # A copy: _phase2gray scales its input in place.
+        phase = xp.array(as_backend(self.phase if phase is None else phase, xp), dtype=xp.float32)
+        gray = self._phase2gray(phase, out=xp.empty(phase.shape, dtype=self.dtype))
+        return self._gray2phase(gray)
+
     # Writing methods
 
     @abstractmethod
@@ -891,7 +947,7 @@ class SLM(_Common, ABC):
     def _viewer_frame(self):
         """The current phase in the gray levels that the viewer's color range spans."""
         factor = self.phase_scaling * self.bitresolution / (2 * np.pi)
-        return (as_numpy(self.phase) * factor % self.bitresolution).astype(self.dtype)
+        return as_numpy((self.phase * factor % self.bitresolution).astype(self.dtype))
 
     def set_phase(
         self,

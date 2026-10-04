@@ -237,6 +237,15 @@ class _WavefrontCalibrationSuperpixel(object):
         )
         num_points = calibration_points.shape[1]
 
+        # Each point interferes against a reference superpixel of its own.
+        if num_points > num_active_superpixels:
+            raise ValueError(
+                f"{num_points} calibration points need as many reference superpixels, but "
+                f"only {num_active_superpixels} superpixels are active at "
+                f"superpixel_size={superpixel_size}. Use smaller superpixels or fewer "
+                f"calibration_points."
+            )
+
         # Clean the base and field points.
         base_point = np.rint(self.kxyslm_to_ijcam([0, 0])).astype(int)
 
@@ -869,7 +878,7 @@ class _WavefrontCalibrationSuperpixel(object):
 
                 point = focus_point
 
-                axs[2].scatter([point[0]], [point[1]], 5, "r", "*")
+                axs[2].scatter([point[0]], [point[1]], s=5, c="r", marker="*")
                 axs[2].set_xlim(point[0] - wh/2, point[0] + wh/2)
                 axs[2].set_ylim(point[1] + hh/2, point[1] - hh/2)
 
