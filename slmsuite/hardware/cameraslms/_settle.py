@@ -25,7 +25,8 @@ class _SettleCalibration(object):
         plot=0
     ):
         """
-        Approximates the :math:`1/e` settle time of the SLM.
+        Approximates the settle time of the SLM: the communication delay plus four
+        :math:`1/e` relaxation times.
         This is done by successively removing and applying a blaze to the SLM,
         measuring the intensity at the first order spot versus time delay.
 
@@ -39,7 +40,7 @@ class _SettleCalibration(object):
             Size in pixels of the integration region in the ``"ij"`` basis.
             If ``None``, sets to sixteen times the approximate size of a diffraction-limited spot.
         times : array_like OR None OR int
-            List of times to sweep over in search of the :math:`1/e` settle time.
+            List of times to sweep over in search of the settle time.
             If ``None``, defaults to 21 points over one second.
             If an integer, defaults to that given number of points over one second.
         settle_time_s : float OR None
@@ -161,8 +162,8 @@ class _SettleCalibration(object):
 
     def settle_calibration_process(self, plot=0):
         """
-        Fits an exponential to the measured data to
-        approximate the :math:`1/e` settle time of the SLM.
+        Fits an exponential to the measured data to approximate the settle time of the
+        SLM: the communication delay plus four :math:`1/e` relaxation times.
 
         Parameters
         ----------

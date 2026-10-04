@@ -22,6 +22,8 @@ def _parse_focal_length(f):
         if np.any(f == 0):
             raise ValueError("Cannot interpret a focal length of zero. Found {}.".format(f))
 
+        f = tuple(float(x) for x in f)
+
     return f
 
 
@@ -122,7 +124,7 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
                 "Found {}.".format(f)
             )
         # sqrt discards the sign of f, so reapply it; a diverging axicon is f < 0.
-        return (2 * np.pi * np.sign(angle[0])) * xp.sqrt(
+        return (2 * np.pi * float(np.sign(angle[0]))) * xp.sqrt(
             xp.square(x_grid * angle[0]) + xp.square(y_grid * angle[1])
         )
 

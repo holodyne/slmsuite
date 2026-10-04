@@ -6,6 +6,7 @@ import numpy as np
 
 from slmsuite.misc.math import *
 from slmsuite.misc.fitfunctions import *
+from slmsuite.holography.analysis import image_variances
 
 
 # slmsuite.misc.math
@@ -196,6 +197,14 @@ def test_gaussian2d(subtests):
         z = gaussian2d(np.array([[2.0], [0.0]]), x0=0, y0=0, a=1, c=0, wx=2, wy=3)
         assert z[0] == pytest.approx(np.exp(-0.5), rel=1e-10)
 
+    with subtests.test("the image's second moments are [[wx^2, wxy], [wxy, wy^2]]"):
+        grid = np.meshgrid(np.arange(-40.0, 41.0), np.arange(-40.0, 41.0))
+        for wxy in (0.0, 6.0, -6.0, 11.9):
+            image = gaussian2d(grid, x0=1.5, y0=-2.0, a=1, c=0, wx=3, wy=4, wxy=wxy)
+            np.testing.assert_allclose(
+                image_variances(image[np.newaxis], grid=grid)[:, 0], [9.0, 16.0, wxy], atol=1e-8
+            )
+
 
 def test_tophat2d(subtests):
     """Test tophat2d() fit function."""
@@ -240,3 +249,24 @@ def test_sinc2d(subtests):
         z_no_d = sinc2d(xy, x0=0, y0=0, R=2, a=10, c=0, d=0)
         z_with_d = sinc2d(xy, x0=0, y0=0, R=2, a=10, c=0, d=5)
         np.testing.assert_array_almost_equal(z_with_d, z_no_d + 5, decimal=10)
+
+
+def test_sinc2d_centered_jacobian(subtests):
+    """Test _sinc2d_centered_jacobian() against differences of _sinc2d_centered()."""
+    from slmsuite.holography.analysis.fitfunctions import (
+        _sinc2d_centered, _sinc2d_centered_jacobian
+    )
+
+    (x, y) = np.meshgrid(np.linspace(-2.5, 2.5, 11), np.linspace(-2.5, 2.5, 11))
+    xy = np.vstack((x.ravel(), y.ravel()))
+    params = np.array([1.1, 3.0, 0.7, 0.4, 0.2, 2 * np.pi, -4.0])
+
+    with subtests.test("every column is the central difference of the model"):
+        jacobian = _sinc2d_centered_jacobian(xy, *params)
+        assert jacobian.shape == (xy.shape[1], params.size)
+        for (index, step) in enumerate(1e-6 * np.maximum(1, np.abs(params))):
+            shift = np.eye(params.size)[index] * step
+            difference = (
+                _sinc2d_centered(xy, *(params + shift)) - _sinc2d_centered(xy, *(params - shift))
+            ) / (2 * step)
+            np.testing.assert_allclose(jacobian[:, index], difference, atol=1e-7, err_msg=index)

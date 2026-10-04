@@ -349,7 +349,7 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
         where the last axis is RGBA color, 8 bits per channel.
     """
     # Parse images.
-    images = np.array(images, copy=(False if np.__version__[0] == '1' else None))
+    images = as_numpy(images)
     if len(images.shape) == 2:
         images = np.reshape(images, (1, images.shape[0], images.shape[1]))
     elif len(images.shape) >= 3 and images.shape[-1] in [3, 4]:  # Already RGB or RGBA

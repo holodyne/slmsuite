@@ -137,9 +137,11 @@ class _WavefrontCalibrationZernike(object):
 
         Returns
         -------
-        dict
+        dict OR SpotHologram
             The contents of
-            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront_zernike"]`.
+            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront_zernike"]`,
+            or the projected :class:`~slmsuite.holography.algorithms.SpotHologram` if
+            ``perturbation`` is non-positive or empty.
 
         Raises
         ------
@@ -661,6 +663,8 @@ class _WavefrontCalibrationZernike(object):
         vectors = self.calibrations["wavefront_zernike"]["corrected_spots"]
         final = np.zeros_like(vectors)
 
+        self._check_calibration_frame("wavefront_zernike")
+
         points_ij = self.calibrations["wavefront_zernike"]["calibration_points_ij"]
         base_xy = convert_vector(
             points_ij,
@@ -706,6 +710,10 @@ class _WavefrontCalibrationZernike(object):
                         c="k",
                         linewidth=1,
                     )
+
+            if not neighbors:
+                final[:, i] = vectors[:, i]
+                continue
 
             # Handle XY terms.
             final[x_smooth, i] = (1-smoothing_xy) * (vectors[x_smooth, i] - base_xy[0, i]) + base_xy[0, i]
@@ -775,6 +783,7 @@ class _WavefrontCalibrationZernike(object):
             raise RuntimeError("Could not find Zernike wavefront calibration.")
 
         values = np.array(self.calibrations["wavefront_zernike"]["corrected_spots"])
+        self._check_calibration_frame("wavefront_zernike")
         base = convert_vector(
             self.calibrations["wavefront_zernike"]["calibration_points_ij"],
             from_units="ij",

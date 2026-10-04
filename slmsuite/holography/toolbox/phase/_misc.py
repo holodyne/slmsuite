@@ -36,8 +36,11 @@ def _determine_source_radius(grid, w=None):
 
     if hasattr(grid, "slm") and hasattr(grid, "cam"):
         grid = grid.slm
-    if hasattr(grid, "source_radius"):
-        return grid.source_radius
+    try:
+        if hasattr(grid, "source_radius"):
+            return grid.source_radius
+    except ValueError as e:
+        raise ValueError(f"{e} Pass the source radius w= explicitly.") from e
 
     (x_grid, y_grid) = _process_grid(grid)
     # Reduce on the device.

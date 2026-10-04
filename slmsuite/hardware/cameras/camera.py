@@ -18,7 +18,7 @@ from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
-from slmsuite.misc.xp import as_backend, as_numpy, is_gpu_array
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
 
 
 class Camera(_Common, ABC):
@@ -1399,9 +1399,9 @@ class Camera(_Common, ABC):
         """
         (exposures, exposure_power) = self._parse_hdr(exposures)
         # In the units of the frames this call will actually capture.
-        overexposure_threshold = self._bitresolution(
-            self._parse_averaging(kwargs.get("averaging"))
-        ) / 2
+        bitresolution = self._bitresolution(self._parse_averaging(kwargs.get("averaging")))
+        overexposure_threshold = bitresolution / 2
+        full_scale = bitresolution - bitresolution // 2**self.bitdepth
 
         # Make empty data and grab the original exposure time.
         original_exposure = self.get_exposure()
@@ -1417,11 +1417,12 @@ class Camera(_Common, ABC):
                 self.flush()    # Sometimes, cameras return bad frames after exposure change.
                 frame = self.get_image(hdr=False, **kwargs)
                 if imgs is None:
-                    imgs = np.zeros((exposures,) + tuple(frame.shape), float)
+                    xp = get_array_module(frame)
+                    imgs = xp.zeros((exposures,) + tuple(frame.shape), float)
                 imgs[i, :, :] = frame
 
                 # Terminate the loop if our image is entirely overexposed.
-                if np.all(imgs[i, :, :] > overexposure_threshold):
+                if xp.all(imgs[i, :, :] > overexposure_threshold):
                     # Drop the unexposed tail so the stack only holds measured frames.
                     imgs = imgs[:i+1, :, :]
                     exposure_times = exposure_times[:i+1]
@@ -1438,7 +1439,7 @@ class Camera(_Common, ABC):
                 overexposure_threshold=overexposure_threshold,
                 exposure_power=exposure_times,
             )
-            if np.nanmax(img) >= self.bitresolution:
+            if float(xp.nanmax(imgs[0])) >= full_scale:
                 self.logger.warning("HDR image is overexposed.")
             # Store the result locally.
             self.last_image = img
@@ -1841,11 +1842,10 @@ class Camera(_Common, ABC):
         if hasattr(set_z, 'set_phase'):
             # SLM passed; create lens phase setter.
             slm = set_z
-            base_phase = slm.phase.copy()
+            base_phase = slm.phase - slm._get_source_phase()
             base_correction = slm.source.get('phase', None)
             if base_correction is None:
                 base_correction = slm.xp.zeros_like(base_phase)
-            base_phase -= base_correction
 
             def slm_set_z(z_val):
                 slm.source['phase'] = (
@@ -1930,7 +1930,7 @@ class Camera(_Common, ABC):
             )
             z_opt = popt[0]
             c_opt = popt[1] + popt[2]
-        except BaseException:
+        except Exception:
             self.logger.warning("Autofocus fit failed, using maximum fom as optimum.")
             z_opt = z_list[I_max_count]
             c_opt = counts[I_max_count]
@@ -1952,7 +1952,7 @@ class Camera(_Common, ABC):
             lfit = None
             try:
                 lfit = lorentzian(z_list_fine, *popt)
-            except BaseException:
+            except Exception:
                 lfit = None
             if lfit is not None:
                 plt.plot(z_list_fine, lfit, color="r", label="Fit")

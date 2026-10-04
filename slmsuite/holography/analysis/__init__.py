@@ -14,16 +14,11 @@ from scipy.ndimage import binary_erosion, gaussian_filter, map_coordinates, maxi
 from scipy.fft import next_fast_len
 
 import warnings
-try:
-    import cupy as cp   # type: ignore
-except ImportError:
-    cp = np
 
-from slmsuite.holography.toolbox import format_2vectors, _process_grid
+from slmsuite.holography.toolbox import format_2vectors
 from slmsuite.holography.toolbox.phase import (
-    zernike_sum, laguerre_gaussian, ZernikeBasis, _zernike_get_basis,
+    zernike_sum, ZernikeBasis, _zernike_get_basis, _zernike_fit_grid,
 )
-from slmsuite.misc.math import REAL_TYPES
 from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
 from slmsuite._logging import make_logger
@@ -456,13 +451,10 @@ def image_remove_field(images, deviations=1, out=None):
         )
     threshold = np.reshape(threshold, (img_count, 1, 1))
 
-    out_max = np.amax(out_, axis=(1, 2), keepdims=True)
-
     # Remove the field. This needs the float from before. Unsigned integer could underflow.
     threshold = threshold.astype(out_.dtype)
     out_ -= threshold
     out_[out_ < 0] = 0
-    out_[out_ > (out_max - threshold)] = 0
 
     return out
 
@@ -850,8 +842,8 @@ def image_variances(images, centers=None, grid=None, normalize=True, nansum=Fals
     ~~~~
     The moment :math:`M_{20} = (\Delta x)^2` is the variance in the
     :math:`x` direction, or the square of the standard deviation :math:`\Delta x`.
-    The standard deviation :math:`\Delta x` is equal to the
-    :math:`1/e` amplitude radius (:math:`1/e^2` power radius) of a Gaussian beam.
+    For the intensity image of a Gaussian beam, the standard deviation :math:`\Delta x` is
+    half the :math:`1/e` amplitude radius (:math:`1/e^2` power radius).
 
     Parameters
     ----------
@@ -1080,7 +1072,8 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=0):
     NotImplementedError
         If the provided ``function`` does not have a guess implemented.
     """
-    # Setup.
+    # Setup. The fit runs on the host.
+    images = as_numpy(images)
     if images.ndim == 2:
         images = images.reshape((1, *images.shape))
     (image_count, w_y, w_x) = images.shape
@@ -1088,6 +1081,7 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=0):
 
     if grid is None:
         grid = _generate_grid(w_x, w_y, centered=True)
+    grid = (as_numpy(grid[0]), as_numpy(grid[1]))
     grid_ravel = (np.ravel(grid[0]), np.ravel(grid[1]))
 
     # Number of fit parameters the function accepts (minus 1 for xy).
@@ -1100,12 +1094,14 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=0):
     # Construct guesses.
     if guess is None or guess is True:
         if function is gaussian2d:
-            images_normalized = image_normalize(images, remove_field=True)
-            centers = image_positions(images_normalized, grid=grid, normalize=False)
-            variances = image_variances(images_normalized, centers=centers, grid=grid, normalize=False)
+            images_normalized = image_normalize(images, nansum=True, remove_field=True)
+            centers = image_positions(images_normalized, grid=grid, normalize=False, nansum=True)
+            variances = image_variances(
+                images_normalized, centers=centers, grid=grid, normalize=False, nansum=True
+            )
 
-            maxs = np.amax(images, axis=(1, 2))
-            mins = np.amin(images, axis=(1, 2))
+            maxs = np.nanmax(images, axis=(1, 2))
+            mins = np.nanmin(images, axis=(1, 2))
             guess = np.vstack((
                 centers,
                 maxs - mins,
@@ -1591,8 +1587,7 @@ def image_zernike_fit(
     image_count = phase_images.shape[0]
 
     if grid is None:
-        (h, w) = phase_images.shape[-2:]
-        grid = np.meshgrid(np.arange(w) - (w - 1) / 2, np.arange(h) - (h - 1) / 2)
+        grid = _zernike_fit_grid(*phase_images.shape[-2:], get_array_module(phase_images))
 
     # Build the Zernike basis, or reuse a cached one for this grid.
     if isinstance(grid, ZernikeBasis):
@@ -2364,7 +2359,8 @@ def _score_array_orientation(image, M, b, array_shape, psf, threshold=0.2):
         The best orientation, the fraction of its spots that are lit, the power at
         its withheld pair relative to a spot, and the median distance from the spots
         to their predictions. ``None`` if too little of the array is in view. A ``dark``
-        approaching a spot's brightness means the orientation is unverified.
+        approaching a spot's brightness means the orientation is unverified. A wrong
+        lattice can leave its pair dark too, but not every spot lit.
     """
     centers = _array_indices(array_shape)
     b = format_2vectors(b)
@@ -2594,10 +2590,15 @@ def _lattice_fourier(image, dft_threshold=100, dft_padding=0, k=8, tol=0.1, plot
             centers_norm[:, 0] * centers_norm[0, 1] -
             centers_norm[:, 1] * centers_norm[0, 0]
         )
-        cross_product[0] = 2
 
-        # Prefer orthogal vectors most, then prefer distance to center.
-        fom = 1e4 * (np.abs(cross_product)) - distance_to_center
+        # A pair spanning the smallest cell is primitive; a larger cell skips lattice points.
+        area = np.abs(cross_product) * centers_length[:, 0]
+        area[np.abs(cross_product) < tol] = np.inf
+        primitive = area <= (1 + tol) * np.min(area)
+
+        # Prefer primitive pairs, then orthogonal vectors, then distance to center.
+        fom = 1e4 * (np.abs(cross_product) + 2 * primitive) - distance_to_center
+        fom[0] = np.inf
         best_groups = np.argsort(-fom)
         count = count[best_groups]
         centers = centers[best_groups, :]
@@ -2635,8 +2636,8 @@ def _lattice_fourier(image, dft_threshold=100, dft_padding=0, k=8, tol=0.1, plot
         ax.grid()
         _slmsuite_plt_show(name="blob_array_detect_lattice")
 
-    # 3.4) Convert to image space (dx = 1/dk)
-    M = fft_size*lv/(np.linalg.norm(lv, axis=0)**2)
+    # 3.4) Convert to image space: the real-space basis is dual to the reciprocal one.
+    M = fft_size * np.linalg.inv(lv).T
 
     # Plot which diffraction orders we used
     if plot >= 2:
@@ -2937,9 +2938,8 @@ def blob_array_detect(
                 M_fixed = np.matmul(
                     M_trial, OrientationTransform.from_code(best[0]).M()
                 )
-                # Only the true orientation leaves the withheld pair dark; a pair as bright
-                # as the spots means the orientation is a guess, not a measurement.
-                parity_success = best[2] < 0.5
+                # Only the true orientation lights every spot and leaves the withheld pair dark.
+                parity_success = best[1] == 1 and best[2] < 0.5
             except IndexError as e:
                 logger.debug("Array parity could not be determined (%s).", e)
                 M_fixed = M_trial

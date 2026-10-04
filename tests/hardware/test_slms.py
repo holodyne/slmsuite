@@ -9,12 +9,14 @@ import warnings
 import pytest
 import numpy as np
 import matplotlib.pyplot as plt
+from PIL import Image
 
 import slmsuite.hardware.slms.slm as slm_module
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.hardware.slms.segmented import SegmentedSLM
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
+from slmsuite.hardware.slms.texasinstruments import PLM
 from slmsuite.holography.toolbox import Aperture
 from slmsuite.holography.toolbox.phase import zernike_sum
 from slmsuite.misc.xp import as_numpy
@@ -33,8 +35,15 @@ class TestSLM:
     """Tests for the SLM base class (via SimulatedSLM), and for its drivers."""
 
     @staticmethod
-    def _slm(bitdepth=8, gpu=False):
-        return SimulatedSLM(resolution=(32, 32), bitdepth=bitdepth, gpu=gpu)
+    def _slm(bitdepth=8, gpu=False, phase_scaling=1):
+        return SimulatedSLM(
+            resolution=(32, 32), bitdepth=bitdepth, gpu=gpu, wav_design_um=1 / phase_scaling
+        )
+
+    @staticmethod
+    def _wrapped_phase(slm):
+        """A random phase spanning several wraps."""
+        return np.random.default_rng(0).uniform(-3 * np.pi, 3 * np.pi, slm.shape)
 
     def test_selftest(self, slm, subtests):
         """test() drives set_phase, the triggers and info, and leaves the phase as it found it."""
@@ -199,11 +208,21 @@ class TestSLM:
             np.testing.assert_allclose(as_numpy(slm.phase), offset, rtol=1e-6)
             del slm.source["phase"]
 
+        with subtests.test("the stored phase re-displays as displayed at any phase_scaling"):
+            for phase_scaling in (1, 0.75, 1.3):
+                s = self._slm(phase_scaling=phase_scaling)
+                s.source["phase"] = np.random.default_rng(1).uniform(0, 1, s.shape)
+                display = s.set_phase(self._wrapped_phase(s), phase_correct=True).copy()
+                s.set_phase(s.phase.copy(), phase_correct=False)
+                np.testing.assert_array_equal(s.display, display, err_msg=f"{phase_scaling=}")
+                s.close()
+
         with subtests.test("write() is a deprecated alias"):
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                slm.write(np.zeros(slm.shape), phase_correct=False)
+                display = slm.write(np.zeros(slm.shape), phase_correct=False)
             assert any("deprecated" in str(w.message).lower() for w in caught)
+            assert display is slm.display
 
         with subtests.test("execute and block reach the hardware which advertises them"):
             class Recording(SimulatedSLM):
@@ -229,6 +248,18 @@ class TestSLM:
             for kwarg in ("execute", "block"):
                 with pytest.raises(ValueError, match=kwarg):
                     slm.set_phase(np.zeros(slm.shape), **{kwarg: False})
+
+    @pytest.mark.gpu
+    def test_set_phase_gpu(self):
+        """A device-backed SLM re-displays its stored phase as displayed."""
+        for phase_scaling in (0.75, 1.3):
+            s = self._slm(gpu=True, phase_scaling=phase_scaling)
+            display = s.set_phase(self._wrapped_phase(s), phase_correct=False).copy()
+            s.set_phase(s.phase.copy(), phase_correct=False)
+            np.testing.assert_array_equal(
+                s.display.get(), display.get(), err_msg=f"{phase_scaling=}"
+            )
+            s.close()
 
     def test_set_gamma(self, subtests):
         """The table inverts a measured response; clearing it restores the linear path."""
@@ -361,6 +392,7 @@ class TestSLM:
     @pytest.mark.gpu
     def test_gamma_backend_parity(self, subtests):
         """A GPU-backed SLM must display exactly what a CPU-backed one does."""
+        import cupy as cp
         from slmsuite.holography.toolbox.phase import blaze
 
         (cpu, gpu) = (self._slm(), self._slm(gpu=True))
@@ -381,6 +413,19 @@ class TestSLM:
             want = cpu.set_phase(phase.copy(), phase_correct=False)
             np.testing.assert_array_equal(np.asarray(got.get()), want)
 
+        with subtests.test("interpolate_gamma accepts a device response"):
+            levels = np.arange(0, B, 16)
+            np.testing.assert_array_equal(
+                gpu._interpolate_gamma(cp.asarray(levels / B), cp.asarray(levels)),
+                cpu._interpolate_gamma(levels / B, levels),
+            )
+
+        with subtests.test("gamma_sim accepts a device response"):
+            sim = SimulatedSLM((16, 16), gpu=True)
+            sim.gamma_sim = cp.asarray(_quadratic_gamma(sim.bitresolution))
+            assert np.array_equal(sim.gamma_sim, _quadratic_gamma(sim.bitresolution))
+            sim.close()
+
         (cpu.close(), gpu.close())
 
     def test_save_load_phase(self, slm, temp_dir, monkeypatch, subtests):
@@ -399,6 +444,34 @@ class TestSLM:
             slm.set_phase(None, phase_correct=False)
             slm.load_phase(None)
             np.testing.assert_array_equal(as_numpy(slm.display), as_numpy(saved_display))
+
+    def test_load_vendor_phase_correction(self, temp_dir, subtests):
+        """A vendor image of gray levels becomes the source phase that displays those levels."""
+        slm = SimulatedSLM(resolution=(48, 32), wav_um=1.0, wav_design_um=1.0, gpu=False)
+        levels = np.random.default_rng(0).integers(0, slm.bitresolution, slm.shape).astype(np.uint8)
+        path = os.path.join(temp_dir, "vendor.png")
+        Image.fromarray(levels).save(path)
+        full = np.copy(slm.load_vendor_phase_correction(path))
+
+        with subtests.test("at unit phase_scaling the correction alone displays the vendor's levels"):
+            slm.set_phase(None, phase_correct=True)
+            np.testing.assert_array_equal(as_numpy(slm.display), levels)
+
+        with subtests.test("a smaller file is padded to the slm about its center"):
+            Image.fromarray(levels[4:-4, 4:-4]).save(path)
+            padded = slm.load_vendor_phase_correction(path)
+            assert padded.shape == slm.shape
+            np.testing.assert_array_equal(padded[4:-4, 4:-4], full[4:-4, 4:-4])
+
+        with subtests.test("a file larger on one axis and smaller on the other raises"):
+            Image.fromarray(np.zeros((slm.shape[0] + 4, slm.shape[1] - 4), np.uint8)).save(path)
+            with pytest.raises(ValueError, match="pad"):
+                slm.load_vendor_phase_correction(path)
+
+        with subtests.test("a color image raises"):
+            Image.fromarray(np.zeros((*slm.shape, 3), np.uint8)).save(path)
+            with pytest.raises(ValueError, match="2D"):
+                slm.load_vendor_phase_correction(path)
 
     def test_set_source_analytic(self, slm, subtests):
         """set_source_analytic fills source from an analytic profile."""
@@ -691,12 +764,26 @@ class TestSLM:
             assert psf.shape == (2048, 2048)
             assert float(np.sum(np.square(as_numpy(psf)))) == pytest.approx(power, rel=1e-5)
 
-    def test_get_spot_radius_kxy(self, slm):
-        """The farfield spot radius is reciprocal to the source radius."""
-        slm.set_aperture(radius=0.3, units="frac")
-        radius = float(slm.get_spot_radius_kxy())
-        slm.set_aperture(radius=0.6, units="frac")
-        assert float(slm.get_spot_radius_kxy()) == pytest.approx(radius / 2)
+    def test_get_spot_radius_kxy(self, slm_small, subtests):
+        """The farfield 1/e amplitude radius of a gaussian source of 1/e amplitude radius w."""
+        pitch = float(np.mean(slm_small.pitch))
+        w = 20 * pitch      # The pupil, at 2 w, stays inside the grid.
+        slm_small.set_aperture(radius=w)
+        radius = float(slm_small.get_spot_radius_kxy())
+
+        with subtests.test("exp(-r^2/w^2) transforms to exp(-pi^2 w^2 k^2), so it is 1/(pi w)"):
+            assert radius == pytest.approx(1 / (np.pi * w), rel=1e-6)
+
+        with subtests.test("it is the 1/e radius of the point spread function"):
+            (x, y) = [as_numpy(g) for g in slm_small.grid]
+            slm_small.source["amplitude"] = np.exp(-(x**2 + y**2) / w**2)
+            pad = 2048
+            psf = as_numpy(slm_small.get_point_spread_function_knm(padded_shape=(pad, pad)))
+            row = psf[pad // 2, pad // 2:] / psf[pad // 2, pad // 2]
+            i = np.argmax(row < np.exp(-1))
+            knm = i - 1 + (row[i - 1] - np.exp(-1)) / (row[i - 1] - row[i])
+            # The pupil truncates the gaussian at 2 w, which widens the spot slightly.
+            assert radius == pytest.approx(knm / (pad * pitch), rel=3e-2)
 
     @pytest.mark.parametrize(
         "driver", driver_classes(SLM), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]
@@ -734,6 +821,12 @@ class TestSimulatedSLM:
             slm = self._slm({"amplitude": amplitude, "phase": phase})
             assert np.allclose(slm.source["amplitude_sim"], amplitude)
             assert np.allclose(slm.source["phase_sim"], -phase)
+
+        with subtests.test("the simulated truth does not alias the measurement"):
+            slm = self._slm({"amplitude": np.random.rand(*shape)})
+            before = np.copy(as_numpy(slm.source["amplitude_sim"]))
+            slm.source["amplitude"] *= 0
+            assert np.array_equal(as_numpy(slm.source["amplitude_sim"]), before)
 
         # A vendor phase correction comes with no measured amplitude, and an amplitude
         # measurement can arrive before any phase.
@@ -960,3 +1053,33 @@ class TestScreenMirrored:
                 with subtests.test("{}: {}".format(name, label)):
                     frame = self._pack(d, self._blank(xp))
                     assert np.array_equal(cp.asnumpy(frame), reference)
+
+
+class TestPLM:
+    """Tests for PLM's bit packing, which needs no display."""
+
+    def test_bitpack(self, subtests):
+        """Test PLM.bitpack."""
+        shape = (4, 6)
+        bitmaps = [np.zeros(shape, dtype=np.uint8) for _ in range(8)]
+        bitmaps[7][:] = 1
+        bitmaps[0][0, 0] = 1
+
+        with subtests.test("bit k of the packed byte is the lsb of bitmap k"):
+            packed = PLM.bitpack(bitmaps)
+            assert packed.shape == (1,) + shape
+            assert packed.dtype == np.uint8
+            assert packed[0, 0, 0] == 129 and packed[0, 1, 1] == 128
+
+        with subtests.test("24 bitmaps pack into three channels"):
+            assert PLM.bitpack(bitmaps * 3).shape == (3,) + shape
+
+    @pytest.mark.gpu
+    def test_bitpack_gpu(self):
+        """Device bitmaps pack to the same host array."""
+        import cupy as cp
+
+        bitmaps = list(np.random.default_rng(0).integers(0, 2, (8, 4, 6), dtype=np.uint8))
+        packed = PLM.bitpack([cp.asarray(b) for b in bitmaps])
+        assert isinstance(packed, np.ndarray)
+        assert np.array_equal(packed, PLM.bitpack(bitmaps))

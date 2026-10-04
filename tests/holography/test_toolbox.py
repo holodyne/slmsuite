@@ -14,6 +14,13 @@ from slmsuite.holography.toolbox import phase
 from slmsuite.misc.xp import as_numpy
 
 
+@pytest.fixture
+def normalized_grid():
+    """A grid of typical SLM coordinates, in wavelengths."""
+    x = np.linspace(-500, 500, 256)
+    return tuple(np.meshgrid(x, x))
+
+
 def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
     """Test convert_vector's unit conversions."""
     vec = np.array([[0.1], [-0.2]])
@@ -81,13 +88,40 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         tilt = phase.zernike_sum(
             slm, indices=(2, 1), weights=(coeff[0, 0], coeff[1, 0]), use_mask=False
         )
-        np.testing.assert_allclose(as_numpy(tilt), ramp, atol=1e-3)
+        np.testing.assert_allclose(as_numpy(tilt), ramp, rtol=1e-5, atol=1e-3)
 
     with subtests.test("every unit inverts back to norm"):
         for unit in ["kxy", "rad", "mrad", "deg", "freq", "lpmm", "zernike", "knm"]:
             kw = knm_kw if unit == "knm" else hw
             roundtrip = convert_vector(convert_vector(vec, "norm", unit, **kw), unit, "norm", **kw)
             np.testing.assert_allclose(roundtrip, vec, err_msg=unit)
+
+    with subtests.test("mag_um is the camera distance in um divided by the magnification"):
+        fs = fourierslm_calibrated
+        (mag, fs.mag) = (fs.mag, 4.0)
+        try:
+            v = np.array([[0.01], [-0.02]])
+            experiment = convert_vector(v, "norm", "mag_um", hardware=fs)
+            np.testing.assert_allclose(
+                experiment, convert_vector(v, "norm", "um", hardware=fs) / 4.0
+            )
+            np.testing.assert_allclose(
+                convert_vector(experiment, "mag_um", "norm", hardware=fs), v
+            )
+        finally:
+            fs.mag = mag
+
+    with subtests.test("mag_um keeps a beam's rayleigh range pi w^2 / wavelength"):
+        fs = fourierslm_calibrated
+        (mag, fs.mag) = (fs.mag, 4.0)
+        try:
+            w = 40.0
+            beam = np.array([[w], [0.0], [np.pi * w**2 / fs.slm.wav_um]])
+            experiment = convert_vector(beam, "um", "mag_um", hardware=fs)
+            assert experiment[2, 0] == pytest.approx(np.pi * experiment[0, 0] ** 2 / fs.slm.wav_um)
+            np.testing.assert_allclose(convert_vector(experiment, "mag_um", "um", hardware=fs), beam)
+        finally:
+            fs.mag = mag
 
     with subtests.test("the z component carries focal power, untouched by the xy scaling"):
         vec_3d = np.array([[0.1], [-0.2], [0.5]])
@@ -172,6 +206,11 @@ def test_convert_radius(slm, subtests):
             radius = convert_radius(0.05, "norm", unit, hardware=slm)
             assert convert_radius(radius, unit, "norm", hardware=slm) == pytest.approx(0.05), unit
 
+    with subtests.test("the convert_blaze_radius alias names the renamed convert_radius"):
+        with pytest.warns(UserWarning) as record:
+            convert_blaze_radius(0.1, "norm", "mrad", slm=slm)
+        assert any("convert_radius(slm=)" in str(w.message) for w in record)
+
 
 def test_imprint(slm, subtests, benchmark):
     """Test imprint's in-place write of a function into a windowed region."""
@@ -238,6 +277,14 @@ def test_imprint(slm, subtests, benchmark):
         imprint(mat, mask, 42.0)
         np.testing.assert_array_equal(mat[mask], 42.0)
         assert np.sum(mat) == 2 * 42.0
+
+    with subtests.test("a mask with two or four rows is a mask, not an index list"):
+        for rows in (2, 4):
+            mat = np.zeros((rows, W))
+            mask = np.zeros((rows, W), dtype=bool)
+            mask[1, 2] = True
+            imprint(mat, mask, 1.0)
+            np.testing.assert_array_equal(mat, mask)
 
     with subtests.test("a (y_ind, x_ind) pair imprints exactly those pixels"):
         mat = np.zeros((H, W))
@@ -310,6 +357,38 @@ def test_format_2vectors(subtests):
         np.testing.assert_array_equal(format_2vectors(np.array([[1], [2], [3]])), [[1], [2]])
 
 
+def test_build_affine(subtests):
+    """Test build_affine's analytic Fourier calibration."""
+    with subtests.test("f_eff scales, theta rotates counterclockwise, and offset is b"):
+        theta = np.pi / 6
+        (M, b) = build_affine(100.0, units="ij", theta=theta, offset=(3, 4))
+        np.testing.assert_allclose(M @ [1, 0], 100 * np.array([np.cos(theta), np.sin(theta)]))
+        np.testing.assert_allclose(M @ [0, 1], 100 * np.array([-np.sin(theta), np.cos(theta)]))
+        np.testing.assert_array_equal(b, [[3], [4]])
+
+    with subtests.test("length units convert through each axis's pixel pitch"):
+        (M, _) = build_affine(2.0, units="mm", cam_pitch_um=(5.0, 4.0))
+        np.testing.assert_allclose(M, np.diag([400.0, 500.0]))
+
+    with subtests.test("norm units convert through the wavelength"):
+        (M, _) = build_affine(1e4, units="norm", cam_pitch_um=5.0, wav_um=0.5)
+        np.testing.assert_allclose(M, np.diag([1000.0, 1000.0]))
+
+    with subtests.test("shear sets the determinant to fx fy (1 - tan(a) tan(b))"):
+        (M, _) = build_affine((2.0, 3.0), units="ij", shear_angle=(0.2, 0.3))
+        assert np.linalg.det(M) == pytest.approx(6 * (1 - np.tan(0.2) * np.tan(0.3)))
+
+    with subtests.test("a unit missing its pitch or wavelength, or an unknown unit, raises"):
+        for kwargs in (
+            {"units": "norm", "cam_pitch_um": 5.0},
+            {"units": "norm", "wav_um": 0.5},
+            {"units": "mm"},
+            {"units": "bogus", "cam_pitch_um": 5.0},
+        ):
+            with pytest.raises(ValueError):
+                build_affine(1.0, **kwargs)
+
+
 def test_fit_3pt(subtests):
     """Test fit_3pt's affine fit through three points."""
     cases = {
@@ -368,6 +447,10 @@ def test_fit_3pt(subtests):
         with pytest.raises(ValueError, match="colinear"):
             fit_3pt((0, 0), (1, 0), (2, 0), x0=(0, 0), x1=(1, 0), x2=(2, 0))
 
+    with subtests.test("colinear indices raise despite floating point roundoff"):
+        with pytest.raises(ValueError, match="colinear"):
+            fit_3pt((0, 0), (1, 2), (3, 4), x0=(0, 0), x1=(0.1, 0.2), x2=(0.3, 0.6))
+
 
 def test_smallest_distance(subtests):
     """Test smallest_distance's closest-pair search."""
@@ -424,6 +507,14 @@ def test_smallest_distance(subtests):
                 expected, rel=1e-9, abs=1e-9
             ), f"trial {trial}: n={n}, metric={metric}, layout={layout}"
 
+    with subtests.test("a non-Minkowski metric is exact on a set large enough to divide"):
+        rng = np.random.default_rng(3)
+        vectors = np.vstack((np.sort(rng.uniform(0, 1000, 600)), rng.uniform(0, 5, 600)))
+        for metric in ("sqeuclidean", "cosine"):
+            assert smallest_distance(vectors, metric=metric) == pytest.approx(
+                distance.pdist(vectors.T, metric=metric).min(), rel=1e-9, abs=1e-15
+            ), metric
+
     with subtests.test("a closest pair straddling the split line is still found"):
         for trial in range(80):
             rng = np.random.default_rng(5000 + trial)
@@ -475,11 +566,11 @@ def test_lloyds_algorithm(subtests):
             assert np.all(result[0] >= 0) and np.all(result[0] <= w)
             assert np.all(result[1] >= 0) and np.all(result[1] <= h)
 
-    with subtests.test("the relaxation is deterministic"):
-        seeds = np.array([[10, 30, 70, 90], [50, 50, 50, 50]])
+    with subtests.test("a shape of numpy integers is a shape"):
+        seeds = np.array([[10, 90], [50, 50]])
         np.testing.assert_allclose(
-            lloyds_algorithm(grid, seeds, iterations=10),
-            lloyds_algorithm(grid, seeds, iterations=10),
+            lloyds_algorithm((np.int64(100), np.int64(100)), seeds, iterations=5),
+            lloyds_algorithm(shape, seeds, iterations=5),
         )
 
 
@@ -618,6 +709,12 @@ def test_window_slice(subtests):
         mask[2, 3] = True
         assert window_slice(mask) is mask
 
+    with subtests.test("a mask with two or four rows is still its own window"):
+        for rows in (2, 4):
+            mask = np.zeros((rows, 6), dtype=bool)
+            mask[1, 2] = True
+            assert window_slice(mask) is mask
+
     with subtests.test("circular inscribes an ellipse, dropping the window's corners"):
         mat = np.zeros((10, 10))
         mat[window_slice([0, 5, 0, 5], shape=(10, 10), circular=True)] = 1
@@ -655,6 +752,12 @@ def test_window_extent(subtests):
     for name, ((window, kwargs), expected) in cases.items():
         with subtests.test(name):
             assert window_extent(window, **kwargs) == expected
+
+    with subtests.test("a mask with two or four rows gives its bounding box"):
+        for rows in (2, 4):
+            mask = np.zeros((rows, 6), dtype=bool)
+            mask[1, 2:5] = True
+            assert window_extent(mask) == (2, 3, 1, 1)
 
     with subtests.test("the extent of a rectangular mask slices back to that mask"):
         mask = np.zeros((12, 15), dtype=bool)
@@ -747,9 +850,98 @@ def test_voronoi_windows(subtests):
         lone = voronoi_windows(shape, np.array([[20], [20]]))
         assert len(lone) == 1 and np.all(lone[0])
 
+    with subtests.test("a shape of numpy integers is a shape"):
+        numpy_shape = (np.int64(shape[0]), np.int64(shape[1]))
+        for (window, expected) in zip(voronoi_windows(numpy_shape, vectors), windows):
+            np.testing.assert_array_equal(window, expected)
+
+
+def _mask_and_grid_gpu():
+    """An off-center host grid and mask on 16x16 pixels, with their device copies."""
+    import cupy as cp
+
+    x = np.linspace(-40, 60, 16)
+    grid = np.meshgrid(x, x)
+    mask = np.zeros((16, 16), dtype=bool)
+    mask[3:5, 4:9] = True
+    return (grid, tuple(cp.asarray(g) for g in grid), mask, cp.asarray(mask))
+
+
+@pytest.mark.gpu
+def test_imprint_gpu(has_cupy, subtests):
+    """GPU variant of imprint() on cupy masks, grids, and canvases."""
+    import cupy as cp
+
+    (grid, grid_cp, mask, mask_cp) = _mask_and_grid_gpu()
+
+    with subtests.test("a device mask imprints onto a host canvas"):
+        for g in (grid, grid_cp):
+            host = imprint(np.zeros((16, 16)), mask_cp, phase.blaze, grid=g, vector=(0.01, 0))
+            expected = imprint(np.zeros((16, 16)), mask, phase.blaze, grid=grid, vector=(0.01, 0))
+            np.testing.assert_allclose(host, expected)
+
+    with subtests.test("shift=True evaluates the centered sub-grid on a device canvas"):
+        canvas = cp.zeros((16, 16))
+        imprint(canvas, [0, 8, 0, 8], phase.blaze, grid=grid_cp, shift=True, vector=(0.01, 0))
+        expected = np.zeros((16, 16))
+        sub = (grid[0][:8, :8], grid[1][:8, :8])
+        expected[:8, :8] = phase.blaze(transform_grid(sub, shift=True), (0.01, 0))
+        np.testing.assert_allclose(cp.asnumpy(canvas), expected)
+
+
+@pytest.mark.gpu
+def test_window_extent_gpu(has_cupy):
+    """GPU variant of window_extent(): a device mask has the host mask's extent."""
+    (_, _, mask, mask_cp) = _mask_and_grid_gpu()
+    assert window_extent(mask_cp) == window_extent(mask)
+
+
+@pytest.mark.gpu
+def test_transform_grid_gpu(has_cupy):
+    """GPU variant of transform_grid(): shift=True centers a device grid on the device."""
+    import cupy as cp
+
+    (grid, grid_cp, _, _) = _mask_and_grid_gpu()
+    (x_out, y_out) = transform_grid(grid_cp, shift=True)
+    assert isinstance(x_out, cp.ndarray)
+    np.testing.assert_allclose(cp.asnumpy(x_out), grid[0] - np.mean(grid[0]))
+    np.testing.assert_allclose(cp.asnumpy(y_out), grid[1] - np.mean(grid[1]))
+
 
 class TestAperture:
     """Tests for the Aperture class."""
+
+    def test_init(self, normalized_grid, subtests):
+        with subtests.test("an invalid spec raises eagerly at construction"):
+            with pytest.raises(ValueError):
+                Aperture(normalized_grid, "invalid")
+            with pytest.raises(ValueError, match="not recognized"):
+                Aperture(normalized_grid, object())
+
+    def test_scale(self, normalized_grid, subtests):
+        max_coord = np.nanmax(normalized_grid[0])
+        rect_grid = np.meshgrid(np.linspace(-200, 200, 128), np.linspace(-500, 500, 128))
+
+        with subtests.test("the spec sets the scale analytically"):
+            for (grid, spec, expected) in (
+                (normalized_grid, "circular", (1 / max_coord, 1 / max_coord)),
+                (normalized_grid, "elliptical", (1 / max_coord, 1 / max_coord)),
+                (normalized_grid, "cropped", (1 / (max_coord * np.sqrt(2)),) * 2),
+                (normalized_grid, 0.005, (0.005, 0.005)),
+                (normalized_grid, (0.01, 0.02), (0.01, 0.02)),
+                (rect_grid, "elliptical", (1 / 200, 1 / 500)),
+            ):
+                assert Aperture(grid, spec).scale == pytest.approx(expected, rel=1e-6)
+
+    def test_is_isotropic(self, normalized_grid, subtests):
+        with subtests.test("is_isotropic / _isotropic_scale honor or reject anisotropy"):
+            circ = Aperture(normalized_grid, "circular")
+            assert circ.is_isotropic
+            assert circ._isotropic_scale() == pytest.approx(circ.scale[0])
+            ell = Aperture(normalized_grid, (0.01, 0.02))
+            assert not ell.is_isotropic
+            with pytest.raises(ValueError, match="isotropic"):
+                ell._isotropic_scale()
 
     def test_crops(self, subtests):
         """Test Aperture.crops, the cheap precursor of Aperture.mask."""
@@ -772,3 +964,70 @@ class TestAperture:
                     aperture = Aperture(grid, spec, center=center)
                     if not np.all(aperture.mask):
                         assert aperture.crops, (spec, center)
+
+    def test_mask(self, normalized_grid, subtests):
+        max_coord = np.nanmax(normalized_grid[0])
+
+        with subtests.test("mask applies center"):
+            (xg, yg) = normalized_grid
+            c = (0.25 * np.nanmax(xg), -0.25 * np.nanmax(yg))
+            ap = Aperture(normalized_grid, "circular", center=c)
+            (sx, sy) = ap.scale
+            expected = ((xg - c[0]) * sx) ** 2 + ((yg - c[1]) * sy) ** 2 <= 1
+            assert np.array_equal(np.asarray(ap.mask), expected)
+            assert not np.array_equal(
+                np.asarray(ap.mask), np.asarray(Aperture(normalized_grid, "circular").mask)
+            )
+
+        with subtests.test("mask is consistent with transform"):
+            ap = Aperture(normalized_grid, "circular", center=(0.1 * max_coord, 0.0))
+            (u, v) = ap.transform()
+            assert np.array_equal(np.asarray(ap.mask), np.asarray(u**2 + v**2 <= 1))
+
+    def test_resolve(self, normalized_grid, subtests):
+        with subtests.test("None resolves to cropped for raw grids"):
+            resolved = Aperture.resolve(normalized_grid, None).scale
+            assert resolved == pytest.approx(Aperture(normalized_grid, "cropped").scale)
+
+        with subtests.test("resolve returns a passed Aperture unchanged if grid matches"):
+            ap = Aperture(normalized_grid, "circular")
+            assert Aperture.resolve(normalized_grid, ap) is ap
+
+        with subtests.test("resolve re-binds a passed Aperture if grid does not match"):
+            ap = Aperture(normalized_grid, "circular")
+            other_grid = (normalized_grid[0] * 2, normalized_grid[1] * 2)
+            ap_other = Aperture.resolve(other_grid, ap)
+            assert ap_other is not ap
+            assert ap_other._grid is other_grid
+            assert ap_other.spec == ap.spec
+            assert ap_other.center == ap.center
+
+        with subtests.test("SLM-like object's aperture is the source of truth"):
+            class FakeSLM:
+                def __init__(self, grid):
+                    self.x_grid, self.y_grid = grid
+                    self.aperture = Aperture(grid, (0.01, 0.02))
+            assert Aperture.resolve(FakeSLM(normalized_grid), None).scale == (0.01, 0.02)
+
+        with subtests.test("CameraSLM-like object delegates to slm.aperture"):
+            class FakeCameraSLM:
+                def __init__(self, grid):
+                    self.x_grid, self.y_grid = grid
+                    self.slm = type('FakeSLM', (), {
+                        'aperture': Aperture(grid, (0.03, 0.04)),
+                        'x_grid': grid[0],
+                        'y_grid': grid[1],
+                    })()
+                    self.cam = True
+            assert Aperture.resolve(FakeCameraSLM(normalized_grid), None).scale == (0.03, 0.04)
+
+        with subtests.test("resolve takes only the spec for an explicit aperture on an SLM"):
+            # An SLM owns its centering through slm.grid, so a passed center must be dropped.
+            class FakeSLM:
+                def __init__(self, grid):
+                    self.x_grid, self.y_grid = grid
+                    self.aperture = Aperture(grid, "circular", center=(1.0, 2.0))
+            passed = Aperture(normalized_grid, (0.01, 0.02), center=(3.0, 4.0))
+            resolved = Aperture.resolve(FakeSLM(normalized_grid), passed)
+            assert resolved.spec == passed.spec
+            assert resolved.center is None

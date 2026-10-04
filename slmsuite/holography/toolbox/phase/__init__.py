@@ -15,6 +15,7 @@ from slmsuite.holography.toolbox.phase._zernike import (
     CUDA_KERNELS,
     _load_cuda,
     _zernike_get_basis,
+    _zernike_fit_grid,
     _zernike_indices_parse,
     _zernike_build_order,
     _zernike_build_indices,

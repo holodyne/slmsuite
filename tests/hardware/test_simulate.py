@@ -489,8 +489,8 @@ class TestSaveLoadRoundTrip:
     """
     A pickle of an already-simulated system must reload as the same simulation. This is
     what lets a simulated rig be kept across sessions: everything that decides what the
-    camera renders — the simulated phase response, the aperture, the placement, the
-    detector characteristics — has to survive the ``.h5``, not just the geometry.
+    camera renders -- the simulated phase response, the aperture, the placement, the
+    detector characteristics -- has to survive the ``.h5``, not just the geometry.
     """
 
     def _decorated(self, name="matched", background=True):
@@ -663,16 +663,6 @@ class TestSaveLoadRoundTrip:
 
         assert type(fs_loaded) is FourierSLM
 
-    def test_match_counts_keeps_the_noise_spec(self):
-        """``match_counts`` blanks the noise to measure, and must put it back whole."""
-        fs_sim = self._decorated()
-        spec = dict(fs_sim.cam._noise_spec)
-
-        fs_sim.cam.match_counts(np.full(fs_sim.cam.shape, 10.0))
-
-        assert fs_sim.cam._noise_spec == spec
-        assert fs_sim.cam.noise is not None
-
 
 class TestSimulateRadiometry:
     """
@@ -704,24 +694,24 @@ class TestSimulateRadiometry:
             with pytest.raises(ValueError, match="positive signal"):
                 fs.simulate(reference=np.zeros(fs.cam.shape))
 
-    def test_match_counts_respects_the_delivered_frame(self):
-        """
-        ``match_counts`` is matched against a reference of the camera's delivered shape,
-        so a camera with a window of its own must be measured over that window and not
-        over its whole sensor.
-        """
-        fs = _calibrated("fov_larger")
-        _display(fs)
-        fs.cam.set_woi((16, 64, 24, 48))
+        with subtests.test("the noise blanked to measure is put back whole"):
+            fs_noisy = fs.simulate(background=np.full(fs.cam.shape, 3.0))
+            spec = dict(fs_noisy.cam._noise_spec)
+            fs_noisy.cam.match_counts(np.full(fs_noisy.cam.shape, 10.0))
+            assert fs_noisy.cam._noise_spec == spec
+            assert fs_noisy.cam.noise is not None
 
-        reference = fs.cam.get_image().astype(float) * 3
-        assert reference.shape == fs.cam.shape
+        with subtests.test("a windowed camera is matched over its window, not its sensor"):
+            fs.cam.set_woi((16, 64, 24, 48))
+            reference = fs.cam.get_image().astype(float) * 3
+            assert reference.shape == fs.cam.shape
 
-        fs.cam.match_counts(reference)
-
-        fs.cam.noise = None
-        delivered = fs.cam.transform(fs.cam._crop_to_woi(fs.cam._get_image_hw(0, quantize=False)))
-        assert np.isclose(delivered.sum(), reference.sum())
+            fs.cam.match_counts(reference)
+            fs.cam.noise = None
+            delivered = fs.cam.transform(
+                fs.cam._crop_to_woi(fs.cam._get_image_hw(0, quantize=False))
+            )
+            assert np.isclose(delivered.sum(), reference.sum())
 
     def test_noise_from_background(self, subtests):
         fs = _calibrated("fov_larger")

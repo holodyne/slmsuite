@@ -618,7 +618,8 @@ class _FourierCalibration(object):
         slm_size : (float, float) OR int OR float OR None
             Size of patch on the SLM in normalized units.
             A scalar is interpreted as the width and height of a square.
-            If ``None``, defaults to the normalized SLM size.
+            If ``None``, defaults to the size whose spot matches the source's, of radius
+            :meth:`~slmsuite.hardware.slms.slm.SLM.get_spot_radius_kxy()`.
         basis : {"kxy", "ij"}
             Basis of the returned size;
             ``"kxy"`` for SLM :math:`k`-space, ``"ij"`` for camera size.

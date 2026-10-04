@@ -3,7 +3,6 @@ Common fit functions.
 """
 
 import numpy as np
-from scipy.special import factorial
 
 
 # 1D
@@ -153,7 +152,7 @@ def gaussian(x, x0, a, c, w):
         Constant offset.
     w : float
         The standard deviation of the normal distribution.
-        Equivalent to the :math:`1/e` radius.
+        The :math:`1/e` radius is :math:`\sqrt{2}w`.
         This is related to the full width at half maximum (FWHM)
         by a factor of :math:`2\sqrt{2\ln{2}}`.
 
@@ -240,7 +239,7 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
         Constant offset.
     wx, wy : float
         The standard deviation of the normal distribution.
-        Equivalent to the :math:`1/e` radius.
+        The :math:`1/e` radius is :math:`\sqrt{2}w`.
         This is related to the full width at half maximum (FWHM)
         by a factor of :math:`2\sqrt{2\ln{2}}`.
     wxy : float
@@ -376,38 +375,6 @@ def _sinc2d_nomod(xy, x0, y0, R, a=1, d=0):
         a * np.square(np.sinc((1 / R) * (xy[0] - x0)) * np.sinc((1 / R) * (xy[1] - y0))) + d
     )
 
-def _sinc2d_nomod_taylor(xy, x0, y0, R, a=1, d=0):
-    r"""
-    For fitting a 2D rectangular sinc distribution, without sinusoidal modulation.
-
-    .. math:: z(x,y) =  d + a * \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
-
-    where
-
-    .. math:: \text{sinc}(x) = \frac{\sin(x)}{x}
-
-    Parameters
-    ----------
-    xy : numpy.ndarray
-        Points to fit upon (x, y).
-    x0, y0 : float
-        Vector offset.
-    R : float
-        Square radius of the sinc (radius of the first zero).
-    a : float
-        Peak amplitude.
-    d : float
-        Global offset.
-
-    Returns
-    -------
-    z : numpy.ndarray
-        Rectangular sinc fit evaluated at all ``(x,y)`` in ``xy``.
-    """
-    return (
-        a * np.square(_sinc_taylor((1 / R) * (xy[0] - x0)) * _sinc_taylor((1 / R) * (xy[1] - y0))) + d
-    )
-
 def _sinc2d_centered(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     r"""
     For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
@@ -445,66 +412,6 @@ def _sinc2d_centered(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
         np.square(np.sinc((1 / R) * xy[0]) * np.sinc((1 / R) * xy[1]))
         * (a * 0.5 * (1 + np.cos(kx * xy[0] + ky * xy[1] - b)) + c) + d
     )
-
-def _sinc2d_centered_taylor(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
-    r"""
-    For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
-
-    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right) *
-                        \text{sinc}^2(\pi x / R) * \text{sinc}^2(\pi y / R).
-
-    where
-
-    .. math:: \text{sinc}(x) = \frac{\sin(x)}{x}
-
-    Parameters
-    ----------
-    xy : numpy.ndarray
-        Points to fit upon (x, y).
-    R : float
-        Square radius of the sinc (radius of the first zero).
-    a : float
-        Peak amplitude.
-    b : float
-        Phase offset.
-    c : float
-        Sinusoidal amplitude offset.
-    d : float
-        Global offset.
-    kx, ky : float
-        Vector phase scale factor. Default is 0.
-
-    Returns
-    -------
-    z : numpy.ndarray
-        Rectangular sinc fit evaluated at all ``(x,y)`` in ``xy``.
-    """
-    return (
-        np.square(_sinc_taylor((1 / R) * xy[0]) * _sinc_taylor((1 / R) * xy[1]))
-        * (a * 0.5 * (1 + np.cos(kx * xy[0] + ky * xy[1] - b)) + c) + d
-    )
-
-def _sinc_taylor(x, order=12):
-    """
-    Taylor series approximation for sinc. We use the numpy normalization.
-
-    Parameters
-    ----------
-    x : numpy.ndarray
-        Array to approximate sinc(x) upon.
-    order : int
-        Order of 12 approximates well up to the second zero.
-    """
-    squared = np.square(np.pi * x)
-    monomial = squared.copy()
-    result = 1
-
-    for n in range(2, order+2, 2):
-        if n != 2:
-            monomial *= squared
-        result += monomial * ((-1 if n % 4 == 2 else 1) / factorial(n+1))
-
-    return result
 
 def _sinc2d_centered_jacobian(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     r"""

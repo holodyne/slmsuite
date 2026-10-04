@@ -5,11 +5,13 @@ and the `RemoteSLM` / `RemoteCamera` clients, which have no contract apart from 
 Every connection here is over loopback to a server running in this process, so the suite
 needs no network and no second machine.
 """
+import gc
 import json
 import logging
 import socket
 import threading
 import time
+import warnings
 
 import pytest
 import numpy as np
@@ -77,7 +79,7 @@ def serve():
 
 
 def test_recurse_decompress(subtests):
-    """The wire encoding of a reply, which compresses arrays and passes the rest through."""
+    """The wire encoding of a message, which compresses arrays and passes the rest through."""
     payload = {
         "image": np.arange(6, dtype=np.uint16).reshape(2, 3),
         "nested": [{"empty": np.zeros((0,))}],
@@ -97,6 +99,10 @@ def test_recurse_decompress(subtests):
     with subtests.test("non-array data is left alone"):
         assert result["scalar"] == 7
         assert result["none"] is None
+
+    with subtests.test("a request can name a dtype by its numpy scalar type"):
+        encoded = json.dumps({"dtype": np.float64}, cls=_NpEncoder)
+        assert _recurse_decompress(json.loads(encoded)) == {"dtype": np.dtype(np.float64)}
 
 
 class TestServer:
@@ -249,6 +255,15 @@ def test_info(hardware, serve, subtests):
     with subtests.test("an unserved port is reported as absent"):
         with pytest.raises(TimeoutError, match="not responsive"):
             _Client.info(host=HOST, port=_free_port(), timeout=0.2, verbose=False)
+
+    with subtests.test("a failed connect closes its socket"):
+        gc.collect()    # Else garbage from earlier tests can warn inside the block.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            with pytest.raises(TimeoutError, match="not responsive"):
+                _Client.info(host=HOST, port=_free_port(), timeout=0.2, verbose=False)
+            gc.collect()
+        assert not [w for w in caught if issubclass(w.category, ResourceWarning)]
 
     with subtests.test("a listener that is not a server is not reported as absent"):
         # DEFAULT_PORT is the usual instrument-control port, so something else may answer.

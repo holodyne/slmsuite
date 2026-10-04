@@ -48,7 +48,7 @@ extern "C" __device__ __forceinline__ void populate_basis(
             if (nx == -1) {
                 // Vortex phase plate case
                 if (x == 0 && y == 0) { monomial = 0.0f; }
-                else { monomial = atan2f(x, y); }
+                else { monomial = atan2f(y, x); }
             } else {
                 monomial = 0.0f;
             }
@@ -78,16 +78,13 @@ extern "C" __device__ __forceinline__ void populate_basis(
         }
 
         // Now we need to add this monomial to all relevant basis states
-        j = 0;
         stride = i*D;       // Only multiply once and find the starting point.
-        d = i_md[stride];   // Get the first term to add.
-        while (d >= 0) {    // d == -1 indicates no further terms to add.
+        for (j = 0; j < D; j++) {
+            d = i_md[stride + j];
+            if (d < 0) { break; }   // d == -1 indicates no further terms to add.
+
             // Add the monomial to the result.
             basis[d] += c_md[stride + d] * monomial;
-
-            // Determine if there's another basis state which needs this monomial
-            j++;
-            d = i_md[stride + j];   // Keep checking until we find a -1.
         }
     }
 }
@@ -283,153 +280,6 @@ extern "C" __global__ void compressed_nearfield2farfield(
         // Save the summed results to global memory.
         if (tid == 0) {
             farfield_intermediate[blockIdx.x + i * gridDim.x] = complex<float>(sdata_real[0], sdata_imag[0]);
-        }
-    }
-}
-
-extern "C" __global__ void zernike_test(
-    const int WH,                   // Size of nearfield
-    const int D,                    // Dimension of Zernike basis (2 [xy] for normal spot arrays)
-    const int M,                    // Dimension of polynomial basis (2 [xy] for normal spot arrays)
-    const float* c_md,              // Polynomial coefficients for Zernike (size M*D) [shared]
-    const int* i_md,                // A key for where c_dm is nonzero (size M*D) [shared]
-    const int* pxy_m,               // Monomial coefficients (size 2*M) [shared]
-    const float* X,                 // X grid (WH)
-    const float* Y,                 // Y grid (WH)
-    float* out                      // Output (size W*H*D)
-) {
-    // nf is the index of the pixel in the nearfield.
-    int nf = blockDim.x * blockIdx.x + threadIdx.x;
-
-    if (nf < WH) {
-        // Prepare local basis.
-        float basis[BASIS_SIZE];
-
-        populate_basis(
-            X[nf],
-            Y[nf],
-            D, M,
-            c_md, i_md, pxy_m,
-            basis
-        );
-
-        // Export the result to global memory.
-        int j = 0;
-        for (int i = 0; i < D; i++) {
-            out[nf + j] = basis[i];
-            j += WH;
-        }
-    }
-}
-
-// Polynomial sum kernel
-
-extern "C" __global__ void polynomial(
-    const int WH,                   // Size of nearfield
-    const int N,                    // Number of coefficients
-    const float* coefficients,      // Monomial coefficients (1*N)
-    const short* pxy,               // Monomial exponents (2*N)
-    const float* X,                 // X grid (WH)
-    const float* Y,                 // Y grid (WH)
-    float* out                      // Output (WH)
-) {
-    // g is each pixel in the grid.
-    int g = blockDim.x * blockIdx.x + threadIdx.x;
-
-    if (g < WH) {
-        // Make a local result variable to avoid talking with global memory.
-        float result = 0;
-
-        // Copy data that will be used multiple times per thread into local memory (this might not matter though).
-        float local_X = X[g];
-        float local_Y = Y[g];
-        float coefficient;
-
-        // Local helper variables.
-        float monomial = 1;
-        int i, j, nx, ny, nx0, ny0 = 0;
-
-        // Loop over all the spots (compiler should handle optimizing the trinary).
-        for (i = 0; i < N; i++) {
-            coefficient = coefficients[i];
-
-            if (coefficient != 0) {
-                nx = pxy[i];
-                ny = pxy[i+N];
-
-                // Reset if we're starting a new path.
-                if (nx - nx0 < 0 || ny - ny0 < 0) {
-                    nx0 = ny0 = 0;
-                    monomial = 1;
-                }
-
-                // Traverse the path in +x or +y.
-                for (j = 0; j < nx - nx0; j++) {
-                    monomial *= local_X;
-                }
-                for (j = 0; j < ny - ny0; j++) {
-                    monomial *= local_Y;
-                }
-
-                // Add the monomial to the result.
-                result += coefficients[i] * monomial;
-
-                // Update the state of the monomial
-                nx0 = nx;
-                ny0 = ny;
-            }
-        }
-
-        // Export the result to global memory.
-        out[g] = result;
-    }
-}
-
-// Weighting
-
-extern "C" __global__ void update_weights_generic(
-    float* weight_amp,                  // Input (N)
-    const float* feedback_amp,          // Measured amplitudes (N)
-    const float* target_amp,            // Desired amplitudes (N)
-    const int N,                        // Size
-    const int method,                   // Indexed WGS method
-    const float feedback_norm,          // cupy-computed norm of feedback_amp
-    const float feedback_exponent,      // Method-specific
-    const float feedback_factor         // Method-specific
-) {
-    // i is each pixel in the weights.
-    int i = blockDim.x * blockIdx.x + threadIdx.x;
-
-    if (i < N) {
-        float feedback = feedback_amp[i] / feedback_norm;
-        float target = target_amp[i];
-
-        if (method != 4 && method != 5) {   // Multiplicative.
-            if (target != 0) {
-                feedback /= target;
-            } else {
-                feedback = 1;
-            }
-
-            if (method == 1 || method == 2) {   // Leonardo, Kim
-                feedback = pow(-feedback, feedback_exponent);
-            } else if (method == 3) {           // Nogrette
-                feedback = 1 / (1 - feedback_factor * (1 - feedback));
-            }
-        } else {                            // Additive.
-            if (method == 4) {                  // Wu
-                feedback = exp(feedback_exponent * (target - feedback));
-            } else if (method == 5) {           // tanh
-                feedback = 1 + feedback_factor * tanh(feedback_exponent * (target - feedback));
-            }
-        }
-
-        // Check nan, inf
-        if (isinf(feedback) || isnan(feedback)) { feedback = 1; }
-
-        // Export the result to global memory if changed.
-        if (feedback != 1) {
-            weight_amp[i] *= feedback;
         }
     }
 }

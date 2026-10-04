@@ -6,6 +6,7 @@ import sys
 
 import cv2
 import h5py
+import imageio.v3 as iio
 import numpy as np
 import pytest
 
@@ -294,30 +295,46 @@ def test_gray2rgb(subtests):
         assert result[0, 0, 0, 1] == 128
 
 
+@pytest.mark.gpu
+def test_gray2rgb_gpu(has_cupy):
+    """GPU variant of _gray2rgb(): a cupy stack is colored on the host."""
+    import cupy as cp
+
+    images = np.random.default_rng(0).random((2, 5, 6))
+    np.testing.assert_array_equal(_gray2rgb(cp.asarray(images)), _gray2rgb(images))
+
+
 def test_save_image(temp_dir, subtests):
     """Test save_image() writes files via imageio, with colormap and border options."""
-    gray = lambda: np.random.randint(0, 255, (10, 10), dtype=np.uint8)
+    rng = np.random.default_rng(0)
+    gray = rng.integers(0, 255, (10, 10), dtype=np.uint8)
     cases = {
-        "single grayscale png": (gray(), "test.png", {}),
-        "single image with a colormap": (gray(), "test_cmap.png", {"cmap": "viridis"}),
-        "stack saved as an animated gif": (
-            np.random.randint(0, 255, (3, 10, 10), dtype=np.uint8), "test.gif", {},
-        ),
-        "float image": (np.random.rand(10, 10), "test_float.png", {"cmap": "viridis"}),
+        "single grayscale png": (gray, "test.png", {}),
+        "single image with a colormap": (gray, "test_cmap.png", {"cmap": "viridis"}),
+        "float image": (rng.random((10, 10)), "test_float.png", {"cmap": "viridis"}),
         "float image, unnormalized": (
-            np.random.rand(10, 10) * 0.5, "test_nonorm.png", {"cmap": "viridis", "normalize": False},
+            rng.random((10, 10)) * 0.5, "test_nonorm.png", {"cmap": "viridis", "normalize": False},
         ),
-        "border option": (gray(), "test_border.png", {"cmap": "viridis", "border": 255}),
+        "border option": (gray, "test_border.png", {"cmap": "viridis", "border": 255}),
     }
     for label, (img, name, kwargs) in cases.items():
-        with subtests.test(label):
+        with subtests.test(f"{label} reads back as its _gray2rgb pixels"):
             path = os.path.join(temp_dir, name)
             save_image(path, img, **kwargs)
-            assert os.path.exists(path)
+            np.testing.assert_array_equal(iio.imread(path), _gray2rgb(img, **kwargs)[0])
+
+    with subtests.test("a stack reads back as an animated gif, one gray frame per image"):
+        path = os.path.join(temp_dir, "test.gif")
+        stack = rng.integers(0, 255, (3, 10, 10), dtype=np.uint8)
+        save_image(path, stack)
+        # The gif stores each gray level in all three color channels.
+        np.testing.assert_array_equal(
+            iio.imread(path, index=None), np.stack([_gray2rgb(stack)] * 3, axis=-1)
+        )
 
     with subtests.test("raises ValueError when imageio is not installed"):
         path = os.path.join(temp_dir, "test_missing_imageio.png")
         with pytest.MonkeyPatch.context() as mp:
             mp.setitem(sys.modules, "imageio", None)
             with pytest.raises(ValueError, match="imageio is required"):
-                save_image(path, gray())
+                save_image(path, gray)

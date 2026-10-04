@@ -53,7 +53,7 @@ from slmsuite.hardware._pyglet import ( _WindowThread, _screen_ids,
                                        _wait_for_screens_settled)
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
 from slmsuite.hardware.slms.slm import LUT_SIZE
-from slmsuite.misc.xp import get_array_module
+from slmsuite.misc.xp import as_numpy, get_array_module
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
@@ -881,7 +881,8 @@ class PLM(ScreenMirrored):
         """
         Combine multiple binary CGHs into single 8-bit or 24-bit image.
 
-        Stacks the MSB of 8 or 24 bitmaps into a single multi-bit image.
+        Stacks the LSB of 8 or 24 bitmaps into a single multi-bit image, bitmap ``k``
+        becoming bit ``k``.
         Supports GPU acceleration if :mod:`cupy` is available and input is on GPU.
 
         Parameters
@@ -911,7 +912,7 @@ class PLM(ScreenMirrored):
             stacked = xp.stack(bitmaps) & 1  # Isolate LSB
             shifts = xp.arange(8)[:, None, None]  # Shape (8, 1, 1) for broadcasting
             shifted = xp.left_shift(stacked.astype(xp.uint8), shifts.astype(xp.uint8))
-            result = xp.sum(shifted, axis=0)[None, ...]  # Add channel dimension
+            result = xp.sum(shifted, axis=0, dtype=xp.uint8)[None, ...]  # Add channel dimension
 
         elif len(bitmaps) == 24:
             # RGB output (3 channels, 8 bits each)
@@ -921,7 +922,7 @@ class PLM(ScreenMirrored):
                 stacked = xp.stack(channel_bitmaps) & 1
                 shifts = xp.arange(8)[:, None, None]
                 shifted = xp.left_shift(stacked.astype(xp.uint8), shifts.astype(xp.uint8))
-                rgb.append(xp.sum(shifted, axis=0))
+                rgb.append(xp.sum(shifted, axis=0, dtype=xp.uint8))
             result = xp.stack(rgb)
 
         else:
@@ -929,11 +930,7 @@ class PLM(ScreenMirrored):
                 f"Bitpack requires 8 or 24 bitmaps, got {len(bitmaps)}"
             )
 
-        # Convert back to NumPy if input was on GPU
-        if xp is not np:
-            result = np.asarray(result)
-
-        return result
+        return as_numpy(result)
 
     @staticmethod
     def get_model_list():

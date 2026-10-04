@@ -293,7 +293,7 @@ class _AbstractSpotHologram(FeedbackHologram):
                 # The spots just moved, so the constructor's bounds check is stale.
                 self._check_spots_in_frame()
             else:
-                raise Exception("Unrecognized basis '{}'.".format(basis))
+                raise ValueError("Unrecognized basis '{}'.".format(basis))
 
         return shift_vectors
 
@@ -550,7 +550,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
         # Parse spot_vectors.
         if basis == "zernike":
-            self.spot_zernike = np.array(spot_vectors, copy=(False if np.__version__[0] == '1' else None))
+            self.spot_zernike = np.array(spot_vectors, copy=True)
             self.spot_kxy = toolbox.convert_vector(
                 spot_vectors[self.zernike_basis_cartesian, :],  # Special case to crop the basis.
                 from_units="zernike",
@@ -611,7 +611,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         else:
             self._spot_integration_width_ij = None
 
-        # Initialize target/etc with fake shape.
+        # Initialize target/etc with fake shape. The quadratic phase waits for the target.
+        quadratic_phase = kwargs.pop("quadratic_phase", None)
         super().__init__(shape=None, target_ij=None, cameraslm=cameraslm, **kwargs)
 
         # Replace the fake shape with the SLM shape.
@@ -619,6 +620,9 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
         # Fill the target with data.
         self.set_target(new_target=self.spot_amp, reset_weights=True)
+
+        if quadratic_phase is not None:
+            self.flags["quadratic_phase"] = quadratic_phase
 
         # Reset to populate variables.
         self.reset()
@@ -690,7 +694,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         :class:`~slmsuite.holography.algorithms.CompressedSpotHologram`
         does not use a DFT grid and does not need padding.
         """
-        raise NameError("CompressedSpotHologram does not use a DFT grid and does not need padding.")
+        raise NotImplementedError("CompressedSpotHologram does not use a DFT grid and does not need padding.")
 
     def _get_target_moments_knm_norm(self):
         """
@@ -752,7 +756,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             use_mask=False,                 # For this task, we don't want the edge of the aperture causing artifacts.
             out=out
         )
-        out = out.reshape((out.shape[0], out.shape[1] * out.shape[2]))
+        out = out.reshape((vectors.shape[1], -1))
 
         # Convert from real phase to complex amplitude.
         out *= self.dtype_complex(1j)
@@ -877,7 +881,11 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
         # Sum over all the blocks to get the final answers using optimized cupy methods.
         self.farfield = cp.sum(self._nearfield2farfield_cuda_intermediate, axis=1, out=self.farfield)
-        self.farfield *= (1 / Hologram._norm(self.farfield, xp=cp))
+        norm = Hologram._norm(self.farfield, xp=cp)
+        self.farfield *= (1 / norm)
+
+        # The kernel omits the 1 / sqrt(H W) that makes the cupy transform unitary.
+        self._farfield_norm = norm / np.sqrt(H * W)
 
         return self.farfield
 
@@ -934,10 +942,12 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             nearfield = cp.conj(nearfield, out=nearfield)
             farfield = cp.conj(farfield, out=farfield)
         else:
-            return torch.conj(farfield)
+            self._farfield_norm = 1     # The torch farfield stays unnormalized.
+            return torch.conj_physical(farfield)
 
-        # Normalize.
-        farfield *= (1 / Hologram._norm(farfield, xp=cp))
+        # Normalize, keeping the norm for the efficiency.
+        self._farfield_norm = Hologram._norm(farfield, xp=cp)
+        farfield *= (1 / self._farfield_norm)
 
         return farfield
 
@@ -1030,27 +1040,29 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         Parameters
         ----------
         new_target : array_like OR None
-            A list with ``N`` elements corresponding to the target intensities of each
+            A list with ``N`` elements corresponding to the target amplitudes of each
             of the ``N`` spots.
             If ``None``, sets the target spot amplitudes to the contents of :attr:`spot_amp`.
         reset_weights : bool
             Whether to overwrite ``weights`` with ``target``.
         """
         if new_target is None:
-            self.target = cp.array(self.spot_amp, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
+            self.target = cp.array(self.spot_amp, dtype=self.dtype, copy=True)
         else:
-            new_target = np.squeeze(np.ravel(new_target))
+            new_target = np.ravel(new_target)
             if new_target.shape != (len(self),):
                 raise ValueError(
                     "Target must be of appropriate shape. "
                     "Initialize a new Hologram if a different shape is desired."
                 )
 
-            self.target = cp.array(new_target, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
-            self.spot_amp = np.array(new_target, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
+            self.target = cp.array(new_target, dtype=self.dtype, copy=True)
+            self.spot_amp = np.array(new_target, dtype=self.dtype, copy=True)
 
         cp.abs(self.target, out=self.target)
-        self.target *= 1 / Hologram._norm(self.target)
+        norm = float(Hologram._norm(self.target))
+        if norm > 0:
+            self.target *= 1 / norm
 
         if reset_weights:
             self.reset_weights()
@@ -1098,11 +1110,12 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         """
         if stat_groups is None: stat_groups = []
         if "computational_spot" in stat_groups:
+            # amp carries unit power, so the unnormalized spot power is the efficiency.
             stats["computational_spot"] = self._calculate_stats(
-                self.amp_ff,
+                self.amp_ff * self._farfield_norm,
                 self.target,
                 xp=cp,
-                efficiency_compensation=False,
+                total=1,
                 raw="raw_stats" in self.flags and self.flags["raw_stats"]
             )
 
@@ -1257,12 +1270,12 @@ class SpotHologram(_AbstractSpotHologram):
             Passed to :meth:`.FeedbackHologram.__init__()`.
         """
         # Parse vectors.
-        vectors = toolbox.format_2vectors(spot_vectors)
+        vectors = toolbox.format_2vectors(spot_vectors).copy()
         N = vectors.shape[1]
 
         # Parse spot_amp.
         if spot_amp is not None:
-            self.spot_amp = np.array(spot_amp, copy=True).ravel()
+            self.spot_amp = np.array(spot_amp, dtype=float, copy=True).ravel()
             if len(self.spot_amp) != N:
                 raise ValueError("spot_amp must have the same length as the provided spots.")
         else:
@@ -1343,7 +1356,7 @@ class SpotHologram(_AbstractSpotHologram):
                 shape=shape
             )
         else:
-            raise Exception("Unrecognized basis for spots '{}'.".format(basis))
+            raise ValueError("Unrecognized basis for spots '{}'.".format(basis))
 
         # Handle null conversions in the ij or kxy cases.
         if basis == "ij" or basis == "kxy":
@@ -1413,15 +1426,13 @@ class SpotHologram(_AbstractSpotHologram):
             self._spot_integration_width_ij = None
 
         # Check to make sure spots are within relevant camera and SLM shapes.
+        knm = np.rint(self.spot_knm)
         if (
             # np.any(self.spot_knm[0] < self.spot_integration_width_knm / 2)
             # or np.any(self.spot_knm[1] < self.spot_integration_width_knm / 2)
             # or np.any(self.spot_knm[0] >= shape[1] - self.spot_integration_width_knm / 2)
             # or np.any(self.spot_knm[1] >= shape[0] - self.spot_integration_width_knm / 2)
-            np.any(self.spot_knm[0] < 0)
-            or np.any(self.spot_knm[1] < 0)
-            or np.any(self.spot_knm[0] >= shape[1])
-            or np.any(self.spot_knm[1] >= shape[0])
+            np.any(knm < 0) or np.any(knm[0] >= shape[1]) or np.any(knm[1] >= shape[0])
         ):
             raise ValueError(
                 "Spots outside SLM computational space bounds!\nSpots:\n{}\nBounds: {}".format(

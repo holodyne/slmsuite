@@ -12,8 +12,10 @@ from slmsuite.holography.toolbox import imprint, format_2vectors, smallest_dista
 from slmsuite.holography.toolbox.phase import blaze
 from slmsuite.holography.analysis import image_remove_blaze, image_remove_vortices, image_reduce_wraps
 from slmsuite.holography.analysis.fitfunctions import cos, _sinc2d_nomod
-from slmsuite.holography.analysis.fitfunctions import _sinc2d_centered_taylor as sinc2d_centered
+from slmsuite.holography.analysis.fitfunctions import _sinc2d_centered as sinc2d_centered
+from slmsuite.holography.analysis.fitfunctions import _sinc2d_centered_jacobian as sinc2d_centered_jacobian
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.misc.xp import as_numpy
 
 def _blaze_offset(grid, vector, offset=0):
     return blaze(grid=grid, vector=vector) + offset
@@ -426,12 +428,12 @@ class _WavefrontCalibrationSuperpixel(object):
                 "of wavefront_calibration_points"
             )
 
-        # Save the current calibration in case we are just testing (test_index != None)
-        amplitude = self.slm._get_source_amplitude()
-        phase = self.slm._get_source_phase()
-        r2 = self.slm.source.get("r2", None)
-        if r2 is not None:
-            r2 = np.copy(r2)
+        # Save the raw source, reinstated after a test run or an abort.
+        saved_source = {
+            key: None if self.slm.source[key] is None else self.slm.source[key].copy()
+            for key in ("amplitude", "phase", "r2")
+            if key in self.slm.source
+        }
 
         # If we're starting fresh, remove the old calibration such that this does not
         # muddle things. If we're only testing, the stored data above will be reinstated.
@@ -440,750 +442,732 @@ class _WavefrontCalibrationSuperpixel(object):
             self.slm.source.pop("phase", "First calibration.")
             self.slm.source.pop("r2", "First calibration.")
 
-        # Parse phase_steps
-        if phase_steps is not None:
-            if not np.isclose(phase_steps, int(phase_steps)):
-                raise ValueError(f"Expected integer phase_steps. Received {phase_steps}.")
-            phase_steps = int(phase_steps)
-            if phase_steps <= 0:
-                raise ValueError(f"Expected positive phase_steps. Received {phase_steps}.")
-
-        # Interpret the plot command.
-        return_movie = plot == 3 and test_index is not None
-        if return_movie:
-            plot = 1
-            if phase_steps is None or phase_steps == 1:
-                raise ValueError(
-                    "cameraslms.py: Must have phase_steps > 1 to produce a movie."
-                )
-        verbose = plot >= 0
-        plot_fits = plot >= 1
-        plot_everything = plot >= 2
-
-        # Build the calibration dict.
-        calibration_dict = {
-            "calibration_points" : calibration_points,
-            "superpixel_size" : superpixel_size,
-            "slm_supershape" : slm_supershape,
-            "reference_superpixels" : reference_superpixels,
-            "phase_steps" : phase_steps,
-            "interference_size" : interference_size,
-            "interference_window" : interference_window,
-            "previous_phase_correction": (
-                False if "phase" not in self.slm.source else np.copy(self.slm.source["phase"])
-            ),
-            "scheduling" : scheduling,
-        }
-
-        keys = [
-            "power",
-            "normalization",
-            "background",
-            "phase",
-            "kx",
-            "ky",
-            "amp_fit",
-            "contrast_fit",
-            "r2_fit",
-        ]
-
-        for key in keys:
-            calibration_dict.update(
-                {key: np.full((num_points,) + slm_supershape, np.nan, dtype=np.float32)}
-            )
-
-        def superpixels(
-            schedule=None,
-            reference_phase=None,
-            target_phase=None,
-            reference_blaze=reference_blazes,
-            target_blaze=calibration_blazes,
-            phase_baselines=None,
-            plot=False
-        ):
-            """
-            Helper function for making superpixel phase masks.
-
-            Parameters
-            ----------
-            schedule : list of int
-                Defines which superpixels to source targets from.
-            reference_phase, target_phase : float OR None
-                Phase of reference/target superpixel; not rendered if None.
-            reference_blaze, target_blaze : (float, float)
-                Blaze vector(s) for the given superpixel.
-            """
-            matrix = blaze(self.slm, field_blaze)
-
-            if reference_phase is not None:
-                for i in range(num_points):
-                    if schedule is None or schedule[i] != -1:
-                        imprint(
-                            matrix,
-                            np.array([
-                                reference_superpixels_coords[0, i], 1,
-                                reference_superpixels_coords[1, i], 1
-                            ]) * superpixel_size,
-                            _blaze_offset,
-                            self.slm,
-                            # shift=True,
-                            vector=reference_blaze[:, [i]],
-                            offset=reference_phase  # This is usually zero when not None.
-                        )
-
-            if target_phase is not None and schedule is not None:
-                target_coords = index2coord(schedule)
-                for i in range(num_points):
-                    if schedule[i] != -1:
-                        phase_baseline = 0 if phase_baselines is None else phase_baselines[i]
-                        imprint(
-                            matrix,
-                            np.array([
-                                target_coords[0, i], 1,
-                                target_coords[1, i], 1
-                            ]) * superpixel_size,
-                            _blaze_offset,
-                            self.slm,
-                            # shift=True,
-                            vector=target_blaze[:, [i]],
-                            offset=phase_baseline + (target_phase if np.isscalar(target_phase) else target_phase[i])
-                        )
-
-            self.slm.set_phase(matrix, settle=True)
-            self.cam.flush()
-            if plot:
-                plt.figure(figsize=(20, 20))
-                self.slm.plot()
-            return self.cam.get_image()
-
-        def fit_phase(phases, intensities, plot_fits=False):
-            """
-            Fits a sine function to the intensity vs phase, and extracts best phase and amplitude
-            that give constructive interference.
-            If fit fails return 0 on all values.
-
-            Parameters
-            ----------
-            phases : numpy.ndarray
-                Phase measurements.
-            intensities : numpy.ndarray
-                Intensity measurements.
-            plot_fits : bool
-                Whether to plot fit results.
-
-            Returns
-            -------
-            best_phase : float
-                Phase b [rad] of maximum constructive interference.
-            amp : float
-                Amplitude a of the interference fringe.
-            r2 : float
-                R^2 of fit
-            contrast : float
-                a / (a + c), where c is the background
-            """
-            guess = [
-                phases[np.argmax(intensities)],
-                np.max(intensities) - np.min(intensities),
-                np.min(intensities),
-            ]
-
-            try:
-                popt, _ = optimize.curve_fit(cos, phases, intensities, p0=guess)
-            except BaseException:
-                self.logger.warning("Curve fitting failed; nulling response from this superpixel.")
-                return 0, 0, 0, 0
-
-            # Extract phase and amplitude from fit.
-            best_phase = popt[0]
-            amp = popt[1]
-            contrast = popt[1] / (popt[1] + popt[2])
-
-            # Residual and total sum of squares, producing the R^2 metric.
-            ss_res = np.sum((intensities - cos(phases, *popt)) ** 2)
-            ss_tot = np.sum((intensities - np.mean(intensities)) ** 2)
-            r2 = 1 - (ss_res / ss_tot)
-
-            if plot_fits:
-                plt.scatter(phases / np.pi, intensities, color="k", label="Data")
-
-                phases_fine = np.linspace(0, 2 * np.pi, 100)
-
-                plt.plot(phases_fine / np.pi, cos(phases_fine, *popt), "k-", label="Fit")
-                plt.plot(phases_fine / np.pi, cos(phases_fine, *guess), "k--", label="Guess")
-                plt.plot(best_phase / np.pi, popt[1] + popt[2], "xr", label="Phase")
-
-                plt.legend(loc="best")
-                plt.title("Interference ($R^2$={:.3f})".format(r2))
-                plt.grid()
-                plt.xlim([0, 2])
-                plt.xlabel(r"$\phi$ $[\pi]$")
-                plt.ylabel("Signal")
-
-                _slmsuite_plt_show(name="wavefront_calibrate_superpixel_fit_1D")
-
-            return best_phase, amp, r2, contrast
-
-        def fit_phase_image(img, dsuperpixel, plot_fits=True):
-            """
-            Fits a modulated 2D sinc function to an image, and extracts best phase and
-            amplitude that give constructive interference.
-            If fit fails return 0 on all values.
-
-            Parameters
-            ----------
-            img : numpy.ndarray
-                2D image centered on the interference point.
-            dsuperpixel : ndarray
-                Integer distance (dx,dy) between superpixels.
-
-            Returns
-            -------
-            best_phase : float
-                Phase [rad] of maximum constructive interference.
-            amp : float
-                Amplitude of the interference fringe.
-            r2 : float
-                R^2 of fit
-            contrast : float
-                a / (a + c)
-            """
-            # Future: Cache this outside to avoid repeating memory allocation.
-            xy = np.meshgrid(
-                *[
-                    np.arange(-(img.shape[1 - a] - 1) / 2, +(img.shape[1 - a] - 1) / 2 + 0.5)
-                    for a in range(2)
-                ]
-            )
-            xyr = [l.ravel() for l in xy]
-
-            # Process dsuperpixel by rotating it according to the Fourier calibration.
-            M = self.fourier_affine.M
-            M_norm = M / np.sqrt(np.abs(np.linalg.det(M)))
-            dsuperpixel = np.squeeze(np.matmul(M_norm, format_2vectors(dsuperpixel)))
-
-            # Make the guess and bounds.
-            d = float(np.amin(img))
-            c = 0
-            a = float(np.amax(img)) - c
-            R = float(np.mean(img.shape)) / 4
-            # theta = np.arctan2(M[1, 0],  -M[0, 0])
-
-            guess = [
-                R, a, 0, c, d,
-                8 * np.pi * dsuperpixel[0] / img.shape[1],
-                8 * np.pi * dsuperpixel[1] / img.shape[0]
-            ]
-            dk = 8 * np.pi * np.max(slm_supershape) / np.min(img.shape)
-            lb = [
-                .9*R, 0, -4*np.pi, 0, 0,
-                guess[5]-dk,
-                guess[6]-dk
-            ]
-            ub = [
-                1.1*R, 2*a, 4*np.pi, a, a,
-                guess[5]+dk,
-                guess[6]+dk
-            ]
-
-            # # Restrict sinc2d to be centered (as expected).
-            # def sinc2d_local(xy, R, a=1, b=0, c=0, d=0, kx=1, ky=1, theta=0):
-            #     # When centered, rotation can be applied to xy, kxy
-            #     c = np.cos(theta)
-            #     s = np.sin(theta)
-            #     rotation = np.array([[c, -s], [s, c]])
-            #     kxy = rotation @ np.array([kx, ky])
-
-            #     # If raveled (for optimization)
-            #     xy = np.array(xy)
-            #     if len(np.array(xy).shape) < 3:
-            #         xy_rot = rotation @ xy
-            #     # But otherwise not raveled
-            #     else:
-            #         xy_rot = np.array([rotation @ xy[:, :, i] for i in range(xy.shape[-1])])
-            #         xy_rot = np.transpose(xy_rot, (1, 2, 0))
-
-            #     return sinc2d(xy_rot, 0, 0, R, a, b, c, d, kxy[0], kxy[1])
-
-            # Determine the guess phase byt overlapping shifted guesses with the image.
-            differences = []
-            N = 20
-            phases = np.arange(N) * 2 * np.pi / N
-
-            for phase in phases:
-                guess[2] = phase
-                differences.append(np.sum(np.square(img - sinc2d_centered(xy, *guess))))
-
-            guess[2] = phases[int(np.min(np.argmin(differences)))]
-
-            # Try the fit!
-            try:
-                popt, _ = optimize.curve_fit(
-                    sinc2d_centered,
-                    xyr,
-                    img.ravel().astype(float),
-                    p0=guess,
-                    bounds=(lb, ub), #, maxfev=20
-                    # method="dogbox",
-                    # jac=sinc2d_centered_jacobian
-                )
-            except BaseException:
-                return [np.nan, np.nan, 0, np.nan]
-
-            # Extract phase and amplitude from fit.
-            best_phase = popt[2]
-            amp = np.abs(popt[1])
-            contrast = np.abs(popt[1] / (np.abs(popt[1]) + np.abs(popt[3])))
-
-            # Remove the sinc term when doing the rsquared.
-            popt_nomod = np.copy(popt)
-            popt_nomod[3] += popt_nomod[1] / 2
-            popt_nomod[1] = 0
-            img0 = img - sinc2d_centered(xy, *popt_nomod)
-            fit0 = sinc2d_centered(xy, *popt) - sinc2d_centered(xy, *popt_nomod)
-
-            # Residual and total sum of squares, producing the R^2 metric.
-            ss_res = np.sum((img0 - fit0) ** 2)
-            ss_tot = np.sum((img0 - np.mean(img0)) ** 2)
-            r2 = 1 - (ss_res / ss_tot)
-
-            final = (np.mod(-best_phase, 2*np.pi), amp, r2, contrast)
-
-            # Plot the image, guess, and fit, if desired.
-            if plot_fits:
-                _, axs = plt.subplots(1, 3, figsize=(20,10))
-
-                axs[0].imshow(img)
-                axs[1].imshow(sinc2d_centered(xy, *guess))
-                axs[2].imshow(sinc2d_centered(xy, *popt))
-
-                for index, title in enumerate(["Image", "Guess", "Fit"]):
-                    axs[index].set_title(title)
-
-                _slmsuite_plt_show(name="wavefront_calibrate_superpixel_fit_2D")
-
-            return final
-
-        def plot_labeled(schedule, img, phase=None, plot=False, title="", plot_zoom=False, focus=None):
-            if plot_everything or plot:
-                def plot_labeled_rects(ax, points, labels, colors, wh, hh):
-                    for point, label, color in zip(points, labels, colors):
-                        rect = plt.Rectangle(
-                            (float(point[0] - wh/2), float(point[1] - hh/2)),
-                            float(wh), float(hh),
-                            ec=color, fc="none"
-                        )
-                        ax.add_patch(rect)
-                        ax.annotate(
-                            label, (point[0], point[1]),
-                            c=color, size="x-small", ha="center", va="center"
-                        )
-
-                if return_movie:
-                    fig, axs = plt.subplots(1, 3, figsize=(16, 4), facecolor="white")
-                else:
-                    fig, axs = plt.subplots(1, 3, figsize=(16,4))
-
-                # Plot phase on the first axis.
-                if phase is None:
-                    phase = self.slm.phase if self.slm.xp is np else self.slm.phase.get()
-                axs[0].imshow(
-                    np.mod(phase, 2*np.pi),
-                    cmap=plt.get_cmap("twilight"),
-                    interpolation="none",
-                )
-
-                points = []
-                labels = []
-                colors = []
-                center_offset = np.array([superpixel_size/2, superpixel_size/2])
-
-                for i in range(num_points):
-                    if schedule is None or schedule[i] != -1:
-                        if focus is None:
-                            focus = i
-                        points.append(reference_superpixels_coords[:, i] * superpixel_size + center_offset)
-                        if schedule is not None: points.append(index2coord(schedule[i]).ravel() * superpixel_size + center_offset)
-                        if num_points > 1:
-                            labels.append("{}".format(i))
-                            if schedule is not None: labels.append("{}".format(i))
-                        else:
-                            labels.append("Reference\nSuperpixel")
-                            if schedule is not None: labels.append("Test\nSuperpixel")
-                        c1 = (1 if i == focus else .5, .2, 0)
-                        colors.append(c1)
-                        c2 = (1 if i == focus else .5, 0, .2)
-                        if schedule is not None: colors.append(c2)
-
-                plot_labeled_rects(axs[0], points, labels, colors, superpixel_size, superpixel_size)
-
-                # FUTURE: fix for multiple
-                # if plot_zoom:
-                #     for a in [0, 1]:
-                #         ref = reference_superpixels[a] * superpixel_size
-                #         test = test_superpixel[a] * superpixel_size
-
-                #         lim = [min(ref, test) - .5 * superpixel_size, max(ref, test) + 1.5 * superpixel_size]
-
-                #         if a:
-                #             axs[0].set_ylim([lim[1], lim[0]])
-                #         else:
-                #             axs[0].set_xlim(lim)
-
-                if img is not None:
-                    im = axs[1].imshow(np.log10(img + .1))
-                    im.set_clim(0, np.log10(self.cam.bitresolution))
-
-                dpoint = field_point - base_point
-
-                # Assemble points and labels.
-                points = [(base_point + N * dpoint).ravel() for N in range(-2, 3)]
-                labels = ["-2nd", "-1st", "0th", "1st", "2nd"]
-                colors = ["b"] * 5
-
-                focus_point = None
-
-                for i in range(num_points):
-                    if schedule is None or schedule[i] != -1:
-                        points.append(calibration_points[:, i])
-                        if num_points > 1:
-                            labels.append("{}".format(i))
-                        else:
-                            labels.append("Calibration\nPoint")
-                        c = (1 if i == focus else .5, 0, 0)
-                        colors.append(c)
-                        if i == focus:
-                            focus_point = calibration_points[:, i]
-
-                # Plot points and labels.
-                wh = int(interference_window[0])
-                hh = int(interference_window[1])
-
-                plot_labeled_rects(axs[1], points, labels, colors, wh, hh)
-
-                if img is not None:
-                    im = axs[2].imshow(np.log10(img + .1))
-                    im.set_clim(0, np.log10(self.cam.bitresolution))
-
-                    if self.cam.bitdepth > 10:
-                        step = 2
-                    else:
-                        step = 1
-
-                    bitres_list = np.power(2, np.arange(0, self.cam.bitdepth+1, step), dtype=int)
-
-                    cbar = fig.colorbar(im, ax=axs[2])
-                    cbar.ax.set_yticks(np.log10(bitres_list))
-                    cbar.ax.set_yticklabels(bitres_list)
-
-                point = focus_point
-
-                axs[2].scatter([point[0]], [point[1]], s=5, c="r", marker="*")
-                axs[2].set_xlim(point[0] - wh/2, point[0] + wh/2)
-                axs[2].set_ylim(point[1] + hh/2, point[1] - hh/2)
-
-                # Axes coloring and colorbar.
-                for spine in ["top", "bottom", "right", "left"]:
-                    axs[2].spines[spine].set_color("r")
-                    axs[2].spines[spine].set_linewidth(1.5)
-
-                axs[0].set_title("SLM Phase")
-                axs[1].set_title("Camera Result")
-                axs[2].set_title(title)
-
-                if plot_zoom and return_movie:
-                    fig.tight_layout()
-                    fig.canvas.draw()
-
-                    try:
-                        try:
-                            image_from_plot = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-                            image_from_plot = image_from_plot.reshape(
-                                fig.canvas.get_width_height()[::-1] + (3,)
-                            )
-                        except Exception:
-                            image_from_plot = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
-                            image_from_plot = image_from_plot.reshape(
-                                fig.canvas.get_width_height()[::-1] + (4,)
-                            )[:,:,:3]
-                    except Exception:
-                        self.logger.warning(
-                            "Failed to convert figure to image for wavefront_calibrate movie. "
-                            "Returning a blank image instead."
-                        )
-                        image_from_plot = np.zeros(
-                            fig.canvas.get_width_height()[::-1] + (3,),
-                            dtype=np.uint8
-                        )
-
-                    plt.close()
-
-                    return image_from_plot
-                else:
-                    title_parsed = title.replace(" ", "_").lower()
-                    _slmsuite_plt_show(name=f"wavefront_calibrate_superpixel_{title_parsed}")
-
-        def take_interference_regions(img, integrate=True):
-            """Helper function for grabbing the data at the calibration points."""
-            return analysis.take(
-                img,
-                calibration_points,
-                interference_window, # / (2 if integrate else 1),
-                clip=True,
-                integrate=integrate
-            )
-
-        def find_centers(img, fit=True):
-            """Helper function for finding the center of images around the calibration points."""
-            imgs = take_interference_regions(img, integrate=False)  # N x W x H
-            centers = analysis.image_positions(imgs)                # 2 x N
-
-            a = np.max(imgs, axis=(1,2))
-            R = np.mean(imgs.shape[1:])/4
-
-            guess = np.transpose(
-                np.vstack((
-                    centers,
-                    np.full_like(a, R),
-                    a,
-                    np.full_like(a, 0),
-                ))
-            )
-
-            result = analysis.image_fit(imgs, function=_sinc2d_nomod, guess=guess) #, plot=True)
-
-            centers = result[:, 1:3].T
-
-            # Get rid of poor or failed fits
-            half = np.array([[imgs.shape[2]], [imgs.shape[1]]]) / 2
-            lost = np.logical_or(
-                np.any(np.logical_not(np.abs(centers) < half), axis=0),
-                np.logical_not(result[:, 0] > .5),      # R^2 of the fit; nan if it failed.
-            )
-            centers[:, lost] = 0
-
-            # if not fit:
-            return centers + calibration_points
-            # else:
-            #     return centers + calibration_points, amps_fit
-
-        def measure(schedule, plot=False):
-            # self.cam.flush()
-
-            # Step 0: Measure the background.
-            if measure_background:
-                back_image = superpixels(schedule, None, None)
-                plot_labeled(schedule, back_image, plot=plot, title="Background")
-                back = take_interference_regions(back_image)
-            else:
-                back = [np.nan] * num_points
-
-            # Step 0.5: Measure the power in the reference mode.
-            norm_image = superpixels(schedule, 0, None)
-            plot_labeled(schedule, norm_image, plot=plot, title="Reference Diffraction")
-            norm = take_interference_regions(norm_image)
-
-            # Step 1: Check the target mode, and return if we don't need to correct.
-            position_image = superpixels(schedule, None, 0)
-            plot_labeled(schedule, position_image, plot=plot, title="Base Target Diffraction")
-            if phase_steps is None and not corrected_amplitude:
-                pwr = take_interference_regions(position_image)
-                return {
-                    "power": pwr,
-                    "normalization": norm,
-                    "background": back,
-                    "phase": [np.nan] * num_points,
-                    "kx": [np.nan] * num_points,
-                    "ky": [np.nan] * num_points,
-                    "amp_fit": [np.nan] * num_points,
-                    "contrast_fit": [np.nan] * num_points,
-                    "r2_fit": [np.nan] * num_points,
-                }
-
-            # Step 1.25: Add a blaze to the target mode so that it overlaps with reference mode.
-            found_centers = find_centers(position_image)
-            blaze_differences = self.ijcam_to_kxyslm(found_centers) - calibration_blazes
-            target_blaze_fixed = calibration_blazes - blaze_differences
-
-            # Step 1.5: Measure the power...
-            if corrected_amplitude:      # ...in the corrected target mode.
-                fixed_image = superpixels(schedule, None, 0, target_blaze=target_blaze_fixed)
-                plot_labeled(schedule, fixed_image, plot=plot, title="Corrected Target Diffraction")
-                pwr = take_interference_regions(fixed_image)
-            else:                       # ...in the uncorrected target mode.
-                pwr = take_interference_regions(position_image)
-
-            # Step 1.75: Stop here if we don't need to measure the phase (only save powers).
-            if phase_steps is None:
-                return {
-                    "power": pwr,
-                    "normalization": norm,
-                    "background": back,
-                    "phase": [np.nan] * num_points,
-                    "kx": -blaze_differences[0, :],
-                    "ky": -blaze_differences[1, :],
-                    "amp_fit": [np.nan] * num_points,
-                    "contrast_fit": [np.nan] * num_points,
-                    "r2_fit": [np.nan] * num_points,
-                }
-
-            results = []
-            first_index = np.where(schedule != -1)[0][0]
-
-            # target_coords = index2coord(schedule)
-            # phase_baselines = np.sum(
-            #     2 * np.pi * target_blaze_fixed *
-            #     (target_coords - reference_superpixels_coords) *
-            #     superpixel_size * self.slm.pitch[:, np.newaxis],
-            #     axis=0,
-            # )
-            phase_baselines = None
-
-            # Step 2: Measure interference and find relative phase. Future: vectorize.
-            if phase_steps == 1:
-                # Step 2.1: Gather a single image.
-                result_img = superpixels(schedule, 0, 0, target_blaze=target_blaze_fixed, phase_baselines=phase_baselines)
-                cropped_img = take_interference_regions(result_img, integrate=False)
-
-                # Step 2.2: Fit the data and return.
-                coord_difference = index2coord(schedule) - index2coord(reference_superpixels)
-
-                results = [
-                    (
-                        fit_phase_image(
-                            cropped_img[i],
-                            coord_difference[:,i],
-                            plot_fits=plot and i == first_index
-                        )
-                        if schedule[i] != -1 else
-                        [np.nan] * 4
-                    )
-                    for i in range(num_points)
-                ]
-            else:
-                # Gather multiple images at different phase offsets.
-                phases = np.linspace(0, 2 * np.pi, phase_steps, endpoint=False)
-                iresults = []  # list for recording the intensity of the reference point
-
-                # Determine whether to use a progress bar.
-                if verbose:
-                    description = "phase_measurement"
-                    prange = tqdm(phases, position=0, leave=False, desc=description)
-                else:
-                    prange = phases
-
-                if return_movie:
-                    frames = []
-
-                # Step 2.1: Measure phases
-                for phase in prange:
-                    interference_image = superpixels(schedule, 0, phase, target_blaze=target_blaze_fixed, phase_baselines=phase_baselines)
-                    iresults.append(
-                        [
-                            interference_image[calibration_points[1, i], calibration_points[0, i]]
-                            for i in range(num_points)
-                        ]
-                    )
-
-                    if return_movie:
-                        frames.append(
-                            plot_labeled(
-                                schedule,
-                                interference_image,
-                                plot=plot,
-                                title=r"Phase = ${:1.2f}\pi$".format(phase / np.pi),
-                                plot_zoom=True,
-                            )
-                        )
-
-                iresults = np.array(iresults)
-
-                # Step 2.2: Fit to sine and return.
-                for i in range(num_points):
-                    results.append(fit_phase(phases, iresults[:, i], plot and i == first_index))
-
-            results = np.array(results)
-
-            phase_fit =     results[:, 0]
-            amp_fit =       results[:, 1]
-            r2_fit =        results[:, 2]
-            contrast_fit =  results[:, 3]
-
-            # Step 2.5: maybe plot a picture of the correct phase.
-            if plot:
-                interference_image = superpixels(schedule, 0, phase_fit, target_blaze=target_blaze_fixed, phase_baselines=phase_baselines)
-                plot_labeled(schedule, interference_image, plot=plot, title="Best Interference")
-
-            # Step 3: Return the result.
+        def restore_source():
+            """Reinstate the source stripped above."""
+            for key in ("amplitude", "phase", "r2"):
+                self.slm.source.pop(key, None)
+            self.slm.source.update(saved_source)
+
+        try:
+            # Parse phase_steps
+            if phase_steps is not None:
+                if not np.isclose(phase_steps, int(phase_steps)):
+                    raise ValueError(f"Expected integer phase_steps. Received {phase_steps}.")
+                phase_steps = int(phase_steps)
+                if phase_steps <= 0:
+                    raise ValueError(f"Expected positive phase_steps. Received {phase_steps}.")
+
+            # Interpret the plot command.
+            return_movie = plot == 3 and test_index is not None
             if return_movie:
-                return frames
+                plot = 1
+                if phase_steps is None or phase_steps == 1:
+                    raise ValueError(
+                        "cameraslms.py: Must have phase_steps > 1 to produce a movie."
+                    )
+            verbose = plot >= 0
+            plot_fits = plot >= 1
+            plot_everything = plot >= 2
 
-            return {
-                "power": pwr,
-                "normalization": norm,
-                "background": back,
-                "phase": phase_fit,
-                "kx": -blaze_differences[0, :],
-                "ky": -blaze_differences[1, :],
-                "amp_fit": amp_fit,
-                "contrast_fit": contrast_fit,
-                "r2_fit": r2_fit,
+            # Build the calibration dict.
+            calibration_dict = {
+                "calibration_points" : calibration_points,
+                "superpixel_size" : superpixel_size,
+                "slm_supershape" : slm_supershape,
+                "reference_superpixels" : reference_superpixels,
+                "phase_steps" : phase_steps,
+                "interference_size" : interference_size,
+                "interference_window" : interference_window,
+                "previous_phase_correction": (
+                    False if fresh_calibration or saved_source.get("phase") is None
+                    else np.copy(as_numpy(saved_source["phase"]))
+                ),
+                "scheduling" : scheduling,
             }
 
-        # Correct exposure and position of the reference mode(s).
-        # self.cam.flush()
-        base_image = superpixels(None, 0, None)
-        plot_labeled(None, base_image, plot=plot_everything, title="Base Reference Diffraction")
-        found_centers = find_centers(base_image)
+            keys = [
+                "power",
+                "normalization",
+                "background",
+                "phase",
+                "kx",
+                "ky",
+                "amp_fit",
+                "contrast_fit",
+                "r2_fit",
+            ]
 
-        # Correct the original blaze using the measured result.
-        reference_blaze_differences = self.ijcam_to_kxyslm(found_centers) - reference_blazes
-        np.subtract(reference_blazes, reference_blaze_differences, out=reference_blazes)
+            for key in keys:
+                calibration_dict.update(
+                    {key: np.full((num_points,) + slm_supershape, np.nan, dtype=np.float32)}
+                )
 
-        if plot_fits:
-            fixed_image = superpixels(None, 0, None)
-            plot_labeled(None, fixed_image, plot=plot_everything, title="Corrected Reference Diffraction")
+            def superpixels(
+                schedule=None,
+                reference_phase=None,
+                target_phase=None,
+                reference_blaze=reference_blazes,
+                target_blaze=calibration_blazes,
+                phase_baselines=None,
+                plot=False
+            ):
+                """
+                Helper function for making superpixel phase masks.
 
-        # If we just want to debug/test one region, then do so.
-        if test_index is not None:
-            result = measure(scheduling[:, test_index], plot=plot_fits)
+                Parameters
+                ----------
+                schedule : list of int
+                    Defines which superpixels to source targets from.
+                reference_phase, target_phase : float OR None
+                    Phase of reference/target superpixel; not rendered if None.
+                reference_blaze, target_blaze : (float, float)
+                    Blaze vector(s) for the given superpixel.
+                """
+                matrix = blaze(self.slm, field_blaze)
 
-            # Reset the phase and amplitude of the SLM to the stored data.
-            self.slm.source["amplitude"] = amplitude
-            self.slm.source["phase"] = phase
-            if r2 is not None:
-                self.slm.source["r2"] = r2
+                if reference_phase is not None:
+                    for i in range(num_points):
+                        if schedule is None or schedule[i] != -1:
+                            imprint(
+                                matrix,
+                                np.array([
+                                    reference_superpixels_coords[0, i], 1,
+                                    reference_superpixels_coords[1, i], 1
+                                ]) * superpixel_size,
+                                _blaze_offset,
+                                self.slm,
+                                # shift=True,
+                                vector=reference_blaze[:, [i]],
+                                offset=reference_phase  # This is usually zero when not None.
+                            )
 
-            return result
+                if target_phase is not None and schedule is not None:
+                    target_coords = index2coord(schedule)
+                    for i in range(num_points):
+                        if schedule[i] != -1:
+                            phase_baseline = 0 if phase_baselines is None else phase_baselines[i]
+                            imprint(
+                                matrix,
+                                np.array([
+                                    target_coords[0, i], 1,
+                                    target_coords[1, i], 1
+                                ]) * superpixel_size,
+                                _blaze_offset,
+                                self.slm,
+                                # shift=True,
+                                vector=target_blaze[:, [i]],
+                                offset=phase_baseline + (target_phase if np.isscalar(target_phase) else target_phase[i])
+                            )
 
-        measurements = range(num_measurements)
-        if plot >= 0:
-            measurements = tqdm(measurements, position=1, leave=True, desc="calibration")
+                self.slm.set_phase(matrix, settle=True)
+                self.cam.flush()
+                if plot:
+                    plt.figure(figsize=(20, 20))
+                    self.slm.plot()
+                return self.cam.get_image()
 
-        # Proceed with all of the superpixels.
-        for n in measurements:
-            schedule = scheduling[:, n]
+            def fit_phase(phases, intensities, plot_fits=False):
+                """
+                Fits a sine function to the intensity vs phase, and extracts best phase and amplitude
+                that give constructive interference.
+                If fit fails return 0 on all values.
 
-            # Measure!
-            measurement = measure(schedule)
+                Parameters
+                ----------
+                phases : numpy.ndarray
+                    Phase measurements.
+                intensities : numpy.ndarray
+                    Intensity measurements.
+                plot_fits : bool
+                    Whether to plot fit results.
 
-            # Update dictionary.
-            coords = index2coord(schedule)
-            for i in range(num_points):
-                if schedule[i] != -1:
-                    for key in measurement.keys():
-                        result = measurement[key]
-                        if np.size(result) > 1:
-                            result = result[i]
-                        elif not np.isscalar(result):
-                            result = np.squeeze(result)
+                Returns
+                -------
+                best_phase : float
+                    Phase b [rad] of maximum constructive interference.
+                amp : float
+                    Amplitude a of the interference fringe.
+                r2 : float
+                    R^2 of fit
+                contrast : float
+                    a / (a + c), where c is the background
+                """
+                guess = [
+                    phases[np.argmax(intensities)],
+                    np.max(intensities) - np.min(intensities),
+                    np.min(intensities),
+                ]
 
-                        calibration_dict[key][i, coords[1, i], coords[0, i]] = result
+                try:
+                    popt, _ = optimize.curve_fit(cos, phases, intensities, p0=guess)
+                except Exception:
+                    self.logger.warning("Curve fitting failed; nulling response from this superpixel.")
+                    return 0, 0, 0, 0
 
-        self.calibrations["wavefront_superpixel"] = calibration_dict
-        self.calibrations["wavefront_superpixel"].update(self._get_calibration_metadata())
+                # Extract phase and amplitude from fit.
+                best_phase = popt[0]
+                amp = popt[1]
+                contrast = popt[1] / (popt[1] + popt[2])
 
-        return calibration_dict
+                # Residual and total sum of squares, producing the R^2 metric.
+                ss_res = np.sum((intensities - cos(phases, *popt)) ** 2)
+                ss_tot = np.sum((intensities - np.mean(intensities)) ** 2)
+                r2 = 1 - (ss_res / ss_tot)
+
+                if plot_fits:
+                    plt.scatter(phases / np.pi, intensities, color="k", label="Data")
+
+                    phases_fine = np.linspace(0, 2 * np.pi, 100)
+
+                    plt.plot(phases_fine / np.pi, cos(phases_fine, *popt), "k-", label="Fit")
+                    plt.plot(phases_fine / np.pi, cos(phases_fine, *guess), "k--", label="Guess")
+                    plt.plot(best_phase / np.pi, popt[1] + popt[2], "xr", label="Phase")
+
+                    plt.legend(loc="best")
+                    plt.title("Interference ($R^2$={:.3f})".format(r2))
+                    plt.grid()
+                    plt.xlim([0, 2])
+                    plt.xlabel(r"$\phi$ $[\pi]$")
+                    plt.ylabel("Signal")
+
+                    _slmsuite_plt_show(name="wavefront_calibrate_superpixel_fit_1D")
+
+                return best_phase, amp, r2, contrast
+
+            def fit_phase_image(img, dsuperpixel, plot_fits=True):
+                """
+                Fits a modulated 2D sinc function to an image, and extracts best phase and
+                amplitude that give constructive interference.
+                If fit fails return 0 on all values.
+
+                Parameters
+                ----------
+                img : numpy.ndarray
+                    2D image centered on the interference point.
+                dsuperpixel : ndarray
+                    Integer distance (dx,dy) between superpixels.
+
+                Returns
+                -------
+                best_phase : float
+                    Phase [rad] of maximum constructive interference.
+                amp : float
+                    Amplitude of the interference fringe.
+                r2 : float
+                    R^2 of fit
+                contrast : float
+                    a / (a + c)
+                """
+                # Future: Cache this outside to avoid repeating memory allocation.
+                xy = np.meshgrid(
+                    *[
+                        np.arange(-(img.shape[1 - a] - 1) / 2, +(img.shape[1 - a] - 1) / 2 + 0.5)
+                        for a in range(2)
+                    ]
+                )
+
+                # Map pixels into the superpixel's farfield, where the sinc zeros are integers.
+                transform = (
+                    format_2vectors(superpixel_size * self.slm.pitch)
+                    * np.linalg.inv(self.fourier_affine.M)
+                )
+                xy = np.tensordot(transform, np.stack(xy), axes=1)
+                xyr = xy.reshape(2, -1)
+
+                # Make the guess and bounds.
+                d = float(np.amin(img))
+                c = 0
+                a = float(np.amax(img)) - c
+                R = 1
+
+                guess = [
+                    R, a, 0, c, d,
+                    2 * np.pi * dsuperpixel[0],
+                    2 * np.pi * dsuperpixel[1]
+                ]
+                dk = 2 * np.pi * np.max(slm_supershape)
+                lb = [
+                    .9*R, 0, -4*np.pi, 0, 0,
+                    guess[5]-dk,
+                    guess[6]-dk
+                ]
+                ub = [
+                    1.1*R, 2*a, 4*np.pi, a, a,
+                    guess[5]+dk,
+                    guess[6]+dk
+                ]
+
+                # The guess phase is the argument of the image's component at the fringe.
+                fringe = np.exp(1j * (guess[5] * xy[0] + guess[6] * xy[1]))
+                guess[2] = float(np.angle(np.sum((img - d) * fringe)))
+
+                # Try the fit!
+                try:
+                    popt, _ = optimize.curve_fit(
+                        sinc2d_centered,
+                        xyr,
+                        img.ravel().astype(float),
+                        p0=guess,
+                        bounds=(lb, ub), #, maxfev=20
+                        # method="dogbox",
+                        jac=sinc2d_centered_jacobian,
+                    )
+                except Exception:
+                    return [np.nan, np.nan, 0, np.nan]
+
+                # Extract phase and amplitude from fit.
+                best_phase = popt[2]
+                amp = np.abs(popt[1])
+                contrast = np.abs(popt[1] / (np.abs(popt[1]) + np.abs(popt[3])))
+
+                # Remove the sinc term when doing the rsquared.
+                popt_nomod = np.copy(popt)
+                popt_nomod[3] += popt_nomod[1] / 2
+                popt_nomod[1] = 0
+                img0 = img - sinc2d_centered(xy, *popt_nomod)
+                fit0 = sinc2d_centered(xy, *popt) - sinc2d_centered(xy, *popt_nomod)
+
+                # Residual and total sum of squares, producing the R^2 metric.
+                ss_res = np.sum((img0 - fit0) ** 2)
+                ss_tot = np.sum((img0 - np.mean(img0)) ** 2)
+                r2 = 1 - (ss_res / ss_tot)
+
+                final = (np.mod(-best_phase, 2*np.pi), amp, r2, contrast)
+
+                # Plot the image, guess, and fit, if desired.
+                if plot_fits:
+                    _, axs = plt.subplots(1, 3, figsize=(20,10))
+
+                    axs[0].imshow(img)
+                    axs[1].imshow(sinc2d_centered(xy, *guess))
+                    axs[2].imshow(sinc2d_centered(xy, *popt))
+
+                    for index, title in enumerate(["Image", "Guess", "Fit"]):
+                        axs[index].set_title(title)
+
+                    _slmsuite_plt_show(name="wavefront_calibrate_superpixel_fit_2D")
+
+                return final
+
+            def plot_labeled(schedule, img, phase=None, plot=False, title="", plot_zoom=False, focus=None):
+                if plot_everything or plot:
+                    def plot_labeled_rects(ax, points, labels, colors, wh, hh):
+                        for point, label, color in zip(points, labels, colors):
+                            rect = plt.Rectangle(
+                                (float(point[0] - wh/2), float(point[1] - hh/2)),
+                                float(wh), float(hh),
+                                ec=color, fc="none"
+                            )
+                            ax.add_patch(rect)
+                            ax.annotate(
+                                label, (point[0], point[1]),
+                                c=color, size="x-small", ha="center", va="center"
+                            )
+
+                    if return_movie:
+                        fig, axs = plt.subplots(1, 3, figsize=(16, 4), facecolor="white")
+                    else:
+                        fig, axs = plt.subplots(1, 3, figsize=(16,4))
+
+                    # Plot phase on the first axis.
+                    if phase is None:
+                        phase = self.slm.phase if self.slm.xp is np else self.slm.phase.get()
+                    axs[0].imshow(
+                        np.mod(phase, 2*np.pi),
+                        cmap=plt.get_cmap("twilight"),
+                        interpolation="none",
+                    )
+
+                    points = []
+                    labels = []
+                    colors = []
+                    center_offset = np.array([superpixel_size/2, superpixel_size/2])
+
+                    for i in range(num_points):
+                        if schedule is None or schedule[i] != -1:
+                            if focus is None:
+                                focus = i
+                            points.append(reference_superpixels_coords[:, i] * superpixel_size + center_offset)
+                            if schedule is not None: points.append(index2coord(schedule[i]).ravel() * superpixel_size + center_offset)
+                            if num_points > 1:
+                                labels.append("{}".format(i))
+                                if schedule is not None: labels.append("{}".format(i))
+                            else:
+                                labels.append("Reference\nSuperpixel")
+                                if schedule is not None: labels.append("Test\nSuperpixel")
+                            c1 = (1 if i == focus else .5, .2, 0)
+                            colors.append(c1)
+                            c2 = (1 if i == focus else .5, 0, .2)
+                            if schedule is not None: colors.append(c2)
+
+                    plot_labeled_rects(axs[0], points, labels, colors, superpixel_size, superpixel_size)
+
+                    # FUTURE: fix for multiple
+                    # if plot_zoom:
+                    #     for a in [0, 1]:
+                    #         ref = reference_superpixels[a] * superpixel_size
+                    #         test = test_superpixel[a] * superpixel_size
+
+                    #         lim = [min(ref, test) - .5 * superpixel_size, max(ref, test) + 1.5 * superpixel_size]
+
+                    #         if a:
+                    #             axs[0].set_ylim([lim[1], lim[0]])
+                    #         else:
+                    #             axs[0].set_xlim(lim)
+
+                    if img is not None:
+                        im = axs[1].imshow(np.log10(img + .1))
+                        im.set_clim(0, np.log10(self.cam.bitresolution))
+
+                    dpoint = field_point - base_point
+
+                    # Assemble points and labels.
+                    points = [(base_point + N * dpoint).ravel() for N in range(-2, 3)]
+                    labels = ["-2nd", "-1st", "0th", "1st", "2nd"]
+                    colors = ["b"] * 5
+
+                    focus_point = None
+
+                    for i in range(num_points):
+                        if schedule is None or schedule[i] != -1:
+                            points.append(calibration_points[:, i])
+                            if num_points > 1:
+                                labels.append("{}".format(i))
+                            else:
+                                labels.append("Calibration\nPoint")
+                            c = (1 if i == focus else .5, 0, 0)
+                            colors.append(c)
+                            if i == focus:
+                                focus_point = calibration_points[:, i]
+
+                    # Plot points and labels.
+                    wh = int(interference_window[0])
+                    hh = int(interference_window[1])
+
+                    plot_labeled_rects(axs[1], points, labels, colors, wh, hh)
+
+                    if img is not None:
+                        im = axs[2].imshow(np.log10(img + .1))
+                        im.set_clim(0, np.log10(self.cam.bitresolution))
+
+                        if self.cam.bitdepth > 10:
+                            step = 2
+                        else:
+                            step = 1
+
+                        bitres_list = np.power(2, np.arange(0, self.cam.bitdepth+1, step), dtype=int)
+
+                        cbar = fig.colorbar(im, ax=axs[2])
+                        cbar.ax.set_yticks(np.log10(bitres_list))
+                        cbar.ax.set_yticklabels(bitres_list)
+
+                    point = focus_point
+
+                    axs[2].scatter([point[0]], [point[1]], s=5, c="r", marker="*")
+                    axs[2].set_xlim(point[0] - wh/2, point[0] + wh/2)
+                    axs[2].set_ylim(point[1] + hh/2, point[1] - hh/2)
+
+                    # Axes coloring and colorbar.
+                    for spine in ["top", "bottom", "right", "left"]:
+                        axs[2].spines[spine].set_color("r")
+                        axs[2].spines[spine].set_linewidth(1.5)
+
+                    axs[0].set_title("SLM Phase")
+                    axs[1].set_title("Camera Result")
+                    axs[2].set_title(title)
+
+                    if plot_zoom and return_movie:
+                        fig.tight_layout()
+                        fig.canvas.draw()
+
+                        try:
+                            try:
+                                image_from_plot = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+                                image_from_plot = image_from_plot.reshape(
+                                    fig.canvas.get_width_height()[::-1] + (3,)
+                                )
+                            except Exception:
+                                image_from_plot = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+                                image_from_plot = image_from_plot.reshape(
+                                    fig.canvas.get_width_height()[::-1] + (4,)
+                                )[:,:,:3]
+                        except Exception:
+                            self.logger.warning(
+                                "Failed to convert figure to image for wavefront_calibrate movie. "
+                                "Returning a blank image instead."
+                            )
+                            image_from_plot = np.zeros(
+                                fig.canvas.get_width_height()[::-1] + (3,),
+                                dtype=np.uint8
+                            )
+
+                        plt.close()
+
+                        return image_from_plot
+                    else:
+                        title_parsed = title.replace(" ", "_").lower()
+                        _slmsuite_plt_show(name=f"wavefront_calibrate_superpixel_{title_parsed}")
+
+            def take_interference_regions(img, integrate=True):
+                """Helper function for grabbing the data at the calibration points."""
+                return analysis.take(
+                    img,
+                    calibration_points,
+                    interference_window, # / (2 if integrate else 1),
+                    clip=True,
+                    integrate=integrate
+                )
+
+            def find_centers(img, fit=True):
+                """Helper function for finding the center of images around the calibration points."""
+                imgs = take_interference_regions(img, integrate=False)  # N x W x H
+                centers = analysis.image_positions(imgs)                # 2 x N
+
+                a = np.max(imgs, axis=(1,2))
+                R = np.mean(imgs.shape[1:]) / self._wavefront_calibration_window_multiplier
+
+                guess = np.transpose(
+                    np.vstack((
+                        centers,
+                        np.full_like(a, R),
+                        a,
+                        np.full_like(a, 0),
+                    ))
+                )
+
+                result = analysis.image_fit(imgs, function=_sinc2d_nomod, guess=guess) #, plot=True)
+
+                centers = result[:, 1:3].T
+
+                # Get rid of poor or failed fits
+                half = np.array([[imgs.shape[2]], [imgs.shape[1]]]) / 2
+                lost = np.logical_or(
+                    np.any(np.logical_not(np.abs(centers) < half), axis=0),
+                    np.logical_not(result[:, 0] > .5),      # R^2 of the fit; nan if it failed.
+                )
+                centers[:, lost] = 0
+
+                # if not fit:
+                return centers + calibration_points
+                # else:
+                #     return centers + calibration_points, amps_fit
+
+            def measure(schedule, plot=False):
+                # self.cam.flush()
+
+                # Step 0: Measure the background.
+                if measure_background:
+                    back_image = superpixels(schedule, None, None)
+                    plot_labeled(schedule, back_image, plot=plot, title="Background")
+                    back = take_interference_regions(back_image)
+                else:
+                    back = [np.nan] * num_points
+
+                # Step 0.5: Measure the power in the reference mode.
+                norm_image = superpixels(schedule, 0, None)
+                plot_labeled(schedule, norm_image, plot=plot, title="Reference Diffraction")
+                norm = take_interference_regions(norm_image)
+
+                # Step 1: Check the target mode, and return if we don't need to correct.
+                position_image = superpixels(schedule, None, 0)
+                plot_labeled(schedule, position_image, plot=plot, title="Base Target Diffraction")
+                if phase_steps is None and not corrected_amplitude:
+                    pwr = take_interference_regions(position_image)
+                    return {
+                        "power": pwr,
+                        "normalization": norm,
+                        "background": back,
+                        "phase": [np.nan] * num_points,
+                        "kx": [np.nan] * num_points,
+                        "ky": [np.nan] * num_points,
+                        "amp_fit": [np.nan] * num_points,
+                        "contrast_fit": [np.nan] * num_points,
+                        "r2_fit": [np.nan] * num_points,
+                    }
+
+                # Step 1.25: Add a blaze to the target mode so that it overlaps with reference mode.
+                found_centers = find_centers(position_image)
+                blaze_differences = self.ijcam_to_kxyslm(found_centers) - calibration_blazes
+                target_blaze_fixed = calibration_blazes - blaze_differences
+
+                # Step 1.5: Measure the power...
+                if corrected_amplitude:      # ...in the corrected target mode.
+                    fixed_image = superpixels(schedule, None, 0, target_blaze=target_blaze_fixed)
+                    plot_labeled(schedule, fixed_image, plot=plot, title="Corrected Target Diffraction")
+                    pwr = take_interference_regions(fixed_image)
+                else:                       # ...in the uncorrected target mode.
+                    pwr = take_interference_regions(position_image)
+
+                # Step 1.75: Stop here if we don't need to measure the phase (only save powers).
+                if phase_steps is None:
+                    return {
+                        "power": pwr,
+                        "normalization": norm,
+                        "background": back,
+                        "phase": [np.nan] * num_points,
+                        "kx": -blaze_differences[0, :],
+                        "ky": -blaze_differences[1, :],
+                        "amp_fit": [np.nan] * num_points,
+                        "contrast_fit": [np.nan] * num_points,
+                        "r2_fit": [np.nan] * num_points,
+                    }
+
+                results = []
+                first_index = np.where(schedule != -1)[0][0]
+
+                # target_coords = index2coord(schedule)
+                # phase_baselines = np.sum(
+                #     2 * np.pi * target_blaze_fixed *
+                #     (target_coords - reference_superpixels_coords) *
+                #     superpixel_size * self.slm.pitch[:, np.newaxis],
+                #     axis=0,
+                # )
+                phase_baselines = None
+
+                # Step 2: Measure interference and find relative phase. Future: vectorize.
+                if phase_steps == 1:
+                    # Step 2.1: Gather a single image.
+                    result_img = superpixels(schedule, 0, 0, target_blaze=target_blaze_fixed, phase_baselines=phase_baselines)
+                    cropped_img = take_interference_regions(result_img, integrate=False)
+
+                    # Step 2.2: Fit the data and return.
+                    coord_difference = index2coord(schedule) - index2coord(reference_superpixels)
+
+                    results = [
+                        (
+                            fit_phase_image(
+                                cropped_img[i],
+                                coord_difference[:,i],
+                                plot_fits=plot and i == first_index
+                            )
+                            if schedule[i] != -1 else
+                            [np.nan] * 4
+                        )
+                        for i in range(num_points)
+                    ]
+                else:
+                    # Gather multiple images at different phase offsets.
+                    phases = np.linspace(0, 2 * np.pi, phase_steps, endpoint=False)
+                    iresults = []  # list for recording the intensity of the reference point
+
+                    # Determine whether to use a progress bar.
+                    if verbose:
+                        description = "phase_measurement"
+                        prange = tqdm(phases, position=0, leave=False, desc=description)
+                    else:
+                        prange = phases
+
+                    if return_movie:
+                        frames = []
+
+                    # Step 2.1: Measure phases
+                    for phase in prange:
+                        interference_image = superpixels(schedule, 0, phase, target_blaze=target_blaze_fixed, phase_baselines=phase_baselines)
+                        iresults.append(
+                            [
+                                interference_image[calibration_points[1, i], calibration_points[0, i]]
+                                for i in range(num_points)
+                            ]
+                        )
+
+                        if return_movie:
+                            frames.append(
+                                plot_labeled(
+                                    schedule,
+                                    interference_image,
+                                    plot=plot,
+                                    title=r"Phase = ${:1.2f}\pi$".format(phase / np.pi),
+                                    plot_zoom=True,
+                                )
+                            )
+
+                    iresults = np.array(iresults)
+
+                    # Step 2.2: Fit to sine and return.
+                    for i in range(num_points):
+                        results.append(fit_phase(phases, iresults[:, i], plot and i == first_index))
+
+                results = np.array(results)
+
+                phase_fit =     results[:, 0]
+                amp_fit =       results[:, 1]
+                r2_fit =        results[:, 2]
+                contrast_fit =  results[:, 3]
+
+                # Step 2.5: maybe plot a picture of the correct phase.
+                if plot:
+                    interference_image = superpixels(schedule, 0, phase_fit, target_blaze=target_blaze_fixed, phase_baselines=phase_baselines)
+                    plot_labeled(schedule, interference_image, plot=plot, title="Best Interference")
+
+                # Step 3: Return the result.
+                if return_movie:
+                    return frames
+
+                return {
+                    "power": pwr,
+                    "normalization": norm,
+                    "background": back,
+                    "phase": phase_fit,
+                    "kx": -blaze_differences[0, :],
+                    "ky": -blaze_differences[1, :],
+                    "amp_fit": amp_fit,
+                    "contrast_fit": contrast_fit,
+                    "r2_fit": r2_fit,
+                }
+
+            # Correct exposure and position of the reference mode(s).
+            # self.cam.flush()
+            base_image = superpixels(None, 0, None)
+            plot_labeled(None, base_image, plot=plot_everything, title="Base Reference Diffraction")
+            found_centers = find_centers(base_image)
+
+            # Correct the original blaze using the measured result.
+            reference_blaze_differences = self.ijcam_to_kxyslm(found_centers) - reference_blazes
+            np.subtract(reference_blazes, reference_blaze_differences, out=reference_blazes)
+
+            if plot_fits:
+                fixed_image = superpixels(None, 0, None)
+                plot_labeled(None, fixed_image, plot=plot_everything, title="Corrected Reference Diffraction")
+
+            # If we just want to debug/test one region, then do so.
+            if test_index is not None:
+                result = measure(scheduling[:, test_index], plot=plot_fits)
+
+                restore_source()
+
+                return result
+
+            measurements = range(num_measurements)
+            if plot >= 0:
+                measurements = tqdm(measurements, position=1, leave=True, desc="calibration")
+
+            # Proceed with all of the superpixels.
+            for n in measurements:
+                schedule = scheduling[:, n]
+
+                # Measure!
+                measurement = measure(schedule)
+
+                # Update dictionary.
+                coords = index2coord(schedule)
+                for i in range(num_points):
+                    if schedule[i] != -1:
+                        for key in measurement.keys():
+                            result = measurement[key]
+                            if np.size(result) > 1:
+                                result = result[i]
+                            elif not np.isscalar(result):
+                                result = np.squeeze(result)
+
+                            calibration_dict[key][i, coords[1, i], coords[0, i]] = result
+
+            self.calibrations["wavefront_superpixel"] = calibration_dict
+            self.calibrations["wavefront_superpixel"].update(self._get_calibration_metadata())
+
+            return calibration_dict
+        except BaseException:
+            restore_source()
+            raise
 
     ### Superpixel Wavefront Calibration Helpers ###
 
@@ -1404,6 +1388,7 @@ class _WavefrontCalibrationSuperpixel(object):
         h = superpixel_size * NY
 
         r2 = np.copy(data["r2_fit"])
+        r2[np.isnan(r2)] = 0
         r2[nyref, nxref] = 1
         r2s = r2
 
@@ -1413,7 +1398,7 @@ class _WavefrontCalibrationSuperpixel(object):
         # Step 2: Process the measured amplitude
         # Fix the reference pixel by averaging the 8 surrounding pixels
         pwr = np.copy(data["power"])
-        pwr[pwr == np.inf] = np.amax(pwr)
+        pwr[np.isposinf(pwr)] = np.max(pwr[np.isfinite(pwr)], initial=0)
         average_neighbors(pwr)
         if smooth:
             pwr = cv2.GaussianBlur(pwr, (size_blur_k, size_blur_k), 0)
@@ -1484,7 +1469,6 @@ class _WavefrontCalibrationSuperpixel(object):
         kx[np.isnan(kx)] = 0
         ky[np.isnan(ky)] = 0
         offset[np.isnan(offset)] = 0
-        r2[np.isnan(r2)] = 0
 
         # Fix a change in how data is aquired pre-0.3.0.
         # if phase_shift_pre_030:

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from scipy import ndimage
 
-from slmsuite.hardware.cameraslms import FourierSLM
+from slmsuite.hardware.cameraslms import FourierSLM, _wavefront_superpixel
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography import analysis
@@ -293,6 +293,12 @@ class TestFourierSLM:
             with pytest.raises(ValueError):
                 fourierslm.fourier_calibrate_analytic(np.eye(3), b)
 
+    def test_fourier_calibration_build(self, fourierslm, subtests):
+        """Test FourierSLM.fourier_calibration_build."""
+        with subtests.test("the offset defaults to the center of the camera image"):
+            (_, b) = fourierslm.fourier_calibration_build(1000)
+            assert np.allclose(np.ravel(b), np.flip(fourierslm.cam.shape) / 2)
+
     def test_fourier_grid_project(self, fourierslm_calibrated, subtests):
         """Test FourierSLM.fourier_grid_project."""
         hologram = fourierslm_calibrated.fourier_grid_project(array_shape=3, array_pitch=35)
@@ -472,8 +478,20 @@ class TestFourierSLM:
             with pytest.raises(ValueError):
                 fourierslm_calibrated.get_camera_extent(units="kxy", return_mask=True)
 
-    def test_simulate(self, fourierslm_calibrated, subtests):
+    def test_simulate(self, fourierslm_calibrated, simulated_system_factory, subtests):
         """Test FourierSLM.simulate."""
+
+        with subtests.test("the clone displays what the hardware displays at any phase_scaling"):
+            for phase_scaling in (1, 0.75, 1.3):
+                fs = simulated_system_factory("matched")
+                fs.slm.wav_design_um = fs.slm.wav_um / phase_scaling
+                install_ground_truth_calibration(fs)
+                phase = np.random.default_rng(0).uniform(0, 2 * np.pi, fs.slm.shape)
+                fs.slm.set_phase(phase, phase_correct=False)
+                np.testing.assert_array_equal(
+                    as_numpy(fs.simulate().slm.display), as_numpy(fs.slm.display),
+                    err_msg=f"{phase_scaling=}",
+                )
 
         with subtests.test("the simulated twin transforms coordinates identically"):
             fs_sim = fourierslm_calibrated.simulate()
@@ -509,6 +527,20 @@ class TestFourierSLM:
                     fourierslm_calibrated.calibrations["fourier"][key],
                 )
 
+        with subtests.test("a default-named file loads by its path alone, under the type it names"):
+            default = fourierslm_calibrated.save_calibration("fourier", path=temp_dir)
+            fs_new = FourierSLM(fourierslm_calibrated.cam, fourierslm_calibrated.slm)
+            assert fs_new.load_calibration(default) == default
+            np.testing.assert_allclose(
+                fs_new.calibrations["fourier"]["M"],
+                fourierslm_calibrated.calibrations["fourier"]["M"],
+            )
+
+        with subtests.test("a path whose name carries no type raises"):
+            fs_new = FourierSLM(fourierslm_calibrated.cam, fourierslm_calibrated.slm)
+            with pytest.raises(ValueError, match="parse calibration type"):
+                fs_new.load_calibration(path)
+
         with subtests.test("saving a calibration that was never taken raises"):
             with pytest.raises(ValueError):
                 fourierslm_calibrated.save_calibration("nonexistent", path=temp_dir)
@@ -539,7 +571,9 @@ class TestFourierSLM:
         assert len(fourierslm.plot(image=fourierslm.cam.get_image())) == 2
 
     @pytest.mark.slow
-    def test_wavefront_calibrate_superpixel(self, fourierslm_calibrated, subtests):
+    def test_wavefront_calibrate_superpixel(
+        self, fourierslm_calibrated, simulated_system_factory, subtests
+    ):
         """Test FourierSLM.wavefront_calibrate_superpixel against a planted aberration."""
         fs = fourierslm_calibrated
         cal_point = [150, 150]
@@ -586,11 +620,63 @@ class TestFourierSLM:
                 )
                 assert error < .5, f"amplitude is {error:.2f} off the simulated source."
 
-        with subtests.test("smoothing the correction"):
-            fs.wavefront_calibration_superpixel_process(smooth=True, plot=True)
+        # Circular standard deviation, blind to the piston a correction leaves free.
+        def spread(phase):
+            return np.sqrt(-2 * np.log(np.abs(np.mean(np.exp(1j * phase)))))
 
-        with subtests.test("test_index measures one point and restores the source"):
-            before = np.array(fs.slm.source["amplitude"])
+        for case in ("rotated", "anisotropic"):
+            residual = {}
+            for multiplier in (4, 6):
+                fs_case = simulated_system_factory(
+                    case, slm_resolution=(256, 256), cam_resolution=(512, 512),
+                    aberration=((3, 4, 5), (1.5, -2.0, 1.0)),
+                )
+                install_ground_truth_calibration(fs_case)
+                fs_case.cam.set_exposure(1)
+                fs_case._wavefront_calibration_window_multiplier = multiplier
+                aberration = as_numpy(fs_case.slm.source["phase_sim"])
+                fs_case.wavefront_calibrate_superpixel(
+                    calibration_points=[[368], [138]], superpixel_size=32, phase_steps=1, plot=-1,
+                )
+                correction = as_numpy(fs_case.wavefront_calibration_superpixel_process(
+                    smooth=False, remove_blaze=False, apply=False, r2_threshold=0.5,
+                )["phase"])
+                residual[multiplier] = spread(correction + aberration)
+
+            with subtests.test(f"one shot on the {case} camera corrects the planted aberration"):
+                assert max(residual.values()) < 0.1 * spread(aberration), residual
+
+            with subtests.test(f"one shot on the {case} camera does not depend on the window"):
+                assert residual[6] == pytest.approx(residual[4], abs=0.01)
+
+        with subtests.test("only fresh_calibration=False keeps the source phase, as a host array"):
+            fs_case = simulated_system_factory(
+                "matched", slm_resolution=(128, 128), cam_resolution=(256, 256)
+            )
+            install_ground_truth_calibration(fs_case)
+            phase = fs_case.slm.xp.full(fs_case.slm.shape, 0.5)
+
+            stored = []
+            for fresh_calibration in (True, False):
+                fs_case.slm.source["phase"] = phase
+                fs_case.wavefront_calibrate_superpixel(
+                    calibration_points=[[190], [170]], superpixel_size=32, phase_steps=1,
+                    fresh_calibration=fresh_calibration, plot=-1,
+                )
+                stored.append(
+                    fs_case.calibrations["wavefront_superpixel"]["previous_phase_correction"]
+                )
+
+            assert stored[0] is False
+            assert isinstance(stored[1], np.ndarray)
+            np.testing.assert_array_equal(stored[1], as_numpy(phase))
+
+        with subtests.test("test_index measures one point and restores the raw source"):
+            fs.slm.set_aperture(radius=0.3, units="frac")
+            phase = fs.slm.xp.ones(fs.slm.shape)
+            fs.slm.source["phase"] = phase
+            fs.slm.source.pop("amplitude", None)
+            keys = {k for (k, v) in fs.slm.source.items() if v is not None}
             result = fs.wavefront_calibrate_superpixel(
                 calibration_points=cal_point,
                 superpixel_size=sp_size,
@@ -599,13 +685,87 @@ class TestFourierSLM:
                 plot=-1,
             )
             assert "power" in result
-            assert np.array_equal(fs.slm.source["amplitude"], before)
+            assert {k for (k, v) in fs.slm.source.items() if v is not None} == keys
+            assert np.array_equal(as_numpy(fs.slm.source["phase"]), as_numpy(phase))
 
         with subtests.test("requires a Fourier calibration"):
             with pytest.raises((RuntimeError, KeyError)):
                 FourierSLM(fs.cam, fs.slm).wavefront_calibrate_superpixel(
                     calibration_points=cal_point, superpixel_size=sp_size, plot=-1,
                 )
+
+    def test_wavefront_calibrate_superpixel_abort(
+        self, fourierslm_calibrated, simulated_system_factory, monkeypatch, subtests
+    ):
+        """An interrupt inside a fit escapes the calibration and leaves the source intact."""
+        fs = fourierslm_calibrated
+        cal_point = [150, 150]
+        sp_size = fs.slm.shape[0] // 6
+
+        fs.slm.set_source_analytic(
+            phase_offset=zernike_sum(
+                fs.slm, indices=(3, 4, 5, 7, 8), weights=(1, -2, 3, 1, 1),
+                aperture=None, use_mask=False,
+            ),
+            sim=True,
+        )
+        fs.cam.set_exposure(.1)
+
+        # A measured source for the aborted run to strip.
+        fs.wavefront_calibrate_superpixel(
+            calibration_points=cal_point, superpixel_size=sp_size, phase_steps=5, plot=-1,
+        )
+        fs.wavefront_calibration_superpixel_process(smooth=False)
+        before_amplitude = as_numpy(fs.slm.source["amplitude"]).copy()
+        before_phase = as_numpy(fs.slm.source["phase"]).copy()
+
+        curve_fit = _wavefront_superpixel.optimize.curve_fit
+        state = {"fits": 0}
+
+        def interrupt_on_third_fit(*args, **kwargs):
+            state["fits"] += 1
+            if state["fits"] == 3:
+                raise KeyboardInterrupt("simulated Ctrl-C inside a fit")
+            return curve_fit(*args, **kwargs)
+
+        monkeypatch.setattr(_wavefront_superpixel.optimize, "curve_fit", interrupt_on_third_fit)
+
+        with subtests.test("the interrupt is not swallowed by the fit guard"):
+            with pytest.raises(KeyboardInterrupt):
+                fs.wavefront_calibrate_superpixel(
+                    calibration_points=cal_point, superpixel_size=sp_size,
+                    phase_steps=5, plot=-1,
+                )
+
+        with subtests.test("the stripped source is reinstated"):
+            assert np.allclose(
+                as_numpy(fs.slm.source["amplitude"]), before_amplitude, equal_nan=True
+            )
+            assert np.allclose(as_numpy(fs.slm.source["phase"]), before_phase, equal_nan=True)
+
+        with subtests.test("the slm still projects after the abort"):
+            fs.slm.set_phase(blaze(fs.slm, vector=fs.ijcam_to_kxyslm(cal_point)))
+            assert fs.cam.get_image().mean() > 0
+
+        with subtests.test("the raw source is reinstated, not its aperture-masked view"):
+            fs = simulated_system_factory(
+                "matched", slm_resolution=(128, 128), cam_resolution=(256, 256)
+            )
+            install_ground_truth_calibration(fs)
+            fs.slm.set_aperture(radius=0.3, units="frac")
+            phase = fs.slm.xp.ones(fs.slm.shape)
+            fs.slm.source["phase"] = phase
+            fs.slm.source.pop("amplitude", None)
+            keys = {k for (k, v) in fs.slm.source.items() if v is not None}
+
+            state["fits"] = 0
+            with pytest.raises(KeyboardInterrupt):
+                fs.wavefront_calibrate_superpixel(
+                    calibration_points=[[190], [170]], superpixel_size=16, phase_steps=5,
+                    plot=-1,
+                )
+            assert {k for (k, v) in fs.slm.source.items() if v is not None} == keys
+            assert np.array_equal(as_numpy(fs.slm.source["phase"]), as_numpy(phase))
 
     def test_wavefront_calibrate_superpixel_scheduling(self, simulated_system_factory):
         """
@@ -689,6 +849,54 @@ class TestFourierSLM:
                 deviation = np.angle(delta * np.conj(piston) / np.abs(piston))
                 assert np.max(np.abs(deviation)) < 1e-3
 
+        with subtests.test("a failed fit reads as zero r2, not NaN"):
+            data = ramp_data((0.013, 0.021))
+            data["r2_fit"][holes[0][1], holes[0][0]] = np.nan
+            fs.calibrations["wavefront_superpixel"] = data
+            r2 = fs.wavefront_calibration_superpixel_process(
+                smooth=False, r2_threshold=.5, apply=False, plot=0
+            )["r2"]
+            assert not np.any(np.isnan(as_numpy(r2)))
+
+        with subtests.test("an infinite power is clamped to the finite maximum"):
+            data = ramp_data((0.013, 0.021))
+            (hx, hy) = holes[0]
+            data["power"][hy, hx] = np.inf
+            fs.calibrations["wavefront_superpixel"] = data
+            amplitude = fs.wavefront_calibration_superpixel_process(
+                smooth=False, r2_threshold=.5, remove_background=False, apply=False, plot=0
+            )["amplitude"]
+            center = (np.array([hy, hx]) + .5) * superpixel_size
+            assert as_numpy(amplitude)[int(center[0]), int(center[1])] == pytest.approx(1)
+
+        with subtests.test("a previous correction is added to the new one"):
+            previous = as_numpy(zernike_sum(fs.slm, indices=(3, 4), weights=(1.0, -0.5)))
+            data = ramp_data((0.013, 0.021))
+            kwargs = dict(smooth=False, remove_background=False, apply=False, plot=0)
+            fs.calibrations["wavefront_superpixel"] = dict(data)
+            fresh = fs.wavefront_calibration_superpixel_process(**kwargs)
+            fs.calibrations["wavefront_superpixel"] = dict(data, previous_phase_correction=previous)
+            stacked = fs.wavefront_calibration_superpixel_process(**kwargs)
+            np.testing.assert_allclose(
+                as_numpy(stacked["phase"]) - as_numpy(fresh["phase"]), previous, atol=1e-5
+            )
+
+        with subtests.test("smoothing leaves a gentle ramp unchanged away from the edges"):
+            vector = (0.004, 0.003)
+            truth = 2 * np.pi * (vector[0] * as_numpy(x_grid) + vector[1] * as_numpy(y_grid))
+            fs.calibrations["wavefront_superpixel"] = ramp_data(vector)
+            phase = fs.wavefront_calibration_superpixel_process(
+                smooth=True, r2_threshold=.5, remove_blaze=False, remove_background=False,
+                apply=False, plot=0,
+            )["phase"]
+
+            # The blur reflects at the border, so only the interior keeps the ramp.
+            interior = (slice(2 * superpixel_size, -2 * superpixel_size),) * 2
+            delta = np.exp(1j * (np.asarray(phase) - truth))[interior]
+            piston = np.mean(delta)
+            deviation = np.angle(delta * np.conj(piston) / np.abs(piston))
+            assert np.max(np.abs(deviation)) < 1e-4
+
     @pytest.mark.slow
     def test_wavefront_calibrate_zernike(self, fourierslm_calibrated, subtests):
         """Test FourierSLM.wavefront_calibrate_zernike."""
@@ -736,7 +944,9 @@ class TestFourierSLM:
             cal = fourierslm_calibrated.calibrations["wavefront_zernike"]
             assert cal["corrected_spots"].shape[1] == calibration_points.shape[1]
 
-    def test_wavefront_calibrate_zernike_smooth(self, simulated_system_factory, subtests):
+    def test_wavefront_calibrate_zernike_smooth(
+        self, simulated_system_factory, caplog, subtests
+    ):
         """Test FourierSLM.wavefront_calibrate_zernike_smooth."""
         (fs, _) = _zernike_calibrated(simulated_system_factory)
         spots = fs.calibrations["wavefront_zernike"]["corrected_spots"]
@@ -757,6 +967,31 @@ class TestFourierSLM:
             assert high[2, 4] == pytest.approx(low[2, 4])
             assert abs(high[2, 4]) < 1.0
             assert np.allclose(high[:2], spots[:2])     # Tilt is left to smoothing_xy.
+
+        with subtests.test("a spot with no neighbors is left alone"):
+            points_ij = fs.calibrations["wavefront_zernike"]["calibration_points_ij"]
+            original = np.copy(points_ij)
+            points_ij[:2, 0] += 10 * np.min(fs.cam.shape)
+            try:
+                smoothed = fs.wavefront_calibrate_zernike_smooth(smoothing=.5, smoothing_xy=.5)
+            finally:
+                points_ij[:] = original
+            assert np.allclose(smoothed[:, 0], spots[:, 0])
+
+        with subtests.test("a changed camera window is flagged"):
+            fs.cam.set_woi((0, 64, 0, 48))
+            try:
+                with caplog.at_level(logging.WARNING):
+                    caplog.clear()
+                    fs.wavefront_calibrate_zernike_smooth()
+                    smooth_warned = "does not follow the window" in caplog.text
+                    caplog.clear()
+                    fs._wavefront_calibration_zernike_interpolator_2d = None
+                    fs.wavefront_calibrate_zernike_get((0, 0))
+                    get_warned = "does not follow the window" in caplog.text
+            finally:
+                fs.cam.set_woi(None)
+            assert smooth_warned and get_warned
 
         with subtests.test("a factor outside [0, 1] raises"):
             for kwargs in ({"smoothing": 1.5}, {"smoothing_xy": -0.1}):
@@ -1270,7 +1505,7 @@ class TestFourierSLM:
 
     def test_fourier_calibrate_geometries(
         self, simulated_system, simulated_system_name, simulated_system_source,
-        calibration_results, calibration_plot_level, request,
+        calibration_results, calibration_plot_level, request, caplog,
     ):
         """fourier_calibrate with a fixed array, across every simulated geometry."""
         (error, tolerance, note, failure) = _run_calibration(
@@ -1295,6 +1530,20 @@ class TestFourierSLM:
             f"Calibrated mapping is {error:.2f} px off ground truth "
             f"(tolerance {tolerance:.2f})."
         )
+
+        # An array with unequal sides may be mis-oriented only with a warning.
+        for shape in ((8, 10), (9, 11)):
+            seed_for(f"orientation-{simulated_system_name}-{shape}")
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                simulated_system.fourier_calibrate(
+                    array_shape=shape, array_pitch=BATTERY_ARRAY_PITCH, plot=False
+                )
+            M = simulated_system.calibrations["fourier"]["M"]
+            R = np.rint(np.linalg.solve(ground_truth_affine(simulated_system)[0], M))
+            assert np.array_equal(R, np.eye(2)) or "not verified" in caplog.text, (
+                f"A {shape} array is silently mis-oriented by {R.tolist()}."
+            )
 
 
 @pytest.mark.parametrize("name", GEOMETRY_CASES)

@@ -88,15 +88,17 @@ class FeedbackHologram(Hologram):
         # Use the Hologram constructor to initialize self.target with proper shape,
         # pass other arguments (esp. slm_shape).
         self.cameraslm = cameraslm
+        amp = kwargs.pop("amp", None)
+        slm_shape = None
         if self.cameraslm is not None:
             # Determine camera size in SLM-space.
             try:
-                amp = self.cameraslm.slm._get_source_amplitude()
+                source_amp = self.cameraslm.slm._get_source_amplitude
                 slm_shape = self.cameraslm.slm.shape
             except Exception:
                 # See if an SLM was passed.
                 try:
-                    amp = self.cameraslm._get_source_amplitude()
+                    source_amp = self.cameraslm._get_source_amplitude
                     slm_shape = self.cameraslm.shape
 
                     # We don't have access to all the calibration stuff, so don't
@@ -105,9 +107,8 @@ class FeedbackHologram(Hologram):
                 except Exception:
                     raise ValueError("Expected a CameraSLM or SLM to be passed to cameraslm.")
 
-        else:
-            amp = kwargs.pop("amp", None)
-            slm_shape = None
+            if amp is None:
+                amp = source_amp()
 
         if not "slm_shape" in kwargs:
             kwargs["slm_shape"] = slm_shape

@@ -90,11 +90,7 @@ class MultiplaneHologram(Hologram):
         if weights is None:
             weights = np.ones(len(self), dtype=self.dtype)
 
-        self.weights = np.array(
-            weights,
-            copy=(False if np.__version__[0] == "1" else None),
-            dtype=self.dtype,
-        )
+        self.weights = np.array(weights, copy=True, dtype=self.dtype)
         self.weights /= Hologram._norm(self.weights, xp=np)
 
         # Batched-FFT fast path, when the children share shape, dtype, and transforms.
@@ -614,6 +610,10 @@ class MultiplaneHologram(Hologram):
             return
         for h, mraf in zip(self.holograms, mraf_variables):
             h._gs_farfield_routines(mraf)
+
+        # The children may weight in place, which the id() restack cannot see.
+        if self._batched:
+            self._batched_child_weights_ids = [None] * len(self.holograms)
 
     def _gs_farfield_routines_batched(self):
         """

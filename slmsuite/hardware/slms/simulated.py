@@ -4,7 +4,7 @@ A simulated SLM.
 
 import numpy as np
 from slmsuite.hardware.slms.slm import SLM
-from slmsuite.misc.xp import as_backend, get_array_module
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module
 
 class SimulatedSLM(SLM):
     r"""
@@ -79,7 +79,7 @@ class SimulatedSLM(SLM):
                 phase = self.source.get("phase", None)
 
                 self.source["amplitude_sim"] = (
-                    self.xp.ones_like(self.grid[0]) if amplitude is None else amplitude
+                    self.xp.ones_like(self.grid[0]) if amplitude is None else amplitude.copy()
                 )
                 self.source["phase_sim"] = (
                     self.xp.zeros_like(self.grid[0]) if phase is None else -phase
@@ -98,7 +98,7 @@ class SimulatedSLM(SLM):
             self._gamma_sim = None
             return
 
-        gamma_sim = np.ravel(np.array(gamma_sim, dtype=float))
+        gamma_sim = np.ravel(np.array(as_numpy(gamma_sim), dtype=float))
         if len(gamma_sim) != self.bitresolution:
             raise ValueError(
                 f"Expected gamma_sim to span all {self.bitresolution} levels; "

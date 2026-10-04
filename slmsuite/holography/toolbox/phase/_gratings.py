@@ -37,7 +37,7 @@ def blaze(
     vector = np.squeeze(vector)
 
     # Flatten to plain scalars; an array-valued vector would not broadcast onto a cupy grid.
-    vector = np.ravel(as_numpy(vector)).astype(float)
+    vector = tuple(float(v) for v in np.ravel(as_numpy(vector)))
 
     # Optimize phase construction based on context.
     if vector[0] == 0 and vector[1] == 0:
@@ -119,7 +119,7 @@ def sinusoid(
     grid: Union[Tuple[np.ndarray, np.ndarray], object],
     vector: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
     shift: float = 0,
-    a: float = 2 * jn_zeros(0, 1)[0],
+    a: float = float(2 * jn_zeros(0, 1)[0]),
     b: float = 0,
 ):
     r"""
@@ -274,23 +274,19 @@ def binary(
         decision -= 2 * np.pi * duty_cycle
         phase = a if (decision < 0 and not np.isclose(decision, 0)) else b
         return np.full_like(x_grid, phase, dtype=dtype)
-    elif vector[0] != 0 and vector[1] != 0:
-        pass    # xor the next case.
-    elif vector[0] == 0 or vector[1] == 0:
-        period = 1/np.sum(vector)   # Relative to the grid
-        duty = period*duty_cycle
-
-        period_int = np.rint(period)
-        duty_int = np.rint(duty)
-
-        if np.all(np.isclose(period, period_int)) and np.all(np.isclose(duty, duty_int)):
-            pass    # Future: speed optimization.
 
     # If we have not returned, then we have to use the slow np.mod option.
     decision = np.mod(blaze(grid, vector) + shift, 2*np.pi)
     decision[np.isclose(decision, 2*np.pi)] = 0   # Handle edge case
     decision -= (2 * np.pi * duty_cycle)
-    return np.where((decision < 0) & ~np.isclose(decision, 0), a, b)
+    # An integer level map keeps its kind; a float phase follows the grid.
+    out_dtype = np.result_type(a, b)
+    if out_dtype.kind == "f":
+        out_dtype = dtype
+
+    return np.where(
+        (decision < 0) & ~np.isclose(decision, 0), out_dtype.type(a), out_dtype.type(b)
+    )
 
 
 def _quadrants(
@@ -310,17 +306,19 @@ def _quadrants(
     # Parse grid.
     grid = (x_grid, y_grid) = _process_grid(grid)
     canvas = np.zeros_like(x_grid)
+    (h, w) = canvas.shape
 
-    # Fill the quadrants.
+    # Fill the quadrants; the right and bottom halves take the odd row and column.
     for i, vector in enumerate(vectors.T):
+        (right, bottom) = ((3-i) // 2, i % 2)
         # Future: center this on the (0,0) point of the current grid?
         imprint(
             matrix=canvas,
             window=[
-                (canvas.shape[1] // 2) * ((3-i) // 2),      # x
-                (canvas.shape[1] // 2),                     # w
-                (canvas.shape[0] // 2) * (i % 2),           # y
-                (canvas.shape[0] // 2),                     # h
+                (w // 2) * right,                           # x
+                (w + right) // 2,                           # w
+                (h // 2) * bottom,                          # y
+                (h + bottom) // 2,                          # h
             ],
             function=grating,
             grid=grid,

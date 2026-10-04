@@ -154,6 +154,9 @@ class _NpEncoder(json.JSONEncoder):
             return obj.isoformat()
         if isinstance(obj, timedelta):
             return str(obj)
+        # Scalar types (e.g. np.float64) -> the dtype they name.
+        if isinstance(obj, type) and issubclass(obj, np.generic):
+            obj = np.dtype(obj)
         if isinstance(obj, np.dtype):
             return {"__dtype__" : str(obj)}
         return super(_NpEncoder, self).default(obj)
@@ -494,47 +497,38 @@ class _Client(_Picklable):
         if args is None: args = []
         if kwargs is None: kwargs = {}
 
-        # Create a TCP/IP socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        try:
-            sock.connect((host, port))
-        except (TimeoutError, ConnectionRefusedError):
-            raise TimeoutError(
-                f"An slmsuite server is not responsive at {host}:{port}."
-            )
-
-
-        # Send the message.
-        sock.sendall((
-            urllib.quote_plus(
-                json.dumps(
-                    {
-                        "name": name,
-                        "command": command,
-                        "args": args,
-                        "kwargs": kwargs
-                    },
-                    cls=_NpEncoder
+        # Create a TCP/IP socket, closed on every path out.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            try:
+                sock.connect((host, port))
+            except (TimeoutError, ConnectionRefusedError):
+                raise TimeoutError(
+                    f"An slmsuite server is not responsive at {host}:{port}."
                 )
-            ) + _delim
-        ).encode())
 
+            # Send the message.
+            sock.sendall((
+                urllib.quote_plus(
+                    json.dumps(
+                        {
+                            "name": name,
+                            "command": command,
+                            "args": args,
+                            "kwargs": kwargs
+                        },
+                        cls=_NpEncoder
+                    )
+                ) + _delim
+            ).encode())
 
-        # Wait for a reply.
-        try:
+            # Wait for a reply.
             success, reply = _recv(sock, timeout)
-            if success == False:
-                raise RuntimeError(
-                    f"Server {host}:{port} communication failed. Message:\n{reply}"
-                )
-        except Exception as e:
-            sock.close()
 
-            raise e
-
-        # Always close.
-        sock.close()
+        if success == False:
+            raise RuntimeError(
+                f"Server {host}:{port} communication failed. Message:\n{reply}"
+            )
 
         return reply
 

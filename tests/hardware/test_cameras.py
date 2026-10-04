@@ -6,10 +6,14 @@ import logging
 import pytest
 import numpy as np
 
+from slmsuite.hardware.cameras import camera as camera_module
 from slmsuite.hardware.cameras.camera import Camera
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.hardware.cameraslms import FourierSLM
+from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography.toolbox.phase import zernike
+
+from slmsuite.misc.xp import as_numpy
 
 from conftest import driver_classes
 
@@ -27,6 +31,20 @@ ORIENTATIONS = (
     ("rot180_flip", dict(rot="180", fliplr=True), False),
     ("rot270_flip", dict(rot="270", fliplr=True), True),
 )
+
+
+class _FlakyCamera(SimulatedCamera):
+    """A SimulatedCamera whose next ``failures`` captures raise, returning ``frame`` if set."""
+    failures = 0
+    frame = None
+
+    def _get_image_hw(self, timeout_s=0, quantize=True):
+        if self.failures > 0:
+            self.failures -= 1
+            raise RuntimeError(f"{self.failures} failures left")
+        if self.frame is not None:
+            return self.frame
+        return super()._get_image_hw(timeout_s, quantize)
 
 
 class TestCamera:
@@ -415,6 +433,18 @@ class TestCamera:
                 cam12.hdr = hdr
                 assert cam12.get_images(2).dtype == np.uint16
 
+    def test_set_exposure(self, slm, caplog, subtests):
+        """set_exposure() never asks the hardware for an exposure outside its bounds."""
+        cam = SimulatedCamera(slm, resolution=(64, 48), exposure_bounds_s=(1e-3, 1.0))
+
+        with subtests.test("a request outside exposure_bounds_s is clipped to the bound and warned"):
+            for (request, bound) in ((10.0, 1.0), (1e-6, 1e-3)):
+                caplog.clear()
+                with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                    assert cam.set_exposure(request) == bound
+                assert cam.get_exposure() == bound
+                assert "out of bounds" in caplog.text
+
     def test_get_image(self, camera, slm, subtests):
         """get_image() returns one transformed frame of camera.shape, optionally summed."""
         img = camera.get_image()
@@ -482,6 +512,28 @@ class TestCamera:
             out = np.empty((count, *camera.shape), dtype=binned_dtype)
             assert camera.get_images(count, out=out) is out
 
+    def test_get_image_hw_tolerant(self, slm, caplog, subtests):
+        """A failed capture is retried up to capture_attempts times before its error escapes."""
+        cam = _FlakyCamera(slm, resolution=(64, 48), capture_attempts=3)
+
+        with subtests.test("fewer failures than attempts return the frame, with a warning"):
+            cam.failures = 2
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                img = cam._get_image_hw_tolerant(0)
+            np.testing.assert_array_equal(img, cam._get_image_hw_tolerant(0))
+            assert "failed 2 times" in caplog.text
+
+        with subtests.test("as many failures as attempts re-raise the last error"):
+            cam.failures = 3
+            with pytest.raises(RuntimeError, match="0 failures left"):
+                cam._get_image_hw_tolerant(0)
+
+        with subtests.test("a frame of more than three dimensions raises"):
+            cam.frame = np.zeros((2, 48, 64, 3))
+            with pytest.raises(ValueError, match="2D or 3D"):
+                cam._get_image_hw_tolerant(0)
+
     def test_get_image_hdr_analysis(self, subtests):
         """get_image_hdr_analysis() recovers the base exposure from a stack of doublings."""
         base = np.linspace(0, 200, 100).reshape(10, 10)
@@ -504,7 +556,7 @@ class TestCamera:
             with pytest.raises(ValueError, match="cannot all be non-positive"):
                 Camera.get_image_hdr_analysis(imgs, exposure_power=[0, 0, 0])
 
-    def test_get_image_hdr(self, camera, subtests):
+    def test_get_image_hdr(self, camera, monkeypatch, caplog, subtests):
         """get_image_hdr() stitches exposures, and hands back the stack when asked."""
         with subtests.test("the stitch is one float frame of the camera's shape"):
             hdr = camera.get_image_hdr(exposures=2)
@@ -515,6 +567,24 @@ class TestCamera:
             (raw, times) = camera.get_image_hdr(exposures=3, return_raw=True)
             assert raw.shape == (3, *camera.shape)
             assert len(times) == 3
+
+        with subtests.test("a saturated shortest exposure is reported"):
+            full_scale = camera.bitresolution - camera.bitresolution // 2**camera.bitdepth
+            monkeypatch.setattr(
+                camera, "get_image", lambda *args, **kwargs: np.full(camera.shape, full_scale)
+            )
+            with caplog.at_level(logging.WARNING):
+                camera.get_image_hdr(exposures=2)
+            assert "overexposed" in caplog.text
+
+    @pytest.mark.gpu
+    def test_get_image_hdr_gpu(self):
+        """get=False stitches on the device."""
+        import cupy as cp
+
+        device = SimulatedCamera(SimulatedSLM((32, 32), gpu=True), resolution=(32, 32))
+        assert isinstance(device.get_image_hdr(exposures=2, get=False), cp.ndarray)
+        device.close()
 
     def test_info(self, camera):
         """info() lists the cameras this class can find, empty where unsupported."""
@@ -639,7 +709,7 @@ class TestCamera:
             peak = np.max(camera.get_image())
             assert peak == pytest.approx(0.3 * camera.bitresolution, rel=0.2)
 
-    def test_autofocus(self, camera, slm, subtests):
+    def test_autofocus(self, camera, slm, monkeypatch, subtests):
         """autofocus() recovers a known Zernike defocus and leaves the caller's sweep alone."""
         slm.set_source_analytic()
 
@@ -683,6 +753,24 @@ class TestCamera:
 
             with pytest.raises(RuntimeError, match="no valid images"):
                 camera.autofocus(jammed, get_z=0.0, range_z=1.0)
+
+        with subtests.test("an slm outside its aperture keeps the pattern it displayed"):
+            cropped = SimulatedSLM((64, 64), gpu=False)
+            cropped.set_aperture(radius=0.3, units="frac")
+            cropped.source["phase"] = np.ones(cropped.shape)
+            cropped.set_phase(np.zeros(cropped.shape), phase_correct=True)
+            camera.autofocus(cropped, range_z=0.5, metric=lambda _image: 1.0)
+            outside = ~as_numpy(cropped.aperture_mask).astype(bool)
+            assert np.allclose(as_numpy(cropped.phase)[outside], 0)
+            cropped.close()
+
+        with subtests.test("an interrupt during the fit is not swallowed"):
+            def interrupt(*args, **kwargs):
+                raise KeyboardInterrupt
+
+            monkeypatch.setattr(camera_module, "curve_fit", interrupt)
+            with pytest.raises(KeyboardInterrupt):
+                camera.autofocus(set_z, get_z=0.0, range_z=1.0, metric=peaked)
 
     @pytest.mark.parametrize(
         "driver", driver_classes(Camera), ids=lambda cls: cls.__module__.rsplit(".", 1)[-1]

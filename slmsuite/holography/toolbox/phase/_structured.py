@@ -56,8 +56,6 @@ def laguerre_gaussian(grid, l, p=0, w=None):
     (x_grid, y_grid) = _process_grid(grid)
     xp = get_array_module(x_grid)
 
-    w = _determine_source_radius(grid, w)
-
     theta_grid = xp.arctan2(y_grid, x_grid)
     rr_grid = y_grid * y_grid + x_grid * x_grid
 
@@ -66,6 +64,7 @@ def laguerre_gaussian(grid, l, p=0, w=None):
     if l != 0:
         canvas += l * theta_grid
     if p != 0:
+        w = _determine_source_radius(grid, w)
         lag = special.genlaguerre(p, np.abs(l))(as_numpy(2 * rr_grid / w / w))
         canvas += np.pi * xp.asarray(np.heaviside(-lag, 0))
 
@@ -105,7 +104,8 @@ def hermite_gaussian(grid, n, m, w=None):
 
     # Generate the amplitude of a Hermite-Gaussian mode.
     phase = xp.asarray(
-        special.hermite(n)(as_numpy(factor * x_grid)) * special.hermite(m)(as_numpy(factor * y_grid))
+        special.hermite(n)(as_numpy(factor * x_grid)) * special.hermite(m)(as_numpy(factor * y_grid)),
+        dtype=np.result_type(x_grid.dtype, np.float32),
     )
 
     # This is real, so the phase is just the sign of the mode. This produces a
@@ -145,7 +145,8 @@ def _ince_polynomial(p, m, parity, ellipticity, z):
         Values of the Ince polynomial at the given points.
     """
     eps = ellipticity
-    z = np.asarray(z)
+    xp = get_array_module(z)
+    z = xp.asarray(z)
     p_even = (p % 2 == 0)
 
     if parity == 1:  # Even: C_p^m
@@ -255,21 +256,21 @@ def _ince_polynomial(p, m, parity, ellipticity, z):
             coeffs = -coeffs
 
     # Evaluate the Fourier series.
-    result = np.zeros_like(z, dtype=complex if np.iscomplexobj(z) else float)
+    result = xp.zeros_like(z, dtype=complex if xp.iscomplexobj(z) else float)
     if parity == 1:
         if p_even:
             for k in range(N):
-                result = result + coeffs[k] * np.cos(2 * k * z)
+                result = result + float(coeffs[k]) * xp.cos(2 * k * z)
         else:
             for k in range(N):
-                result = result + coeffs[k] * np.cos((2 * k + 1) * z)
+                result = result + float(coeffs[k]) * xp.cos((2 * k + 1) * z)
     else:
         if p_even:
             for k in range(N):
-                result = result + coeffs[k] * np.sin(2 * (k + 1) * z)
+                result = result + float(coeffs[k]) * xp.sin(2 * (k + 1) * z)
         else:
             for k in range(N):
-                result = result + coeffs[k] * np.sin((2 * k + 1) * z)
+                result = result + float(coeffs[k]) * xp.sin((2 * k + 1) * z)
 
     return result
 
@@ -298,8 +299,9 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
         .. math:: IG^h_{p,m} = IG^e_{p,m} + iIG^o_{p,m}
 
     ellipticity : float
-        Ellipticity of the beam. The semifocal distance is equal to ``ellipticity * w``,
-        where the foci are the points which define the elliptical coordinate system.
+        Ellipticity :math:`\varepsilon` of the beam. The semifocal distance is equal to
+        :math:`w\sqrt{\varepsilon/2}`, where the foci are the points which define the
+        elliptical coordinate system.
     w : float
         See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
 
@@ -309,6 +311,7 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_array_module(x_grid)
     w = _determine_source_radius(grid, w)
 
     if parity == 1:
@@ -328,7 +331,7 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
     complex_grid = x_grid + 1j * y_grid
     factor = 1 / (w * np.sqrt(ellipticity / 2))
 
-    elliptic_grid = np.arccosh(complex_grid * factor)
+    elliptic_grid = xp.arccosh(complex_grid * factor)
     xi = elliptic_grid.real    # radial coordinate (>= 0)
     eta = elliptic_grid.imag   # angular coordinate [0, 2*pi)
 
@@ -353,7 +356,7 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
         radial_o = (_ince_polynomial(p, m, -1, ellipticity, 1j * xi) / 1j).real
         amplitude = radial_e * angular_e + 1j * radial_o * angular_o
 
-    return np.angle(amplitude)
+    return xp.angle(amplitude).astype(np.result_type(x_grid.dtype, np.float32))
 
 
 def mathieu_gaussian(grid, r, q, w=None):
@@ -386,7 +389,12 @@ def mathieu_gaussian(grid, r, q, w=None):
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
+    xp = get_array_module(x_grid)
+    dtype = np.result_type(x_grid.dtype, np.float32)
     w = _determine_source_radius(grid, w)
+
+    # scipy.special has no device implementation of the Mathieu or Bessel functions.
+    (x_grid, y_grid) = (as_numpy(x_grid), as_numpy(y_grid))
 
     if q == 0:
         # Circular limit: the elliptic coordinates degenerate to polar, and the Mathieu
@@ -423,7 +431,7 @@ def mathieu_gaussian(grid, r, q, w=None):
 
     amplitude = angular_vals * radial_vals
 
-    return np.angle(amplitude)
+    return xp.asarray(np.angle(amplitude), dtype=dtype)
 
 
 def airy(grid, f=(np.inf, np.inf), w=None):

@@ -1,12 +1,13 @@
 """
 Zernike polynomials and related functions.
 """
+import copy
 import os
 import threading
 import warnings
 import weakref
 from collections import OrderedDict
-from functools import cached_property
+from functools import cached_property, lru_cache
 
 import numpy as np
 
@@ -14,7 +15,7 @@ try:
     import cupy as cp  # type: ignore
 except ImportError:
     cp = np
-from math import comb, factorial
+from math import comb, factorial, perm
 
 import matplotlib.pyplot as plt
 from scipy import special
@@ -104,8 +105,9 @@ def zernike_order_number(radial_order):
 
     Returns
     -------
-    max_index : int
-        Maximum Zernike index for this radial order (ANSI 0-based)
+    count : int
+        Number of Zernike polynomials through this radial order, one past the largest
+        ANSI index.
     """
     return (radial_order + 1) * (radial_order + 2) // 2
 
@@ -184,7 +186,7 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
     indices = np.array(indices, dtype=int, copy=(False if np.__version__[0] == '1' else None))
     if indices.size == dimension:
         indices = indices.reshape((1, dimension))
-    if dimension > 1 and indices.shape[1] != dimension:
+    if dimension > 1 and (indices.ndim != 2 or indices.shape[1] != dimension):
         raise ValueError(f"Expected dimension (N, {dimension}); found {indices.shape}")
 
     if from_index == to_index:
@@ -252,8 +254,9 @@ def _zernike_index_inverse(indices, from_index):
     over the range where the forward map is defined.
     Unmapped indices return :data:`ZERNIKE_INDEX_UNDEFINED`.
     """
-    # The Fringe/Wyant piston term Z_37 requires ANSI indices through radial order 12.
-    D = max(int(np.max(indices, initial=0)) + 1, zernike_order_number(12))
+    # Tabulate whole radial orders; Fringe/Wyant piston Z_37 requires order 12.
+    order = int(np.ceil((np.sqrt(8 * int(np.max(indices, initial=0)) + 1) - 1) / 2))
+    D = zernike_order_number(max(order, 12))
     (built_to, table) = _zernike_inverse_cache.get(from_index, (0, {}))
 
     if built_to < D:
@@ -374,9 +377,7 @@ def _zernike_get_cantor(indices, weights, derivative=(0,0)):
                 elif derivative[j] > 1:
                     keep = power >= derivative[j]
                     factor = np.zeros_like(power)
-                    factor[keep] = (
-                        special.factorial(power[keep]) / special.factorial(power[keep] - derivative[j])
-                    ).astype(int)
+                    factor[keep] = [perm(int(p), int(derivative[j])) for p in power[keep]]
                     zernike_cantor = zernike_cantor * factor[np.newaxis, :]
 
                 # Reduce the power of the term.
@@ -626,6 +627,8 @@ def _zernike_sum_from_basis(basis, weights, out=None):
     """Synthesize a weighted sum of polynomials from a precomputed :class:`ZernikeBasis`."""
     xp = basis._xp
     weights = xp.asarray(weights)
+    if not xp.iscomplexobj(weights):
+        weights = weights.astype(basis.basis_flat.dtype, copy=False)
     D = len(basis)
 
     if weights.ndim == 0:
@@ -663,14 +666,28 @@ def _zernike_sum_from_basis(basis, weights, out=None):
 # Transparent ZernikeBasis cache, keyed on grid + indices + aperture.
 _ZERNIKE_BASIS_CACHE = OrderedDict()     # key -> ZernikeBasis
 _ZERNIKE_BASIS_CACHE_MAX = 32            # LRU cap
-_ZERNIKE_BASIS_CACHE_LOCK = threading.Lock()
+_ZERNIKE_BASIS_CACHE_LOCK = threading.RLock()
 
 
 def clear_zernike_basis_cache():
     """Empty the transparent :class:`ZernikeBasis` cache used by :meth:`zernike_sum`
     and :meth:`~slmsuite.holography.analysis.image_zernike_fit`. Useful after a large
     one-off synthesis, or to free GPU memory held by cached bases."""
-    _ZERNIKE_BASIS_CACHE.clear()
+    with _ZERNIKE_BASIS_CACHE_LOCK:
+        _ZERNIKE_BASIS_CACHE.clear()
+        _zernike_fit_grid.cache_clear()
+
+
+@lru_cache(maxsize=8)
+def _zernike_fit_grid(h, w, xp):
+    """Unit-pitch grid centered on an ``(h, w)`` image, held so the basis cache can reuse it."""
+    return tuple(xp.meshgrid(xp.arange(w) - (w - 1) / 2, xp.arange(h) - (h - 1) / 2))
+
+
+def _zernike_cache_evict(key):
+    """Weakref callback dropping the cache entry of a grid that died."""
+    with _ZERNIKE_BASIS_CACHE_LOCK:
+        _ZERNIKE_BASIS_CACHE.pop(key, None)
 
 
 def _aperture_key(aperture):
@@ -689,7 +706,7 @@ def _zernike_get_basis(grid, indices, aperture=None, use_mask=True):
     """
     Return a (cached) :class:`ZernikeBasis` for ``grid``, ``indices``, ``aperture``,
     and ``use_mask``, building and caching it on a miss. The cache is keyed on the
-    identity of the grid array (plus its shape and both grids' corner values), so
+    identity of both grid arrays (plus their shape and corner values), so
     distinct grids -- e.g. two SLMs -- map to separate entries and coexist. Access is
     serialized by a lock, and entries are evicted least-recently-used once the cache
     exceeds ``_ZERNIKE_BASIS_CACHE_MAX``.
@@ -700,6 +717,7 @@ def _zernike_get_basis(grid, indices, aperture=None, use_mask=True):
 
     key = (
         id(x_grid),
+        id(y_grid),
         tuple(x_grid.shape),
         (
             x_grid[0, 0].item(), x_grid[-1, -1].item(),
@@ -717,14 +735,17 @@ def _zernike_get_basis(grid, indices, aperture=None, use_mask=True):
             return basis
 
         basis = ZernikeBasis(grid, indices, aperture=aperture, use_mask=use_mask)
+
+        # The cached entry must not keep its grid alive, else the weakrefs below never fire.
+        basis.aperture = copy.copy(basis.aperture)
+        basis.aperture._grid = None
         _ZERNIKE_BASIS_CACHE[key] = basis
 
-        # Drop the entry when the grid array dies; guards against id() reuse after GC.
-        # The weakref must be kept alive for its callback to fire, so stash it on the
-        # cached basis -- its lifetime is then exactly that of the cache entry.
+        # Drop the entry when either grid dies; the weakrefs live on the cached basis.
         try:
-            basis._grid_ref = weakref.ref(
-                x_grid, lambda _ref, k=key: _ZERNIKE_BASIS_CACHE.pop(k, None)
+            basis._grid_ref = tuple(
+                weakref.ref(g, lambda _ref, k=key: _zernike_cache_evict(k))
+                for g in (x_grid, y_grid)
             )
         except TypeError:
             pass    # Array type does not support weakref; rely on the LRU cap below.
@@ -812,6 +833,15 @@ def _zernike_sum_direct(grid, indices, weights, aperture, use_mask, derivative, 
 
     # Gather the Zernike information.
     cantor_terms, cantor_weights = _zernike_get_cantor(indices, weights, derivative)
+
+    if np.finfo(out.dtype).bits <= 32 and np.any(indices >= 0):
+        n = int(np.max(zernike_convert_index(indices[indices >= 0], to_index="radial")[:, 0]))
+        if n >= _ZERNIKE_ORDER_PRECISION_SINGLE:
+            warnings.warn(
+                f"Zernike radial order {n} on a {out.dtype} grid can err by an 8-bit phase "
+                "level or more. Pass a float64 grid, "
+                "e.g. tuple(g.astype(float) for g in slm.grid), for higher precision."
+            )
 
     # The masked case only computes on a fraction of the full space.
     if use_mask:
@@ -1122,6 +1152,8 @@ _zernike_cache_vectorized = np.array([[]], dtype=float)
 
 # Radial order above which float64 monomial evaluation is untrustworthy.
 _ZERNIKE_ORDER_PRECISION = 38
+# Radial order from which float32 grid evaluation errs by about one 8-bit phase level.
+_ZERNIKE_ORDER_PRECISION_SINGLE = 17
 _zernike_precision_warned = False
 
 
@@ -1282,50 +1314,6 @@ def _zernike_populate_basis_map(indices):
         i_md[m, :len(nonzero)] = nonzero
 
     return c_md, i_md, pxy_m.T
-
-
-def _zernike_test(grid, indices):
-    _zernike_test_kernel = cp.RawKernel(_load_cuda(), 'zernike_test')
-    _zernike_test_kernel.compile()
-
-    c_md, i_md, pxy_m = _zernike_populate_basis_map(indices)
-
-    # Parse grid.
-    (x_grid, y_grid) = _process_grid(grid)
-    scale = Aperture.resolve(grid)._isotropic_scale()
-    logger.debug("source Zernike scaling: %s", scale)
-    x_grid = cp.array(x_grid, copy=True, dtype=np.float32)
-    y_grid = cp.array(y_grid, copy=True, dtype=np.float32)
-
-    x_grid *= scale
-    y_grid *= scale
-
-    (H, W) = x_grid.shape
-    WH = int(W*H)
-    (M, D) = c_md.shape
-
-    out = cp.full((D,H,W), np.nan, dtype=np.float32)
-    out.fill(-42)
-
-    threads_per_block = int(_zernike_test_kernel.max_threads_per_block)
-    blocks = (WH // threads_per_block) + 1
-
-    # Call the RawKernel.
-    _zernike_test_kernel(
-        (blocks,),
-        (threads_per_block,),
-        (
-            np.int32(WH), np.int32(D), np.int32(M),
-            cp.array(c_md.ravel()),
-            cp.array(i_md.ravel()),
-            cp.array(pxy_m.ravel()),
-            x_grid.ravel(),
-            y_grid.ravel(),
-            out.ravel()
-        )
-    )
-
-    return out
 
 
 # Polynomials.

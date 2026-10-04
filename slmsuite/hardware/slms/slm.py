@@ -586,8 +586,8 @@ class SLM(_Common, ABC):
             ``gamma`` sampled at every grayscale level.
         """
         bitresolution = self.bitresolution
-        gamma = np.ravel(np.array(gamma, dtype=float))
-        levels = np.ravel(np.array(levels, dtype=float))
+        gamma = np.ravel(np.array(as_numpy(gamma), dtype=float))
+        levels = np.ravel(np.array(as_numpy(levels), dtype=float))
 
         if len(levels) != len(gamma):
             raise ValueError(
@@ -806,9 +806,9 @@ class SLM(_Common, ABC):
                     "(see set_gamma) when phase_scaling is not one."
                 )
 
-            # phase_scaling is not included in the scaling.
+            # phase_scaling is not included in the scaling. Scale a copy, so phase keeps the data.
             factor = -(self.bitresolution * self.phase_scaling / 2 / np.pi)
-            phase *= factor
+            phase = phase * factor
 
             # Only if necessary, modulo the phase to remain within SLM bounds.
             if xp.amin(phase) <= -self.bitresolution or xp.amax(phase) > 0:
@@ -832,9 +832,6 @@ class SLM(_Common, ABC):
 
             # Copy and cast the data to the output (usually self.display)
             xp.copyto(out, phase, casting="unsafe")
-
-            # Restore phase (though we do not unmodulo)
-            phase *= 1 / factor
 
         return out
 
@@ -1050,12 +1047,11 @@ class SLM(_Common, ABC):
                to a TypeError.
 
             Usually, an **exact** stored copy of the data passed by the user
-            under ``phase`` is stored in the attribute :attr:`phase`. However,
-            in cases where :attr:`phase_scaling` is not one, this copy is modified
-            to include how the data was wrapped. If the data was cropped, then
-            the cropped data is stored, etc. If integer data was passed, the
-            equivalent floating point phase is computed and stored in the
-            attribute :attr:`phase`.
+            under ``phase`` is stored in the attribute :attr:`phase`. When
+            :attr:`phase_scaling` is one and no :attr:`lut` is set, this copy is
+            rounded to a whole number of levels. If the data was cropped, then the
+            cropped data is stored, etc. If integer data was passed, the equivalent
+            floating point phase is computed and stored in the attribute :attr:`phase`.
         phase_correct : bool OR None
             Whether to add wavefront correction to the pattern. This correction
             is stored in
@@ -1222,7 +1218,7 @@ class SLM(_Common, ABC):
             "in favor of SLM.set_phase in a future release."
         )
 
-        self.set_phase(phase, phase_correct, settle, **kwargs)
+        return self.set_phase(phase, phase_correct, settle, **kwargs)
 
     # File saving methods
 
@@ -1855,8 +1851,8 @@ class SLM(_Common, ABC):
 
         Returns
         -------
-        numpy.ndarray
-            The point spread function of shape ``padded_shape``.
+        numpy.ndarray OR cupy.ndarray
+            The point spread function of shape ``padded_shape``, on the SLM's backend.
         """
         nearfield = toolbox.pad(self._get_source_amplitude(), padded_shape)
         farfield = np.abs(np.fft.fftshift(np.fft.fft2(np.fft.fftshift(nearfield), norm="ortho")))
@@ -1864,12 +1860,10 @@ class SLM(_Common, ABC):
         return farfield
 
     def get_spot_radius_kxy(self):
-        """
-        Approximates the expected standard deviation radius of farfield spots in the
-        ``"kxy"`` basis based on the near-field amplitude distribution
-        stored in :attr:`source`.
-        For a Gaussian source, this is the :math:`1/e` amplitude radius
-        (:math:`1/e^2` power radius).
+        r"""
+        Approximates the :math:`1/e` amplitude (:math:`1/e^2` power) radius of farfield
+        spots in the ``"kxy"`` basis: :math:`1 / (\pi w)` for a Gaussian source of
+        :math:`1/e` amplitude radius :math:`w =` :attr:`source_radius`.
 
         Returns
         -------
@@ -1878,7 +1872,7 @@ class SLM(_Common, ABC):
         """
         rad_norm = self.source_radius
         rad_pix = rad_norm / np.mean(self.pitch)
-        rad_freq = np.reciprocal(rad_pix)
+        rad_freq = np.reciprocal(np.pi * rad_pix)
 
         psf_kxy = toolbox.convert_vector(
             [rad_freq, rad_freq],

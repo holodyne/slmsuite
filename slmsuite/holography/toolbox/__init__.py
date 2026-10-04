@@ -11,7 +11,7 @@ from slmsuite._plotting import _slmsuite_plt_show
 import warnings
 
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
-from slmsuite.misc.xp import as_backend, get_array_module
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module
 from slmsuite.holography.toolbox._aperture import Aperture as Aperture
 from slmsuite._logging import make_logger
 
@@ -92,7 +92,7 @@ def convert_blaze_radius(*args, **kwargs):
 
     if "slm" in kwargs.keys():
         kwargs["hardware"] = kwargs.pop("slm")
-        warnings.warn("convert_vector(slm=) was renamed convert_vector(hardware=).")
+        warnings.warn("convert_radius(slm=) was renamed convert_radius(hardware=).")
 
     return convert_radius(*args, **kwargs)
 
@@ -207,7 +207,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         True cartesian distance relative to the **experiment plane** in metric units.
         Importantly, :math:`x` and :math:`y` are divided by
         :attr:`~slmsuite.hardware.cameraslms.FourierSLM.mag`,
-        while :math:`z` is multiplied by it.
+        while :math:`z` is divided by its square, the longitudinal magnification
+        between planes of equal refractive index.
 
     Some of these units will not make sense in a system with anisotropic focusing, for
     instance due to cylindrical lenses in the optical train.
@@ -449,7 +450,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         elif from_units in CAMERA_UNITS:
             unit = from_units.split("_")[-1]
             z_ij = vector_z * LENGTH_FACTORS[unit] / np.mean(cam_pitch_um)
-            if "mag_" in from_units: z_ij = z_ij / cameraslm.mag
+            if "mag_" in from_units: z_ij = z_ij * cameraslm.mag ** 2
         elif from_units == "zernike":
             focal_power = vector_z * ((8 * np.pi) / (zernike_scale * zernike_scale))
         else:
@@ -469,7 +470,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         elif to_units in CAMERA_UNITS:
             unit = to_units.split("_")[-1]
             vector_z = z_ij * np.mean(cam_pitch_um) / LENGTH_FACTORS[unit]
-            if "mag_" in to_units: vector_z = vector_z * cameraslm.mag
+            if "mag_" in to_units: vector_z = vector_z / cameraslm.mag ** 2
         elif to_units == "zernike":
             vector_z = focal_power * ((zernike_scale * zernike_scale) / (8 * np.pi))
         else:
@@ -584,6 +585,9 @@ def window_slice(window, shape=None, centered=False, circular=False):
     # Case 0: No window, so return the full slice.
     if window is None:
         slice_ = (slice(None), slice(None))
+    # Case 3: Boolean mask. Tested before cases 1 and 2, as a 2- or 4-row mask has their length.
+    elif _is_mask(window):
+        slice_ = window
     # Case 1: (x, w, y, h) format
     elif len(window) == 4:
         # Windows are indexed like an FFT: the center sits at offset w // 2.
@@ -627,13 +631,18 @@ def window_slice(window, shape=None, centered=False, circular=False):
             x_ind = np.clip(x_ind, 0, shape[1] - 1)
             y_ind = np.clip(y_ind, 0, shape[0] - 1)
         slice_ = (y_ind, x_ind)
-    # Case 3: Boolean numpy array.
+    # Case 4: Any other 2D array passes through as an index array.
     elif np.ndim(window) == 2:
         slice_ = window
     else:
         raise ValueError("Unrecognized format for `window`.")
 
     return slice_
+
+
+def _is_mask(window):
+    """Whether ``window`` is a 2D boolean mask, on any backend."""
+    return getattr(window, "dtype", None) == bool and getattr(window, "ndim", 0) == 2
 
 
 def window_extent(window, padding_frac=0, padding_pix=0):
@@ -664,13 +673,16 @@ def window_extent(window, padding_frac=0, padding_pix=0):
         This result is clipped to be within ``shape`` of the window.
     """
     limits = []
+    is_mask = _is_mask(window)
+    if is_mask:
+        window = as_numpy(window)
 
     # For each axis...
     for a in [0, 1]:
-        if len(window) == 4:  # Handle the (x, w, y, h) case
+        if len(window) == 4 and not is_mask:  # Handle the (x, w, y, h) case
             b = 2*a
             limit = np.array([window[b], window[b] + window[b + 1]])
-        elif len(window) == 2:  # Handle two list case: window = (y_ind, x_ind)
+        elif len(window) == 2 and not is_mask:  # Handle two list case: window = (y_ind, x_ind)
             limit = np.array([np.amin(window[1 - a]), np.amax(window[1 - a]) + 1])
         elif np.ndim(window) == 2:  # Handle the boolean array case
             collapsed = np.where(np.any(window, axis=a))  # Collapse the other axis
@@ -734,8 +746,8 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
 
     if (
         isinstance(grid, (list, tuple))
-        and isinstance(grid[0], (int))
-        and isinstance(grid[1], (int))
+        and isinstance(grid[0], INTEGER_TYPES)
+        and isinstance(grid[1], INTEGER_TYPES)
     ):
         shape = grid
     else:
@@ -889,7 +901,7 @@ def imprint(
     clip : bool
         Whether to clip the imprint region if it exceeds the size of ``matrix``.
         If ``False``, then an error is raised when the size is exceeded.
-        If ``True``, then the out-of-range pixels are instead filled with ``numpy.nan``.
+        If ``True``, then the out-of-range pixels are cropped from the window.
     transform : float or ((float, float), (float, float))
        Passed to :meth:`transform_grid`, operating on the cropped imprint grid.
        This is left as an option such that the user does not have to transform the
@@ -948,12 +960,17 @@ def imprint(
     # share a backend (a GPU slm.grid is often imprinted onto a host matrix), so land
     # the result on the canvas' backend before writing it in.
     if not is_float:
+        grid_slice = as_backend(slice_, get_array_module(x_grid)) if _is_mask(slice_) else slice_
         function = as_backend(
             function(
-                transform_grid((x_grid[slice_], y_grid[slice_]), transform, shift), **kwargs
+                transform_grid((x_grid[grid_slice], y_grid[grid_slice]), transform, shift),
+                **kwargs
             ),
             get_array_module(matrix),
         )
+
+    if _is_mask(slice_):
+        slice_ = as_backend(slice_, get_array_module(matrix))
 
     # Modify the matrix.
     if imprint_operation == "replace":
@@ -1282,8 +1299,8 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
     dx2 = x2 - x0
 
     # Invert the index matrix.
-    colinear = np.abs(np.sum(dx1 * dx2)) == np.sqrt(np.sum(dx1 * dx1) * np.sum(dx2 * dx2))
-    if colinear:
+    cross = float(dx1[0, 0] * dx2[1, 0] - dx1[1, 0] * dx2[0, 0])
+    if abs(cross) <= 1e-9 * float(np.linalg.norm(dx1) * np.linalg.norm(dx2)):
         raise ValueError("Indices must not be colinear.")
 
     J = np.linalg.inv(np.squeeze(np.array([[dx1[0], dx2[0]], [dx1[1], dx2[1]]])))
@@ -1356,8 +1373,10 @@ def smallest_distance(vectors, metric="chebyshev"):
         Defaults to ``"chebyshev"`` which corresponds to
         :meth:`scipy.spatial.distance.chebyshev()`.
         The :math:`\mathcal{O}(N\log(N))` divide and conquer algorithm is only
-        compatible with string inputs allowed by :meth:`scipy.spatial.distance.pdist`.
-        Function arguments will fallback to the brute force approach.
+        compatible with the Minkowski metrics (``"chebyshev"``, ``"cityblock"``,
+        ``"euclidean"``, ``"minkowski"``), whose distance bounds the separation along
+        one axis. Other strings allowed by :meth:`scipy.spatial.distance.pdist` and
+        function arguments fall back to the brute force approach.
 
     Returns
     -------
@@ -1410,7 +1429,9 @@ def smallest_distance(vectors, metric="chebyshev"):
         # pdist needs transpose.
         vectors = vectors.T
 
-        if N < 2*min_div:
+        if N < 2*min_div or distance._METRIC_ALIAS[metric].canonical_name not in (
+            "chebyshev", "cityblock", "euclidean", "minkowski"
+        ):
             return distance.pdist(vectors, metric=metric).min()
         else:
             centroid = np.max(vectors, axis=axis, keepdims=True)
@@ -1461,7 +1482,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
     result = np.copy(format_2vectors(vectors)).astype(float)
 
     # Parse grid
-    if isinstance(grid, (tuple, list)) and all(isinstance(x, int) for x in grid):
+    if isinstance(grid, (tuple, list)) and all(isinstance(x, INTEGER_TYPES) for x in grid):
         shape = grid
     else:
         x_grid, y_grid = _process_grid(grid)
@@ -1762,7 +1783,7 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
     if shift is None:
         shift = (0, 0)
     if shift is True:
-        shift = (-np.mean(x_grid), -np.mean(y_grid))
+        shift = (-float(x_grid.mean()), -float(y_grid.mean()))
     shift = np.squeeze(shift)
 
     # Return the transformed grids.

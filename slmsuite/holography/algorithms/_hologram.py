@@ -1,3 +1,5 @@
+import copy
+
 from slmsuite.holography.algorithms._header import *
 from slmsuite._logging import _Loggable, make_logger
 from slmsuite.holography.algorithms._stats import _HologramStats
@@ -14,7 +16,12 @@ if torch is not None:
 
         def forward(self, input, target):
             input_abs = torch.abs(input)
-            return torch.nn.functional.mse_loss(input_abs / Hologram._norm(input_abs, torch), target, reduction=self.reduction)
+            defined = ~torch.isnan(target)  # Undefined (MRAF) target pixels carry no error.
+            return torch.nn.functional.mse_loss(
+                (input_abs / Hologram._norm(input_abs, torch))[defined],
+                target[defined],
+                reduction=self.reduction,
+            )
 
     class MaxUniformLoss(torch.nn.modules.loss._Loss):
         __constants__ = ['reduction']
@@ -798,9 +805,11 @@ class Hologram(_HologramStats, _Loggable):
         if new_target is None:
             self.target = cp.zeros(shape=self.shape, dtype=self.dtype)
         else:
-            self.target = cp.array(new_target, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
+            self.target = cp.array(new_target, dtype=self.dtype, copy=True)
             cp.abs(self.target, out=self.target)
-            self.target *= 1 / Hologram._norm(self.target)
+            norm = float(Hologram._norm(self.target))
+            if norm > 0:
+                self.target *= 1 / norm
 
         if reset_weights:
             self.reset_weights()
@@ -823,8 +832,11 @@ class Hologram(_HologramStats, _Loggable):
     def get_phase(self, include_propagation=False):
         r"""
         Collects the current nearfield phase from the GPU with :meth:`cupy.ndarray.get()`.
-        Also shifts the :math:`[-\pi, \pi]` range of :meth:`numpy.arctan2()` to :math:`[0, 2\pi]`
-        for faster writing to the SLM (see :meth:`~slmsuite.hardware.slms.slm.SLM.set_phase()`).
+        Also offsets by :math:`\pi`, which shifts the :math:`[-\pi, \pi]` range of
+        :meth:`numpy.arctan2()` to :math:`[0, 2\pi]` for faster writing to the SLM
+        (see :meth:`~slmsuite.hardware.slms.slm.SLM.set_phase()`). The result is not
+        wrapped, so a phase from CG, a quadratic initialization, or an included
+        :attr:`propagation_kernel` can fall outside this range.
 
         Parameters
         ----------
@@ -872,11 +884,7 @@ class Hologram(_HologramStats, _Loggable):
                 f"New weights {new_weights.shape} do not match target shape {self.target.shape}"
             )
 
-        self.weights = cp.array(
-            new_weights,
-            dtype=self.dtype,
-            copy=(False if np.__version__[0] == '1' else None)
-        )
+        self.weights = cp.array(new_weights, dtype=self.dtype, copy=True)
 
     def get_weights(self):
         r"""
@@ -1059,8 +1067,6 @@ class Hologram(_HologramStats, _Loggable):
             amp_torch =         self._get_torch_tensor_from_cupy(self.amp)
             prop_torch =        self._get_torch_tensor_from_cupy(self.propagation_kernel)
 
-            self.optimizer.zero_grad()
-
             if prop_torch is None:
                 nearfield_torch[i0:i1, i2:i3] = amp_torch * torch.exp(1j * phase_torch)
             else:
@@ -1094,7 +1100,6 @@ class Hologram(_HologramStats, _Loggable):
             self.farfield = cp.fft.fftshift(cp.fft.fft2(cp.fft.fftshift(nearfield), norm="ortho"))
             self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
         else:
-            farfield_torch = self._get_torch_tensor_from_cupy(self.farfield)
             farfield_torch = torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(nearfield), norm="ortho"))
             self.farfield = cp.asarray(farfield_torch.detach())
             self.amp_ff = cp.abs(self.farfield, out=self.amp_ff)
@@ -1237,7 +1242,9 @@ class Hologram(_HologramStats, _Loggable):
               `interoperability <https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch>`_.
 
               The objective ``loss`` is expected to be a :class:`torch.nn.Module`
-              and defaults to a complex variant of ``torch.nn.MSELoss()``.
+              and defaults to a complex variant of ``torch.nn.MSELoss()`` that skips
+              undefined (``nan``) target pixels, such as an MRAF noise region, but
+              normalizes the farfield over the whole plane.
               ``loss`` is called in the style of :mod:`pytorch`, using (as arguments)
               the computed ``farfield`` (with gradient tree intact) and
               the ``target`` values for the farfield. Internally, this looks like:
@@ -1255,6 +1262,9 @@ class Hologram(_HologramStats, _Loggable):
               computational values are then replaced with the experimental results.
               This allows optimization of the experimental results using the
               computational gradients (correct to first order) as a guide.
+              Pixels the camera does not see are passed as undefined target pixels, so a
+              ``null_region`` there is not enforced, and a target pixel the camera reads
+              as zero passes no gradient: start from a computational solution.
               Currently, feedback is *not supported* for spot arrays with
               ``"experimental_spot"`` or ``"computational_spot"`` feedback
               (WGS probably works better for such spot array objectives anyway).
@@ -1436,7 +1446,7 @@ class Hologram(_HologramStats, _Loggable):
         # 1.1) Set defaults if not already set.
         for flag, value in ALGORITHM_DEFAULTS[method].items():
             if not flag in self.flags:
-                self.flags[flag] = value
+                self.flags[flag] = copy.deepcopy(value)
         if not "fixed_phase" in self.flags:
             self.flags["fixed_phase"] = False
 
@@ -1583,10 +1593,10 @@ class Hologram(_HologramStats, _Loggable):
         noise_region = cp.isnan(self.target)
 
         zero_region = cp.abs(self.target) == 0
-        if ("zero_factor" in self.flags and self.flags["zero_factor"] != 0):
+        if self.flags.get("zero_factor", 0) != 0:
             Z = int(cp.sum(zero_region))
             # Reallocate on a resized zero region, else the buffer broadcast-fails.
-            if Z > 0 and (not hasattr(self, "zero_weights") or self.zero_weights.shape[0] != Z):
+            if not hasattr(self, "zero_weights") or self.zero_weights.shape[0] != Z:
                 self.zero_weights = cp.zeros((Z,), dtype=self.dtype_complex)
 
         signal_region = cp.logical_not(cp.logical_or(noise_region, zero_region))
@@ -1665,16 +1675,6 @@ class Hologram(_HologramStats, _Loggable):
 
         # Fix amplitude, potentially also fixing the phase.
         if not mraf_enabled:
-            # if ("fixed_phase" in self.flags and self.flags["fixed_phase"]):
-            #     # Set the farfield to the stored phase and updated weights.
-            #     cp.exp(1j * self.phase_ff, out=farfield)
-            #     cp.multiply(farfield, self.weights, out=farfield)
-            # else:
-            #     # Set the farfield amplitude to the updated weights.
-            #     cp.divide(farfield, cp.abs(farfield), out=farfield)
-            #     cp.multiply(farfield, self.weights, out=farfield)
-            #     cp.nan_to_num(farfield, copy=False, nan=0)
-
             if not ("fixed_phase" in self.flags and self.flags["fixed_phase"]) or self.phase_ff is None:
                 self.phase_ff = cp.arctan2(self.farfield.imag, self.farfield.real, out=self.phase_ff)
 
@@ -1687,35 +1687,12 @@ class Hologram(_HologramStats, _Loggable):
             mraf_factor =   self.flags.get("mraf_factor", None)
             where_working = mraf_variables["where_working"]
 
-            if hasattr(self, "zero_weights"):
+            if self.flags.get("zero_factor", 0) != 0:
                 fz = self.farfield[zero_region]
-                self.zero_weights -= self.flags.get("zero_factor", 1) * cp.abs(fz) * fz
+                self.zero_weights -= self.flags["zero_factor"] * cp.abs(fz) * fz
                 self.farfield[zero_region] = self.zero_weights
             else:
                 self.farfield[zero_region] = 0
-
-            # # Handle signal and noise regions.
-            # if ("fixed_phase" in self.flags and self.flags["fixed_phase"]):
-            #     # Set the farfield to the stored phase and updated weights, in the signal region.
-            #     if where_working:
-            #         cp.exp(1j * self.phase_ff, where=signal_region, out=farfield)
-            #         cp.multiply(farfield, self.weights, where=signal_region, out=farfield)
-            #         if mraf_factor is not None: cp.multiply(farfield, mraf_factor, where=noise_region, out=farfield)
-            #     else:
-            #         cp.exp(1j * self.phase_ff, _where=signal_region, out=farfield)
-            #         cp.multiply(farfield, self.weights, _where=signal_region, out=farfield)
-            #         if mraf_factor is not None: cp.multiply(farfield, mraf_factor, _where=noise_region, out=farfield)
-            # else:
-            #     # Set the farfield amplitude to the updated weights, in the signal region.
-            #     if where_working:
-            #         cp.divide(farfield, cp.abs(farfield), where=signal_region, out=farfield)
-            #         cp.multiply(farfield, self.weights, where=signal_region, out=farfield)
-            #         if mraf_factor is not None: cp.multiply(farfield, mraf_factor, where=noise_region, out=farfield)
-            #     else:
-            #         cp.divide(farfield, cp.abs(farfield), _where=signal_region, out=farfield)
-            #         cp.multiply(farfield, self.weights, _where=signal_region, out=farfield)
-            #         if mraf_factor is not None: cp.multiply(farfield, mraf_factor, _where=noise_region, out=farfield)
-            #     cp.nan_to_num(farfield, copy=False, nan=0)
 
             if (
                 not ("fixed_phase" in self.flags and self.flags["fixed_phase"])
@@ -1805,7 +1782,7 @@ class Hologram(_HologramStats, _Loggable):
                 iterations.set_description("loss="+str(self.flags["loss_result"]))
 
             # (B.3) Compute the gradients of the phase pattern with respect to loss.
-            result.backward(retain_graph=True)
+            result.backward()
 
             # (B.4) Step the optimization of phase_torch according to the gradients calculated.
             self.optimizer.step()
@@ -1852,14 +1829,15 @@ class Hologram(_HologramStats, _Loggable):
         elif feedback == "experimental":
             self.measure("knm")  # Make sure data is there.
             img_knm_torch = Hologram._get_torch_tensor_from_cupy(self.img_knm)
+            unmeasured = torch.isnan(img_knm_torch)
+            measured = torch.where(unmeasured, 0, img_knm_torch)
 
-            # Replace the values of the farfield with the measured values, but keep the
-            # gradients using detach().
-            farfield_feedback_torch = farfield_torch.detach()
-            farfield_feedback_torch[:] = img_knm_torch[:]   # TODO: retain phase?
-            farfield_feedback_torch = farfield_feedback_torch.requires_grad_()
+            # Straight-through: the measured amplitude on the computed phase and gradient.
+            farfield_feedback_torch = farfield_torch + (
+                torch.sgn(farfield_torch) * measured - farfield_torch
+            ).detach()
 
-            return loss(farfield_feedback_torch, target_torch)
+            return loss(farfield_feedback_torch, torch.where(unmeasured, torch.nan, target_torch))
         elif feedback == "experimental_spot":
             raise RuntimeError("experimental_spot feedback not yet implemented for CG optimization.")
         elif feedback == "external_spot":
@@ -1874,7 +1852,7 @@ class Hologram(_HologramStats, _Loggable):
             return None
         else:
             if cp == np:
-                return torch.from_numpy(array)
+                return torch.as_tensor(array)
             else:
                 return torch.as_tensor(array, device='cuda')
 
