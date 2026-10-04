@@ -1009,12 +1009,12 @@ class Hologram(_HologramStats, _Loggable):
                     holo.remove_vortices() # This method is slightly expensive, so calling every loop should be avoided.
 
             # The function will be called during the loop.
-            hologram.optimize(..., callback=remove_vortices_callback)
+            hologram.optimize(method="WGS-Kim", ..., callback=remove_vortices_callback)
 
         Important
         ~~~~~~~~~
-        This callback can only be applied during a GS loop. To use for a conjugate
-        gradient hologram, do a single iteration of GS.
+        Each iteration recomputes :attr:`phase_ff` from the farfield, so the removal only
+        persists where the phase is held fixed, as in ``"WGS-Kim"``.
 
         Parameters
         ----------

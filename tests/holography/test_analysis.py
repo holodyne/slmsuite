@@ -220,6 +220,18 @@ def test_take_plot(subtests):
                 analysis.take_plot(images, shape=(2, 2), separate_axes=separate_axes)
             assert shown == ["take_plot"]
 
+    with subtests.test("figsize=None keeps the caller's figure size"):
+        fig = plt.figure(figsize=(3, 5))
+        with _shows():
+            analysis.take_plot(images[:2], shape=(1, 2))
+        np.testing.assert_allclose(fig.get_size_inches(), (3, 5))
+
+    with subtests.test("a scalar figsize sets the larger dimension at the tile aspect"):
+        fig = plt.figure()
+        with _shows():
+            analysis.take_plot(images[:2], shape=(1, 2), figsize=6)
+        np.testing.assert_allclose(fig.get_size_inches(), (6, 3))
+
 
 def test_take_parse_shape(subtests, caplog):
     """Test _take_parse_shape() tiling shape selection."""
@@ -759,6 +771,13 @@ def test_image_aperture_fit(subtests):
     with subtests.test("an unclipped Gaussian beam has no edge"):
         gaussian = np.exp(-2 * ((xx - 250) ** 2 + (yy - 150) ** 2) / 60.0**2)
         assert analysis.image_aperture_fit(gaussian) is None
+
+    with subtests.test("a Gaussian clip is found only above about a tenth of the peak"):
+        r = np.hypot(xx - 250, yy - 150)
+        gaussian = np.exp(-2 * r**2 / 60.0**2)
+        (_, radius) = analysis.image_aperture_fit(gaussian * (r <= 1.1 * 60), edge_level=0.5)
+        assert radius == pytest.approx(1.1 * 60, abs=1)
+        assert analysis.image_aperture_fit(gaussian * (r <= 1.25 * 60)) is None
 
     with subtests.test("the fit is deterministic"):
         (first, second) = (analysis.image_aperture_fit(clipped), analysis.image_aperture_fit(clipped))

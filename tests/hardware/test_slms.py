@@ -261,6 +261,41 @@ class TestSLM:
             )
             s.close()
 
+    def test_set_phase_settle(self, temp_dir, monkeypatch, subtests):
+        """`settle` waits the SLM's settle time when True, or that many seconds when a number."""
+        monkeypatch.chdir(temp_dir)
+        s = self._slm()
+        s.settle_time_s = 100
+        sleeps = []
+        monkeypatch.setattr(slm_module.time, "sleep", sleeps.append)
+
+        cases = [(True, 100), (np.True_, 100), (30, 30), (2.5, 2.5)]
+        for settle, expected in cases:
+            with subtests.test(f"settle={settle!r} waits {expected} s less the render time"):
+                sleeps.clear()
+                s.set_phase(None, settle=settle)
+                assert len(sleeps) == 1 and expected - 1 < sleeps[0] <= expected
+
+        for settle in (False, 0, 0.0):
+            with subtests.test(f"settle={settle!r} does not wait"):
+                sleeps.clear()
+                s.set_phase(None, settle=settle)
+                assert sleeps == []
+
+        with subtests.test("None follows the SLM's settle default"):
+            (s.settle, sleeps[:]) = (True, [])
+            s.set_phase(None)
+            assert len(sleeps) == 1 and 99 < sleeps[0] <= 100
+
+        s.save_phase()
+        for (settle, expected) in [(True, [100]), (2.5, [2.5]), (False, [])]:
+            with subtests.test(f"load_phase(settle={settle!r}) waits {expected}"):
+                sleeps.clear()
+                s.load_phase(None, settle=settle)
+                assert sleeps == expected
+
+        s.close()
+
     def test_set_gamma(self, subtests):
         """The table inverts a measured response; clearing it restores the linear path."""
         s = self._slm(bitdepth=6)

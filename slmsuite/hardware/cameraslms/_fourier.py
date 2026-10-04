@@ -557,9 +557,10 @@ class _FourierCalibration(object):
                 ):
                     warn_str = (
                         "The wavefront calibration is newer (%s) than the Fourier "
-                        "calibration (%s). The Fourier calibration may be stale.",
-                        self.calibrations["wavefront_superpixel"]["__time__"],
-                        self.calibrations["fourier"]["__time__"],
+                        "calibration (%s). The Fourier calibration may be stale." % (
+                            self.calibrations["wavefront_superpixel"]["__time__"],
+                            self.calibrations["fourier"]["__time__"],
+                        )
                     )
                     warnings.warn(warn_str)
                     self.logger.debug(warn_str)     # Also pass this to the logger, but as a debug message to avoid spam.

@@ -247,7 +247,7 @@ class _Viewable:
             try:
                 import pyglet     # noqa: F401
             except ImportError:
-                self.logger.warn("pyglet is not installed; falling back to ipython backend.")
+                self.logger.warning("pyglet is not installed; falling back to ipython backend.")
                 backend = "ipython"
 
         if _ipython() is None:

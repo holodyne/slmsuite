@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from scipy import ndimage
 
 import slmsuite._plotting
-from slmsuite.holography import toolbox
+from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.algorithms import (
     Hologram, SpotHologram, CompressedSpotHologram, MultiplaneHologram, FeedbackHologram
 )
@@ -1433,6 +1433,43 @@ class TestMultiplaneHologram:
             weights = np.array([1.0, 3.0], dtype=np.float32)
             MultiplaneHologram(_multiplane(n=2).holograms, weights=weights)
             np.testing.assert_array_equal(weights, [1.0, 3.0])
+
+    def test_remove_vortices(self, subtests):
+        """The meta hologram removes each child's vortices, as the child itself would."""
+        (yy, xx) = np.mgrid[:64, :64]
+        amp = np.ones((64, 64), dtype=np.float32) / 64
+        mph = MultiplaneHologram([
+            Hologram(target=(np.hypot(yy - c, xx - c) <= 10).astype(np.float32), amp=amp)
+            for c in (20, 44)
+        ])
+        mph.optimize(method="GS", maxiter=3, verbose=False)
+        before = [_np(h.phase_ff).copy() for h in mph.holograms]
+        expected = []
+        for (h, phase) in zip(mph.holograms, before):
+            phase = phase.copy()
+            analysis.image_remove_vortices(phase, _np(h.target) > 0)
+            expected.append(phase)
+
+        with subtests.test("the disk targets hold vortices to remove"):
+            assert all(not np.allclose(b, e) for (b, e) in zip(before, expected))
+
+        with subtests.test("each child matches its own vortex removal"):
+            mph.remove_vortices()
+            for (h, phase) in zip(mph.holograms, expected):
+                np.testing.assert_allclose(_np(h.phase_ff), phase)
+
+        with subtests.test("callable from an optimize callback"):
+            mph.optimize(
+                method="GS", maxiter=2, verbose=False, callback=lambda m: m.remove_vortices()
+            )
+
+        with subtests.test("a spot child is a no-op"):
+            spots = SpotHologram.make_rectangular_array((64, 64), (2, 2), (8, 8), basis="knm")
+            mixed = MultiplaneHologram([_multiplane(n=1).holograms[0], spots])
+            mixed.optimize(method="GS", maxiter=2, verbose=False)
+            spot_phase = _np(spots.phase_ff).copy()
+            mixed.remove_vortices(plot=False)
+            np.testing.assert_array_equal(_np(spots.phase_ff), spot_phase)
 
     def test_nearfield_extract(self, simulated_system_factory, subtests):
         """Extracting the meta phase drops every child's frame, so each iteration re-measures."""

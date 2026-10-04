@@ -16,11 +16,10 @@ class _SettleCalibration(object):
     ### Settle Time Calibration ###
 
     def settle_calibrate(
-        self, 
-        vector=(.005, .005), 
-        size=None, 
-        times=None, 
-        settle_time_s=None, 
+        self,
+        vector=(.005, .005),
+        size=None,
+        times=None,
         autoexpose=True,
         plot=0
     ):
@@ -43,13 +42,12 @@ class _SettleCalibration(object):
             List of times to sweep over in search of the settle time.
             If ``None``, defaults to 21 points over one second.
             If an integer, defaults to that given number of points over one second.
-        settle_time_s : float OR None
-            Time between measurements to allow the SLM to re-settle. If ``None``, uses the
-            current default in the SLM.
+            The SLM is given the longest of these times to settle between measurements.
         autoexpose : bool OR dict
             Whether or not to automatically set the camera exposure on the projected
             array. If a dictionary is passed, it is passed to
             :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexpose()`.
+            The camera's exposure is restored afterward.
         plot : int OR bool
             If ``>= 1``, shows a debug plot with the exponential fit.
             If ``< 0``, also suppresses the progress bar.
@@ -67,85 +65,83 @@ class _SettleCalibration(object):
             )
         size = int(size)
 
-        # Create mask.
-        mask = analysis.take(
-            self.cam.shape, point, size, centered=True, clip=True, return_mask=True
-        )
-
-        # Optional step -- expose
-        self.slm.set_phase(blaze, phase_correct=False, settle=settle_time_s)
-        
-        if autoexpose or isinstance(autoexpose, dict):
-            self.cam.autoexpose(
-                window=mask,
-                **(autoexpose if isinstance(autoexpose, dict) else {})
-            )
-        exposure_s = self.cam.get_exposure()
-
-        self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
-
-        # If desired, plot to show how the unblazed state compares with the blazed state.
-        if plot >= 2:
-            fig, ax = plt.subplots()
-            self.cam.plot(ax=ax, title="Zeroth Order (phase=None)")
-            ax.contour(mask, levels=[0.5], colors="r")
-
-            _slmsuite_plt_show("settle_calibrate_none")
-
-            self.slm.set_phase(blaze, phase_correct=False, settle=settle_time_s)
-
-            fig, ax = plt.subplots()
-            self.cam.plot(ax=ax, title="Target (phase=blaze)")
-            ax.contour(mask, levels=[0.5], colors="r")
-
-            _slmsuite_plt_show("settle_calibrate_target")
-            
-            self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
-            
         # Parse times.
         if times is None:
             times = 21
         if np.isscalar(times):
             times = np.linspace(0, 1, int(times), endpoint=True)
         times = np.ravel(times)
+        settle_time_s = float(np.max(times))
 
-        # Parse settle_time_s.
-        if settle_time_s is None:
-            settle_time_s = self.slm.settle_time_s
-        settle_time_s = float(settle_time_s)
+        # Create mask.
+        mask = analysis.take(
+            self.cam.shape, point, size, centered=True, clip=True, return_mask=True
+        )
 
-        results = 0 * times
-        results_set_phase_time = 0 * times
-        results_get_image_time = 0 * times
+        exposure_prev = self.cam.get_exposure()
+        try:
+            # Optional step -- expose
+            self.slm.set_phase(blaze, phase_correct=False, settle=settle_time_s)
 
-        I = np.arange(len(times))
-        if True:
+            if autoexpose or isinstance(autoexpose, dict):
+                self.cam.autoexpose(
+                    window=mask,
+                    **(autoexpose if isinstance(autoexpose, dict) else {})
+                )
+            exposure_s = self.cam.get_exposure()
+
+            self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
+
+            # If desired, plot to show how the unblazed state compares with the blazed state.
+            if plot >= 2:
+                fig, ax = plt.subplots()
+                self.cam.plot(ax=ax, title="Zeroth Order (phase=None)")
+                ax.contour(mask, levels=[0.5], colors="r")
+
+                _slmsuite_plt_show("settle_calibrate_none")
+
+                self.slm.set_phase(blaze, phase_correct=False, settle=settle_time_s)
+
+                fig, ax = plt.subplots()
+                self.cam.plot(ax=ax, title="Target (phase=blaze)")
+                ax.contour(mask, levels=[0.5], colors="r")
+
+                _slmsuite_plt_show("settle_calibrate_target")
+
+                self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
+
+            results = np.zeros(len(times))
+            results_set_phase_time = np.zeros(len(times))
+            results_get_image_time = np.zeros(len(times))
+
+            I = np.arange(len(times))
             np.random.shuffle(I)
 
-        iterations = tqdm(I) if plot >= 0 else I
+            iterations = tqdm(I) if plot >= 0 else I
 
-        # Collect data
-        self.cam.flush()
-        
-        for i in iterations:
-            # Reset the pattern and wait for it to settle
-            self.slm.set_phase(None, settle=False, phase_correct=False)
-            time.sleep(settle_time_s)
+            # Collect data
+            self.cam.flush()
 
-            # Turn on the pattern and wait for time t
-            t0 = time.perf_counter()
-            self.slm.set_phase(blaze, settle=False, phase_correct=False)
-            t1 = time.perf_counter()
-            time.sleep(times[i])
-            t2 = time.perf_counter()
-            image = self.cam.get_image()
-            t3 = time.perf_counter()
+            for i in iterations:
+                # Reset the pattern and wait for it to settle
+                self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
 
-            results[i] = float(np.nansum(analysis.take(
-                image, point, size, centered=True, clip=True
-            )))
-            results_set_phase_time[i] = t1 - t0
-            results_get_image_time[i] = t3 - t2
+                # Turn on the pattern and wait for time t
+                t0 = time.perf_counter()
+                self.slm.set_phase(blaze, settle=False, phase_correct=False)
+                t1 = time.perf_counter()
+                time.sleep(times[i])
+                t2 = time.perf_counter()
+                image = self.cam.get_image()
+                t3 = time.perf_counter()
+
+                results[i] = float(np.nansum(analysis.take(
+                    image, point, size, centered=True, clip=True
+                )))
+                results_set_phase_time[i] = t1 - t0
+                results_get_image_time[i] = t3 - t2
+        finally:
+            self.cam.set_exposure(exposure_prev)
 
         self.calibrations["settle"] = {
             "data" : np.array(results),

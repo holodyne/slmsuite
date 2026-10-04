@@ -695,7 +695,7 @@ class TestCamera:
             np.testing.assert_allclose(im.get_clim(), (0, 250))
             plt.close("all")
 
-    def test_autoexpose(self, camera, subtests):
+    def test_autoexpose(self, camera, monkeypatch, subtests):
         """autoexpose() converges on one exposure and pins the image to set_fraction."""
         with subtests.test("the result does not depend on the starting exposure"):
             camera.set_exposure(0.01)
@@ -708,6 +708,18 @@ class TestCamera:
             camera.autoexpose(set_fraction=0.3, verbose=False)
             peak = np.max(camera.get_image())
             assert peak == pytest.approx(0.3 * camera.bitresolution, rel=0.2)
+
+        with subtests.test("wider caller bounds never exceed the camera's own"):
+            written = []
+            write = camera._set_exposure_hw
+            record = lambda e: (written.append(e), write(e))[1]
+            monkeypatch.setattr(camera, "_set_exposure_hw", record)
+            monkeypatch.setattr(camera, "exposure_bounds_s", (1e-3, 1e-2))
+            for (bounds, metric) in (((1e-6, 10), 0.0), ((1e-6, 1e-4), 1e9)):
+                camera.set_exposure(5e-3)
+                written.clear()
+                camera.autoexpose(exposure_bounds_s=bounds, metric=lambda _: metric, verbose=False)
+                assert 1e-3 <= min(written) and max(written) <= 1e-2, bounds
 
     def test_autofocus(self, camera, slm, monkeypatch, subtests):
         """autofocus() recovers a known Zernike defocus and leaves the caller's sweep alone."""

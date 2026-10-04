@@ -1166,12 +1166,12 @@ class TestFourierSLM:
                 offset.pixel_calibrate(levels=2, periods=[6], orders=1, directions="x", plot=False)
 
         with subtests.test("test_index booleans"):
-            # True tests every point of the sweep; False is not a test at all.
+            # True tests the first len(levels) points of the sweep; False is not a test at all.
             for true in (True, np.True_):        # numpy booleans are not bool instances.
                 result = fs.pixel_calibrate(
-                    levels=2, periods=1, orders=1, directions="x", test_index=true, plot=False
+                    levels=4, periods=1, orders=1, directions="x", test_index=true, plot=False
                 )
-                assert len(result["indices"]) == 4
+                np.testing.assert_array_equal(result["indices"], np.arange(4))
             result = fs.pixel_calibrate(
                 levels=2, periods=1, orders=1, directions="x", test_index=False, plot=False
             )
@@ -1492,16 +1492,32 @@ class TestFourierSLM:
             assert result["settle_time"] > np.max(times)
             assert "outside the swept range" in caplog.text
 
-    def test_settle_calibrate(self, fourierslm_calibrated):
+    def test_settle_calibrate(self, fourierslm_calibrated, monkeypatch, subtests):
         """The sweep writes both the raw response and the fit into the calibration."""
         fs = fourierslm_calibrated
-        calibration = fs.settle_calibrate(times=3, settle_time_s=0, plot=-1)
+        fs.cam.set_exposure(0.1)
+        times = [0, 0.01, 0.02]
+        settles = []
+        set_phase = fs.slm.set_phase
+        def spy(phase, *args, settle=None, **kwargs):
+            settles.append(settle)
+            return set_phase(phase, *args, settle=settle, **kwargs)
+        monkeypatch.setattr(fs.slm, "set_phase", spy)
 
-        assert calibration is fs.calibrations["settle"]
-        np.testing.assert_allclose(calibration["times"], [0, 0.5, 1])
-        assert len(calibration["data"]) == 3
-        assert np.all(calibration["data"] > 0), "the blazed spot should reach the camera"
-        assert {"settle_time", "relax_time", "communication_time"} <= set(calibration)
+        calibration = fs.settle_calibrate(times=times, plot=-1)
+
+        with subtests.test("the raw response and the fit are stored"):
+            assert calibration is fs.calibrations["settle"]
+            np.testing.assert_allclose(calibration["times"], times)
+            assert len(calibration["data"]) == 3
+            assert np.all(calibration["data"] > 0), "the blazed spot should reach the camera"
+            assert {"settle_time", "relax_time", "communication_time"} <= set(calibration)
+
+        with subtests.test("every reset settles for the longest probed time"):
+            assert set(settles) == {max(times), False}
+
+        with subtests.test("the camera exposure is restored"):
+            assert fs.cam.get_exposure() == pytest.approx(0.1)
 
     def test_fourier_calibrate_geometries(
         self, simulated_system, simulated_system_name, simulated_system_source,

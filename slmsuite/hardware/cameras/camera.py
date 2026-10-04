@@ -648,7 +648,7 @@ class Camera(_Common, ABC):
         self._exposure_s = float(self._get_exposure_hw())
         return self._exposure_s
 
-    def set_exposure(self, exposure_s, suppress_warning=False):
+    def set_exposure(self, exposure_s):
         """
         Set the frame integration time in seconds.
         Used in :meth:`.autoexpose()`.
@@ -657,10 +657,6 @@ class Camera(_Common, ABC):
         ----------
         exposure_s : float
             The integration time in seconds.
-        suppress_warning : bool
-            If ``True``, suppresses the warning when the 
-            requested exposure does not match the realized exposure (the warning is demoted to debug).
-            Otherwise, a warning is logged if the exposures differ by more than 1%.
 
         Returns
         -------
@@ -685,7 +681,7 @@ class Camera(_Common, ABC):
 
         # Report to the logger.
         if not np.isclose(self._exposure_s, exposure_s): 
-            if not suppress_warning and abs(self._exposure_s - exposure_s) / self._exposure_s > 0.01:
+            if abs(self._exposure_s - exposure_s) / self._exposure_s > 0.01:
                 warn = self.logger.warning
             else:
                 warn = self.logger.debug
@@ -1658,9 +1654,9 @@ class Camera(_Common, ABC):
         tol : float
             Fractional tolerance for exposure adjustment.
         exposure_bounds_s : (float, float) OR None
-            Shortest and longest allowable integration in seconds. If ``None``, defaults to
-            :attr:`exposure_bounds_s`. If this attribute was not set (or not available on
-            a particular camera), then ``None`` instead defaults to unbounded.
+            Shortest and longest allowable integration in seconds, always within
+            :attr:`exposure_bounds_s` when that attribute is set. If ``None``, defaults to
+            :attr:`exposure_bounds_s`, or to unbounded if it is not set.
         window : array_like OR None
             Passed to :meth:`~slmsuite.holography.toolbox.window_slice()`.
             If ``None``, the full camera frame will be used.
@@ -1693,10 +1689,9 @@ class Camera(_Common, ABC):
 
         # Parse exposure_bounds_s
         if exposure_bounds_s is None:
-            if self.exposure_bounds_s is None:
-                exposure_bounds_s = (0, np.inf)
-            else:
-                exposure_bounds_s = self.exposure_bounds_s
+            exposure_bounds_s = (0, np.inf)
+        if self.exposure_bounds_s is not None:
+            exposure_bounds_s = tuple(np.clip(exposure_bounds_s, *self.exposure_bounds_s))
 
         # Parse window
         sliced = window_slice(window)
@@ -1739,7 +1734,7 @@ class Camera(_Common, ABC):
                 # Otherwise, prepare to do so next loop.
                 is_railed = True
 
-            self.set_exposure(exp, suppress_warning=True)   # Don't warn about differing exposures.
+            self._set_exposure_hw(exp)
             exp = self.get_exposure()
             if exp_prev == exp:
                 # If already railed, handle failure cases (TODO).

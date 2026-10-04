@@ -15,6 +15,9 @@ class _PixelCalibration(object):
     """
     ### Pixel Crosstalk and Gamma Calibration ###
 
+    # Phase range, in cycles, that a gamma sweep ought to resolve.
+    _PIXEL_CAL_EXPECTED_CYCLES = 4
+
     def pixel_calibrate(
         self,
         levels=32,
@@ -102,8 +105,8 @@ class _PixelCalibration(object):
             Project the grating for only a subset of points in the full sweep, for testing
             purposes. Return the results of the test instead of storing a calibration.
             Indices are taken modulo the length of the sweep.
-            ``True`` tests the first ``levels`` indices; this is useful to get the full sweep range for autoexposure.
-            ``None`` (default) or ``False`` runs the full sweep.
+            ``True`` tests the first ``levels`` indices, which span the full range of the
+            sweep, as for autoexposure. ``None`` (default) or ``False`` runs the full sweep.
         window
             If not ``None``, the pixel calibration is only done over the region of the SLM
             defined by ``window``.
@@ -150,9 +153,13 @@ class _PixelCalibration(object):
 
         if N == 0:
             raise ValueError("No valid levels specified.")
-        if N < 8:
+
+        # The fit is unwrapped, resolving at most half a cycle between sampled levels.
+        cycles = (N - 1) / 2
+        if cycles < self._PIXEL_CAL_EXPECTED_CYCLES / self.slm.phase_scaling:
             self.logger.warning(
-                "%s levels might not be enough to resolve the phase variation. Sample more levels.", N
+                "%s levels resolve a phase range of only %.1f cycles; an SLM with a "
+                "mis-set phase table can span more. Sample more levels.", N, cycles,
             )
 
         # Parse directions.
@@ -351,7 +358,7 @@ class _PixelCalibration(object):
             self.cam.plot(canvas, title="Order integration mask")
             _slmsuite_plt_show(name="pixel_calibrate_masks")
 
-        # ``True`` scans the whole sweep; ``False`` is not a test at all.
+        # ``True`` scans the first ``len(levels)`` indices; ``False`` is not a test at all.
         if np.ndim(test_index) == 0 and np.asarray(test_index).dtype == bool:
             test_index = np.arange(len(levels)) if test_index else None
 
@@ -724,12 +731,16 @@ class _PixelCalibration(object):
         if plot >= 1:
             fig, ax = plt.subplots(1, 1)
 
+            if self.slm.gamma is not None:
+                self.slm.plot_gamma(
+                    s=100, marker="o", facecolors='none', edgecolors="k",
+                    ax=ax, zorder=10, label="Previous gamma"
+                )
             self.slm.plot_gamma(
-                s=100, marker="o", facecolors='none', edgecolors="k", 
-                ax=ax, zorder=10, label="Previous gamma"
+                self.slm._interpolate_gamma(gamma, levels), ax=ax, zorder=20, label="New gamma"
             )
-            self.slm.plot_gamma(gamma, ax=ax, zorder=20, label="New gamma")
-            plt.legend()
+            ax.set_title(f"Pixel Calibration Gamma (R^2: {r_squared:.3f})")
+            ax.legend()
 
             _slmsuite_plt_show(name="pixel_calibration_process_fit")
 

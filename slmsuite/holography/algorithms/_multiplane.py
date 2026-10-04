@@ -637,6 +637,7 @@ class MultiplaneHologram(Hologram):
         cp.multiply( self._batched_farfield, self._batched_child_weights,
                     out=self._batched_farfield)
 
-    def _remove_vortices(self):
+    def remove_vortices(self, plot=False):
+        """Removes each child's farfield phase vortices; see :meth:`Hologram.remove_vortices()`."""
         for h in self.holograms:
-            h._remove_vortices()
+            h.remove_vortices(plot=plot)

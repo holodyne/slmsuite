@@ -5,7 +5,6 @@ Abstract functionality for SLMs.
 import os
 import time
 
-from lark import logger
 import numpy as np
 
 try:
@@ -256,7 +255,7 @@ class SLM(_Common, ABC):
                     "cupy is installed, but gpu=False, so this SLM runs (slowly) on the host (numpy)."
                 )
             else:
-                logger.info("Using GPU (cupy) backend.")
+                self.logger.info("Using GPU (cupy) backend.")
 
         # Phase and display caches for user reference.
         self.phase = self.xp.zeros(self.shape, dtype=np.float32)
@@ -950,7 +949,7 @@ class SLM(_Common, ABC):
         self,
         phase,
         phase_correct: bool = None,
-        settle: bool = None,
+        settle: bool | float = None,
         execute: bool = None,
         block: bool = None,
         **kwargs
@@ -1058,10 +1057,11 @@ class SLM(_Common, ABC):
             :attr:`~slmsuite.hardware.slms.slm.SLM.source` ``["phase"]``. If
             ``None``, defaults to :attr:`phase_correct` (which defaults to
             ``True``).
-        settle : bool OR None
+        settle : bool OR float OR None
             Whether to sleep for
-            :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`. If ``None``,
-            defaults to :attr:`settle` (which defaults to ``False``).
+            :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`, or any number (integers
+            included) of seconds to sleep instead. If ``None``, defaults to :attr:`settle`
+            (which defaults to ``False``).
             If ``block=False``, this parameter is ignored.
         execute : bool OR None
             Whether to actually send the image to the SLM. Most SLMs do not
@@ -1198,8 +1198,10 @@ class SLM(_Common, ABC):
         if settle is None:
             settle = self.settle
         if block and settle:
+            if isinstance(settle, (bool, np.bool_)):
+                settle = self.settle_time_s
             time_elapsed = time.perf_counter() - t0
-            time_remaining = self.settle_time_s - time_elapsed
+            time_remaining = float(settle) - time_elapsed
             if time_remaining > 0:
                 time.sleep(time_remaining)
 
@@ -1267,8 +1269,9 @@ class SLM(_Common, ABC):
             Full path to the phase file. If ``None``, will
             search the current directory for a file with a name like
             :attr:`name` + ``'-phase'``.
-        settle : bool
-            Whether to sleep for :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`.
+        settle : bool OR float
+            Whether to sleep for :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`, or any
+            number (integers included) of seconds to sleep instead.
 
         Returns
         -------
@@ -1311,7 +1314,10 @@ class SLM(_Common, ABC):
 
         # Optional delay.
         if settle:
-            time.sleep(self.settle_time_s)
+            if isinstance(settle, (bool, np.bool_)):
+                settle = self.settle_time_s
+            if float(settle) > 0:
+                time.sleep(float(settle))
 
         return file_path
 
@@ -1628,7 +1634,10 @@ class SLM(_Common, ABC):
         If no rolloff is found (for instance, for an unclipped Gaussian beam), the aperture
         is instead centered by ``method``, and the pupil is placed where a Gaussian's power
         falls to ``edge_level`` of its peak (:math:`\sqrt{\ln(1 / \text{edge\_level}) / 2}`
-        source radii, :math:`\approx 1.07` for the default).
+        source radii, :math:`\approx 1.07` for the default). A clip where the power has
+        already fallen below about a tenth of its peak (for a Gaussian, beyond about 1.1
+        source radii) is not found as a rolloff; set such an aperture with
+        :meth:`set_aperture` instead.
 
         If no source amplitude has been measured, the aperture is set to a circular
         aperture of source radius equal to a quarter of the smallest SLM extent.

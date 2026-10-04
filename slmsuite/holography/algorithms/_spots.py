@@ -136,14 +136,8 @@ class _AbstractSpotHologram(FeedbackHologram):
             ),
         )
 
-    def remove_vortices(self):
+    def remove_vortices(self, plot=False):
         """Spot holograms do not need to consider vortices."""
-        pass
-
-    def _remove_vortices(self, *args, **kwargs):
-        """Spot holograms do not need to consider vortices (private entry point used by
-        MultiplaneHologram). Overrides the base Hologram implementation, which would
-        otherwise run real vortex removal on spot children."""
         pass
 
     def refine_offset(self, img=None, basis="kxy", force_affine=True, plot=False):
@@ -247,9 +241,9 @@ class _AbstractSpotHologram(FeedbackHologram):
                     - self.cameraslm.ijcam_to_kxyslm((0, 0))
                 )
                 self.spot_kxy[[0, 1], :] = self.spot_kxy[[0, 1], :] - shift_kxy
-                distance_kxy = np.linalg.norm(shift_kxy, axis=1)
+                distance_kxy = np.linalg.norm(shift_kxy, axis=0)
                 self.logger.info(
-                    "Refine offset: avergage shift %f kxy distance.",
+                    "Refine offset: average shift %f kxy distance.",
                     float(distance_kxy.mean())
                 )
 
@@ -264,7 +258,7 @@ class _AbstractSpotHologram(FeedbackHologram):
                     )
                     self.set_target(reset_weights=True)
                     shift_knm = self.spot_knm - before
-                    distance_knm = np.linalg.norm(shift_knm, axis=1)
+                    distance_knm = np.linalg.norm(shift_knm, axis=0)
                     self.logger.info(
                         "Refine offset: average shift %f knm pixel distance.",
                         float(distance_knm.mean()),
@@ -283,7 +277,7 @@ class _AbstractSpotHologram(FeedbackHologram):
                 # Modify camera targets. Don't modify any k-vectors.
                 self.spot_ij = self.spot_ij.astype(float)
                 self.spot_ij[[0, 1]] += shift_vectors
-                distance_ij = np.linalg.norm(shift_vectors, axis=1)
+                distance_ij = np.linalg.norm(shift_vectors, axis=0)
 
                 self.logger.info(
                     "Refine offset: average shift %f ij pixel distance.",

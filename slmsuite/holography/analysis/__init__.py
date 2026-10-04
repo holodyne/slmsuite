@@ -270,8 +270,7 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True, figsize=None):
     figsize : (float, float) OR float OR None
         Size of the figure in inches. A scalar is interpreted as the larger dimension,
         with the other dimension set by the aspect ratio of the tiled images.
-        If ``None``, the current figure is reshaped to the aspect ratio of the tiled
-        images, preserving its area.
+        If ``None``, the current figure keeps its size.
     """
     # Gather helper variables and set the min and max of all the subplots.
     (img_count, sy, sx) = np.shape(images)
@@ -279,16 +278,12 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True, figsize=None):
 
     images = as_numpy(images)
 
-    # Shape the figure to the aspect ratio of the tiled images such that the
-    # (equal-aspect) images fill the figure instead of being letterboxed.
-    fig = plt.gcf()
-    aspect = float(N * sx) / float(M * sy)
-    if figsize is None:                                 # Preserve the current area.
-        area = np.prod(fig.get_size_inches())
-        figsize = (np.sqrt(area * aspect), np.sqrt(area / aspect))
-    elif np.isscalar(figsize):                          # Scalar sets the larger dimension.
-        figsize = (figsize, figsize / aspect) if aspect > 1 else (figsize * aspect, figsize)
-    fig.set_size_inches(figsize)
+    # Resize the figure only if a size is given.
+    if figsize is not None:
+        aspect = float(N * sx) / float(M * sy)
+        if np.isscalar(figsize):                        # Scalar sets the larger dimension.
+            figsize = (figsize, figsize / aspect) if aspect > 1 else (figsize * aspect, figsize)
+        plt.gcf().set_size_inches(figsize)
 
     if separate_axes:
         sx = sx / 2.0 - 0.5
@@ -1408,11 +1403,14 @@ def image_aperture_fit(
     (numpy.ndarray, float) OR None
         The ``center`` of the circle as an ``(x, y)`` pixel coordinate, and its ``radius`` in
         pixels at ``edge_level``. ``None`` if no aperture edge is found, for instance for an
-        unclipped Gaussian beam.
+        unclipped Gaussian beam, or one clipped where its power is below about a tenth of its
+        peak.
     """
     image = np.asarray(as_numpy(image), dtype=float)
     if image.ndim != 2:
         raise ValueError(f"image_aperture_fit expects a 2D image; got shape {image.shape}.")
+    image = np.nan_to_num(image, nan=0, posinf=0, neginf=0)
+    min_points = max(int(min_points), 3)
     if not 0 < edge_level < 1:
         raise ValueError(f"edge_level must be in (0, 1); got {edge_level}.")
     (h, w) = image.shape
