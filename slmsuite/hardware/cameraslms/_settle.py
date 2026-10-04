@@ -81,23 +81,26 @@ class _SettleCalibration(object):
             )
         exposure_s = self.cam.get_exposure()
 
-        if plot >= 2:
-            fig, ax = plt.subplots()
-            self.cam.plot(ax=ax, title="Target (phase=blaze)")
-            ax.contour(mask, levels=[0.5], colors="r")
-
-            _slmsuite_plt_show("settle_calibrate_target")
-            
         self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
 
+        # If desired, plot to show how the unblazed state compares with the blazed state.
         if plot >= 2:
             fig, ax = plt.subplots()
             self.cam.plot(ax=ax, title="Zeroth Order (phase=None)")
             ax.contour(mask, levels=[0.5], colors="r")
 
             _slmsuite_plt_show("settle_calibrate_none")
-            
 
+            self.slm.set_phase(blaze, phase_correct=False, settle=settle_time_s)
+
+            fig, ax = plt.subplots()
+            self.cam.plot(ax=ax, title="Target (phase=blaze)")
+            ax.contour(mask, levels=[0.5], colors="r")
+
+            _slmsuite_plt_show("settle_calibrate_target")
+            
+            self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
+            
         # Parse times.
         if times is None:
             times = 21
@@ -110,32 +113,45 @@ class _SettleCalibration(object):
             settle_time_s = self.slm.settle_time_s
         settle_time_s = float(settle_time_s)
 
-        results = []
+        results = 0 * times
+        results_set_phase_time = 0 * times
+        results_get_image_time = 0 * times
 
-        iterations = tqdm(times) if plot >= 0 else times
+        I = np.arange(len(times))
+        if True:
+            np.random.shuffle(I)
+
+        iterations = tqdm(I) if plot >= 0 else I
 
         # Collect data
         self.cam.flush()
         
-        for t in iterations:
-
+        for i in iterations:
             # Reset the pattern and wait for it to settle
             self.slm.set_phase(None, settle=False, phase_correct=False)
             time.sleep(settle_time_s)
 
             # Turn on the pattern and wait for time t
+            t0 = time.perf_counter()
             self.slm.set_phase(blaze, settle=False, phase_correct=False)
-            time.sleep(t)
-
+            t1 = time.perf_counter()
+            time.sleep(times[i])
+            t2 = time.perf_counter()
             image = self.cam.get_image()
-            results.append(float(np.nansum(analysis.take(
+            t3 = time.perf_counter()
+
+            results[i] = float(np.nansum(analysis.take(
                 image, point, size, centered=True, clip=True
-            ))))
+            )))
+            results_set_phase_time[i] = t1 - t0
+            results_get_image_time[i] = t3 - t2
 
         self.calibrations["settle"] = {
-            "times" : times,
             "data" : np.array(results),
+            "times" : times,
             "exposure_s" : exposure_s,
+            "set_phase_time" : np.array(results_set_phase_time),
+            "get_image_time" : np.array(results_get_image_time)
         }
         self.calibrations["settle"].update(self._get_calibration_metadata())
 
@@ -206,16 +222,24 @@ class _SettleCalibration(object):
             x_interp = np.linspace(min(times), max(times), 100)
             y_interp = exponential(x_interp, *params)
 
-            title = (
-                f"Communication time: {int((1e3*com_time))} ms\n"
-                f"$1/e$ Relaxation time: {int((1e3*relax_time))} ms\n"
+            plt.plot(times, results, "k.", markersize=7, label='Measurement')
+            plt.plot(x_interp, y_interp, "--", linewidth=2, color='red', label='Fit')
+
+            labels = (
+                f"Communication time: {int((1e3*com_time))} ms",
+                # f"$1/e$ Relaxation time: {int((1e3*relax_time))} ms",
                 f"Suggested $1/e^4$ Settle time: {int((1e3*settle_time))} ms"
             )
-            plt.plot(x_interp, y_interp, "--", linewidth=2, color='red', label='interpolation')
-            plt.plot(times, results, "k.", markersize=7, label='capta')
+            times = [com_time, settle_time]
+            style = ["-", "--"]
+
+            for l, t, s in zip(labels, times, style):
+                plt.axvline(x=t, alpha=0.5, linestyle=s, zorder=-1, label=l)
+
             plt.xlabel("Time [sec]")
             plt.ylabel("Signal [a.u.]")
-            plt.title(title)
+            plt.legend()
+            
             _slmsuite_plt_show(name="settle_calibration_process")
 
         # Update dictionary with results. FUTURE: Return error bars?

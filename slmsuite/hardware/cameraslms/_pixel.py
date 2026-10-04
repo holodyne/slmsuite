@@ -15,9 +15,6 @@ class _PixelCalibration(object):
     """
     ### Pixel Crosstalk and Gamma Calibration ###
 
-    # Phase range, in cycles, that a gamma sweep ought to resolve.
-    _PIXEL_CAL_EXPECTED_CYCLES = 4
-
     def pixel_calibrate(
         self,
         levels=32,
@@ -105,7 +102,8 @@ class _PixelCalibration(object):
             Project the grating for only a subset of points in the full sweep, for testing
             purposes. Return the results of the test instead of storing a calibration.
             Indices are taken modulo the length of the sweep.
-            ``True`` tests every index; ``None`` (default) or ``False`` runs the full sweep.
+            ``True`` tests the first ``levels`` indices; this is useful to get the full sweep range for autoexposure.
+            ``None`` (default) or ``False`` runs the full sweep.
         window
             If not ``None``, the pixel calibration is only done over the region of the SLM
             defined by ``window``.
@@ -152,13 +150,9 @@ class _PixelCalibration(object):
 
         if N == 0:
             raise ValueError("No valid levels specified.")
-
-        # The fit is unwrapped, resolving at most half a cycle between sampled levels.
-        cycles = (N - 1) / 2
-        if cycles < self._PIXEL_CAL_EXPECTED_CYCLES / self.slm.phase_scaling:
+        if N < 8:
             self.logger.warning(
-                "%s levels resolve a phase range of only %.1f cycles; an SLM with a "
-                "mis-set phase table can span more. Sample more levels.", N, cycles,
+                "%s levels might not be enough to resolve the phase variation. Sample more levels.", N
             )
 
         # Parse directions.
@@ -359,7 +353,7 @@ class _PixelCalibration(object):
 
         # ``True`` scans the whole sweep; ``False`` is not a test at all.
         if np.ndim(test_index) == 0 and np.asarray(test_index).dtype == bool:
-            test_index = np.arange(length) if test_index else None
+            test_index = np.arange(len(levels)) if test_index else None
 
         show_tqdm = test_index is None
 
@@ -378,6 +372,8 @@ class _PixelCalibration(object):
             autoexposure_results = []
 
         if show_tqdm: iterations = tqdm(range(length))
+
+        self.cam.flush()
 
         # Big sweep.
         index = 0
@@ -456,24 +452,39 @@ class _PixelCalibration(object):
 
                         data[i,j,k,l,:] = np.sum(regions, axis=(1,2))
 
-                        # (3a) Update the current index of the sweep, and maybe update the progress bar.
-                        if show_tqdm: iterations.update()
-                        index += 1
-
-                        # (3b) Maybe plot the results for this point.
+                        # (3a) Maybe plot the results for this point.
                         if plot >= 1:
-                            self.cam.plot(
-                                title=(
-                                    f"Pixel Calibrate index {index} "
-                                    f"at direction {('x', 'y')[i]}, period {periods[j]}, "
-                                    f"levels {levels[k]}, {levels[l]}"
-                                )
+                            fig, axs = plt.subplots(1, 2, figsize=(12,6))
+                            self.slm.plot(
+                                ax=axs[0],
                             )
+                            self.cam.plot(
+                                ax=axs[1],
+                            )
+
+                            fig.suptitle(
+                                f"Pixel Calibrate index {index} "
+                                f"(direction={('x', 'y')[i]}, period={periods[j]} pix, "
+                                f"a={levels[k]}, b={levels[l]})"
+                            )
+
+                            canvas = np.zeros(self.cam.shape)
+                            canvas = analysis.take(
+                                images=canvas,
+                                vectors=order_ij[j + P*i],
+                                size=integration_size,
+                                return_mask=True,
+                            )
+                            axs[1].contour(canvas, levels=[0.5], colors="r")
                             _slmsuite_plt_show(name="pixel_calibrate_result")
 
                             # Turn plotting off after the first test index.
                             if test_index is None:
                                 plot = 0
+
+                        # (3b) Update the current index of the sweep, and maybe update the progress bar.
+                        if show_tqdm: iterations.update()
+                        index += 1
 
                         # (3c) Handle test index results collection and maybe autoexpose adjustment.
                         if test_index is not None:

@@ -2,6 +2,8 @@
 Unit tests for the SLM base class and its subclasses.
 """
 import os
+import ctypes
+import logging
 import warnings
 
 import pytest
@@ -324,35 +326,35 @@ class TestSLM:
         levels = np.arange(32) * (B / 32)
 
         with subtests.test("a subsampled linear response is recovered at every level"):
-            np.testing.assert_allclose(s.interpolate_gamma(levels / B, levels), ideal)
+            np.testing.assert_allclose(s._interpolate_gamma(levels / B, levels), ideal)
 
             # Sampling that starts above zero must close at the bottom as well as the top.
             edged = np.arange(16, B, 16)
-            np.testing.assert_allclose(s.interpolate_gamma(edged / B, edged), ideal)
+            np.testing.assert_allclose(s._interpolate_gamma(edged / B, edged), ideal)
 
         with subtests.test("sample order does not matter"):
             # A linear response interpolates alike between any pair, so it cannot see the sort.
             curved = _quadratic_gamma(B)[levels.astype(int)]
             order = np.random.permutation(len(levels))
             np.testing.assert_allclose(
-                s.interpolate_gamma(curved[order], levels[order]),
-                s.interpolate_gamma(curved, levels),
+                s._interpolate_gamma(curved[order], levels[order]),
+                s._interpolate_gamma(curved, levels),
             )
 
         with subtests.test("non-uniform sampling follows the levels given"):
             sparse = np.array([0, 3, 9, 40, 150, 251])
             np.testing.assert_allclose(
-                s.interpolate_gamma(sparse / B, sparse)[sparse], sparse / B
+                s._interpolate_gamma(sparse / B, sparse)[sparse], sparse / B
             )
 
         with subtests.test("degenerate input raises"):
             with pytest.raises(ValueError, match="pair with gamma"):
-                s.interpolate_gamma([0, 0.5], [0, 1, 2])
+                s._interpolate_gamma([0, 0.5], [0, 1, 2])
             with pytest.raises(ValueError, match="two distinct levels"):
-                s.interpolate_gamma([0, 0.5], [3, 3])
+                s._interpolate_gamma([0, 0.5], [3, 3])
             # Levels spanning the whole range would close onto themselves.
             with pytest.raises(ValueError, match="span less than"):
-                s.interpolate_gamma([0, 0.3, 1.0], [0, 100, 400])
+                s._interpolate_gamma([0, 0.3, 1.0], [0, 100, 400])
 
         s.close()
 
@@ -437,6 +439,51 @@ class TestSLM:
             assert isinstance(slm.fit_aperture(method="moments"), Aperture)
             assert slm.source_radius == pytest.approx(np.sqrt(2) * w)
             assert np.allclose(as_numpy(slm.aperture.center), 0)
+            # A Gaussian has no rolloff edge, so the pupil sits where its power falls to edge_level.
+            pupil = 1 / slm.aperture._isotropic_scale()
+            assert pupil == pytest.approx(np.sqrt(2) * w * np.sqrt(np.log(1 / 0.1) / 2), rel=2e-2)
+
+        with subtests.test("a flat-top source gets a pupil at its edge, not twice its radius"):
+            # A uniform disk of radius a has a moment (1/e) radius of a too.
+            slm.set_aperture("cropped")
+            a = np.amin([float(g.max()) for g in slm.grid]) / 2
+            slm.source["amplitude"] = (np.hypot(*map(as_numpy, slm.grid)) <= a).astype(float)
+            # edge_level=0.5 places the pupil at the middle of the rolloff, the geometric edge.
+            slm.fit_aperture(method="moments", edge_level=0.5)
+            assert slm.source_radius == pytest.approx(a, rel=2e-2)
+            assert 1 / slm.aperture._isotropic_scale() == pytest.approx(a, rel=2e-2)
+
+        with subtests.test("a clipped, unevenly lit source is fit at its edge, not its centroid"):
+            slm.set_aperture("cropped")
+            (x, y) = map(as_numpy, slm.grid)
+            # An iris larger than the SLM's height, off center, so the display clips its top.
+            (cx, cy, a) = (0.15 * float(x.max()), -0.1 * float(y.max()), float(y.max()))
+            r = np.hypot(x - cx, y - cy)
+            iris = np.clip((a - r) / (0.03 * a) + 0.5, 0, 1)
+            # Brighter to one side, with a hot spot, both of which pull the centroid.
+            lit = (0.5 + 0.5 * (x - x.min()) / np.ptp(x)) * (
+                1 + np.exp(-((x - cx - 0.5 * a) ** 2 + (y - cy + 0.3 * a) ** 2) / (0.2 * a) ** 2)
+            )
+            power = iris * lit
+            slm.source["amplitude"] = np.sqrt(power)
+
+            centroid = np.array([np.sum(x * power), np.sum(y * power)]) / np.sum(power)
+            assert np.hypot(*(centroid - (cx, cy))) > 0.05 * a
+
+            slm.fit_aperture()
+            np.testing.assert_allclose(as_numpy(slm.aperture.center), (cx, cy), atol=0.01 * a)
+            assert 1 / slm.aperture._isotropic_scale() == pytest.approx(a, rel=2e-2)
+
+        with subtests.test("a lower edge_level widens the pupil about the same center"):
+            slm.fit_aperture(edge_level=0.5)
+            (center, pupil) = (as_numpy(slm.aperture.center).copy(), 1 / slm.aperture._isotropic_scale())
+            slm.fit_aperture(edge_level=0.01)
+            np.testing.assert_allclose(as_numpy(slm.aperture.center), center)
+            assert 1 / slm.aperture._isotropic_scale() > pupil
+
+        with subtests.test("edge_level outside (0, 1) raises"):
+            with pytest.raises(ValueError, match="edge_level"):
+                slm.fit_aperture(edge_level=0)
 
         with subtests.test("an unmeasured source guesses a quarter of the smallest extent"):
             slm.source.pop("amplitude", None)
@@ -470,6 +517,13 @@ class TestSLM:
             assert slm.source_radius == pytest.approx(0.4)
             slm.set_aperture(radius=0.3, units="frac")
             assert 0 < np.mean(slm.aperture_mask) < 1
+
+        with subtests.test("a new spec drops a stored source radius; recentering keeps it"):
+            slm.set_aperture(radius=0.4, units="norm")
+            slm.set_aperture(center=(cx, cy))
+            assert slm.source_radius == pytest.approx(0.4)
+            slm.set_aperture(0.5)
+            assert slm.source_radius == pytest.approx(1.0)
 
         with subtests.test("aperture_mask is the resolved Aperture's mask"):
             # slm.grid is already shifted, so a resolved aperture must not re-subtract.

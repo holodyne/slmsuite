@@ -676,6 +676,79 @@ def test_image_fit(subtests, benchmark, caplog):
         assert shown == ["image_fit", "image_fit"]
 
 
+def test_image_aperture_fit(subtests):
+    """Test image_aperture_fit() circle fits to the rolloff of an illuminated aperture."""
+    from scipy.special import erfc
+
+    (h, w) = (300, 500)
+    (yy, xx) = np.indices((h, w)).astype(float)
+
+    def iris(cx, cy, radius, width=3.0):
+        return 0.5 * erfc((np.hypot(xx - cx, yy - cy) - radius) / (np.sqrt(2) * width))
+
+    def centroid(power):
+        return np.array([np.sum(xx * power), np.sum(yy * power)]) / np.sum(power)
+
+    # An iris which the top of the image clips, lit brighter to one side and with a hot spot.
+    truth = np.array([220.0, 120.0])
+    uneven = (0.5 + 0.5 * xx / w) * (1 + np.exp(-((xx - 300) ** 2 + (yy - 60) ** 2) / 30.0**2))
+    clipped = 0.02 + iris(*truth, 140) * uneven
+
+    # edge_level=0.5 places the radius at the middle of the rolloff, the geometric edge.
+    with subtests.test("a uniform disk recovers its center and radius"):
+        (center, radius) = analysis.image_aperture_fit(iris(250, 150, 100), edge_level=0.5)
+        np.testing.assert_allclose(center, (250, 150), atol=0.5)
+        assert radius == pytest.approx(100, abs=1)
+        assert np.shape(center) == (2,) and isinstance(radius, float)
+
+    with subtests.test("uneven power inside a clipped iris does not pull the center"):
+        assert np.hypot(*(centroid(clipped) - truth)) > 10
+        (center, radius) = analysis.image_aperture_fit(clipped, edge_level=0.5)
+        np.testing.assert_allclose(center, truth, atol=1)
+        assert radius == pytest.approx(140, abs=1.5)
+
+    with subtests.test("a straight clip and noise are rejected from the circle"):
+        chord = 0.5 * erfc((40 - yy) / (np.sqrt(2) * 3.0))
+        noisy = clipped * chord + 0.02 * np.random.default_rng(0).standard_normal((h, w))
+        # Recovering the iris from this is the rejection: the chord's straight edge would
+        # otherwise drag the circle down toward it.
+        (center, radius) = analysis.image_aperture_fit(noisy, edge_level=0.5)
+        np.testing.assert_allclose(center, truth, atol=2)
+        assert radius == pytest.approx(140, abs=2)
+
+    with subtests.test("the default edge_level places the radius where power falls to 10%"):
+        from scipy.special import ndtri
+
+        (center_half, _) = analysis.image_aperture_fit(iris(250, 150, 100), edge_level=0.5)
+        (center, radius) = analysis.image_aperture_fit(iris(250, 150, 100))
+        np.testing.assert_array_equal(center, center_half)
+        # The edge, blurred by the default 1.5 pixel smoothing, falls to 10% ndtri(0.9) widths out.
+        assert radius == pytest.approx(100 + np.hypot(3.0, 1.5) * ndtri(0.9), abs=0.5)
+
+    with subtests.test("edge_level outside (0, 1) raises"):
+        with pytest.raises(ValueError, match="edge_level"):
+            analysis.image_aperture_fit(iris(250, 150, 100), edge_level=1)
+
+    with subtests.test("an unclipped Gaussian beam has no edge"):
+        gaussian = np.exp(-2 * ((xx - 250) ** 2 + (yy - 150) ** 2) / 60.0**2)
+        assert analysis.image_aperture_fit(gaussian) is None
+
+    with subtests.test("the fit is deterministic"):
+        (first, second) = (analysis.image_aperture_fit(clipped), analysis.image_aperture_fit(clipped))
+        np.testing.assert_array_equal(first[0], second[0])
+        assert first[1] == second[1]
+
+    with subtests.test("a stack of images raises"):
+        with pytest.raises(ValueError, match="2D"):
+            analysis.image_aperture_fit(np.zeros((2, 10, 10)))
+
+    with subtests.test("plot renders with or without an edge"):
+        with _shows() as shown:
+            analysis.image_aperture_fit(iris(250, 150, 100), plot=True)
+            analysis.image_aperture_fit(np.exp(-((xx - 250) ** 2 + (yy - 150) ** 2) / 60.0**2), plot=True)
+        assert shown == ["image_aperture_fit", "image_aperture_fit"]
+
+
 def test_image_zernike_fit(subtests):
     """Test image_zernike_fit() Zernike decomposition."""
     x_small = np.linspace(-1, 1, 64)

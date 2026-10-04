@@ -208,8 +208,10 @@ class FLIR(Camera):
         except PySpin.SpinnakerException as ex:
             raise RuntimeError(f"Failed to begin acquisition: {ex}")
 
+        current_binning = self._get_binning_hw()
+
         super().__init__(
-            (self.cam.WidthMax.GetValue(), self.cam.HeightMax.GetValue()),
+            (current_binning[0] * self.cam.WidthMax.GetValue(), current_binning[1] * self.cam.HeightMax.GetValue()),
             bitdepth=bitdepth,
             pitch_um=pitch_um,
             name=kwargs.pop("name", serial),
