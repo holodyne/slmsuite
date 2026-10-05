@@ -1404,6 +1404,8 @@ class Hologram(_HologramStats, _Loggable):
         **kwargs : dict, optional
             Various weight keywords and values to pass depending on the weight method.
             These are passed into :attr:`flags`. See options documented in the constructor.
+            Flags read by :meth:`reset_phase`, such as ``quadratic_phase``, are stored too,
+            but have no effect until :meth:`reset_phase` is next called.
         """
         # 1) Update flags based upon the arguments.
         name = kwargs.pop("name", None)
