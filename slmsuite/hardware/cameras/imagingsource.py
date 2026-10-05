@@ -48,14 +48,9 @@ class ImagingSource(Camera):
         """
         Class method for initializing the sdk. Called when the first instance is instantiated or when the static method info is called.
 
-        Parameters
-        ----------
-        cls : object
-            required parameter for a class method.
-
         Raises
         ------
-        RuntimeError
+        Exception
            If the library fails to initiate. See tisgrabber.h for error codes.
         """
         sdk = ctypes.cdll.LoadLibrary(DLL_PATH)
@@ -191,7 +186,7 @@ class ImagingSource(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of serial numbers or identifiers.
         """

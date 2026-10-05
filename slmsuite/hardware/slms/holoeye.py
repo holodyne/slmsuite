@@ -1,4 +1,4 @@
-"""
+r"""
 Hardware control for Holoeye SLMs.
 Created for SLM Display SDK (Python) v4.0.0.
 Tested with Holoeye SLM ERIS-NIR-153.
@@ -6,7 +6,7 @@ Tested with Holoeye SLM ERIS-NIR-153.
 Important
 ~~~~~~~~~
 Check that the SLM Display SDK is in the default folder
-``C:\\Program Files\\HOLOEYE Photonics\\SLM Display SDK`` (Python) v4.0.0
+``C:\Program Files\HOLOEYE Photonics\SLM Display SDK`` (Python) v4.0.0
 or otherwise add the installation folder to your python path.
 """
 import warnings
@@ -55,7 +55,7 @@ class Holoeye(SLM):
         self,
         preselect=None,
         wav_um=1,
-        verbose=True,
+        verbose=None,
         **kwargs
     ):
         r"""
@@ -75,8 +75,9 @@ class Holoeye(SLM):
 
         wav_um : float
             Wavelength of operation in microns. Defaults to 1 μm.
-        verbose : bool
-            Whether to print extra information.
+        verbose : None
+            Ignored, with a warning. Use :func:`slmsuite.configure_logging()`
+            to see the progress of initialization.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
 
@@ -88,16 +89,20 @@ class Holoeye(SLM):
         if HEDS is None:
             raise ImportError("SDK HEDS not installed. Install to use Holoeye SLMs.")
 
+        if verbose is not None:
+            warnings.warn(
+                "verbose is ignored; set the log level with slmsuite.configure_logging()."
+            )
+
         # Initialize the SDK and check that version 4.0 of the SDK is being used.
         error = HEDS.SDK.Init(4,0)
         self._handle_error(error)
 
         # Connect and open the SLM
-        if verbose: print("Opening SLM ...", end="")
+        logger.debug("Opening SLM...")
         self.preselect = preselect
         self.slm_lib = HEDS.SLM.Init(preselect=self.preselect)
         self._handle_error(self.slm_lib.errorCode())
-        if verbose: print("success")
 
         # Set the SLM's operating wavelength (wav_um) in nm.
         error = self.slm_lib.setWavelength(wav_um * 1000)

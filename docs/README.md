@@ -13,5 +13,6 @@ notebooks (`source/_examples`), and `_build` before building. `make html` builds
 incrementally instead, and `make clean` only clears.
 
 The example notebooks come from a clone of
-[slmsuite-examples](https://github.com/holodyne/slmsuite-examples) next to this repository
-(`../slmsuite-examples`) if one exists, and are otherwise downloaded from GitHub.
+[slmsuite-examples](https://github.com/holodyne/slmsuite-examples) beside this repository
+(`../slmsuite-examples` from the repository root) if one exists, and are otherwise
+downloaded from GitHub.

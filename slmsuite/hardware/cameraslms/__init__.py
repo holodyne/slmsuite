@@ -131,7 +131,7 @@ class CameraSLM(_Loggable):
             If ``None``, grabs the last written :attr:`~slmsuite.hardware.slms.slm.SLM.phase` from the SLM.
 
             Important
-            ---------
+            ~~~~~~~~~
             Writes this ``phase`` to the SLM if ``image`` is ``None``.
         image : ndarray OR None
             Image to be plotted. If ``None``, grabs an image from the camera.
@@ -244,16 +244,15 @@ class FourierSLM(
             See
             :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_zernike()`.
         "pixel" : dict
-            Raw data for measuring the crosstalk and :math:`V_\pi` of sections of the
+            Raw data for measuring the phase response (gamma) and pixel crosstalk of the
             SLM via measurements on the diffractive orders of binary gratings.
 
             See
             :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibrate()`.
-            Usable data is produced by running
-            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibration_process()`.
-
-            **This data is currently unused; exploring
-            computationally-efficient ways to apply the crosstalk without oversampling.**
+            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibration_process()`
+            fits the phase response and installs it with
+            :meth:`~slmsuite.hardware.slms.slm.SLM.set_gamma()`; crosstalk processing is
+            experimental.
         "settle" : dict
             Raw data for determining the temporal system response of the SLM.
 
@@ -559,8 +558,8 @@ class FourierSLM(
 
         Note
         ~~~~
-        The camera's orientation transform and binning are not recorded in the
-        metadata, so neither is restored; a window of interest is folded into the
+        The camera's orientation transform is not recorded in the metadata, and the
+        recorded binning is not reapplied; a window of interest is folded into the
         camera's placement. A :attr:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.noise`
         of hand-written callables cannot be written to an ``.h5`` and is lost. To clone a
         system that is actually connected, with its phase response, aperture, and noise,
@@ -671,10 +670,17 @@ class FourierSLM(
         Places the simulated camera of :meth:`load()` using the Fourier calibration that
         was read with it. That calibration maps onto *raw* sensor pixels while the
         rebuilt camera is the delivered image, so a window of interest has to be
-        subtracted off; binning and orientation are not recorded and cannot be.
+        subtracted off; binning is not reapplied and orientation is not recorded.
         """
         M = np.array(self.calibrations["fourier"]["M"], dtype=float)
         b = np.array(self.calibrations["fourier"]["b"], dtype=float).reshape(2, 1)
+
+        binning = cam_data.get("binning", None)
+        if binning is not None and np.any(np.asarray(binning) != 1):
+            self.logger.warning(
+                "The saved camera was binned %s; load() does not reapply binning.",
+                tuple(int(n) for n in np.ravel(binning)),
+            )
 
         woi = cam_data.get("woi", None)
         if woi is not None:
@@ -682,9 +688,10 @@ class FourierSLM(
             if (woi[1], woi[3]) != (width, height):
                 self.logger.warning(
                     "The saved camera was binned or reoriented (window %s delivering "
-                    "shape %s), which the metadata does not record; the simulated "
-                    "camera is placed as though it were neither.",
-                    tuple(woi), (height, width),
+                    "shape %s); load() does not reapply binning and the metadata does not "
+                    "record orientation, so the simulated camera is placed as though it "
+                    "were neither.",
+                    tuple(int(n) for n in woi), (height, width),
                 )
             b = b - np.array([[woi[0]], [woi[2]]], dtype=float)
 

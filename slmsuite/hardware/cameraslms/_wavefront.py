@@ -180,8 +180,8 @@ class _WavefrontCalibration(
 
         Raises
         ------
-        AssertionError
-            If the fourier plane calibration does not exist.
+        RuntimeError
+            If the Fourier calibration does not exist.
         """
         # Parse field_point.
         field_point = toolbox.convert_vector(

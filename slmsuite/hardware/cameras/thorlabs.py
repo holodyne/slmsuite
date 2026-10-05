@@ -1,4 +1,4 @@
-"""
+r"""
 Hardware control for modern Thorlabs cameras via :mod:`TLCameraSDK`.
 The :mod:`thorlabs_tsi_sdk` module must
 be installed
@@ -7,7 +7,7 @@ Consider also installing ThorCam
 for testing cameras outside of Python
 (See `ThorCam <https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=ThorCam>`_ ->  Software).
 After installing the SDK, extract the files in:
-``~\\Program Files\\Thorlabs\\Scientific Imaging\\Scientific Camera Support\\Scientific_Camera_Interfaces.zip``.
+``~\Program Files\Thorlabs\Scientific Imaging\Scientific Camera Support\Scientific_Camera_Interfaces.zip``.
 Follow the instructions in the extracted file Python_README.txt to install into your
 python environment via ``pip``.
 
@@ -207,7 +207,7 @@ class ThorCam(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of ThorCam serial numbers.
         """

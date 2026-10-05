@@ -58,10 +58,10 @@ class AlliedVision(Camera):
     to be used in concert with ``with`` statements. Unfortunately, this does not mesh with the
     architecture of :mod:`slmsuite`, where notebook-style operation is desired.
     Using ``with`` statements inside :class:`.AlliedVision` methods is likewise not an option,
-    as the methods to :meth:`__enter__()` and :meth:`__exit__()` the ``with`` are time-consuming
-    due to calls to :meth:`_open()` and :meth:`_close()` the objects, to the point of
+    as the methods to ``__enter__()`` and ``__exit__()`` the ``with`` are time-consuming
+    due to calls to ``_open()`` and ``_close()`` the objects, to the point of
     :math:`\mathcal{O}(\text{s})` overhead. :class:`.AlliedVision` disables these protections by
-    calling :meth:`__enter__()` and :meth:`__exit__()` directly during :meth:`.__init__()` and
+    calling ``__enter__()`` and ``__exit__()`` directly during :meth:`.__init__()` and
     :meth:`.close()`, instead of inside ``with`` statements.
     """
 
@@ -201,7 +201,7 @@ class AlliedVision(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of AlliedVision serial numbers.
         """

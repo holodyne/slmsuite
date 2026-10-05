@@ -142,7 +142,7 @@ class MindVision(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of :mod:`mvsdk` serial numbers.
         """

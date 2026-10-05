@@ -19,17 +19,21 @@ def blaze(
 
     .. math:: \phi(\vec{x}) = 2\pi \cdot \vec{k} \cdot \vec{x}
 
-
-    :param grid:
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
         :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
         corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
         These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
         such a class can be passed instead of the grids directly.
-    :param vector:
+    vector : (float, float) OR (float, float, float)
         :math:`\vec{k}`. Blaze vector in normalized :math:`\frac{k_x}{k}` units.
         See :meth:`~slmsuite.holography.toolbox.convert_vector()`.
         If a 3-dimensional vector is passed, a normalized focusing term is added.
-    :return:
+
+    Returns
+    -------
+    numpy.ndarray
         The phase for this function.
     """
     (x_grid, y_grid) = _process_grid(grid)
@@ -78,24 +82,28 @@ def triangle(
     at :math:`1` and :math:`-\vec{k}` at :math:`-1`, by way of a symmetric triangle at
     :math:`0`. Power is split between the two by symmetry in between.
 
-
-    :param grid:
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
         :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
         corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
         These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
         such a class can be passed instead of the grids directly.
-    :param vector:
+    vector : (float, float)
         :math:`\vec{k}`. Blaze vector in normalized :math:`\frac{k_x}{k}` units.
         See :meth:`~slmsuite.holography.toolbox.convert_vector()`.
-    :param shift:
+    shift : float
         Radians to laterally shift the period of the grating by.
-    :param a:
+    a : float
         Value at the peak of the triangle.
-    :param b:
+    b : float
         Value at the trough of the triangle.
-    :param bias:
+    bias : float
         Position of the peak within the period, on :math:`[-1, 1]`.
-    :return:
+
+    Returns
+    -------
+    numpy.ndarray
         The phase for this function.
     """
     duty_cycle = (float(np.clip(bias, -1, 1)) + 1) / 2
@@ -134,25 +142,29 @@ def sinusoid(
     Unlike a blazed grating :meth:`.blaze()`, power will efficiently be deflected toward
     the mirror -1st order at :math:`-\vec{k}` in addition to the 1st order, by symmetry.
 
-
-    :param grid:
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
         :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
         corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
         These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
         such a class can be passed instead of the grids directly.
-    :param vector:
+    vector : (float, float)
         :math:`\vec{k}`. Blaze vector in normalized :math:`\frac{k_x}{k}` units.
         See :meth:`~slmsuite.holography.toolbox.convert_vector()`.
-    :param shift:
+    shift : float
         Radians to laterally shift the period of the grating by.
-    :param a:
+    a : float
         Value at one extreme of the sinusoid.
         The :math:`n`\ th order carries :math:`J_n^2(|a-b|/2)`, so the 0th order
         vanishes at ``|a-b|`` :math:`= 2j_{0,1} = 4.8097`, the default.
-    :param b:
+    b : float
         Value at the other extreme of the sinusoid.
-        Defaults to zero, in which case ``a`` is the amplitude.
-    :return:
+        Defaults to zero, in which case the phase spans ``[0, a]``.
+
+    Returns
+    -------
+    numpy.ndarray
         The phase for this function.
     """
     if vector[0] == 0 and vector[1] == 0:
@@ -184,7 +196,7 @@ def binary(
             \begin{array}{ll}
                 a, & (
                     [2\pi \cdot \vec{k} \cdot \vec{x} + s] \,\,\,\,\text{mod}\,\,\,\, 2\pi
-                    ) < 2\pi*d \\
+                    ) < 2\pi d \\
                 b, & \text{ otherwise}.
             \end{array}
         \right.
@@ -217,35 +229,36 @@ def binary(
 
     Note
     ~~~~
-    When parameters are chosen to produce an integer period,
-    this function uses speed optimizations **(implementation incomplete)**.
-    Otherwise, this function uses ``np.mod`` on top of
+    This function uses ``np.mod`` on top of
     :meth:`~slmsuite.holography.toolbox.phase.blaze()` to compute gratings.
 
-
-    :param grid:
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
         :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
         corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
         These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
         such a class can be passed instead of the grids directly.
-    :param vector:
+    vector : (float, float)
         :math:`\vec{k}`. Blaze vector in normalized :math:`\frac{k_x}{k}` units.
         See :meth:`~slmsuite.holography.toolbox.convert_vector()`.
 
         If the user passes data greater than 1, this is interpreted
         as requesting a binary grating with the given period. This feature
         ignores whatever transformations might have been applied to ``grid``.
-    :param shift:
+    shift : float
         Radians to laterally shift the period of the grating by.
-    :param a:
+    a : float
         Value at one extreme of the binary grating.
-    :param b:
-        Value at the other extreme of the binary grating.
-        Defaults to zero, in which case ``a`` is the amplitude.
-    :param duty_cycle:
+    b : float
+        Value at the other extreme of the binary grating. Defaults to zero.
+    duty_cycle : float
         The grating value is ``a`` for ``duty_cycle * period``.
         Then the grating value is ``b`` for ``(1 - duty_cycle) * period``.
-    :return:
+
+    Returns
+    -------
+    numpy.ndarray
         The phase for this function.
     """
     grid = (x_grid, y_grid) = _process_grid(grid)
@@ -339,23 +352,27 @@ def bahtinov(
     commonly used for focusing telescopes.
     When the farfield pattern resulting from this mask is symmetric, the system is in focus.
 
-
-    :param grid:
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
         :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
         corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
         These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
         such a class can be passed instead of the grids directly.
-    :param radius:
+    radius : float
         Radius of the diffraction pattern in normalized :math:`\frac{k_x}{k}` units.
         See :meth:`~slmsuite.holography.toolbox.convert_radius()`.
         Defaults to a milliradian.
-    :param angle:
+    angle : float
         Angle of the right two quadrants from the left two quadrants in radians.
         Defaults to 10 degrees.
-    :param grating:
+    grating : callable
         Type of grating to use for the mask. Must have a ``vector=`` argument.
         Defaults to :meth:`~slmsuite.holography.toolbox.phase.binary()`.
-    :return:
+
+    Returns
+    -------
+    numpy.ndarray
         The phase for this function.
     """
     s = np.sin(angle)
@@ -391,19 +408,24 @@ def quadrants(
     The position of the spots on the camera can align
     the SLM to the optical axis of the system.
 
-    :param grid:
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
         :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
         corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
         These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
         such a class can be passed instead of the grids directly.
-    :param radius:
+    radius : float
         Radius of the diffraction pattern in normalized :math:`\frac{k_x}{k}` units.
         See :meth:`~slmsuite.holography.toolbox.convert_radius()`.
         Defaults to a milliradian.
-    :param center:
+    center : (float, float)
         Center of the diffraction pattern in normalized :math:`\frac{k_x}{k}` units.
         Defaults to the origin.
-    :return:
+
+    Returns
+    -------
+    numpy.ndarray
         The phase for this function.
     """
     vectors = format_2vectors(

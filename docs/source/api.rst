@@ -5,7 +5,7 @@ API Reference
 This page provides an auto-generated summary of |slmsuite|_'s API. You can
 find the source on `GitHub <https://github.com/holodyne/slmsuite>`_.
 
-|slmsuite|_ is divided into two modules:
+|slmsuite|_ is divided into two subpackages, plus package-level settings:
 algorithms and analysis in :mod:`~slmsuite.holography` and
 connectivity to physical devices via :mod:`~slmsuite.hardware`.
 
@@ -45,7 +45,7 @@ Hardware
 
 A central concept of |slmsuite|_ is **experimental** holography.
 Thus, we require interfaces to control the hardware used in experiment.
-While some common hardware implementions are included, we welcome
+While some common hardware implementations are included, we welcome
 `contributions <https://github.com/holodyne/slmsuite/blob/main/CONTRIBUTING.md>`_
 to expand the scope and utility of the package!
 Hardware is divided into two main categories:
@@ -97,7 +97,9 @@ top level:
    make_logger
    configure_plotting
 
-With :mod:`cupy` installed, SLMs, cameras, and holograms keep their arrays on the GPU.
+With :mod:`cupy` installed, holograms and SLMs (unless ``gpu=False``) keep their arrays
+on the GPU; camera frames are returned in host memory unless requested with
+``get_image(get=False)``.
 Helpers for moving data between :mod:`numpy` and :mod:`cupy` are provided in:
 
 .. currentmodule:: slmsuite.misc
@@ -154,7 +156,7 @@ for coordinate bases can be converted to these standard bases using
        implemented by the optical train separating the two).
 
        The edge of Fourier space **that is accessible to the SLM** corresponds to
-       :math:`\pm\frac{\lambda}{2\Delta x}` radians, dependant on the pixel size
+       :math:`\pm\frac{\lambda}{2\Delta x}` radians, dependent on the pixel size
        :math:`\Delta x` of the SLM. For most SLMs and wavelengths, this angle
        corresponds to a few degrees at most.
        Thus, this edge is generally within the small angle approximation.

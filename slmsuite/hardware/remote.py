@@ -553,7 +553,7 @@ class _Client(_Picklable):
         :param timeout:
             Timeout in seconds for the connection. Defaults to ``5``.
         :return:
-            List of hardware at the server in ``name:kind`` pairs, where ``kind`` is
+            Dictionary mapping the name of each hardware at the server to its kind,
             either ``"camera"`` or ``"slm"``. Raises :exc:`TimeoutError` if no server is found.
         """
         try:

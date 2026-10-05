@@ -13,7 +13,7 @@ class SimulatedSLM(SLM):
     Attributes
     ----------
     source : dict
-        For a :class:`SimulatedSLM()`, :attr:`source` stores ``"amplitude_sim"`` and ``"phase_sim"``,
+        For a :class:`SimulatedSLM`, :attr:`source` stores ``"amplitude_sim"`` and ``"phase_sim"``,
         which are used to compute the SLM's simulated far-field.
 
         ``"amplitude_sim"`` : numpy.ndarray

@@ -55,7 +55,7 @@ class SLM(_Common, ABC):
     pitch_um : (float, float)
         Pixel pitch in microns.
     wav_um : float
-        Operating wavelength targeted by the SLM in microns. Defaults to 780 nm.
+        Operating wavelength targeted by the SLM in microns.
     wav_design_um : float
         Design wavelength for which the maximum settable value corresponds to a
         :math:`2\pi` phase shift.
@@ -434,7 +434,7 @@ class SLM(_Common, ABC):
 
         Returns
         -------
-        numpy.ndarray
+        numpy.ndarray OR cupy.ndarray
             :attr:`~slmsuite.hardware.slms.slm.SLM.source` ``["phase"]``,
             the vendor-provided phase correction.
         """
@@ -564,7 +564,7 @@ class SLM(_Common, ABC):
     def _interpolate_gamma(self, gamma, levels):
         r"""
         Interpolates a phase response measured at some ``levels`` onto all
-        :attr:`bitresolution` grayscale levels, as :meth:`set_gamma` requires. Levels
+        :attr:`bitresolution` grayscale levels, for :meth:`set_gamma`. Levels
         outside the sampled range are closed circularly, at the curve's average slope.
 
         Parameters
@@ -607,7 +607,7 @@ class SLM(_Common, ABC):
             np.concatenate(([gamma[-1] - span], gamma, [gamma[0] + span])),
         )
 
-    def set_gamma(self, gamma=None, lut_size=LUT_SIZE):
+    def set_gamma(self, gamma=None, levels=None, lut_size=LUT_SIZE):
         r"""
         Sets :attr:`lut`, the lookup table mapping a desired phase onto the grayscale
         level which best realizes it, from a measured phase response ``gamma``.
@@ -630,9 +630,12 @@ class SLM(_Common, ABC):
             sense is set per class, as most SLMs decrease phase delay with increasing level
             whereas a :class:`~slmsuite.hardware.slms.texasinstruments.PLM` increases it.
             Must be unwrapped, as an SLM with more than :math:`2\pi` of range spans more
-            than one unit. Pass a measurement of only some levels through
-            :meth:`_interpolate_gamma` first. ``None`` clears :attr:`lut`, restoring the
-            ideal linear response.
+            than one unit. ``None`` clears :attr:`lut`, restoring the ideal linear response.
+        levels : array_like OR None
+            The grayscale levels at which ``gamma`` was sampled, in any order. ``gamma`` is
+            then interpolated onto every level, with levels outside the sampled range closed
+            circularly at the curve's average slope. If ``None``, ``gamma`` must sample
+            every level.
         lut_size : int
             Number of entries in :attr:`lut`. Must be a power of two.
 
@@ -648,6 +651,8 @@ class SLM(_Common, ABC):
         if lut_size < 1 or lut_size & (lut_size - 1):
             raise ValueError(f"Expected lut_size {lut_size} to be a positive power of two.")
 
+        if levels is not None:
+            gamma = self._interpolate_gamma(gamma, levels)
         gamma = np.ravel(np.array(as_numpy(gamma), dtype=float))
 
         if len(gamma) != self.bitresolution:
@@ -740,7 +745,7 @@ class SLM(_Common, ABC):
 
     def _phase2gray(self, phase, out=None):
         r"""
-        Helper function to convert an array of phases (units of :math:`2\pi`) to an array of
+        Helper function to convert an array of phases (in radians) to an array of
         :attr:`~slmsuite.hardware.slms.slm.SLM.bitresolution` -scaled and -cropped integers.
         This is used by :meth:`set_phase()`. See special cases described in :meth:`set_phase()`.
         If :attr:`lut` is set, the conversion is a lookup into the measured phase response
@@ -975,8 +980,8 @@ class SLM(_Common, ABC):
 
         Important
         ~~~~~~~~~
-        The user does not need to wrap (e.g. :mod:`numpy.mod(data,
-        2*numpy.pi)`) the passed phase data, unless they are pre-caching data
+        The user does not need to wrap (e.g. ``numpy.mod(data, 2*numpy.pi)``)
+        the passed phase data, unless they are pre-caching data
         for speed (see below). :meth:`.set_phase()` uses optimized routines to
         wrap the phase (see the private method :meth:`_phase2gray()`). When a
         measured phase response is loaded with :meth:`set_gamma()`, phase is
@@ -1005,21 +1010,16 @@ class SLM(_Common, ABC):
 
         Caution
         ~~~~~~~
-        After scale conversion, data is ``floor()`` ed to integers with
-        ``np.copyto``, rather than rounded to the nearest integer
-        (``np.rint()`` equivalent). While this is irrelevant for the average
-        user, it may be significant in some cases. If this behavior is
-        undesired consider either: :meth:`set_phase()` integer data directly or
-        modifying the behavior of the private method :meth:`_phase2gray()` in a
-        pull request. We have not been able to find an example of ``np.copyto``
-        producing undesired behavior, but will change this if such behavior is
-        found.
+        With :attr:`phase_scaling` equal to one, phase is rounded to the nearest
+        level. Otherwise, the scaled data is truncated to integers by ``np.copyto``,
+        and with a :attr:`lut`, phase is floored onto one of its entries. Where this
+        matters, pass integer data to :meth:`set_phase()` directly.
 
         Parameters
         ----------
         phase : numpy.ndarray OR cupy.ndarray OR
                 slmsuite.holography.algorithms.Hologram OR None
-            Phase data to display in units of :math:`2\pi`, unless the passed
+            Phase data to display, in radians, unless the passed
             data is of integer type and the data is applied directly.
 
             -  If ``None`` is passed to :meth:`.set_phase()`, data is zeroed.
@@ -1084,7 +1084,7 @@ class SLM(_Common, ABC):
 
         Returns
         -------
-        numpy.ndarray
+        numpy.ndarray OR cupy.ndarray
            :attr:`~slmsuite.hardware.slms.slm.SLM.display`, the integer data
            sent to the SLM.
 
@@ -1230,7 +1230,7 @@ class SLM(_Common, ABC):
         path : str
             Path to directory to save in. Default is current directory.
         name : str OR None
-            Name of the save file. If ``None``, will use :attr:`name` + ``'-phase'``.
+            Name of the save file. If ``None``, will use :attr:`name` + ``'_phase'``.
 
         Returns
         -------
@@ -1256,14 +1256,15 @@ class SLM(_Common, ABC):
     def load_phase(self, file_path=None, settle=False):
         """
         Loads :attr:`~slmsuite.hardware.slms.slm.SLM.display`
-        from a file and writes to the SLM.
+        from a file and writes to the SLM. Logs a warning if the stored
+        :attr:`~slmsuite.hardware.slms.slm.SLM.phase` does not reproduce the stored display.
 
         Parameters
         ----------
         file_path : str OR None
             Full path to the phase file. If ``None``, will
             search the current directory for a file with a name like
-            :attr:`name` + ``'-phase'``.
+            :attr:`name` + ``'_phase'``.
         settle : bool OR float
             Whether to sleep for :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`, or any
             number (integers included) of seconds to sleep instead.
@@ -1277,10 +1278,6 @@ class SLM(_Common, ABC):
         ------
         FileNotFoundError
             If a file is not found.
-        Warning
-            Warns the user if the stored
-            :attr:`~slmsuite.hardware.slms.slm.SLM.phase`
-            does not agree with the displayed value.
         """
         if file_path is None:
             path = os.path.abspath(".")
@@ -1432,23 +1429,25 @@ class SLM(_Common, ABC):
             source profile. The function can also be passed directly.
             Defaults to ``"gaussian2d"``.
         units : str in {"norm", "frac", "nm", "um", "mm", "m"}
-            Units for the :math:`(x,y)` grid passed to ``fit_function``. This essentially
-            determines the scaling on the normalized grid stored in the SLM which is
-            passed to the ``fit_function``.
+            Units for the :math:`(x,y)` grid passed to ``fit_function``: ``"norm"``
+            (normalized to wavelengths), ``"frac"`` (each axis divided by the full extent of
+            the SLM along it, so the grid spans :math:`[-1/2, 1/2]`), or a physical length.
+            A ``"frac"`` radius here is thus a fraction of the full extent, which is where
+            :meth:`set_aperture` places the pupil for the same ``"frac"`` ``radius``.
+        phase_offset : float OR numpy.ndarray OR cupy.ndarray
+            Additional phase (of shape :attr:`shape`) added to :attr:`source`.
         sim : bool
             Sets the simulated source distribution if ``True`` or the approximate
             experimental source distribution (in absence of wavefront calibration)
             if ``False``.
-        phase_offset : float OR numpy.ndarray OR cupy.ndarray
-            Additional phase (of shape :attr:`shape`) added to :attr:`source`.
         **kwargs
             Arguments passed to ``fit_function`` in addition to the SLM grid in the
             requested ``units``. If the ``fit_function`` is ``"gaussian2d"`` and no
-            keyword arguments have been passed, the radius defaults to 1/2 of the
+            keyword arguments have been passed, the radius defaults to a quarter of the
             smaller of the two SLM dimensions.
 
         Returns
-        --------
+        -------
         dict
             :attr:`~slmsuite.hardware.slms.slm.SLM.source`.
         """
@@ -1574,8 +1573,10 @@ class SLM(_Common, ABC):
             centers the aperture on the geometric center of the SLM.
         units : str
             Units for ``radius``: ``"norm"`` (normalized to wavelengths, the default),
-            ``"frac"`` (fraction of the half-extent of the SLM), ``"pix"`` (number of
-            pixels), or a physical length (``"um"``, ``"mm"``, ...).
+            ``"frac"`` (fraction of the smaller half-extent of the SLM), ``"pix"`` (number
+            of pixels), or a physical length (``"um"``, ``"mm"``, ...). As the pupil extends
+            to twice ``radius``, a ``"frac"`` ``radius`` puts the pupil at that fraction of
+            the full extent of the shorter axis, as in :meth:`set_source_analytic`.
 
         Returns
         -------
@@ -1756,7 +1757,7 @@ class SLM(_Common, ABC):
             aperture discards stays visible.
 
         Returns
-        --------
+        -------
         matplotlib.axes.Axes
             Axis handles for the generated plot.
         """

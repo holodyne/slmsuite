@@ -62,7 +62,7 @@ class Camera(_Common, ABC):
         receives (to avoid copying overhead). Thus, if the user modifies the returned data,
         then this data will be modified also. It sits on whichever backend the last
         :meth:`get_image()` returned, i.e. the device if that call passed ``get=False``.
-        This may be of :attr:`~slmsuite.hardware.cameras.camera.Camera.dtype`, or may be a float, depending on whether :attr:`hdr` is
+        This may be of :attr:`dtype`, or may be a float, depending on whether :attr:`hdr` is
         used and the type of :attr:`averaging`.
         Is ``None`` if no image has ever been taken.
     """
@@ -211,8 +211,9 @@ class Camera(_Common, ABC):
     @property
     def bitresolution(self) -> int:
         """
-        Returns ``(2**bitdepth) * averaging``. The action of averaging here is a sum
-        rather than a mean, so the effective bitresolution increases accordingly.
+        Returns ``(2**bitdepth) * averaging``, times the binned pixel count under software
+        binning. Both sum rather than mean, so the effective bitresolution increases
+        accordingly.
         """
         # This overwrites the _Common bitresolution, as averaging and software binning
         # both sum into a range wider than the bitdepth.
@@ -334,7 +335,7 @@ class Camera(_Common, ABC):
 
         Accounts for the current WOI, binning, and orientation transform (a 90/270
         rotation swaps the two) so that ``get_image().shape == camera.shape`` always holds.
-        Read-only.
+        Assignment is ignored.
         """
         h_bin = self._woi[3] // self._binning[1]
         w_bin = self._woi[1] // self._binning[0]
@@ -440,6 +441,7 @@ class Camera(_Common, ABC):
         ----------
         woi : int or (int, int) or (int, int, int, int) or None
             Window of interest in **transformed, unbinned** pixel coordinates:
+
             - ``None``: resets to the full sensor.
             - ``int``: centered square window ``(size, size)`` on the sensor.
             - ``(w, h)``: centered rectangular window ``(w, h)`` on the sensor.
@@ -547,7 +549,7 @@ class Camera(_Common, ABC):
         Returns
         -------
         (int, int, int, int)
-            ``(x0, w, y0, h)`` in transformed, unbinned pixel coordinates —
+            ``(x0, w, y0, h)`` in transformed, unbinned pixel coordinates,
             the same coordinate system accepted by :meth:`set_woi`.
         """
         if not self._software_woi:
@@ -861,7 +863,7 @@ class Camera(_Common, ABC):
     def _get_out(self, shape, out=None, dtype=None):
         """
         Allocate a buffer of ``shape`` and ``dtype``, or check that ``out`` is one.
-        Defaults to the raw sensor :attr:`~slmsuite.hardware.cameras.camera.Camera.dtype`; software binning widens it.
+        Defaults to the raw sensor :attr:`dtype`; software binning widens it.
         """
         shape = tuple(int(s) for s in shape)
         dtype = np.dtype(self.dtype if dtype is None else dtype)
@@ -1369,8 +1371,9 @@ class Camera(_Common, ABC):
             This base can be changed to another number by instead passing a tuple, where
             the second ``int`` defines the desired base.
         return_raw : bool
-            If ``True``, returns the raw data (stack of images with count ``exposures``)
-            instead of the processed data. The data can be processed using :meth:`.get_image_hdr_analysis`.
+            If ``True``, returns ``(imgs, exposure_times)`` instead of the processed image:
+            the stack of raw frames and the exposure of each frame, in seconds. Process
+            them with ``get_image_hdr_analysis(imgs, exposure_power=exposure_times)``.
         **kwargs
             Passed to :meth:`.get_image()`.
 
@@ -1591,6 +1594,8 @@ class Camera(_Common, ABC):
             Axis to plot upon.
         cbar : bool
             Also plot a colorbar. Does not work if ``ax`` is passed.
+        clim : (float, float) OR None
+            Color limits passed to ``imshow``.
 
         Returns
         -------
@@ -1801,7 +1806,7 @@ class Camera(_Common, ABC):
         get_z : function OR float
             Gets the current position of the focusing stage. Should return a ``float``.
             Can also pass a ``float`` representing the center of the search range.
-        range_z : array_like OR float OR None
+        range_z : array_like OR float
             ``z`` values to sweep over during search relative to the base position ``get_z``.
             If a single ``float`` is passed, sweeps from ``-range_z`` to ``+range_z``
             with 11 steps.

@@ -370,6 +370,14 @@ class TestSLM:
             )
             wide.close()
 
+        with subtests.test("a sparse response with its levels fills every level"):
+            sampled = levels[::8]
+            s.set_gamma(_quadratic_gamma(B)[sampled], levels=sampled)
+            np.testing.assert_allclose(
+                as_numpy(s.gamma), s._interpolate_gamma(_quadratic_gamma(B)[sampled], sampled)
+            )
+            assert len(as_numpy(s.gamma)) == B
+
         with subtests.test("invalid input raises"):
             with pytest.raises(ValueError):
                 s.set_gamma(ideal, lut_size=1000)

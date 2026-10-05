@@ -24,7 +24,8 @@ def _determine_source_radius(grid, w=None):
         If an SLM was passed as grid, retrieves the data from
         :attr:`slmsuite.hardware.slms.slm.SLM.source_radius` (see also
         :meth:`slmsuite.hardware.slms.slm.SLM.fit_aperture()`).
-        If ``w`` is left as ``None``, ``w`` is set to a quarter of the smallest normalized screen dimension.
+        If ``w`` is left as ``None``, ``w`` is set to a quarter of the grid's smaller
+        half-extent, ``min(x_grid.max(), y_grid.max()) / 4``.
 
     Returns
     -------

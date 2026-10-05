@@ -158,7 +158,7 @@ class Basler(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of serial numbers or identifiers.
         """

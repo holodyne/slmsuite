@@ -672,7 +672,7 @@ class _Window(__Window):
                     pass
         elif sys.platform == "darwin":
             try:
-                # NSFloatingWindowLevel = 3 — above normal windows.
+                # NSFloatingWindowLevel = 3 -- above normal windows.
                 self._nswindow.setLevel_(3)
             except Exception:
                 try:
@@ -1411,7 +1411,7 @@ class _WindowThread(object):
 
         self._ready.set()
 
-        # Phase 2: Event loop — process commands and dispatch events.
+        # Phase 2: Event loop -- process commands and dispatch events.
         while self._running and not self._window.has_exit:
             # Drain all pending commands from the main thread.
             while True:

@@ -10,8 +10,6 @@ clone, pass the ``-e`` flag (e.g. ``pip install -e .``).
 
    We recommend `uv <https://docs.astral.sh/uv/>`_ as a fast, modern package
    manager. To use it, substitute ``uv pip`` for ``pip`` in all commands below.
-   Note that ``uv pip install`` defaults to editable mode, so the ``-e`` flag
-   is not needed.
 
 PyPI
 ----
@@ -44,7 +42,7 @@ Required Dependencies
 The following python packages are necessary to run |slmsuite|_. These are listed as PyPI
 dependencies and thus are installed automatically if PyPI is used to install.
 
-- `python <https://www.python.org/>`_
+- `python <https://www.python.org/>`_ >= 3.10
 - `numpy <https://numpy.org/>`_
 - `scipy <https://scipy.org/>`_
 - `opencv-python <https://github.com/opencv/opencv-python>`_
@@ -67,17 +65,15 @@ the user can install selectively.
 
 - GPU ``pip install -e ".[gpu]"``
     - `cupy <https://cupy.dev/>`_, highly recommended for GPU-accelerated holography.
-      Once installed, :mod:`slmsuite` uses GPU acceleration by default ---
-      algorithms, simulated hardware, and true hardware all run on :mod:`cupy`
-      unless ``gpu=False`` is passed during instantiation. Without :mod:`cupy`,
-      :mod:`numpy` is used as a backup.
-      Sometimes, installation is made complicated by a pre-installed version of CUDA.
-      You can find the CUDA version with ``nvcc --version`` in a terminal, and then
-      install an installation of :mod:`cupy` specific to CUDA version ``YY`` with
-      ``pip install cupy-cudaYYx``.
+      Once installed, holograms and SLMs (unless ``gpu=False``) run on :mod:`cupy`;
+      camera frames are returned in host memory unless a simulated camera is called
+      with ``get_image(get=False)``. Without :mod:`cupy`, :mod:`numpy` is used as a backup.
+      The ``gpu`` extra installs ``cupy-cuda13x`` (CUDA 13). For another CUDA version,
+      skip the extra and ``pip install cupy-cudaYYx``, finding ``YY`` with
+      ``nvcc --version``.
 - Gradients ``pip install -e ".[torch]"``
-    - `pytorch <https://pytorch.org/>`_, required for conjugate gradient hologram
-      optimization, either in GPU or CPU mode. Uses :mod:`cupy` - :mod:`torch`
+    - `pytorch <https://pytorch.org/>`_, required for gradient-based (``"CG"``) hologram
+      optimization with a :mod:`torch.optim` optimizer, either in GPU or CPU mode. Uses :mod:`cupy` - :mod:`torch`
       `interoperability <https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch>`_
       to pass data between modules without copying overhead, even on the GPU.
 - Cameras ``pip install -e ".[cameras]"``
@@ -93,7 +89,9 @@ the user can install selectively.
     - Other cameras are loaded directly via .dll.
 - SLMs ``pip install -e ".[slms]"``
     - `pyglet <https://pyglet.org/>`_
-    - Other SLMs are loaded directly via .dll.
+    - `hidapi <https://pypi.org/project/hidapi/>`_ and
+      `pyyaml <https://pypi.org/project/PyYAML/>`_, for Texas Instruments PLMs
+    - Other SLMs are loaded via their vendor's SDK or .dll.
 - Image saving ``pip install -e ".[images]"``
     - For most images and videos, `imageio <https://imageio.readthedocs.io/en/stable/>`_
     - Many video formats additionally require `pyav <https://pypi.org/project/av/>`_
@@ -109,9 +107,13 @@ notebooks for interactive computing. Consider also using
 features like |autoreload|_ or |matplotlibs|_.
 
 - `jupyter <https://jupyter.org>`_
+- `ipywidgets <https://ipywidgets.readthedocs.io/>`_ and
+  `ipyevents <https://github.com/mwcraig/ipyevents>`_, for the ``live()`` viewer of
+  cameras and SLMs
+- The ``images`` extra
 
-If Jupyter is not used, the default :mod:`matplotlib` plots will block further
-execution, so the user should avoid plotting by using ``plot=False`` flags on functions.
+Outside Jupyter, ``plt.show()`` blocks; call :func:`slmsuite.configure_plotting` with
+``mode="suppress"`` or ``mode="save"`` (and ``headless=True`` without a display).
 
 Use the following to install recommended jupyter-related packages.
 
@@ -122,8 +124,8 @@ Use the following to install recommended jupyter-related packages.
 All Dependencies
 ----------------
 
-To install all optional dependencies at once (including GPU, SLMs, cameras,
-images, Jupyter, docs, and testing), use the ``dev`` extra:
+To install the optional dependencies for GPU, gradients, SLMs, cameras, images, Jupyter,
+docs, and testing at once, use the ``dev`` extra.
 
 .. code-block:: console
 

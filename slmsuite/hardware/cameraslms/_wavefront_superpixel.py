@@ -94,7 +94,7 @@ class _WavefrontCalibrationSuperpixel(object):
             Defaults to the center of the SLM if ``None``. If multiple calibration
             points are requested when ``None``, then the references are clustered at the center.
         exclude_superpixels : (int, int) OR numpy.ndarray OR None
-            If in ``(nx, ny)`` form, optionally exclude superpixels from the margin,
+            If in ``(nx, ny)`` form, optionally exclude superpixels from the margin.
             That is, the ``nx`` superpixels are omitted from the left and right sides
             of the SLM, with the same for ``ny``. As power is
             typically concentrated in the center of the SLM, this function is useful for
@@ -102,7 +102,7 @@ class _WavefrontCalibrationSuperpixel(object):
             pupil), or for quickly testing calibration at the most relevant points.
             Otherwise, if exclude_superpixels is an image with the same dimension as the
             superpixeled SLM, this image is interpreted as a denylist.
-            Defaults to ``None``, where no superpixels are excluded.
+            Defaults to ``(0, 0)``, which excludes no superpixels, as does ``None``.
         test_index : int OR None
             If ``int``, then tests the scheduled calibration corresponding to this index.
             Defaults to ``None``, which runs the full wavefront calibration instead of
@@ -1207,17 +1207,14 @@ class _WavefrontCalibrationSuperpixel(object):
         plot=0
     ):
         """
-        Processes :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations` ``["wavefront"]``
-        into the desired phase correction and amplitude measurement. Applies these
+        Processes :attr:`calibrations["wavefront_superpixel"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`
+        (or the legacy ``"wavefront"``) into the desired phase correction and amplitude measurement. Applies these
         parameters to the respective variables in the SLM if ``apply`` is ``True``.
 
         Parameters
         ----------
         index : int
             The calibration point index to process, in the case of a multi-point calibration.
-            In the future, this should include the option to request an "ij" position,
-            then the return will automatically interpolate between the Zernike results
-            of the local calibration points.
         smooth : bool OR int
             Whether to blur the correction data to avoid aliasing.
             If ``int``, uses this as the number of smoothing iterations.

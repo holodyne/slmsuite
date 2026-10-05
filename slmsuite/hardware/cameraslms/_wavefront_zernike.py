@@ -88,7 +88,8 @@ class _WavefrontCalibrationZernike(object):
             :math:`\pm 1`-normalized Zernike terms.
             If ``float``, tests 11 points in a range of plus to minus this value in radians.
             Defaults to a range of :math:`\pm 1` radians.
-            If ``0`` or ``None``, the starting spots are projected and the function returns before optimizing.
+            If non-positive or empty, the starting spots are projected and the function
+            returns before optimizing. ``None`` uses the default of 1 radian.
         callback : None OR function
             Measure the system to determine the level of aberration. Expected to return
             a list of floats of length ``N`` corresponding to the chosen metric evaluated

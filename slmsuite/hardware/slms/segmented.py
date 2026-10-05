@@ -59,7 +59,7 @@ class SegmentedSLM(SLM):
         self.parent = parent
         self.refresh = bool(refresh)
 
-        # Parse window — preserve original for unclipped bounds checking.
+        # Parse window -- preserve original for unclipped bounds checking.
         window_raw = window
         window = window_slice(window, shape=parent.shape)  # 2 slice, 2 indices, or boolean array format
 

@@ -92,8 +92,9 @@ class ScreenMirrored(SLM):
 
     -   ``"interop"``, which writes into ``OpenGL`` memory mapped into ``CUDA`` and never
         crosses PCIe. Requires an NVIDIA driver and ``OpenGL`` 3.0+, and is only attempted
-        for a ``gpu=True`` SLM (see :meth:`.SLM.__init__`), since there is no device memory
-        to map otherwise.
+        for a :mod:`cupy`-backed SLM (``gpu=True``, or the default when :mod:`cupy` is
+        installed; see :meth:`.SLM.__init__`), since there is no device memory to map
+        otherwise.
     -   ``"pinned"``, page-locked host memory for fast DMA. Requires a ``CUDA`` device.
     -   ``"pageable"``, ordinary host memory, which always works.
 
@@ -191,9 +192,9 @@ class ScreenMirrored(SLM):
             screen resolutions are not generally supported unless explicitly
             implemented in the associated SLM class.
         **kwargs
-            See :meth:`.SLM.__init__` for permissible options. Notably, ``gpu=True`` is
-            what enables the :mod:`cupy`-OpenGL interop described in the class
-            documentation.
+            See :meth:`.SLM.__init__` for permissible options. Notably, ``gpu`` selects
+            the :mod:`cupy` backend (the default when :mod:`cupy` is installed), which
+            enables the :mod:`cupy`-OpenGL interop described in the class documentation.
         """
         if pyglet is None:
             raise ImportError("pyglet not installed. Install to use ScreenMirrored SLMs.")

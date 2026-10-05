@@ -69,9 +69,9 @@ class _PixelCalibration(object):
         ~~~~~~~
         Data is internally acquired without wavefront calibration applied
         (``.set_phase(..., phase_correct=False)`` is used).
-        If the uncalibrated SLM produces too defocussed of a spot,
+        If the uncalibrated SLM produces too defocused of a spot,
         then this measurement may not be ideal. On the flip side, a
-        too-focussed spot might increase error by integrating over fewer camera pixels.
+        too-focused spot might increase error by integrating over fewer camera pixels.
 
         Parameters
         ----------
@@ -119,11 +119,20 @@ class _PixelCalibration(object):
             If ``True``, then the camera exposure is automatically
             adjusted at the start of the sweep, or adjusted to not overexpose the given test indices.
             ``autoexpose=True`` and ``test_index=True`` is recommended to autoexpose the sweep.
+            A ``float`` is passed as the ``set_fraction`` of
+            :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexpose()`.
         plot : int OR bool
             If ``0``, then no plots are made.
             If ``>= 1``, then the camera image is plotted at the first measurement,
             or for every test index measurement, if test indices are given.
             If ``>= 2``, then the order integration masks are additionally plotted.
+
+        Returns
+        -------
+        dict
+            :attr:`calibrations["pixel"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`,
+            or, if ``test_index`` is set, ``{"indices", "results"}`` with the integrated
+            orders (or the exposures, if ``autoexpose``) of each test index.
         """
         # Parse levels by forcing range and datatype.
         if np.isscalar(levels):
@@ -773,9 +782,7 @@ class _PixelCalibration(object):
             )
             return
 
-        self.slm.set_gamma(
-            self.slm._interpolate_gamma(cal["gamma"], cal["levels"])
-        )
+        self.slm.set_gamma(cal["gamma"], levels=cal["levels"])
 
     @staticmethod
     def pixel_kernel(x, a_pix=.1, n=1, a_minus_pix=None, n_minus=None, x0_pix=0):

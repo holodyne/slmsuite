@@ -739,7 +739,7 @@ class Cheetah640(Camera):
         Set the get_frame time allowed before issuing E_NOFRAME error.
 
         Warning
-        ~~~~~~~~
+        ~~~~~~~
         Implementation unfinished and untested.
 
         Parameters
@@ -1318,7 +1318,7 @@ class Cheetah640(Camera):
         Main grabbing function; captures latest image into single frame buffer.
 
         Warning
-        ~~~~~~~~
+        ~~~~~~~
         ``timeout_s`` parameter is currently untested; setting it may lead to unintended behavior.
 
         Parameters
@@ -1381,7 +1381,7 @@ class Cheetah640(Camera):
         Get number of captured frames since :meth:`start_capture()`.
 
         Returns
-        ----------
+        -------
         int
             Number of frames.
         """

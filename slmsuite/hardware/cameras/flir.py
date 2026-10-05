@@ -264,7 +264,7 @@ class FLIR(Camera):
             Whether to print the discovered information.
 
         Returns
-        --------
+        -------
         list of str
             List of FLIR serial numbers.
         """

@@ -56,7 +56,7 @@ def download_example_notebooks(
                     if file_name[-6:] == ".ipynb":
                         shutil.copy(file_path, examples_path)
                     elif images_path is not None:
-                        # As in the download branch: next to the notebooks (for nbsphinx) and in images.
+                        # Next to the notebooks (for nbsphinx) and in images.
                         shutil.copy(file_path, examples_path)
                         image_path = os.path.join(images_path, file_name)
                         shutil.copy(file_path, image_path)

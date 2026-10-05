@@ -19,9 +19,9 @@ class Aperture:
 
     Note
     ~~~~
-    `Aperture` currently focuses on circular and elliptical shapes; future versions
-    will broaden support to more general aperture shapes and shift the `Aperture` class
-    into a broader `Source` class describing the SLM's working source.
+    :class:`Aperture` currently focuses on circular and elliptical shapes; future versions
+    will broaden support to more general aperture shapes and shift the :class:`Aperture` class
+    into a broader ``Source`` class describing the SLM's working source.
 
     Many useful phase functions are most naturally defined on a normalized unit disk
     rather than in raw grid units. An :class:`Aperture` maps normalized grid coordinates
@@ -29,7 +29,7 @@ class Aperture:
     :attr:`center`. The edge of the disk corresponds to where
     :math:`(s_x (x - c_x))^2 + (s_y (y - c_y))^2 = 1`. Evaluating a unit-disk function on
     the :meth:`transform`\ ed coordinates therefore places, sizes, and positions that
-    function on the grid; :meth:`mask` selects the pixels that fall inside the aperture.
+    function on the grid; :attr:`mask` selects the pixels that fall inside the aperture.
 
     Tip
     ~~~
@@ -48,7 +48,7 @@ class Aperture:
 
     Note
     ~~~~
-    **Centering is owned by the bound grid, and applied exactly once.** Both :meth:`mask`
+    **Centering is owned by the bound grid, and applied exactly once.** Both :attr:`mask`
     and :meth:`transform` subtract :attr:`center` from the bound grid before scaling, so an
     :class:`Aperture` must be bound to the **raw, unshifted** grid. An aperture used on the
     *derived* center-shifted :attr:`~slmsuite.hardware.slms.slm.SLM.grid` must instead be
@@ -83,6 +83,23 @@ class Aperture:
     """
 
     def __init__(self, grid, spec="cropped", center=None):
+        """
+        Bind an aperture to a grid.
+
+        Parameters
+        ----------
+        grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+            The grid to bind to; see :attr:`grid`.
+        spec : {"circular", "elliptical", "cropped"} OR float OR (float, float)
+            See :attr:`spec`.
+        center : (float, float) OR None
+            See :attr:`center`.
+
+        Raises
+        ------
+        ValueError
+            If ``spec`` is not supported.
+        """
         self._validate_spec(spec)
         self._grid = grid
         self._spec = spec
@@ -302,6 +319,7 @@ class Aperture:
         """
         Return an h5-serializable dict describing this aperture. Compatible with the
         pickling recursion used by :meth:`SLM.save() <slmsuite.hardware.slms.slm.SLM.save>`.
+        ``attributes`` and ``metadata`` are accepted for that interface and ignored.
         """
         return {"spec": self._spec, "center": self._center}
 

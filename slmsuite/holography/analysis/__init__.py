@@ -127,6 +127,8 @@ def take(
         If ``xp`` is :mod:`cupy`, then a ``cupy.ndarray`` is returned.
         If a stack of ``image_count`` images is given, the output is of shape
         ``(image_count, vector_count, h, w)`` or ``(image_count, vector_count)`` depending on ``integrate``.
+        If ``return_mask`` is ``True``, instead returns a boolean mask of the image shape
+        that is ``True`` inside the regions.
     """
     # Clean variables.
     if np.isscalar(size):
@@ -899,7 +901,7 @@ def image_variances(images, centers=None, grid=None, normalize=True, nansum=Fals
 
 
 def image_std(images, centers=None, grid=None, normalize=True, nansum=False):
-    """Near-alias of :meth:`image_variances()`. Excludes the shear variance."""
+    r"""Standard deviations :math:`\sqrt{M_{20}}`, :math:`\sqrt{M_{02}}`; see :meth:`image_variances()`."""
     return np.sqrt(image_variances(images, centers, grid, normalize, nansum, exclude_shear=True))
 
 
@@ -943,6 +945,7 @@ def image_ellipticity(variances):
     -------
     numpy.ndarray
         Array of ellipticities for the given moments in an array of shape ``(image_count,)``.
+        ``nan`` where :math:`\lambda_+ = 0`, such as for an all-zero image.
     """
     m20 = variances[0, :]
     m02 = variances[1, :]
@@ -1524,8 +1527,8 @@ def image_zernike_fit(
     (at the cost of the omission of the piston term).
     This runs on the GPU when ``phase_images`` (or ``grid``) are :mod:`cupy` arrays.
 
-    When ``gradient=False``, imperfect unwrapping breaks the assumption of linearity,
-    so large phase wraps can lead to inaccurate fits.
+    When ``gradient=False``, the phase is fit directly and must already be unwrapped;
+    phase wraps give inaccurate fits.
 
     Note
     ~~~~
@@ -1553,9 +1556,9 @@ def image_zernike_fit(
         If ``True`` (default), solve the exact least-squares fit via the normal
         equations. If ``False``, return the cheaper per-mode basis projection
         :math:`\langle\phi, Z_i\rangle / \langle Z_i, Z_i\rangle`, which ignores
-        cross-terms between modes and is exact only when the basis is orthonormal
+        cross-terms between modes and is exact only when the basis is orthogonal
         over the sampled aperture. Requires ``gradient=False``, as the gradient
-        basis is never orthonormal.
+        basis is never orthogonal.
     aperture : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
         The aperture defining the lateral scaling of the Zernike polynomials. Resolved
         with :meth:`~slmsuite.holography.toolbox.Aperture.resolve`. Ignored if ``grid``
@@ -1694,10 +1697,10 @@ def image_vortices_coordinates(phase_image, mask=None):
 
     Returns
     -------
-    coordinates : numpy.ndarray
-        The coordinates of each vortex.
+    coordinates : tuple of numpy.ndarray
+        ``(rows, cols)`` index arrays of each vortex.
     weights : numpy.ndarray
-        The winding number of each coordinate.
+        Winding number at each coordinate.
     """
     xp = get_array_module(phase_image)
 
@@ -2114,11 +2117,15 @@ def image_lattice_detect(image, method="autocorrelation", plot=0, **kwargs):
 
     Parameters
     ----------
+    image : numpy.ndarray
+        2D image of the spot array.
     method : {"autocorrelation", "fourier"}
         Whether to look for the lattice in the image's autocorrelation, whose 0th
         order is only as wide as a *spot*, or for the reciprocal lattice in its
         Fourier transform, whose 0th order is as wide as the whole *array* and so
         hides the lattice of a coarse one. Both survive the array being cropped.
+    plot : int OR bool
+        Whether to enable debug plots.
     **kwargs
         Passed to the chosen method.
 
@@ -2132,6 +2139,8 @@ def image_lattice_detect(image, method="autocorrelation", plot=0, **kwargs):
     ------
     RuntimeError
         If no prominent periodicity is found in the image.
+    ValueError
+        If ``method`` is not recognized.
     """
     if method == "autocorrelation":
         return _lattice_autocorrelation(image, plot=plot, **kwargs)
@@ -2775,7 +2784,7 @@ def blob_array_detect(
         lattice. Passed to :meth:`image_lattice_detect()`, which details the trade-off.
 
     Returns
-    --------
+    -------
     dict
         Orientation dictionary with the following keys, corresponding to
         the affine transformation:
@@ -3168,7 +3177,7 @@ class Affine(object):
         return np.linalg.det(self.M)
 
     def to_dict(self):
-        """Returns the legacy ``{"M", "b", "a"}`` dictionary form of this transformation."""
+        """Returns the ``{"M", "b", "a"}`` dictionary stored in :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations`."""
         return {"M": self.M, "b": self.b, "a": 0 * self.b}
 
 
@@ -3191,7 +3200,7 @@ class OrientationTransform:
         the :func:`numpy.rot90` step counts ``0``, ``1``, ``2``, ``3``.
     fliplr : bool
         Apply a left-right flip *after* rotation. ``fliplr=True, flipud=True`` is
-        equivalent to a 180° rotation and will be collapsed accordingly.
+        equivalent to a 180 degree rotation and will be collapsed accordingly.
     flipud : bool
         Apply an up-down flip *after* rotation.
     """
@@ -3199,13 +3208,13 @@ class OrientationTransform:
     class D_4(enum.IntEnum):
         """Enums for image orientations."""
         IDENTITY    = 0  # no transform
-        ROT90       = 1  # 90° CCW
-        ROT180      = 2  # 180°
-        ROT270      = 3  # 270° CCW  (= 90° CW)
-        FLIP        = 4  # left-right flip            (fliplr)
-        FLIP_ROT90  = 5  # left-right flip then 90° CCW  (= transpose)
-        FLIP_ROT180 = 6  # left-right flip then 180°     (= up-down flip)
-        FLIP_ROT270 = 7  # left-right flip then 270° CCW (= anti-transpose)
+        ROT90       = 1  # 90 deg CCW
+        ROT180      = 2  # 180 deg
+        ROT270      = 3  # 270 deg CCW  (= 90 deg CW)
+        FLIP        = 4  # left-right flip               (fliplr)
+        FLIP_ROT90  = 5  # left-right flip then 90 deg CCW  (= transpose)
+        FLIP_ROT180 = 6  # left-right flip then 180 deg     (= up-down flip)
+        FLIP_ROT270 = 7  # left-right flip then 270 deg CCW (= anti-transpose)
 
     # Inverse elements
     _INVERSE_D_4 = [0, 3, 2, 1, 4, 5, 6, 7]
@@ -3237,7 +3246,7 @@ class OrientationTransform:
         else:
             rot_steps = 0
 
-        # Canonicalize: flipud ≡ fliplr + rot180; both flips ≡ rot180
+        # Canonicalize: flipud == fliplr + rot180; both flips == rot180
         if fliplr and flipud:
             has_flip, extra_rot = False, 2
         elif flipud:
@@ -3334,7 +3343,7 @@ class OrientationTransform:
         numpy.ndarray
             Transformed array. Shape is ``(..., H, W)`` for transforms that preserve
             axis order or ``(..., W, H)`` for transforms that swap the spatial axes
-            (90° / 270° rotations and their flip variants).
+            (90 and 270 degree rotations and their flip variants).
         """
         xp = get_array_module(image)
         image = xp.asarray(image)

@@ -30,7 +30,7 @@ class FeedbackHologram(Hologram):
         frame. Everything outside the sub-image is undefined. ``None`` when
         :attr:`target_ij` covers the full frame.
     img_ij : numpy.ndarray OR cupy.ndarray OR None
-        Cached **amplitude** feedback image in the ``"ij"`` (raw camera) basis.
+        Cached **amplitude** feedback image in the ``"ij"`` (camera image) basis.
         Measured with :meth:`.measure()`.
     img_knm : numpy.ndarray OR cupy.ndarray OR None
         Cached **amplitude** feedback image in the ``"knm"`` basis (transformed to
@@ -317,20 +317,10 @@ class FeedbackHologram(Hologram):
             a camera-sized canvas. If ``None``, ``img`` covers the full camera
             frame.
 
-            Bounds are tested against the sub-image, so an output pixel whose
-            source coordinate falls in the outer half-pixel rim of the ROI is
-            undefined here while a full-frame canvas would have rounded it
-            inward. Size the ROI with a pixel of margin around the signal and
-            the difference does not arise.
-
-            At ``order=0`` -- what :meth:`set_target` uses -- the result is
-            otherwise identical to transforming the same sub-image embedded in
-            a full frame. Above ``order=0`` it is identical only to within the
-            spline prefilter, which is an IIR recursion over the whole input:
-            cropping perturbs its coefficients everywhere, not just at the ROI
-            edge. The perturbation is ~1e-4 of peak in intensity, rising to a
-            few parts in a thousand once :meth:`measure` takes the square root,
-            concentrated in the dimmest pixels. 
+            Source coordinates in the outer half-pixel rim of the sub-image are
+            undefined, so leave a pixel of margin around the signal. Above
+            ``order=0``, the spline prefilter makes the result differ slightly from
+            a full-frame transform.
 
         Returns
         -------
@@ -555,10 +545,7 @@ class FeedbackHologram(Hologram):
             fully inside the camera frame. Stored as :attr:`target_ij_roi`.
         """
         self.target_ij = new_target_ij.astype(self.dtype)
-        # Normalize once here and pass the result down, rather than validating
-        # in both places. ijcam_to_knmslm validates too (see
-        # _ijcam_to_knmslm_resampler), so a bad roi raises either way -- this
-        # just avoids normalizing it twice.
+        # Normalize roi once here; ijcam_to_knmslm validates it again.
         self.target_ij_roi = self._validate_roi(roi, np.shape(new_target_ij))
         # Transformation order of zero to prevent nan-blurring in MRAF cases.
         self.ijcam_to_knmslm(

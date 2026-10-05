@@ -287,8 +287,10 @@ class Meadowlark(SLM):
 
         Raises
         ------
+        RuntimeError
+            If the SDK fails to load.
         NotImplementedError
-            If multiple SLMs are not supported for this SDK
+            If the SDK cannot report a board's serial number, size, or bitdepth.
         """
         mode = Meadowlark._load_lib(sdk_path=sdk_path)
 
@@ -476,7 +478,7 @@ class Meadowlark(SLM):
 
         Raises
         ------
-        Not Implemented Error
+        NotImplementedError
             If the temperature reading is not supported for the SLM.
         """
         sdk = Meadowlark._slm_lib[self.sdk_mode]
@@ -508,7 +510,7 @@ class Meadowlark(SLM):
 
         Raises
         ------
-        Not Implemented Error
+        NotImplementedError
             If the coverglass voltage reading is not supported for the SLM.
         """
         sdk = Meadowlark._slm_lib[self.sdk_mode]

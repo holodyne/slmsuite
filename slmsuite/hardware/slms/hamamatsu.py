@@ -70,7 +70,7 @@ class Hamamatsu(SLM):
         wav_um=1,
         resolution=(1272, 1024),
         pitch_um=(12.5, 12.5),
-        verbose=True,
+        verbose=None,
         **kwargs
     ):
         r"""
@@ -95,24 +95,28 @@ class Hamamatsu(SLM):
             If ``None``, the first connected device will be used.
         wav_um : float
             Wavelength of operation in microns. Defaults to 1 um.
+        resolution : (int, int)
+            SLM resolution as ``(width, height)``. Defaults to ``(1272, 1024)``.
         pitch_um : (float, float)
             Pixel pitch in microns. Defaults to 12.5 micron square pixels.
+        verbose : None
+            Ignored, with a warning. Use :func:`slmsuite.configure_logging()`
+            to see the progress of initialization.
         """
         # Search for one device.
-        if verbose: print("Initializing Hamamatsu SDK...", end="")
+        if verbose is not None:
+            warnings.warn(
+                "verbose is ignored; set the log level with slmsuite.configure_logging()."
+            )
+        logger.debug("Initializing Hamamatsu SDK...")
         n_dev, board_ids = self._Open_Device(bID_size=1)
         self.board_id = list(board_ids)[0]
 
         if n_dev == 0:
             raise RuntimeError("No Hamamatsu devices found!")
 
-        if verbose: print("success")
-
         # Read the serial number of the device.
-        if serial_number is None:
-            if verbose: print(f"Looking for SLM...", end="")
-        else:
-            if verbose: print(f"Looking for '{serial_number}'...", end="")
+        logger.debug("Looking for %s...", "SLM" if serial_number is None else repr(serial_number))
 
         self.serial_number = self._Check_HeadSerial(board_id=self.board_id)
 
@@ -124,25 +128,20 @@ class Hamamatsu(SLM):
                 self._Close_Device(board_ids, bID_size=1)
                 raise RuntimeError(f"Could not find '{serial_number}'. Found '{self.serial_number}'.")
 
-        if verbose: print("success")
-
         # Force the SLM to USB/Trigger mode.
         try:
-            if verbose: print("Checking SLM mode...", end="")
+            logger.debug("Checking SLM mode...")
             mode = self._Mode_Check(board_id=self.board_id)
 
             if mode == 0:
-                if verbose: print("found DVI mode...switching to USB...", end="")
+                logger.debug("Found DVI mode; switching to USB and rebooting.")
                 self._Mode_Select(board_id=self.board_id, mode=1)
 
-                if verbose: print("rebooting...", end="")
                 self._Reboot(board_id=self.board_id)
             elif mode == 1:
-                if verbose: print("found USB mode...", end="")
+                logger.debug("Found USB mode.")
             else:
                 raise RuntimeError(f"Unknown SLM mode {mode}.")
-
-            if verbose: print("success")
         except Exception as e:
             self._Close_Device(board_ids, bID_size=1)
             raise e

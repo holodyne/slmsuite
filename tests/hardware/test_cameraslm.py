@@ -545,7 +545,9 @@ class TestFourierSLM:
             with pytest.raises(ValueError):
                 fourierslm_calibrated.save_calibration("nonexistent", path=temp_dir)
 
-    def test_load(self, fourierslm_calibrated, temp_dir, subtests):
+    def test_load(
+        self, fourierslm_calibrated, simulated_system_factory, temp_dir, caplog, subtests
+    ):
         """Test the FourierSLM.load static constructor."""
         path = fourierslm_calibrated.save_calibration(
             "fourier", path=temp_dir, name="test_static_load"
@@ -564,6 +566,17 @@ class TestFourierSLM:
                 fs.kxyslm_to_ijcam(kxy), fourierslm_calibrated.kxyslm_to_ijcam(kxy)
             )
             assert np.allclose(fs.simulate().kxyslm_to_ijcam(kxy), fs.kxyslm_to_ijcam(kxy))
+
+        with subtests.test("a saved binning is reported, not reapplied"):
+            binned_fs = simulated_system_factory("matched")
+            binned_fs.cam.set_binning((2, 2))
+            install_ground_truth_calibration(binned_fs)
+            binned = binned_fs.save_calibration(
+                "fourier", path=temp_dir, name="test_static_load_binned"
+            )
+            with caplog.at_level(logging.WARNING):
+                FourierSLM.load(binned)
+            assert "does not reapply binning" in caplog.text
 
     def test_plot(self, fourierslm):
         """Test FourierSLM.plot, which shows the nearfield beside the farfield."""

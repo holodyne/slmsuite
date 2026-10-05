@@ -34,8 +34,7 @@ for module_path in module_paths:
 
 from examples import download_example_notebooks
 
-# nbsphinx needs a pandoc binary. Fall back to the one bundled with pypandoc_binary
-# (in the ``docs`` extra) when pandoc is not installed on the system.
+# Without a system pandoc, nbsphinx uses the one pypandoc_binary bundles.
 if shutil.which("pandoc") is None:
     try:
         import pypandoc
@@ -63,6 +62,7 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx_autodoc_typehints",
     "sphinx.ext.extlinks",
+    "sphinx.ext.intersphinx",
     "sphinx.ext.linkcode",
     "sphinx_design",
     "IPython.sphinxext.ipython_directive",
@@ -76,6 +76,15 @@ extensions = [
 extlinks = {
     "issue": ("https://github.com/holodyne/slmsuite/issues/%s", "GH"),
     "pull": ("https://github.com/holodyne/slmsuite/pull/%s", "PR"),
+}
+
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "numpy": ("https://numpy.org/doc/stable", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy", None),
+    "cupy": ("https://docs.cupy.dev/en/stable", None),
+    "torch": ("https://docs.pytorch.org/docs/stable", None),
+    "matplotlib": ("https://matplotlib.org/stable", None),
 }
 
 # Adapted from https://github.com/DisnakeDev/disnake/blob/7853da70b13fcd2978c39c0b7efa59b34d298186/docs/conf.py#L192
@@ -216,8 +225,7 @@ def skip(app, what, name, obj, would_skip, options):
     # Don't document private things.
     elif name[0] == '_':
         skip_ = True
-    # Don't document members implemented in C on builtin bases (e.g. ``int.to_bytes`` on
-    # an ``IntEnum``). Every slmsuite method is a Python function, so none are skipped.
+    # Don't document members inherited from C builtins (e.g. ``int.to_bytes`` on an ``IntEnum``).
     elif isinstance(obj, (
         types.BuiltinFunctionType, types.MethodDescriptorType, types.WrapperDescriptorType,
         types.GetSetDescriptorType, types.MemberDescriptorType, types.ClassMethodDescriptorType,
@@ -228,28 +236,27 @@ def skip(app, what, name, obj, would_skip, options):
 
 def public_bases(app, name, obj, options, bases):
     """
-    Show base classes by their public path (e.g. ``algorithms.SpotHologram`` rather than
-    ``algorithms._spots.SpotHologram``), and drop private mixins, which are undocumented.
+    Show each base class as its nearest public ancestor, by its public path (e.g.
+    ``algorithms.FeedbackHologram`` rather than ``algorithms._feedback.FeedbackHologram``).
     """
     import importlib
 
-    public = []
-    for base in bases:
-        if base.__module__ == "builtins" or base.__name__.startswith("_"):
-            if base.__module__ == "builtins":
-                public.append(base)
-            continue
-        parts = base.__module__.split(".")
-        if any(part.startswith("_") for part in parts):
-            module = ".".join(part for part in parts if not part.startswith("_"))
-            try:
-                if getattr(importlib.import_module(module), base.__name__, None) is base:
-                    public.append(f":class:`~{module}.{base.__name__}`")
-            except ImportError:
-                pass
-        else:
-            public.append(base)
-    bases[:] = public
+    def public(cls):
+        if cls is object:
+            return []
+        module = ".".join(p for p in cls.__module__.split(".") if not p.startswith("_"))
+        try:
+            twin = getattr(importlib.import_module(module), cls.__name__, None)
+        except ImportError:
+            twin = None
+        if (
+            cls.__name__.startswith("_") or not isinstance(twin, type)
+            or twin is obj or not issubclass(twin, cls)
+        ):
+            return [p for base in cls.__bases__ for p in public(base)]
+        return [cls if twin is cls and module == cls.__module__ else f":class:`~{module}.{cls.__name__}`"]
+
+    bases[:] = list(dict.fromkeys(p for base in bases for p in public(base))) or [object]
 
 def resolve_relative(app, env, node, contnode):
     """
@@ -295,11 +302,14 @@ def resolve_relative(app, env, node, contnode):
         except (ImportError, AttributeError):
             pass
 
-    # 2) A unique documented slmsuite object with this (dotted) name. Not for modules, as
-    #    e.g. :mod:`pylablib` means the external library, not slmsuite's wrapper of it.
+    # 2) A unique module member (``func``, ``Class.attr``); not :mod:, e.g. the external pylablib.
     if node.get("reftype") != "mod":
-        suffix = "." + target
-        matches = unique([n for n in objects if n.startswith("slmsuite") and n.endswith(suffix)])
+        modules = env.get_domain("py").modules
+        matches = unique([
+            n for n in objects
+            if n.startswith("slmsuite") and n.endswith("." + target)
+            and n[:-len(target) - 1] in modules
+        ])
         if len(matches) == 1:
             return link(matches[0])
 
@@ -320,7 +330,6 @@ def setup(app):
     app.connect("autodoc-skip-member", skip)
     app.connect("autodoc-process-bases", public_bases)
     app.connect("missing-reference", resolve_relative)
-    app.add_css_file('css/custom.css')
 
     # Use local notebooks
     # examples_source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../..", "slmsuite-examples/examples")

@@ -82,7 +82,9 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
     :math:`w` is the radius of the axicon. With a flat input amplitude over
     :math:`[-w, w]`, this will produce a Bessel beam focused at :math:`z = \vec{f}`.
 
-    .. math:: \phi(\vec{x}) = 2\pi \cdot |\vec{k}_g \cdot \vec{x}|
+    .. math:: \phi(\vec{x}) = 2\pi \, \mathrm{sgn}(f) \sqrt{(k_{g,x} x)^2 + (k_{g,y} y)^2}
+
+    A negative ``f`` gives a diverging axicon.
 
     Parameters
     ----------
@@ -97,7 +99,7 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
         Defaults to infinity (no axicon).
     w : float OR None
         If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
-        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
+        passed as ``grid``, or else a quarter of the grid's smaller half-extent.
 
     Returns
     -------

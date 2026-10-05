@@ -151,6 +151,7 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
     indices : array_like
         List of indices of shape ``(N, D)`` where ``D`` is the dimension of the indexing
         (1, apart from ``"radial"`` indexing which has a dimension of 2).
+        1-dimensional indices may also be passed with shape ``(N,)``.
     from_index, to_index : str
         Zernike index convention. Must be supported.
 
@@ -158,10 +159,11 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
     -------
     indices_converted : numpy.ndarray
         List of indices of shape ``(N, D)`` where ``D`` is the dimension of the indexing
-        (1, apart from ``"radial"`` indexing which has a dimension of 2).
+        (1, apart from ``"radial"`` indexing which has a dimension of 2), or ``(N,)``
+        for 1-dimensional ``indices`` passed with that shape.
         A polynomial outside the 37-term Fringe/Wyant set has no index in these conventions
-        and is reported as :data:`ZERNIKE_INDEX_UNDEFINED`, which every further conversion
-        propagates unchanged.
+        and is reported as ``ZERNIKE_INDEX_UNDEFINED`` (``np.iinfo(int).min``), which every
+        further conversion propagates unchanged.
 
     Raises
     ------
@@ -252,7 +254,7 @@ def _zernike_index_inverse(indices, from_index):
     """
     ANSI indices for a 1-dimensional Zernike convention, inverted by table lookup
     over the range where the forward map is defined.
-    Unmapped indices return :data:`ZERNIKE_INDEX_UNDEFINED`.
+    Unmapped indices return ``ZERNIKE_INDEX_UNDEFINED``.
     """
     # Tabulate whole radial orders; Fringe/Wyant piston Z_37 requires order 12.
     order = int(np.ceil((np.sqrt(8 * int(np.max(indices, initial=0)) + 1) - 1) / 2))
@@ -275,7 +277,7 @@ def zernike(grid, index, weight=1, **kwargs):
     Returns a single real
     `Zernike polynomial <https://en.wikipedia.org/wiki/Zernike_polynomials>`_
     as a subset of :meth:`.zernike_sum()`.
-    These polynomials are commonly used as an orthonormal basis for optical aberration
+    These polynomials are commonly used as an orthogonal basis for optical aberration
     and are used in a number of places inside :mod:`slmsuite` for aberration
     compensation.
 
@@ -314,8 +316,13 @@ def zernike_get_string(index, derivative=(0,0)):
     index : int
         ANSI Zernike index.
     derivative : (int, int)
-        If non-negative, returns the Zernike derivative of the given order. For instance,
+        If nonzero, returns the Zernike derivative of the given order. For instance,
         ``(1, 0)`` corresponds to the first derivative in the :math:`x` direction.
+
+    Returns
+    -------
+    str
+        The polynomial, such as ``"2y^2+2x^2-1"`` for :math:`Z_4`.
     """
     cxy, cw = _zernike_get_cantor([index], [[1]], derivative)
     result = ""
@@ -871,7 +878,7 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     Returns a summation of
     `Zernike polynomials <https://en.wikipedia.org/wiki/Zernike_polynomials>`_
     in a computationally-efficient manner.
-    These polynomials are commonly used as an orthonormal basis for optical aberration
+    These polynomials are commonly used as an orthogonal basis for optical aberration
     and are used in a number of places inside :mod:`slmsuite` for aberration compensation.
     This function returns a sum of polynomials:
 
@@ -933,8 +940,8 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
 
         A precomputed :class:`ZernikeBasis` may also be passed. In this case the
         sum is evaluated as a single matrix product against the cached basis
-        images, and ``indices``, ``aperture``, ``use_mask``, and ``derivative``
-        are ignored (they are fixed when the basis is built).
+        images, and ``indices``, ``aperture``, and ``use_mask`` are ignored (they are
+        fixed when the basis is built). A nonzero ``derivative`` raises.
     indices : array_like of int OR None
         Which Zernike polynomials to sum, defined by ANSI indices. Of shape ``(D,)``.
 
@@ -942,7 +949,7 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
         to convert to ANSI from various other common indexing conventions.
 
         If ``None`` is passed, the assumed Zernike basis depends on the
-        dimensionality of the provided spots:
+        dimension ``D`` of ``weights``:
 
         -   If ``D == 2``, then the basis is assumed to be ``[2,1]``
             corresponding to the :math:`x = Z_2 = Z_1^1`
@@ -962,7 +969,7 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     aperture : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
         The aperture defining how the Zernike polynomials are laterally scaled and
         cropped. Pass a first-class :class:`~slmsuite.holography.toolbox.Aperture`
-        (e.g. ``Aperture("circular")``), or a legacy shorthand spec
+        (e.g. ``Aperture("circular")``), or a shorthand spec
         (``"circular"`` / ``"elliptical"`` / ``"cropped"`` / ``float`` /
         ``(float, float)``) which is wrapped by
         :meth:`~slmsuite.holography.toolbox.Aperture.resolve`. If ``None`` and ``grid``
@@ -983,7 +990,7 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
         If ``np.nan``, the clipped area is set to ``np.nan`` instead of zero;
         this is used for plotting transparency in this undefined region.
     derivative : (int, int)
-        If non-negative, returns the Zernike derivative of the given order. For instance,
+        If nonzero, returns the Zernike derivative of the given order. For instance,
         ``(1, 0)`` corresponds to the first derivative in the :math:`x` direction.
         This is fast and accurate because the derivative is computed via power rule before
         generating Zernike images.

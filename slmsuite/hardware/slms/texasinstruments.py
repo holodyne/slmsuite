@@ -107,17 +107,17 @@ class DLPC900Command(IntEnum):
     <https://www.ti.com/lit/ug/dlpu018j/dlpu018j.pdf>`_.
     """
                               # Programmer Guide Sections
-    POWER_MODE     = 0x0200   #: 2.2.1 — Standby / wakeup / reset
-    VERSION        = 0x0206   #: 2.1.5 — Firmware version info
-    HW_STATUS      = 0x1A0A   #: 2.1.1 — Hardware status register
-    MAIN_STATUS    = 0x1A0C   #: 2.1.3 — Main status register
-    INPUT_SOURCE   = 0x1A00   #: 2.3.1 — Input source selection
-    IT6535_POWER   = 0x1A01   #: 2.3.2 — IT6535 receiver power mode
-    PORT_CLOCK     = 0x1A03   #: 2.3.3 — Port and clock configuration
-    DISPLAY_MODE   = 0x1A1B   #: 2.4.1 — Display mode selection
-    PAT_STARTSTOP  = 0x1A24   #: 2.4.4.3.1 — Pattern start / stop / pause
-    PAT_LUT_CONFIG = 0x1A31   #: 2.4.4.3.3 — Pattern LUT configuration
-    PAT_LUT_DEFINE = 0x1A34   #: 2.4.4.3.5 — Pattern LUT entry definition
+    POWER_MODE     = 0x0200   #: 2.2.1 -- Standby / wakeup / reset
+    VERSION        = 0x0206   #: 2.1.5 -- Firmware version info
+    HW_STATUS      = 0x1A0A   #: 2.1.1 -- Hardware status register
+    MAIN_STATUS    = 0x1A0C   #: 2.1.3 -- Main status register
+    INPUT_SOURCE   = 0x1A00   #: 2.3.1 -- Input source selection
+    IT6535_POWER   = 0x1A01   #: 2.3.2 -- IT6535 receiver power mode
+    PORT_CLOCK     = 0x1A03   #: 2.3.3 -- Port and clock configuration
+    DISPLAY_MODE   = 0x1A1B   #: 2.4.1 -- Display mode selection
+    PAT_STARTSTOP  = 0x1A24   #: 2.4.4.3.1 -- Pattern start / stop / pause
+    PAT_LUT_CONFIG = 0x1A31   #: 2.4.4.3.3 -- Pattern LUT configuration
+    PAT_LUT_DEFINE = 0x1A34   #: 2.4.4.3.5 -- Pattern LUT entry definition
 
 
 class PLM(ScreenMirrored):
@@ -140,7 +140,7 @@ class PLM(ScreenMirrored):
     written per frame is several times larger than the phase array itself, and building it
     on the host also forgoes the :mod:`cupy`-OpenGL interop that :class:`ScreenMirrored`
     otherwise uses to reach the display. Pass :mod:`cupy` phase to :meth:`set_phase`
-    consistently to avoid a host→device copy on every call.
+    consistently to avoid a host-to-device copy on every call.
 
     Attributes
     ----------
@@ -188,7 +188,7 @@ class PLM(ScreenMirrored):
             initializing the display, which includes starting the pattern
             sequencer that the mirrors need in order to display phase at all.
             Requires ``hidapi`` (see :class:`DLPC900`). Defaults to ``False``,
-            which assumes the EVM was already configured — see the caution in
+            which assumes the EVM was already configured -- see the caution in
             the module documentation. For several PLMs, use :meth:`open_all`
             rather than ``configure_usb`` on each.
         video_input : str, optional
@@ -205,6 +205,9 @@ class PLM(ScreenMirrored):
         usb_device_number : int, optional
             Index of the DLPC900 device to open when multiple units are connected.
             Defaults to ``0``. Only used when ``configure_usb=True``.
+        dlpc : DLPC900 OR None
+            An already-open USB controller for this PLM, as passed by :meth:`open_all`.
+            Replaced by a new one if ``configure_usb=True``.
         **kwargs
             Additional arguments for :class:`ScreenMirrored`. Notably ``gpu``, which the
             PLM benefits from more than most SLMs; see the note in the class documentation.
@@ -216,7 +219,7 @@ class PLM(ScreenMirrored):
 
         # Extract model parameters
         model_shape = tuple(self.model_config["shape"])  # (rows, cols) - input phase shape
-        pitch_um = tuple(np.array(self.model_config["pitch"]) * 1e6)  # Convert m to µm
+        pitch_um = tuple(np.array(self.model_config["pitch"]) * 1e6)  # Convert m to um
 
         # Store electrode layout for later use
         self._electrode_layout_raw = np.array(self.model_config["electrode_layout"])
@@ -732,7 +735,7 @@ class PLM(ScreenMirrored):
         Close the PLM, stopping the pattern sequence and releasing USB.
 
         Stopping the pattern sequence parks the mirrors, so the PLM will ignore its
-        video signal until an EVM is configured over USB again — reopen with
+        video signal until an EVM is configured over USB again -- reopen with
         :meth:`open_all` or ``configure_usb=True``, not with :meth:`__init__` alone.
 
         Parameters
@@ -755,7 +758,7 @@ class PLM(ScreenMirrored):
             self.dlpc900 = None
         super().close()
 
-    def set_gamma(self, gamma=None, lut_size=LUT_SIZE):
+    def set_gamma(self, gamma=None, levels=None, lut_size=LUT_SIZE):
         """
         See :meth:`~slmsuite.hardware.slms.slm.SLM.set_gamma`. A PLM addresses its phase
         states through the table, so it has no ideal linear response to clear back to.
@@ -764,7 +767,7 @@ class PLM(ScreenMirrored):
             raise ValueError(
                 "A PLM requires a lookup table; pass the model's displacement ratios."
             )
-        return super().set_gamma(gamma, lut_size)
+        return super().set_gamma(gamma, levels=levels, lut_size=lut_size)
 
     def _quantize(self, phase_map):
         """
@@ -818,17 +821,17 @@ class PLM(ScreenMirrored):
         return out
 
     def _format_phase_hw(self, phase, replicate_bits=True):
-        """
+        r"""
         Process phase array into PLM electrode bitmap.
 
         Combines quantization and electrode mapping into optimized pipeline.
         Data stays on GPU if available for maximum performance - ScreenMirrored
-        will handle GPU→CPU transfer only when needed for display.
+        will handle GPU-to-CPU transfer only when needed for display.
 
         Parameters
         ----------
         phase : numpy.ndarray or cupy.ndarray
-            Phase data in any range (wrapping to [0, 2π) is handled internally
+            Phase data in any range (wrapping to :math:`[0, 2\pi)` is handled internally
             by :meth:`_quantize`).
         replicate_bits : bool, optional
             Multiply final bitplane by 255 to display same CGH for full frame.
@@ -854,10 +857,10 @@ class PLM(ScreenMirrored):
                 f"model shape {self.shape}"
             )
 
-        # Coerce input to match backend (e.g. numpy→cupy if gpu=True)
+        # Coerce input to match backend (e.g. numpy -> cupy if gpu=True)
         phase = xp.asarray(phase)
 
-        # Quantize phase to discrete states (handles [0, 2π) wrapping internally)
+        # Quantize phase to discrete states (handles [0, 2pi) wrapping internally)
         phase_state_idx = self._quantize(phase)
 
         return self._gray2display(phase_state_idx, replicate_bits=replicate_bits)
@@ -954,7 +957,7 @@ class DLPC900:
 
     Implements the DLPC900 USB commands needed to configure the EVM for video
     pattern mode, eliminating the need for TI's GUI software. Uses the native
-    OS HID driver via ``hidapi`` — no driver replacement (Zadig) required.
+    OS HID driver via ``hidapi`` -- no driver replacement (Zadig) required.
 
     The DLPC900 communicates via 64-byte HID reports with a 6-byte header::
 
@@ -1348,7 +1351,7 @@ class DLPC900:
         """
         Define a single pattern LUT entry.
 
-        Uses the fixed exposure time :data:`DLPC900_EXPOSURE_US`.
+        Uses the fixed exposure time ``DLPC900_EXPOSURE_US`` (694 microseconds).
 
         Parameters
         ----------

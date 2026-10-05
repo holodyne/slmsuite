@@ -47,7 +47,7 @@ def laguerre_gaussian(grid, l, p=0, w=None):
     w : float OR None
         The source :math:`1/e` field-amplitude (:math:`1/e^2` intensity) radius.
         If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
-        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
+        passed as ``grid``, or else a quarter of the grid's smaller half-extent.
 
     Returns
     -------
@@ -91,7 +91,7 @@ def hermite_gaussian(grid, n, m, w=None):
     w : float
         The source :math:`1/e` field-amplitude (:math:`1/e^2` intensity) radius.
         If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
-        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
+        passed as ``grid``, or else a quarter of the grid's smaller half-extent.
 
     Returns
     -------
@@ -124,7 +124,7 @@ def _ince_polynomial(p, m, parity, ellipticity, z):
     or :math:`S_p^m(z, \varepsilon)` (odd, ``parity=-1``) by constructing the
     tridiagonal eigenvalue problem for the Fourier coefficients and summing the
     resulting Fourier series. Follows the recurrence relations in
-    `DLMF §28.31 <https://dlmf.nist.gov/28.31#ii>`_.
+    `DLMF Sec. 28.31 <https://dlmf.nist.gov/28.31#ii>`_.
 
     Parameters
     ----------
@@ -306,7 +306,7 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
         elliptical coordinate system.
     w : float
         If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
-        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
+        passed as ``grid``, or else a quarter of the grid's smaller half-extent.
 
     Returns
     -------
@@ -385,7 +385,7 @@ def mathieu_gaussian(grid, r, q, w=None):
         The semifocal distance is :math:`h = w\sqrt{q/2}`.
     w : float
         If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
-        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
+        passed as ``grid``, or else a quarter of the grid's smaller half-extent.
 
     Returns
     -------
@@ -461,7 +461,7 @@ def airy(grid, f=(np.inf, np.inf), w=None):
         ``np.inf`` disables the cubic phase in that direction.
     w : float
         If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
-        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
+        passed as ``grid``, or else a quarter of the grid's smaller half-extent.
 
 
     Returns

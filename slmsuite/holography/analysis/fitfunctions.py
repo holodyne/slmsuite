@@ -200,7 +200,7 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
     .. math:: z(x,y) = c + a \exp \left[
                                 -\frac{1}{2}\left(
                                 K_{00}(x-x_0)^2 +
-                                2*K_{10}(x-x_0)(y-y_0) +
+                                2K_{10}(x-x_0)(y-y_0) +
                                 K_{11}(y-y_0)^2
                                 \right)
                                 \right].
@@ -222,10 +222,9 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
 
     Note
     ~~~~
-    The shear variance ``wxy`` is currently bounded to magnitudes below ``wx*wy``.
-    Higher values lead to solutions which cannot be normalized.
-    When ``wxy = wx*wy``, this distribution is a line (an ellipse with zeroed minor
-    axis).
+    The shear variance ``|wxy|`` is clamped to ``wx*wy``, where the covariance is
+    singular: there the shear is dropped when the inversion fails, and the distribution
+    is numerically degenerate otherwise. Keep ``|wxy|`` below ``wx*wy``.
 
     Parameters
     ----------
@@ -271,7 +270,7 @@ def tophat2d(xy, x0, y0, R, a=1, c=0):
 
     .. math:: z(x,y) =  \left\{
                             \begin{array}{ll}
-                                a + c, & x^2 + y^2 < R^2 \\
+                                a + c, & x^2 + y^2 \leq R^2 \\
                                 c, & \text{ otherwise}.
                             \end{array}
                         \right.
@@ -303,8 +302,8 @@ def sinc2d(xy, x0, y0, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     r"""
     For fitting a 2D rectangular :math:`\text{sinc}^2` distribution, potentially with a sinusoidal modulation.
 
-    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right) *
-                        \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
+    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right)
+                        \text{sinc}^2(\pi (x-x_0) / R) \, \text{sinc}^2(\pi (y-y_0) / R).
 
     where
 
@@ -347,7 +346,7 @@ def _sinc2d_nomod(xy, x0, y0, R, a=1, d=0):
     r"""
     For fitting a 2D rectangular sinc distribution, without sinusoidal modulation.
 
-    .. math:: z(x,y) =  d + a * \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
+    .. math:: z(x,y) =  d + a \, \text{sinc}^2(\pi (x-x_0) / R) \, \text{sinc}^2(\pi (y-y_0) / R).
 
     where
 
@@ -379,8 +378,8 @@ def _sinc2d_centered(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     r"""
     For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
 
-    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right) *
-                        \text{sinc}^2(\pi x / R) * \text{sinc}^2(\pi y / R).
+    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right)
+                        \text{sinc}^2(\pi x / R) \, \text{sinc}^2(\pi y / R).
 
     where
 
@@ -415,7 +414,7 @@ def _sinc2d_centered(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
 
 def _sinc2d_centered_jacobian(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     r"""
-    Jacobian of :meth:`.sinc2d_centered()`.
+    Jacobian of ``_sinc2d_centered()``.
 
     Returns
     -------

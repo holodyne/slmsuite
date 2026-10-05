@@ -301,7 +301,7 @@ class MultiplaneHologram(Hologram):
 
         Parameters
         ----------
-        cameraslm : ~slmsuite.hardware.cameraslms.FourierSLM
+        cameraslm : :class:`~slmsuite.hardware.cameraslms.FourierSLM`
             Hardware to implement blur for. Calibrations are necessary to determine how
             much to blur.
 

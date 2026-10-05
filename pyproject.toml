@@ -60,7 +60,6 @@ cameras = [
 images = [
     "imageio",
     "pygifsicle",
-    "scikit-image",
     "av",
 ]
 jupyter = [
@@ -76,7 +75,6 @@ docs = [
     "sphinx",
     "sphinx_copybutton",
     "sphinx_last_updated_by_git",
-    "sphinx_rtd_theme",
     "requests",
     "pypandoc_binary",     # Bundles the pandoc binary that nbsphinx needs.
     "pydata-sphinx-theme",
@@ -91,7 +89,6 @@ test = [
     "pytest-subtests",
     "pytest-notebook",
     "nbformat",
-    "imageio",
     "pyyaml",
     "ipywidgets",
 ]
@@ -100,6 +97,7 @@ dev = [
     "slmsuite[jupyter]",
     "slmsuite[docs]",
     "slmsuite[gpu]",
+    "slmsuite[torch]",
     "slmsuite[slms]",
     "slmsuite[cameras]",
     "line-profiler",

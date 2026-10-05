@@ -329,8 +329,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
     """
     Holography optimized for the generation of optical focal arrays (kernel-based).
 
-    Is a subclass of :class:`FeedbackHologram`, but falls back to non-camera-feedback
-    routines if :attr:`cameraslm` is not passed.
+    Is a subclass of :class:`FeedbackHologram`. Requires a :attr:`cameraslm`, which
+    supplies the Zernike scaling and calibrations.
 
     Note
     ~~~~
@@ -348,6 +348,9 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         The ANSI indices of the Zernike basis.
     spot_ij : numpy.ndarray OR None
         Lateral spot position vectors in the camera basis with shape ``(2, N)``.
+    spot_amp : numpy.ndarray
+        The **amplitudes** to target for each spot, of length ``N``.
+        The target **powers** are the square of the amplitudes.
     external_spot_amp : numpy.ndarray
         When using ``"external_spot"`` feedback or the ``"external_spot"`` stat group,
         the user must supply external data. This data is transferred through this
@@ -414,9 +417,8 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             This kernel bases itself upon :attr:`spot_zernike`, which is moved to the
             GPU every tick.
 
-        The chosen option is selected dynamically. Option 2 is the highest preference.
-        If the kernel fails to load or :mod:`cupy` is unavailable, the option will downgrade
-        to option 1. The choice is stored in :attr:`cuda`.
+        Option 2 is used when ``cuda=True``; if its kernel fails to load or :mod:`cupy`
+        is unavailable, option 1 is used. The choice is stored in :attr:`cuda`.
 
         Note
         ~~~~
@@ -479,7 +481,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             MRAF functionality still works by setting elements of ``spot_amp``
             to ``np.nan``, denoting 'noise' points where amplitude can be dumped.
             "Null" points can be set by setting elements of ``spot_amp`` to zero.
-        cameraslm : ~slmsuite.hardware.cameraslms.FourierSLM
+        cameraslm : :class:`~slmsuite.hardware.cameraslms.FourierSLM`
             Must be passed. The default of ``None`` will throw an error and is only
             optional such that we can retain the same argument ordering as :class:`SpotHologram`.
         cuda : bool

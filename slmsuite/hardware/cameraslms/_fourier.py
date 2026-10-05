@@ -410,7 +410,7 @@ class _FourierCalibration(object):
 
         If the vectors are three-dimensional, the third depth dimension is treated according to:
 
-        .. math:: y_z = \frac{f_\text{eff}^2}{\pi}x_z
+        .. math:: y_z = f_\text{eff}^2 x_z
 
         where :math:`y_z` is the normalized depth of the spot relative to the focal plane and
         :math:`x_z` is equivalent to focal power, equivalent to
@@ -483,7 +483,7 @@ class _FourierCalibration(object):
         For camera pixel indices :math:`\vec{y}` (with binning and WOI applied)
         and blaze vectors :math:`\vec{x}`, computes:
 
-        .. math:: \vec{x} = M^{-1} \cdot (\vec{y} - \vec{b}) + \vec{a}
+        .. math:: \vec{x} = M^{-1} \cdot (\vec{y} - \vec{b})
 
         where :math:`M` and :math:`\vec{b}` are computed from stored calibrations.
 
@@ -729,7 +729,7 @@ class _FourierCalibration(object):
         ----------
         return_mask : bool
             If ``False``, returns a ``(2, 5)`` array of the farfield corner coordinates
-            in camera pixel space (closed polygon with camera origin repeated).
+            in camera pixel space (closed polygon, first corner repeated).
             If ``True``, returns a boolean mask of shape ``cam.shape`` that is ``True``
             where the SLM farfield falls on the camera.
         inscribe : bool
@@ -827,7 +827,7 @@ class _FourierCalibration(object):
             returns corners in ``"knm"`` space for that grid (and supports mask output).
         return_mask : bool
             If ``False``, returns a ``(2, 5)`` array of camera corner coordinates in ``units``
-            (closed polygon with camera origin repeated).
+            (closed polygon, first corner repeated).
             If ``True``, requires ``units`` to be a shape; returns a boolean mask of that
             shape that is ``True`` where the camera falls on the farfield.
 

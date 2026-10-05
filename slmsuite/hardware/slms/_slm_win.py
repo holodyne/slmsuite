@@ -61,13 +61,13 @@ SLM_DRIVEBOARD_ERROR = {
     0x01 : "Startup error 1 (Drive board)",
     0x02 : "Startup error 2 (Drive board)",
     0x04 : "Video signal error (No signal)",
-    0x08 : "Drive board temperature error (70°C or higher)"
+    0x08 : "Drive board temperature error (70 C or higher)"
 }
 SLM_OPTIONBOARD_ERROR = {
     0x01 : "Startup error 1 (Option board)",
     0x02 : "Startup error 2 (Option board)",
     0x04 : "Voltage level error (DC 5.0V)",
-    0x08 : "Option board temperature error (70°C or higher)"
+    0x08 : "Option board temperature error (70 C or higher)"
 }
 
 # SLM_STATUS

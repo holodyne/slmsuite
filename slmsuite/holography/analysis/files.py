@@ -467,6 +467,9 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
         If ``False`` and using integer data, the data is unchanged.
         If ``False`` and using floating point data, 1 is taken to be the maximum, and
         this is scaled to the ``lut``.
+    border : float OR array_like OR None
+        Value, or leading color channel values, written into the outermost pixels of
+        each 8-bit image. If ``None``, no border is drawn.
     **kwargs
         Passed to ``imageio.imsave()`` or ``imageio.mimsave()``. Useful for choosing a ``plugin`` or ``format``.
     """

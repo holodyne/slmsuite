@@ -178,8 +178,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
         along with knowledge of the camera pixel size ``pitch_um``.
 
-    3D Vectors
-    ~~~~~~~~~~
+    .. rubric:: 3D Vectors
 
     If an array of 3D vectors is given, then the depth (:math:`z`) direction is handled
     differently than the field (:math:`xy`).
@@ -251,7 +250,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         Defaults to ``slm.shape`` if ``hardware`` is not ``None``.
 
     Returns
-    --------
+    -------
     vector_converted : numpy.ndarray
         Result of the unit conversion, in the cleaned format of :meth:`format_2vectors()`.
     """
@@ -650,8 +649,9 @@ def window_extent(window, padding_frac=0, padding_pix=0):
 
     Parameters
     ----------
-    window : numpy.ndarray<bool>
-        Boolean mask of shape ``(height, width)``.
+    window : numpy.ndarray<bool> OR (int, int, int, int) OR (array_like, array_like)
+        Boolean mask of shape ``(height, width)``, a rectangle ``(x, w, y, h)``,
+        or ``(y_indices, x_indices)`` lists of active pixels.
     padding_frac : float
         If this default window has width ``w`` and height ``h``,
         ``padding_frac`` proportionally changes these dimensions all sides.
@@ -669,7 +669,7 @@ def window_extent(window, padding_frac=0, padding_pix=0):
         in the format ``(x, w, y, h)`` where
         ``(x, y)`` is the upper left coordinate, and
         ``(w, h)`` define the extent.
-        This result is clipped to be within ``shape`` of the window.
+        For a boolean mask, this result is clipped to be within ``shape`` of the window.
     """
     limits = []
     is_mask = _is_mask(window)
@@ -910,7 +910,7 @@ def imprint(
        Passed to :meth:`transform_grid`, operating on the cropped imprint grid.
        This is left as an option such that the user does not have to transform the
        entire ``grid`` to satisfy a tiny imprinted patch.
-       If ``True``, the grid is centered on the region.
+       If ``True``, the shift is minus the mean of the cropped grid.
        See :meth:`transform_grid` for more details.
     **kwargs :
         For passing additional arguments accepted by ``function``.
@@ -1744,14 +1744,15 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
         These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
         such a class can be passed instead of the grids directly.
     transform : float OR ((float, float), (float, float)) OR None
-        If a scalar is passed, this is the angle to rotate the basis of the lens by.
+        If a scalar is passed, this is the angle to rotate the basis of the grid by.
         Defaults to zero if ``None``.
         If a 2x2 matrix is passed, transforms the :math:`x` and :math:`y` grids
         according to :math:`x' = M_{00}x + M_{01}y`,  :math:`y' = M_{10}x + M_{11}y`.
     shift : (float, float) OR None OR True
         Translational shift of the grid in normalized :math:`\frac{x}{\lambda}` coordinates
         ("fwd" direction). Defaults to no shift if ``None``.
-        If ``True``, shifts the grid to be centered upon itself.
+        If ``True``, the shift is minus the mean of the untransformed grid, which
+        centers the result only for ``direction="fwd"`` without a ``transform``.
     direction : str in ``{"fwd", "rev"}``
         Defines the direction of the transform: forward (``"fwd"``) transforms then shifts;
         reverse (``"rev"``) undoes the shift then applies the inverse transform.

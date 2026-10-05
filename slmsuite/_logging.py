@@ -21,7 +21,7 @@ _BUFFER_CAPACITY = 10000
 
 _LOGGER_COLORS = {
     "reset":                  "\033[0m",
-    "grey":                   "\033[90m",
+    "gray":                   "\033[90m",
     "red":                    "\033[31m",
     "green":                  "\033[32m",
     "yellow":                 "\033[33m",
@@ -36,6 +36,8 @@ _LOGGER_COLORS = {
     "bold_cyan":              "\033[1;36m",
     "bold_italic_bright_red": "\033[1;3;91m",
 }
+
+_LOGGER_COLORS["grey"] = _LOGGER_COLORS["gray"]       # Alias.
 
 _SLMSUITE_COLORS = {
     "Camera":    "bold_blue",
@@ -122,7 +124,7 @@ class _ColorFormatter(logging.Formatter):
     """Colorized console format, with one sub-formatter built per level."""
 
     _LEVEL_COLORS = {
-        logging.DEBUG:    _LOGGER_COLORS["grey"],
+        logging.DEBUG:    _LOGGER_COLORS["gray"],
         logging.INFO:     _LOGGER_COLORS["reset"],
         logging.WARNING:  _LOGGER_COLORS["red"],
         logging.ERROR:    _LOGGER_COLORS["bold_red"],
@@ -131,11 +133,11 @@ class _ColorFormatter(logging.Formatter):
 
     def __init__(self):
         super().__init__()
-        grey = _LOGGER_COLORS["grey"]
+        gray = _LOGGER_COLORS["gray"]
         reset = _LOGGER_COLORS["reset"]
         self._formatters = {
             level: logging.Formatter(
-                f"{grey}%(leveltag)s{reset} {grey}%(asctime)s{reset} "
+                f"{gray}%(leveltag)s{reset} {gray}%(asctime)s{reset} "
                 f"%(logcolor)s%(display)s{reset} {color}%(message)s{reset}",
                 "%H:%M:%S"
             )
@@ -221,8 +223,8 @@ def make_logger(name, color="default"):
         Logger name, prefixed with ``"slmsuite."`` automatically. Passing a module
         ``__name__`` works too: a leading ``"slmsuite."`` is stripped to avoid doubling.
     color : str, optional
-        Key into :data:`_LOGGER_COLORS` (e.g. ``"bold_cyan"``, ``"Hologram"``).
-        Defaults to uncolored.
+        A color such as ``"red"`` or ``"bold_cyan"``, or a class key such as
+        ``"Hologram"`` or ``"Camera"``. Unrecognized keys and the default are uncolored.
     """
     name = name.removeprefix("slmsuite.")
     return logging.LoggerAdapter(

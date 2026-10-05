@@ -44,13 +44,18 @@ class _SettleCalibration(object):
             If an integer, defaults to that given number of points over one second.
             The SLM is given the longest of these times to settle between measurements.
         autoexpose : bool OR dict
-            Whether or not to automatically set the camera exposure on the projected
-            array. If a dictionary is passed, it is passed to
+            Whether or not to automatically set the camera exposure on the blazed
+            spot. If a dictionary is passed, it is passed to
             :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexpose()`.
             The camera's exposure is restored afterward.
         plot : int OR bool
             If ``>= 1``, shows a debug plot with the exponential fit.
             If ``< 0``, also suppresses the progress bar.
+
+        Returns
+        -------
+        dict
+            :attr:`calibrations["settle"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`.
         """
         # Parse vector.
         point = self.kxyslm_to_ijcam(vector)

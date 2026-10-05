@@ -156,7 +156,7 @@ class Hologram(_HologramStats, _Loggable):
         Allows the user to target holography at different depths or aberration spaces.
         This is also applied for
         :class:`~slmsuite.holography.algorithms.FeedbackHologram`
-        and subclasses to `~slmsuite.holography.algorithms.FeedbackHologram.measure()`
+        and subclasses to :meth:`~slmsuite.holography.algorithms.FeedbackHologram.measure()`
         the hologram at the desired plane.
         If ``None``, this feature is not used and no depth or aberration
         transformation is applied.
@@ -305,12 +305,15 @@ class Hologram(_HologramStats, _Loggable):
                 # are automatically assumed from the 3-vector.
                 propagation_kernel = toolbox.phase.zernike_sum(
                     grid=cameraslm,
+                    indices=None,
                     weights=depth_zernike,
                 )
 
             Note
             ~~~~
             Is ignored for :class:`~slmsuite.holography.algorithms.CompressedSpotHologram`.
+        name : str OR None
+            Name used by the logger. Defaults to the class name.
         **kwargs
             Passed to :attr:`flags`.
         """
@@ -587,9 +590,7 @@ class Hologram(_HologramStats, _Loggable):
         ----------
         custom_phase : array_like OR None
             Custom nearfield initial phase. If not ``None``, then all other parameters
-            are ignored.
-            See :attr:`phase`. :attr:`phase` should only be passed if the user wants to
-            precondition the optimization. Of shape :attr:`slm_shape`.
+            are ignored. See :attr:`phase`. Of shape :attr:`slm_shape`.
         random_phase : float OR None
             Sets the phase to uniformly random phase, scaled to :math:`2\pi`.
             Setting ``random_phase`` to a fraction of 1 likewise scales the randomness.
@@ -608,7 +609,7 @@ class Hologram(_HologramStats, _Loggable):
             If ``None``, looks for ``"quadratic_phase"`` in :attr:`flags`.
             If a ``float`` is provided, the size of the beam in the
             farfield is scaled accordingly.
-            This feature is ignored if ``phase`` is not ``None``.
+            This feature is ignored if ``custom_phase`` is not ``None``.
         """
         if self.phase is None:
             self.phase = cp.zeros(self.slm_shape, dtype=self.dtype)
@@ -684,15 +685,15 @@ class Hologram(_HologramStats, _Loggable):
 
         Parameters
         ----------
-        slm_shape : (int, int) OR slmsuite.hardware.FourierSLM
-            The original shape of the SLM in :mod:`numpy` `(h, w)` form. The user can pass a
+        slm_shape : (int, int) OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR :class:`~slmsuite.hardware.slms.slm.SLM`
+            The original shape of the SLM in :mod:`numpy` ``(h, w)`` form. The user can pass a
             :class:`~slmsuite.hardware.cameraslms.FourierSLM` or
             :class:`~slmsuite.hardware.slms.slm.SLM` instead,
             and should pass this when using the ``precision`` parameter.
         padding_order : int
             Scales to the ``padding_order`` th larger power of 2.
-            A ``padding_order`` of zero does nothing. For instance, an SLM
-            with shape ``(720, 1280)`` would yield
+            A ``padding_order`` of zero does nothing. For instance, with
+            ``square_padding=False``, an SLM with shape ``(720, 1280)`` would yield
             ``(720, 1280)`` for ``padding_order=0``,
             ``(1024, 2048)`` for ``padding_order=1``, and
             ``(2048, 4096)`` for ``padding_order=2``.
@@ -1187,9 +1188,10 @@ class Hologram(_HologramStats, _Loggable):
 
               Weights target intensities by `a tunable gain factor <https://doi.org/10.1103/PhysRevX.4.021034>`_.
 
-              .. math:: \mathcal{W} = \mathcal{W}/\left(1 - f\left(1 - \mathcal{F}/\mathcal{T}\right)\right)
+              .. math:: \mathcal{W} = \mathcal{W}\Big/\left(1 - f\left(1 - \frac{\mathcal{F}/\mathcal{T}}{\langle\mathcal{F}/\mathcal{T}\rangle}\right)\right)
 
-              where :math:`f` is the gain factor passed as ``"feedback_factor"`` in
+              where :math:`\langle\cdot\rangle` is the mean and
+              :math:`f` is the gain factor passed as ``"feedback_factor"`` in
               :attr:`~slmsuite.holography.algorithms.Hologram.flags` (see ``kwargs``).
               The factor :math:`f` defaults to .1 if not passed.
 
@@ -1236,16 +1238,16 @@ class Hologram(_HologramStats, _Loggable):
               Weighting different components of the objective leads to tradeoffs between
               those components: for instance a tradeoff between power guided into a given
               pattern and the uniformity of the realized pattern.
-              :mod:`slmsuite` uses :mod:`pytorch` as a backend for gradient computation.
+              :mod:`slmsuite` uses :mod:`torch` as a backend for gradient computation.
               Notably, memory is still owned and initialized by :mod:`cupy`, but
-              gradients can be calculated by using :mod:`pytorch`-:mod:`cupy`
+              gradients can be calculated by using :mod:`torch`-:mod:`cupy`
               `interoperability <https://docs.cupy.dev/en/stable/user_guide/interoperability.html#pytorch>`_.
 
               The objective ``loss`` is expected to be a :class:`torch.nn.Module`
               and defaults to a complex variant of ``torch.nn.MSELoss()`` that skips
               undefined (``nan``) target pixels, such as an MRAF noise region, but
               normalizes the farfield over the whole plane.
-              ``loss`` is called in the style of :mod:`pytorch`, using (as arguments)
+              ``loss`` is called in the style of :mod:`torch`, using (as arguments)
               the computed ``farfield`` (with gradient tree intact) and
               the ``target`` values for the farfield. Internally, this looks like:
 
@@ -1276,7 +1278,7 @@ class Hologram(_HologramStats, _Loggable):
               or as complicated as
               `a full neural network <https://pytorch.org/tutorials/beginner/introyt/modelsyt_tutorial.html>`_
               operating on the input parameters.
-              However, remember to use :mod:`pytorch` methods because the arguments are
+              However, remember to use :mod:`torch` methods because the arguments are
               of type :class:`torch.Tensor`.
               Here's an example of a custom :meth:`torch.nn.Module.forward()`
               which implements the `Huber loss <https://en.wikipedia.org/wiki/Huber_loss>`_:
@@ -1322,6 +1324,11 @@ class Hologram(_HologramStats, _Loggable):
             A factor of 1 does not attenuate the noise region at all (the default).
             Middle ground is recommended, but is application-dependent as a
             tradeoff between improving pattern fidelity and maintaining pattern efficiency.
+            Setting the ``"mraf"`` flag to ``False`` disables MRAF even when the target
+            contains ``nan``. With MRAF enabled, a nonzero ``"zero_factor"`` flag
+            :math:`f_0` replaces the zeroing of zero-target pixels with an accumulated
+            correction :math:`\mathcal{W}_0 \leftarrow \mathcal{W}_0 - f_0|E|E`, where
+            :math:`E` is the complex farfield there (default 0, zeroing).
 
             As examples, consider two cases where MRAF can be useful:
 
@@ -1406,6 +1413,8 @@ class Hologram(_HologramStats, _Loggable):
             These are passed into :attr:`flags`. See options documented in the constructor.
             Flags read by :meth:`reset_phase`, such as ``quadratic_phase``, are stored too,
             but have no effect until :meth:`reset_phase` is next called.
+            The exception is ``name``, which labels the :mod:`tqdm` progress bar and is
+            not stored.
         """
         # 1) Update flags based upon the arguments.
         name = kwargs.pop("name", None)
@@ -1505,27 +1514,6 @@ class Hologram(_HologramStats, _Loggable):
         This function should be called through :meth:`.optimize()` and not called
         directly. It is left as a public function exposed in documentation to clarify
         how the internals of :meth:`.optimize()` work.
-
-        Note
-        ~~~~
-        FFTs here are **not** in-place: neither :mod:`numpy.fft` nor ``fftshift`` support
-        it, so each transform allocates. Per-iteration cost is dominated by the
-        ``fftshift``/``fft2``/``fftshift`` sandwich, which is kernel-launch bound for small
-        farfields and memory-bandwidth bound for large ones. Two ideas that look attractive
-        here are not improvements:
-
-        -   Replacing the two shifts with the equivalent :math:`(-1)^{m+n}` checkerboard
-            multiplies, which is faster only for small farfields and slower for large ones,
-            because the checkerboard reads a plane that the roll does not.
-        -   `get_fft_plan
-            <https://docs.cupy.dev/en/stable/reference/generated/cupyx.scipy.fftpack.get_fft_plan.html>`_,
-            as :mod:`cupy` already caches cuFFT plans internally.
-
-        The one remaining idea with real headroom is **not shifting** at all, keeping the
-        farfield in FFT order and moving measurement data into that basis -- but that
-        pushes unshifted indexing into ``target``, ``weights``, stats, and plotting. In
-        practice, speed is limited by other peripherals (especially feedback and stats)
-        rather than FFT speed or memory.
 
         Parameters
         ----------
@@ -1711,18 +1699,11 @@ class Hologram(_HologramStats, _Loggable):
                 cp.multiply(self.farfield, self.weights, _where=signal_region, out=self.farfield)
                 if mraf_factor is not None: cp.multiply(self.farfield, mraf_factor, _where=noise_region, out=self.farfield)
 
-            # self.plot_farfield(signal_region.astype(float))
-            # self.plot_farfield(noise_region.astype(float))
-            # self.plot_farfield(zero_region.astype(float))
-            # self.plot_farfield(np.isnan(self.farfield).astype(float))
-            # self.plot_farfield(self.farfield)
-
-        # self.farfield /= Hologram._norm(self.farfield, xp=cp)
-
-    # Conjugate gradient optimization.
+    # Gradient-based optimization.
     def optimize_cg(self, iterations, callback):
         """
-        Conjugate Gradient (CG) iterative phase retrieval.
+        Gradient-based iterative phase retrieval via :mod:`torch` autograd and a
+        ``torch.optim`` optimizer (the ``"CG"`` method; see :meth:`.optimize()`).
 
         **(This feature is experimental.)**
 
@@ -1750,7 +1731,7 @@ class Hologram(_HologramStats, _Loggable):
         """
         # pytorch is optional in case some users are allergic to bloat.
         if torch is None:
-            raise ValueError("pytorch is required for conjugate gradient optimization.")
+            raise ValueError("pytorch is required for gradient-based ('CG') optimization.")
 
         # Convert variables to torch with **zero-copy** cupy interoperability.
         # We need torch to handle gradient calculation.
@@ -1769,7 +1750,7 @@ class Hologram(_HologramStats, _Loggable):
             # (A) Project the phase on the SLM if it is expected by the feedback method and stat groups.
             self._update_slm(force=True, cleanup_images=True)
 
-            # (B) Step the Conjugate Gradient Optimization
+            # (B) Step the optimizer.
             # (B.1) Reset the gradients for this step.
             self.optimizer.zero_grad()
 
@@ -1917,7 +1898,7 @@ class Hologram(_HologramStats, _Loggable):
             # 1/(x^p)
             xp.power(feedback_corrected, -self.flags["feedback_exponent"], out=feedback_corrected)
         elif "nogrette" in method.lower():
-            # Taylor expand 1/(1-g(1-x)) -> 1 + g(1-x) + (g(1-x))^2 ~ 1 + g(1-x)
+            # 1/(1 - g(1 - x/<x>))
             feedback_corrected *= -(1 / xp.nanmean(feedback_corrected))
             feedback_corrected += 1
             feedback_corrected *= -self.flags["feedback_factor"]
@@ -1973,7 +1954,7 @@ class Hologram(_HologramStats, _Loggable):
 
     def measure(self, basis="ij"):
         """
-        Placeholder for `FeedbackHologram` measurements.
+        Raises :class:`NotImplementedError`; :class:`FeedbackHologram` measures the camera.
         """
         raise NotImplementedError(
             "measure() is not implemented for the base Hologram class. "
