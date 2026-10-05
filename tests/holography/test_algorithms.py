@@ -21,11 +21,6 @@ from slmsuite.holography.algorithms._header import (
 from slmsuite.holography.analysis import Affine
 from slmsuite.holography.analysis.files import load_h5
 
-from slmsuite.holography.toolbox import convert_vector, format_vectors
-from slmsuite.holography.toolbox.phase import blaze
-
-from slmsuite.hardware.slms.simulated import SimulatedSLM
-
 from conftest import (
     seed_for, install_ground_truth_calibration, spot_size_ij, view_kxy_grid, ground_truth_kxy_to_ij
 )
@@ -34,6 +29,7 @@ try:
     import cupy as cp
 except ImportError:
     cp = None
+
 
 def _np(array):
     """Return numpy array regardless of whether input is numpy or cupy."""
@@ -99,6 +95,7 @@ def _multiplane(shape=(64, 64), slm_shape=None, n=2, amp=None):
         Hologram(target=_spot_target(shape, spot), amp=amp, slm_shape=slm_shape)
         for spot in [(12, 12), (20, 44), (44, 20)][:n]
     ])
+
 
 class TestHologram:
 
@@ -418,28 +415,6 @@ class TestHologram:
         _require_cg()
         seed_for("optimize_cg")
 
-    def test_remove_vortices(self):
-        # Flat-top target, which GS fills with vortices.
-        target = np.zeros((128, 128), dtype=np.float32)
-        target[48:80, 48:80] = 1
-        hologram = Hologram(target=target, slm_shape=(64, 64))
-        hologram.optimize(method="GS", maxiter=5, verbose=False)
-
-        mask = target > 0
-        vortices_before = np.count_nonzero(analysis.image_vortices(hologram.phase_ff)[mask])
-        assert vortices_before > 0
-
-        figures_before = plt.get_fignums()
-        hologram.remove_vortices()
-        vortices_after = np.count_nonzero(analysis.image_vortices(hologram.phase_ff)[mask])
-
-        # Removal happens without plotting, and actually removes vortices.
-        assert plt.get_fignums() == figures_before
-        assert vortices_after < vortices_before
-
-    @pytest.mark.parametrize("method", ["GS", "WGS-Leonardo", "WGS-Kim", "WGS-Nogrette"])
-    def test_gs_validity(self, random_seed, method):
-
         with subtests.test("a single spot reaches better than 99% efficiency"):
             h = Hologram(target=_spot_target((64, 64), (16, 48)))
             h.optimize(method="CG", maxiter=60, verbose=False, stat_groups=["computational"])
@@ -468,6 +443,25 @@ class TestHologram:
             assert not np.any(np.isnan(h.get_phase()))
             power = np.square(np.abs(_np(h.get_farfield())))
             assert power[20, 20] + power[40, 40] > 0.5 * np.sum(power)
+
+    def test_remove_vortices(self):
+        # Flat-top target, which GS fills with vortices.
+        target = np.zeros((128, 128), dtype=np.float32)
+        target[48:80, 48:80] = 1
+        hologram = Hologram(target=target, slm_shape=(64, 64))
+        hologram.optimize(method="GS", maxiter=5, verbose=False)
+
+        mask = target > 0
+        vortices_before = np.count_nonzero(analysis.image_vortices(hologram.phase_ff)[mask])
+        assert vortices_before > 0
+
+        figures_before = plt.get_fignums()
+        hologram.remove_vortices()
+        vortices_after = np.count_nonzero(analysis.image_vortices(hologram.phase_ff)[mask])
+
+        # Removal happens without plotting, and actually removes vortices.
+        assert plt.get_fignums() == figures_before
+        assert vortices_after < vortices_before
 
     def test_gs_farfield_routines(self, subtests):
         """WGS-Kim's fixed farfield phase, latched by iteration count or by efficiency."""
