@@ -1,1 +1,1 @@
-"""File-handling and math functions. This module is hidden from documentation."""
+"""File-handling and math functions. Only :mod:`slmsuite.misc.xp` is documented."""

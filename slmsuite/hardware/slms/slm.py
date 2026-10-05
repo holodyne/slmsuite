@@ -2,42 +2,44 @@
 Abstract functionality for SLMs.
 """
 
-import time
 import os
+import time
+
 import numpy as np
+
 try:
     import cupy as cp
 except ImportError:
     cp = np
-import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-import warnings
-from PIL import Image
 import inspect
+import warnings
+import weakref
 from abc import ABC, abstractmethod
 
+import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from PIL import Image
+
 from slmsuite import __version__
-from slmsuite.hardware import _Picklable
-from slmsuite.holography import toolbox
+from slmsuite.hardware._common import _Common
+from slmsuite.holography import analysis, toolbox
 from slmsuite.misc import fitfunctions
-from slmsuite.misc.math import REAL_TYPES
-from slmsuite.holography import analysis
-from slmsuite.misc.files import generate_path, latest_path, save_h5, load_h5
+from slmsuite.misc.files import generate_path, latest_path, load_h5, save_h5
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
 
 
-def _xp(array):
-    """Return cupy if array is a cupy ndarray, else numpy."""
-    if cp is not np and isinstance(array, cp.ndarray):
-        return cp
-    return np
+LUT_SIZE = 1 << 16      # Default number of entries in a phase lookup table.
 
 
-class SLM(_Picklable, ABC):
+
+
+class SLM(_Common, ABC):
     r"""
     Abstract class for SLMs.
 
     Attributes
-    ------
+    ----------
     name : str
         Name of the SLM.
     shape : (int, int)
@@ -46,19 +48,14 @@ class SLM(_Picklable, ABC):
         Depth of SLM pixel well in bits. This is useful for converting the floats which
         the user provides to the ``bitdepth``-bit ints that the SLM reads (see the
         private method :meth:`_phase2gray`).
-    bitresolution : int
-        Stores ``2 ** bitdepth``.
     settle_time_s : float
         Delay in seconds to allow the SLM to settle. This is mostly useful for applications
         requiring high precision. This delay is applied if the user flags ``settle``
         in :meth:`set_phase()`. Defaults to .3 sec for precision.
     pitch_um : (float, float)
         Pixel pitch in microns.
-    pitch : float
-        Pixel pitch normalized to wavelengths ``pitch_um / wav_um``. This value is more
-        useful than ``pitch_um`` when considering conversions to :math:`k`-space.
     wav_um : float
-        Operating wavelength targeted by the SLM in microns. Defaults to 780 nm.
+        Operating wavelength targeted by the SLM in microns.
     wav_design_um : float
         Design wavelength for which the maximum settable value corresponds to a
         :math:`2\pi` phase shift.
@@ -74,14 +71,9 @@ class SLM(_Picklable, ABC):
         than :attr:`wav_um` should the user want to have a phase range larger than
         :math:`2\pi`, for SLMs with lookup table capability.
 
-    phase_scaling : float
-        Wavelength normalized to the phase range of the SLM. See :attr:`wav_design_um`.
-        Determined by ``phase_scaling = wav_um / wav_design_um``.
-    grid : (numpy.ndarray<float> (height, width), numpy.ndarray<float> (height, width))
-        :math:`x` and :math:`y` coordinates of the SLM's pixels in wavelengths
-        (see :attr:`wav_um`, :attr:`pitch_um`)
-        measured from the center of the SLM.
-        Of size :attr:`shape`. Produced by :meth:`numpy.meshgrid`.
+    aperture : :class:`~slmsuite.holography.toolbox.Aperture`
+        Aperture applied to the SLM's nearfield. Set with :meth:`set_aperture`
+        or fitted to a measured amplitude with :meth:`fit_aperture`.
     source : dict
         Stores data describing measured, simulated, or estimated properties of the source,
         such as amplitude and phase.
@@ -101,14 +93,44 @@ class SLM(_Picklable, ABC):
         store the true source properties (defined by the user) used to simulate the SLM's
         far-field.
 
-        When :meth:`.fit_source_amplitude()` is called,
-    phase : numpy.ndarray
-        Last displayed data in units of phase (radians). If wavefront calibration
-        (`phase_correct=True`) is used, this includes the calibration data.
-    display : numpy.ndarray
-        Last displayed data in discrete SLM units (integers). This is the data
-        that is actually displayed by the bit-limited hardware. If wavefront calibration
-        (`phase_correct=True`) is used, this includes the calibration data.
+        Arrays stored here are moved onto :attr:`xp`, so a host array may be assigned
+        without stranding it on the wrong backend; see the note on :attr:`xp`.
+
+    xp : module
+        The array backend, :mod:`numpy` or :mod:`cupy`, that this SLM stores and processes
+        data with. Selected by the ``gpu`` argument, which defaults to :mod:`cupy`
+        whenever it is installed.
+
+        Important
+        ~~~~~~~~~
+        Every array an SLM owns lives on :attr:`xp`: :attr:`phase`, :attr:`display`,
+        :attr:`grid`, :attr:`aperture` (and so :attr:`aperture_mask`), and the arrays in
+        :attr:`source`, which are moved onto :attr:`xp` as they are stored. Phase
+        functions given the SLM (``blaze(slm, ...)``, ``zernike_sum(slm, ...)``, ...)
+        therefore evaluate on :attr:`xp` and return arrays there too --- which is what
+        lets a :mod:`cupy`-backed SLM synthesize its patterns on the GPU rather than on a
+        host meshgrid and upload the result.
+
+        The consequence is that a :mod:`cupy`-backed SLM hands back :mod:`cupy` arrays, and
+        :mod:`cupy` refuses to combine those with host arrays. Where host memory is
+        required --- plotting, :mod:`cv2`, :mod:`scipy`, or a Python scalar --- ask for it
+        explicitly with :meth:`slmsuite.misc.xp.as_numpy`. Pass ``gpu=False`` to keep the
+        SLM on :mod:`numpy` instead.
+    phase : numpy.ndarray OR cupy.ndarray
+        Last displayed data in units of phase (radians), held on :attr:`xp`.
+        If wavefront calibration (`phase_correct=True`) is used, this includes the
+        calibration data.
+    display : numpy.ndarray OR cupy.ndarray
+        Last displayed data in discrete SLM units (integers), held on :attr:`xp`. This is
+        the data that is actually displayed by the bit-limited hardware. If wavefront
+        calibration (`phase_correct=True`) is used, this includes the calibration data.
+    gamma : numpy.ndarray OR cupy.ndarray OR None
+        Measured phase response, in units of :math:`2\pi`, resampled onto every one of the
+        :attr:`bitresolution` grayscale levels. Set by :meth:`set_gamma`.
+    lut : numpy.ndarray OR cupy.ndarray OR None
+        Lookup table mapping phase onto the grayscale level which realizes it, inverted
+        from :attr:`gamma` by :meth:`set_gamma`. If ``None`` (the default), the private
+        method :meth:`_phase2gray` assumes the ideal linear phase response instead.
     settle : bool
         Default behavior for the ``settle`` argument of :meth:`set_phase()`. Defaults to ``False``.
     phase_correct : bool
@@ -125,52 +147,105 @@ class SLM(_Picklable, ABC):
         "wav_um",
         "wav_design_um",
         "phase_scaling",
+        "aperture",
+        "_source_radius",
+        "phase_correct",
+        "settle",
     ]
     _pickle_data = [
         "source",
         "phase",
         "display",
     ]
+    _gamma_sign = -1        # Increasing grayscale decreases phase delay; +1 for the reverse.
 
     @abstractmethod
     def __init__(
         self,
         resolution,
         bitdepth=8,
-        name="SLM",
+        name="",
         wav_um=1,
         wav_design_um=None,
         pitch_um=(8,8),
         settle_time_s=0.3,
+        gpu=None,
     ):
         """
         Initialize SLM.
 
         Parameters
         ----------
-        resolution
-            The width and height of the camera in ``(width, height)`` form.
+        resolution : (int, int)
+            The width and height of the SLM in ``(width, height)`` form.
 
             Important
             ~~~~~~~~~
             This is the opposite of the numpy ``(height, width)``
             convention stored in :attr:`shape`.
-        bitdepth
+        bitdepth : int
             See :attr:`bitdepth`. Defaults to 8.
-        name
+        name : str
             See :attr:`name`.
-        wav_um
+        wav_um : float
             See :attr:`wav_um`.
-        wav_design_um
+        wav_design_um : float or None
             See :attr:`wav_design_um`.
-        pitch_um
+        pitch_um : float OR (float, float)
             See :attr:`pitch_um`. Defaults to 8 micron square pixels.
-        settle_time_s
+        settle_time_s : float
             See :attr:`settle_time_s`.
+        gpu : bool or None
+            Whether to store and process data with :mod:`cupy` (see :attr:`xp`).
+            Defaults to ``None``, which uses :mod:`cupy` if it is installed and
+            :mod:`numpy` otherwise. ``gpu=False`` forces host (:mod:`numpy`) arrays;
+            ``gpu=True`` forces :mod:`cupy` and raises if it is not installed.
+            This governs the whole object --- grid, aperture, and source as well as the
+            phase buffers --- so a :mod:`cupy`-backed SLM returns :mod:`cupy` arrays
+            throughout; see the note on :attr:`xp`.
         """
-        self.name = str(name)
-        width, height = resolution
-        self.shape = (int(height), int(width))
+        # Choose the array backend that this SLM will hold all of its data in.
+        if gpu is None:
+            self.xp = cp
+        elif gpu:
+            if cp is np:
+                raise ImportError("gpu=True requested, but cupy is not installed.")
+            self.xp = cp
+        else:
+            self.xp = np
+
+        # Empty handles for the phase response and its lookup table (see set_gamma).
+        self.gamma = None
+        self.lut = None
+
+        # Initialize the common hardware attributes.
+        _Common.__init__(
+            self,
+            resolution=resolution,
+            bitdepth=bitdepth,
+            name=name,
+            pitch_um=pitch_um,
+            is_slm=True,
+        )
+
+        if self.bitdepth > 12:
+            self.logger.warning(
+                "Bitdepth %s is greater than 12 and some features "
+                "(gamma/LUT, etc) may not be supported.",
+                self.bitdepth
+            )
+
+        if cp is not np:
+            if self.xp is np:
+                self.logger.warning(
+                    "cupy is installed, but gpu=False, so this SLM runs (slowly) on the host (numpy)."
+                )
+            else:
+                self.logger.info("Using GPU (cupy) backend.")
+
+        # Phase and display caches for user reference.
+        self.phase = self.xp.zeros(self.shape, dtype=np.float32)
+        self.display = self.xp.zeros(self.shape, dtype=self.dtype)
 
         # By default, target wavelength is the design wavelength
         self.wav_um = float(wav_um)
@@ -179,42 +254,31 @@ class SLM(_Picklable, ABC):
         else:
             self.wav_design_um = float(wav_design_um)
 
-        # Multiplier for when the target wavelengths differ from the design wavelength.
-        self.phase_scaling = self.wav_um / self.wav_design_um
+        if not (.3 < self.wav_um < 2):
+            self.logger.warning("SLM operation wavelength of %.2f um is unusual. Was this a typo?", self.wav_um)
+        if not (.3 < self.wav_design_um < 2):
+            self.logger.warning("SLM design wavelength of %.2f um is unusual. Was this a typo?", self.wav_design_um)
 
-        # Bit depth of SLM pixels.
-        self.bitdepth = int(bitdepth)
-
-        # time to delay after writing (allows SLM to stabilize).
-        self.settle_time_s = float(settle_time_s)
-
-        # Spatial dimensions
-        if isinstance(pitch_um, REAL_TYPES):
-            pitch_um = [pitch_um, pitch_um]
-        self.pitch_um = np.squeeze(pitch_um)
-        if len(self.pitch_um) != 2 or np.any(self.pitch_um <= 0):
-            raise ValueError("Expected positive (float, float) for pitch_um")
-        self.pitch_um = np.array([float(self.pitch_um[0]), float(self.pitch_um[1])])
-
-        self.pitch = self.pitch_um / self.wav_um
-
-        # Make normalized coordinate grids.
+        # Make normalized coordinate grids. ``_grid_base`` is the immutable geometric
+        # grid (centered on the SLM); the public ``grid`` property derives the
+        # aperture-centered working frame from it (see the ``grid`` property).
+        height, width = self.shape
         xpix = (width  - 1) * np.linspace(-0.5, 0.5, width)
         ypix = (height - 1) * np.linspace(-0.5, 0.5, height)
-        self.grid = list(np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix))
+        self._grid_base = [
+            self.xp.asarray(g.astype(np.float32))
+            for g in np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix)
+        ]
+        self._grid = None            # cache for the aperture-centered working grid
+        self._grid_center = None     # aperture center the cache was built for
 
-        # Source profile dictionary
-        self.source = {}
+        # Aperture defaults to "cropped" (circumscribes the whole grid, so it
+        # masks nothing until the user sets a real aperture). See set_aperture().
+        self.aperture = toolbox.Aperture(self._grid_base, "cropped")
+        self._source_radius = None   # None derives it from the aperture; see source_radius.
 
-        # Decide dtype
-        if self.bitdepth <= 8:
-            self.dtype = np.dtype(np.uint8)
-        else:
-            self.dtype = np.dtype(np.uint16)
-
-        # Phase and display caches for user reference.
-        self.phase = np.zeros(self.shape)
-        self.display = np.zeros(self.shape, dtype=self.dtype)
+        # Source profile dictionary. Holds its arrays on self.xp; see _Source.
+        self.source = _Source(self)
 
         # Now inspect the _set_phase_hw() method to see if it supports the execute and
         # block arguments. We need to do this in init because inspect is expensive.
@@ -222,24 +286,118 @@ class SLM(_Picklable, ABC):
         self._set_phase_hw_block = "block" in self._set_phase_hw_args
         self._set_phase_hw_execute = "execute" in self._set_phase_hw_args
 
+        # Time to delay after writing (allows SLM to stabilize).
+        self.settle_time_s = float(settle_time_s)
+
         # Default settle and phase_correct behavior for set_phase.
         self.phase_correct = True
         self.settle = False
 
+    # Aperture-derived properties
     @property
-    def bitresolution(self):
-        return 2**self.bitdepth
+    def grid(self):
+        r"""
+        :math:`(x, y)` coordinate meshgrids of the SLM's pixels in normalized units
+        (wavelengths), measured from the **aperture center**. This is the working
+        coordinate frame that analytic phase functions (lenses, gratings, Zernike, ...)
+        are generated in. Of size :attr:`shape`. Read-only: it is derived from the
+        immutable geometric grid and the :attr:`aperture` center.
+
+        Held on :attr:`xp`, so this is a :mod:`cupy` meshgrid for a :mod:`cupy`-backed SLM;
+        pass it through :meth:`slmsuite.misc.xp.as_numpy` where host memory is required.
+        See the note on :attr:`xp`.
+        """
+        center = (
+            None if self.aperture.center is None
+            else tuple(float(c) for c in self.aperture.center)
+        )
+        if self._grid is None or self._grid_center != center:
+            if center is None:
+                self._grid = self._grid_base
+            else:
+                self._grid = [
+                    self._grid_base[0] - center[0],
+                    self._grid_base[1] - center[1],
+                ]
+            self._grid_center = center
+        return self._grid
+
+    @property
+    def aperture_mask(self):
+        """
+        Boolean mask (of :attr:`shape`) of the pixels inside :attr:`aperture`.
+        """
+        return self.aperture.mask
+
+    @property
+    def zernike_scaling(self):
+        """
+        The ``(x_scale, y_scale)`` lateral scaling mapping :attr:`grid` onto the Zernike
+        unit disk, from :attr:`aperture`. Used by
+        :meth:`~slmsuite.holography.toolbox.phase.zernike_sum`. This is the SLM-level name
+        for the general :attr:`~slmsuite.holography.toolbox.Aperture.scale`.
+        """
+        return self.aperture.scale
+
+    @property
+    def source_radius(self):
+        r"""
+        The :math:`1/e` field-amplitude source radius in normalized units, for structured
+        beams such as :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian`. Set
+        independently of the pupil by :meth:`fit_aperture` or by
+        :meth:`set_aperture` ``(radius=...)``. Otherwise, it is derived from the
+        :attr:`aperture` scaling as :math:`1 / (2\,s)`, where :math:`s` is the (isotropic)
+        lateral scale, which raises :class:`ValueError` for an anisotropic (elliptical)
+        aperture that a single radius cannot describe.
+        """
+        if self._source_radius is not None:
+            return self._source_radius
+        return float(1.0 / (2.0 * self.aperture._isotropic_scale()))
+
+    def _unpickle(self, data):
+        """
+        Restores the pickled state which :meth:`__init__` does not take: the display
+        defaults, the :attr:`aperture`, the measured phase response, and the displayed
+        :attr:`phase`. See :meth:`~slmsuite._pickling._Picklable._unpickle`.
+
+        :attr:`phase_scaling` is not restored, as it is derived from the wavelengths
+        which the constructor already fixed. Neither are :attr:`gamma` and :attr:`lut`,
+        which are rebuilt from the pixel calibration that measured them; see
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM._pixel_calibration_apply_gamma`.
+        """
+        super()._unpickle(data)
+
+        if "settle_time_s" in data:
+            self.settle_time_s = float(data["settle_time_s"])
+        if "phase_correct" in data:
+            self.phase_correct = bool(data["phase_correct"])
+        if "settle" in data:
+            self.settle = bool(data["settle"])
+
+        # The pickled center is already in normalized grid units, so build the Aperture
+        # directly rather than through set_aperture(), which reads `center` as pixels.
+        aperture = data.get("aperture", None)
+        if aperture is not None:
+            self.aperture = toolbox.Aperture(
+                self._grid_base, aperture["spec"], center=aperture.get("center", None)
+            )
+            self._grid = None
+
+        # A None radius (derived from the aperture) is written to .h5 as a bool.
+        source_radius = data.get("_source_radius", None)
+        if source_radius is not None and not isinstance(source_radius, (bool, np.bool_)):
+            self._source_radius = float(source_radius)
+
+        # Last, as this renders through everything set above. The stored phase is
+        # already corrected, so it must not be corrected a second time.
+        phase = data.get("phase", None)
+        if phase is not None:
+            self.set_phase(phase, phase_correct=False, settle=False)
 
     @abstractmethod
     def close(self):
         """Abstract method to close the SLM and delete related objects."""
         raise NotImplementedError()
-
-    def __del__(self):
-        try:
-            self.close()
-        except:
-            pass
 
     @staticmethod
     def info(verbose=True):
@@ -263,7 +421,7 @@ class SLM(_Picklable, ABC):
     def load_vendor_phase_correction(self, file_path):
         """
         Loads vendor-provided phase correction from file,
-        setting :attr:`~slmsuite.hardware.slms.slm.SLM.source["phase"]`.
+        setting :attr:`~slmsuite.hardware.slms.slm.SLM.source` ``["phase"]``.
         By default, this is interpreted as an image file and is padded or unpadded to
         the shape of the SLM.
         Subclasses should implement vendor-specific routines for loading and
@@ -276,8 +434,8 @@ class SLM(_Picklable, ABC):
 
         Returns
         -------
-        numpy.ndarray
-            :attr:`~slmsuite.hardware.slms.slm.SLM.source["phase"]`,
+        numpy.ndarray OR cupy.ndarray
+            :attr:`~slmsuite.hardware.slms.slm.SLM.source` ``["phase"]``,
             the vendor-provided phase correction.
         """
         # Load an invert the image file (see phase sign convention rules in set_phase).
@@ -299,16 +457,44 @@ class SLM(_Picklable, ABC):
                 )
             )
 
-        if np.any(file_shape_error > 1):
+        if np.any(file_shape_error > 0):
             self.source["phase"] = toolbox.unpad(phase_correction, self.shape)
-        elif np.any(file_shape_error < 1):
+        elif np.any(file_shape_error < 0):
             self.source["phase"] = toolbox.pad(phase_correction, self.shape)
         else:
             self.source["phase"] = phase_correction
 
         return self.source["phase"]
 
-    def plot(self, phase=None, limits=None, title="Phase", ax=None, cbar=True):
+    def _plot_aperture(self, ax):
+        """
+        Overlay the current :attr:`aperture` on a pixel-coordinate axis: an outline, with
+        the region outside faded to mark the light which the aperture masks off.
+        Drawn only if the aperture actually crops the SLM (the default ``"cropped"``
+        aperture, whose mask is all-True, draws nothing).
+        """
+        if not self.aperture.crops:
+            return
+        mask = as_numpy(self.aperture_mask)
+        if np.all(mask):
+            return
+
+        # Fade the data itself outside the aperture. An overlay would tint the colors and
+        # so misrepresent the colormap; per-pixel alpha leaves them as plotted.
+        alpha = np.where(mask, 1.0, 0.75)
+        for im in ax.get_images():
+            array = im.get_array()
+            if array is not None and array.shape[:2] == mask.shape:
+                im.set_alpha(alpha)
+
+        ax.contour(
+            mask.astype(float),
+            levels=[0.5],
+            colors="red",
+            linewidths=1,
+        )
+
+    def plot(self, phase=None, limits=None, title="Phase", ax=None, cbar=True, aperture=True):
         """
         Plots the provided phase.
 
@@ -323,7 +509,10 @@ class SLM(_Picklable, ABC):
         ax : matplotlib.pyplot.axis OR None
             Axis to plot upon.
         cbar : bool
-            Also plot a colorbar.
+            Also plot a colorbar. Does not work if ``ax`` is passed.
+        aperture : bool
+            If ``True`` (default), overlay the current :attr:`aperture` (when it crops the
+            SLM): an outline, with the masked-off region faded.
 
         Returns
         -------
@@ -332,70 +521,376 @@ class SLM(_Picklable, ABC):
         """
         if phase is None:
             phase = self.phase
-        phase = np.array(phase, copy=(False if np.__version__[0] == '1' else None))
+        phase = as_numpy(phase)
         phase = np.mod(phase, 2*np.pi) / np.pi
 
-        if len(plt.get_fignums()) > 0:
-            fig = plt.gcf()
-        else:
-            fig = plt.figure(figsize=(20,8))
+        (ax, cax, should_show) = self._plot(
+            phase, limits, title, ax=ax, cbar=cbar,
+            labels=("SLM $n$ [pix]", "SLM $m$ [pix]"),
+            clim=[0, 2], cmap="twilight", interpolation="none",
+        )
 
-        if ax is not None:
-            plt.sca(ax)
-
-        im = plt.imshow(phase, clim=[0, 2], cmap="twilight", interpolation="none")
-        ax = plt.gca()
-
-        if cbar:
-            cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
-            fig.colorbar(im, cax=cax, orientation="vertical")
+        if cax is not None:
             ticks = [0,1,2]
-            cax.set_yticks([0,1,2])
+            cax.set_yticks(ticks)
             cax.set_yticklabels([f"${t}\\pi$" for t in ticks])
 
-        # ax.invert_yaxis()
-        ax.set_title(title)
+        if aperture and phase.shape == self.shape:
+            self._plot_aperture(ax)
 
-        if limits is not None and limits != 1:
-            if np.isscalar(limits):
-                axlim = [ax.get_xlim(), ax.get_ylim()]
-
-                centers = np.mean(axlim, axis=1)
-                deltas = np.squeeze(np.diff(axlim, axis=1)) * limits / 2
-
-                limits = np.vstack((centers - deltas, centers + deltas)).T
-            elif np.shape(limits) == (2,2):
-                pass
-            else:
-                raise ValueError(f"limits format {limits} not recognized; provide a scalar or limits.")
-
-            ax.set_xlim(limits[0])
-            ax.set_ylim(limits[1])
-
-        if phase.shape == self.shape:
-            ax.set_xlabel("SLM $n$ [pix]")
-            ax.set_ylabel("SLM $m$ [pix]")
-
-        plt.sca(ax)
+        if should_show:
+            _slmsuite_plt_show(name="slm_plot")
 
         return ax
 
-    # Writing methods
+    @property
+    def pitch(self):
+        """
+        Pixel pitch ``(x, y)`` normalized to wavelengths, ``pitch_um / wav_um``. This value
+        is more useful than ``pitch_um`` when considering conversions to :math:`k`-space.
+        """
+        return self.pitch_um / self.wav_um
 
-    def write(
-        self,
-        phase,
-        phase_correct=True,
-        settle=False,
-        **kwargs,
-    ):
-        "Backwards-compatibility alias for :meth:`set_phase()`."
-        warnings.warn(
-            "The backwards-compatible alias SLM.write will be depreciated "
-            "in favor of SLM.set_phase in a future release."
+    # Phase scaling and LUT methods
+
+    @property
+    def phase_scaling(self):
+        """
+        Wavelength normalized to the phase range of the SLM, ``wav_um / wav_design_um``.
+        See :attr:`wav_design_um`.
+        """
+        return self.wav_um / self.wav_design_um
+
+    def _interpolate_gamma(self, gamma, levels):
+        r"""
+        Interpolates a phase response measured at some ``levels`` onto all
+        :attr:`bitresolution` grayscale levels, for :meth:`set_gamma`. Levels
+        outside the sampled range are closed circularly, at the curve's average slope.
+
+        Parameters
+        ----------
+        gamma : array_like
+            Measured phase response, in units of :math:`2\pi`. See :meth:`set_gamma`.
+        levels : array_like
+            The grayscale levels at which ``gamma`` was sampled, in any order.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``gamma`` sampled at every grayscale level.
+        """
+        bitresolution = self.bitresolution
+        gamma = np.ravel(np.array(as_numpy(gamma), dtype=float))
+        levels = np.ravel(np.array(as_numpy(levels), dtype=float))
+
+        if len(levels) != len(gamma):
+            raise ValueError(
+                f"Expected {len(gamma)} levels to pair with gamma; got {len(levels)}."
+            )
+
+        order = np.argsort(levels)
+        (levels, gamma) = (levels[order], gamma[order])
+
+        if len(gamma) < 2 or levels[0] == levels[-1]:
+            raise ValueError("Expected gamma to sample at least two distinct levels.")
+        if levels[-1] - levels[0] >= bitresolution:
+            raise ValueError(
+                f"Expected levels to span less than the bitresolution {bitresolution}; "
+                f"got {levels[0]} to {levels[-1]}."
+            )
+
+        span = (gamma[-1] - gamma[0]) * bitresolution / (levels[-1] - levels[0])
+
+        return np.interp(
+            np.arange(bitresolution),
+            np.concatenate(([levels[-1] - bitresolution], levels, [levels[0] + bitresolution])),
+            np.concatenate(([gamma[-1] - span], gamma, [gamma[0] + span])),
         )
 
-        self.set_phase(phase, phase_correct, settle, **kwargs)
+    def set_gamma(self, gamma=None, levels=None, lut_size=LUT_SIZE):
+        r"""
+        Sets :attr:`lut`, the lookup table mapping a desired phase onto the grayscale
+        level which best realizes it, from a measured phase response ``gamma``.
+        Measure ``gamma`` with
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibration_process`.
+        Its sweep projects grayscale levels directly, so a previously-set :attr:`lut`
+        does not disturb the measurement.
+
+        Note
+        ~~~~
+        The lookup table supersedes :attr:`phase_scaling`, as a measured ``gamma`` already
+        contains the phase range which the SLM achieves at :attr:`wav_um`. Phases outside
+        this range are mapped to the nearest phase which the SLM can realize.
+
+        Parameters
+        ----------
+        gamma : array_like OR None
+            Magnitude of the phase realized by each of the :attr:`bitresolution` grayscale
+            levels, in units of :math:`2\pi`, increasing with level for the usual SLM. Its
+            sense is set per class, as most SLMs decrease phase delay with increasing level
+            whereas a :class:`~slmsuite.hardware.slms.texasinstruments.PLM` increases it.
+            Must be unwrapped, as an SLM with more than :math:`2\pi` of range spans more
+            than one unit. ``None`` clears :attr:`lut`, restoring the ideal linear response.
+        levels : array_like OR None
+            The grayscale levels at which ``gamma`` was sampled, in any order. ``gamma`` is
+            then interpolated onto every level, with levels outside the sampled range closed
+            circularly at the curve's average slope. If ``None``, ``gamma`` must sample
+            every level.
+        lut_size : int
+            Number of entries in :attr:`lut`. Must be a power of two.
+
+        Returns
+        -------
+        numpy.ndarray OR cupy.ndarray OR None
+            :attr:`lut`.
+        """
+        if gamma is None:
+            self.gamma = self.lut = None
+            return self.lut
+
+        if lut_size < 1 or lut_size & (lut_size - 1):
+            raise ValueError(f"Expected lut_size {lut_size} to be a positive power of two.")
+
+        if levels is not None:
+            gamma = self._interpolate_gamma(gamma, levels)
+        gamma = np.ravel(np.array(as_numpy(gamma), dtype=float))
+
+        if len(gamma) != self.bitresolution:
+            raise ValueError(
+                f"Expected gamma to span all {self.bitresolution} levels; got {len(gamma)}."
+            )
+        if not np.all(np.isfinite(gamma)):
+            raise ValueError("Expected finite gamma; a degenerate fit may produce nan.")
+
+        if self.phase_scaling != 1:
+            self.logger.warning(
+                "The gamma lookup table supersedes this SLM's phase_scaling of %s.",
+                self.phase_scaling,
+            )
+
+        # Phase realized by each level, sorted and tiled to bucket phase circularly.
+        phase = np.mod(self._gamma_sign * gamma * 2 * np.pi, 2 * np.pi)
+        ranking = np.argsort(phase)
+        tiled = np.concatenate(
+            (phase[ranking] - 2*np.pi, phase[ranking], phase[ranking] + 2*np.pi)
+        )
+
+        # Assign each of the lut_size uniformly spaced phases to the nearest level.
+        grid = np.arange(lut_size) * (2 * np.pi / lut_size)
+        index = np.searchsorted((tiled[:-1] + tiled[1:]) / 2, grid, side="right")
+
+        self.gamma = self.xp.asarray(gamma)
+        self.lut = self.xp.asarray(ranking[np.mod(index, self.bitresolution)].astype(self.dtype))
+
+        return self.lut
+
+    def plot_gamma(self, gamma=None, ax=None, **kwargs):
+        r"""
+        Plots :attr:`gamma`, the measured phase response as a function of grayscale level.
+
+        Parameters
+        ----------
+        gamma : array_like OR None
+            Phase response to plot, in units of :math:`2\pi`. If ``None``, uses
+            :attr:`gamma`.
+        ax : matplotlib.axes.Axes OR None
+            Axis to plot onto, if desired.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            Axis handle for the generated plot.
+        """
+        if gamma is None:
+            gamma = self.gamma
+        if gamma is None:
+            raise RuntimeError("No gamma to plot; call set_gamma() first or pass gamma directly.")
+
+        gamma = as_numpy(gamma)
+
+        should_show = False
+        if ax is None:
+            if len(plt.get_fignums()) == 0:
+                plt.figure()
+                should_show = True
+            ax = plt.gca()
+        else:
+            plt.sca(ax)
+
+        ax.scatter(np.arange(len(gamma)), gamma, **kwargs)
+        ax.set_title("SLM Gamma")
+        ax.set_xlabel("Bit Level")
+        ax.set_ylabel(r"Phase [norm $2\pi$]")
+        ax.set_xlim(0, len(gamma) - 1)
+        # ax.set_ylim(-0.1, 1)
+        ax.grid("on")
+
+        if should_show:
+            _slmsuite_plt_show(name="plot_gamma")
+
+        return ax
+
+    @property
+    def _phase_to_lut(self):
+        """Scale factor from phase in radians onto an index of :attr:`lut`."""
+        return np.float64(self.lut.size / (2 * np.pi))
+
+    def _phase2lut(self, phase):
+        r"""
+        Helper function to index :attr:`lut` with phase in radians, wrapping modulo
+        :math:`2\pi`.
+        """
+        xp = self.xp
+        return xp.floor(phase * self._phase_to_lut).astype(xp.int64) & (self.lut.size - 1)
+
+    def _phase2gray(self, phase, out=None):
+        r"""
+        Helper function to convert an array of phases (in radians) to an array of
+        :attr:`~slmsuite.hardware.slms.slm.SLM.bitresolution` -scaled and -cropped integers.
+        This is used by :meth:`set_phase()`. See special cases described in :meth:`set_phase()`.
+        If :attr:`lut` is set, the conversion is a lookup into the measured phase response
+        rather than the ideal linear scaling.
+
+        Parameters
+        ----------
+        phase : numpy.ndarray or cupy.ndarray
+            Array of phases in radians.
+        out : numpy.ndarray or cupy.ndarray
+            Array to store integer values scaled to SLM voltage, i.e. for in-place
+            operations.
+            If ``None``, an appropriate array will be allocated.
+
+        Returns
+        -------
+        out
+        """
+        xp = self.xp
+
+        if out is None:
+            out = xp.zeros(self.shape, dtype=self.dtype)
+
+        if self.lut is not None:
+            return xp.take(self.lut, self._phase2lut(phase), out=out)
+
+        if self.phase_scaling == 1:
+            # Prepare the 2pi -> integer conversion factor and convert.
+            factor = self._gamma_sign * (self.bitresolution / 2 / np.pi)
+            phase *= factor
+
+            # Cast via signed integers; cupy clamps negative floats cast to unsigned.
+            xp.rint(phase, out=phase)
+            index = phase.astype(xp.int32)
+
+            # Restore phase (usually self.phase) as these operations are in-place.
+            phase *= 1 / factor
+
+            # Shift by one so that phase=0 --> display=max. That way, phase will be more continuous.
+            index -= 1
+
+            # This implements modulo much faster than xp.mod().
+            if self.bitresolution & (self.bitresolution - 1) == 0:
+                active_bits_mask = int(self.bitresolution - 1)
+                xp.bitwise_and(index, active_bits_mask, out=index)
+            else:
+                # Slow backup using xp.mod().
+                xp.mod(index, self.bitresolution, out=index)
+
+            # Copy and cast the data to the output (usually self.display)
+            xp.copyto(out, index, casting="unsafe")
+        else:
+            # The bounds and truncation below are written for decreasing phase delay.
+            if self._gamma_sign != -1:
+                raise NotImplementedError(
+                    "An SLM with increasing phase delay must use a gamma lookup table "
+                    "(see set_gamma) when phase_scaling is not one."
+                )
+
+            # phase_scaling is not included in the scaling. Scale a copy, so phase keeps the data.
+            factor = -(self.bitresolution * self.phase_scaling / 2 / np.pi)
+            phase = phase * factor
+
+            # Only if necessary, modulo the phase to remain within SLM bounds.
+            if xp.amin(phase) <= -self.bitresolution or xp.amax(phase) > 0:
+                # Minus 1 is to conform with the in-bound case.
+                phase -= 1
+                # xp.mod is the slowest step. It could maybe be faster if phase is converted to
+                # an integer beforehand, but there is an amount of risk for overflow.
+                # For instance, a standard double can represent numbers far larger than
+                # even a 64 bit integer. If this optimization is implemented, take care to
+                # generate checks for the conversion to long integer / etc before the final
+                # conversion to dtype of uint8 or uint16.
+                xp.mod(phase, self.bitresolution * self.phase_scaling, out=phase)
+                phase += self.bitresolution * (1 - self.phase_scaling)
+
+                # Set values still out of range to the maximum.
+                if self.phase_scaling > 1:
+                    phase[phase < 0] = self.bitresolution - 1
+            else:
+                # Go from negative to positive.
+                phase += self.bitresolution - 1
+
+            # Copy and cast the data to the output (usually self.display)
+            xp.copyto(out, phase, casting="unsafe")
+
+        return out
+
+    def _gray2phase(self, gray):
+        r"""
+        The inverse of :meth:`_phase2gray`: the phase, in :math:`[0, 2\pi)`, that
+        :meth:`_phase2gray` maps onto each grayscale level in ``gray``.
+
+        Parameters
+        ----------
+        gray : numpy.ndarray or cupy.ndarray
+            Integer grayscale levels.
+
+        Returns
+        -------
+        numpy.ndarray or cupy.ndarray
+            Float32 phase in radians, on the SLM's backend.
+        """
+        xp = self.xp
+        if self.lut is not None:
+            level_phase = self._gamma_sign * 2 * np.pi * xp.asarray(self.gamma, dtype=xp.float32)
+            return xp.mod(level_phase, 2 * np.pi)[gray]
+
+        gray = xp.asarray(gray).astype(xp.float32)
+        if self.phase_scaling == 1:
+            # _phase2gray shifts by one level so that phase zero lands on the top level.
+            realized = (gray + 1) * (self._gamma_sign * 2 * np.pi / self.bitresolution)
+        else:
+            realized = (gray - (self.bitresolution - 1)) * (
+                -2 * np.pi / (self.bitresolution * self.phase_scaling)
+            )
+        return xp.mod(realized, 2 * np.pi).astype(xp.float32)
+
+    def get_realized_phase(self, phase=None):
+        r"""
+        The phase the SLM shows for ``phase``: quantized to its :attr:`bitresolution`
+        levels exactly as :meth:`set_phase` quantizes it (through :attr:`lut` when a
+        gamma is set), in radians wrapped to :math:`[0, 2\pi)`.
+
+        A 4-bit SLM realizes only 16 phases; this is what it displays, where
+        :attr:`phase` is what was asked of it.
+
+        Parameters
+        ----------
+        phase : array_like OR None
+            Phase in radians, of any shape. Defaults to :attr:`phase`, the last phase
+            written (including any wavefront correction).
+
+        Returns
+        -------
+        numpy.ndarray OR cupy.ndarray
+            Float32 phase in radians, on the SLM's backend.
+        """
+        xp = self.xp
+        # A copy: _phase2gray scales its input in place.
+        phase = xp.array(as_backend(self.phase if phase is None else phase, xp), dtype=xp.float32)
+        gray = self._phase2gray(phase, out=xp.empty(phase.shape, dtype=self.dtype))
+        return self._gray2phase(gray)
+
+    # Writing methods
 
     @abstractmethod
     def _set_phase_hw(self, display):
@@ -435,11 +930,26 @@ class SLM(_Picklable, ABC):
         """
         return self._phase2gray(phase, out=self.display)
 
+    def _gray2display(self, gray):
+        """
+        Helper function to send integer data to a format understood by the SLM.
+        For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`),
+        this is a more complicated step to convert from grayscale to an electrode bitmap.
+        """
+        self.xp.copyto(self.display, gray)
+        return self.display
+
+    @property
+    def _viewer_frame(self):
+        """The current phase in the gray levels that the viewer's color range spans."""
+        factor = self.phase_scaling * self.bitresolution / (2 * np.pi)
+        return as_numpy((self.phase * factor % self.bitresolution).astype(self.dtype))
+
     def set_phase(
         self,
         phase,
         phase_correct: bool = None,
-        settle: bool = None,
+        settle: bool | float = None,
         execute: bool = None,
         block: bool = None,
         **kwargs
@@ -470,11 +980,13 @@ class SLM(_Picklable, ABC):
 
         Important
         ~~~~~~~~~
-        The user does not need to wrap (e.g. :mod:`numpy.mod(data,
-        2*numpy.pi)`) the passed phase data, unless they are pre-caching data
+        The user does not need to wrap (e.g. ``numpy.mod(data, 2*numpy.pi)``)
+        the passed phase data, unless they are pre-caching data
         for speed (see below). :meth:`.set_phase()` uses optimized routines to
-        wrap the phase (see the private method :meth:`_phase2gray()`). Which
-        routine is used depends on :attr:`phase_scaling`:
+        wrap the phase (see the private method :meth:`_phase2gray()`). When a
+        measured phase response is loaded with :meth:`set_gamma()`, phase is
+        instead wrapped and converted by lookup into :attr:`lut`. Otherwise,
+        which routine is used depends on :attr:`phase_scaling`:
 
         -  :attr:`phase_scaling` is one.
             Fast bitwise integer modulo is used. Much faster than the other
@@ -498,22 +1010,17 @@ class SLM(_Picklable, ABC):
 
         Caution
         ~~~~~~~
-        After scale conversion, data is ``floor()`` ed to integers with
-        ``np.copyto``, rather than rounded to the nearest integer
-        (``np.rint()`` equivalent). While this is irrelevant for the average
-        user, it may be significant in some cases. If this behavior is
-        undesired consider either: :meth:`set_phase()` integer data directly or
-        modifying the behavior of the private method :meth:`_phase2gray()` in a
-        pull request. We have not been able to find an example of ``np.copyto``
-        producing undesired behavior, but will change this if such behavior is
-        found.
+        With :attr:`phase_scaling` equal to one, phase is rounded to the nearest
+        level. Otherwise, the scaled data is truncated to integers by ``np.copyto``,
+        and with a :attr:`lut`, phase is floored onto one of its entries. Where this
+        matters, pass integer data to :meth:`set_phase()` directly.
 
         Parameters
         ----------
-        phase : numpy.ndarray OR cupy.cparray OR
+        phase : numpy.ndarray OR cupy.ndarray OR
                 slmsuite.holography.algorithms.Hologram OR None
-        Phase data to display in units of :math:`2\pi`, unless the passed
-        data is of integer type and the data is applied directly.
+            Phase data to display, in radians, unless the passed
+            data is of integer type and the data is applied directly.
 
             -  If ``None`` is passed to :meth:`.set_phase()`, data is zeroed.
             -  If a :class:`~slmsuite.holography.algorithms.Hologram` is passed,
@@ -521,7 +1028,7 @@ class SLM(_Picklable, ABC):
                :meth:`~slmsuite.holography.algorithms.Hologram.get_phase()`.
             -  If the array has a larger shape than the SLM shape, then the data is
                cropped to size in a centered manner
-               (:attr:`~slmsuite.holography.toolbox.unpad`).
+               (:meth:`~slmsuite.holography.toolbox.unpad`).
             -  If integer data is passed with the same type as :attr:`display`
                (``np.uint8`` for <=8-bit SLMs, ``np.uint16`` otherwise),
                then this data is **directly** passed to the
@@ -534,22 +1041,23 @@ class SLM(_Picklable, ABC):
                to a TypeError.
 
             Usually, an **exact** stored copy of the data passed by the user
-            under ``phase`` is stored in the attribute :attr:`phase`. However,
-            in cases where :attr:`phase_scaling` not one, this copy is modified
-            to include how the data was wrapped. If the data was cropped, then
-            the cropped data is stored, etc. If integer data was passed, the
-            equivalent floating point phase is computed and stored in the
-            attribute :attr:`phase`.
+            under ``phase`` is stored in the attribute :attr:`phase`. When
+            :attr:`phase_scaling` is one and no :attr:`lut` is set, this copy is
+            rounded to a whole number of levels. If the data was cropped, then the
+            cropped data is stored, etc. If integer data was passed, the equivalent
+            floating point phase is computed and stored in the attribute :attr:`phase`.
         phase_correct : bool OR None
             Whether to add wavefront correction to the pattern. This correction
             is stored in
-            :attr:`~slmsuite.hardware.slms.slm.SLM.source```["phase"]``. If
+            :attr:`~slmsuite.hardware.slms.slm.SLM.source` ``["phase"]``. If
             ``None``, defaults to :attr:`phase_correct` (which defaults to
             ``True``).
-        settle : bool OR None
+        settle : bool OR float OR None
             Whether to sleep for
-            :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`. If ``None``,
-            defaults to :attr:`settle` (which defaults to ``False``).
+            :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`, or any number (integers
+            included) of seconds to sleep instead. If ``None``, defaults to :attr:`settle`
+            (which defaults to ``False``).
+            If ``block=False``, this parameter is ignored.
         execute : bool OR None
             Whether to actually send the image to the SLM. Most SLMs do not
             support this feature, and will error if ``execute`` is not
@@ -576,7 +1084,7 @@ class SLM(_Picklable, ABC):
 
         Returns
         -------
-        numpy.ndarray
+        numpy.ndarray OR cupy.ndarray
            :attr:`~slmsuite.hardware.slms.slm.SLM.display`, the integer data
            sent to the SLM.
 
@@ -588,9 +1096,7 @@ class SLM(_Picklable, ABC):
             SLM shape, etc).
         """
         # Parse execute and block arguments.
-        if execute is None:
-            execute = True
-        else:
+        if execute is not None:
             if self._set_phase_hw_execute:
                 kwargs["execute"] = bool(execute)
             else:
@@ -608,179 +1114,108 @@ class SLM(_Picklable, ABC):
                     "This SLM does not support the block argument in set_phase."
                 )
 
+        # Start a counter here for the settle time blocking.
+        t0 = time.perf_counter()
+
         # Parse phase.
         if hasattr(phase, "get_phase"):
             # If we passed a hologram, grab the phase from there.
             phase = phase.get_phase()
 
+        xp = self.xp
+
         if phase is None:
             # Zero the phase pattern.
             self.phase.fill(0)
-            xp = _xp(self.phase)
         else:
-            # Make sure the array is an ndarray (cupy or numpy).
-            xp = _xp(phase)
-            phase = xp.asarray(phase)
+            # Move the data onto this SLM's backend; numpy cannot read GPU memory.
+            phase = as_backend(phase, xp)
 
-            # If internal structures are already on GPU but input is numpy, upgrade the input.
-            if cp is not np and xp is np and isinstance(self.phase, cp.ndarray):
-                xp = cp
-                phase = cp.asarray(phase)
-
-            # Promote self.phase and self.display to GPU if input is cupy.
-            if xp is cp:
-                if not isinstance(self.phase, cp.ndarray):
-                    self.phase = cp.zeros(self.shape)
-                if not isinstance(self.display, cp.ndarray):
-                    self.display = cp.zeros(self.shape, dtype=self.dtype)
-
+        # Pass integer data directly to the SLM (no quantize/wrapping).
         if phase is not None and np.issubdtype(phase.dtype, np.integer):
-            # Check the type.
-            if phase.dtype != self.display.dtype:
+            # First, check the type.
+            if phase.dtype != self.dtype:
                 raise TypeError(
-                    "Unexpected integer type {}. Expected {}.".format(
-                        phase.dtype, self.display.dtype
-                    )
+                    f"Unexpected integer type {phase.dtype}. Expected {self.dtype}."
                 )
 
             # If integer data was passed, check that we are not out of range.
             if xp.any(phase >= self.bitresolution):
                 raise TypeError(
-                    "Integer data must be within the bitdepth ({}-bit) of the SLM.".format(
-                        self.bitdepth
-                    )
+                    f"Integer data must be within the bitdepth ({self.bitdepth}-bit) of the SLM."
                 )
 
-            # Copy the pattern and unpad if necessary.
+            # Unpad if necessary.
             if phase.shape != self.shape:
-                xp.copyto(self.display, toolbox.unpad(phase, self.shape))
-            else:
-                xp.copyto(self.display, phase)
+                phase = toolbox.unpad(phase, self.shape)
+
+            # Send the data to self.display.
+            self.display = self._gray2display(phase)
 
             # Update the phase variable with the integer data that we displayed.
-            self.phase = 2 * np.pi - self.display * (
-                2 * np.pi / self.phase_scaling / self.bitresolution
-            )
+            if self.gamma is None:
+                realized = phase * (self._gamma_sign * 2 * np.pi
+                                    / self.phase_scaling / self.bitresolution)
+            else:
+                realized = self._gamma_sign * 2 * np.pi * self.gamma[phase]
+            xp.copyto(self.phase, xp.mod(realized, 2 * np.pi))
         else:
             # If float data was passed (or the None case).
-            # Copy the pattern and unpad if necessary.
+            # Unpad if necessary.
             if phase is not None:
                 if phase.shape != self.shape:
-                    xp.copyto(self.phase, toolbox.unpad(phase, self.shape))
-                else:
-                    xp.copyto(self.phase, phase)
+                    phase = toolbox.unpad(phase, self.shape)
+
+                # Copy the data to self.phase.
+                xp.copyto(self.phase, phase)
 
             # Add phase correction if requested.
             if phase_correct is None:
                 phase_correct = self.phase_correct
             if phase_correct and ("phase" in self.source):
-                self.phase += xp.asarray(self.source["phase"])
+                self.phase += as_backend(self._get_source_phase(), xp)
 
             # Pass the data to self.display.
             # Turn the floats in phase space to integer data for the SLM.
             self.display = self._format_phase_hw(self.phase)
 
         # Write!
-        if execute:
-            self._set_phase_hw(self.display, **kwargs)
+        self._set_phase_hw(self.display, **kwargs)
+
+        # For accurate settle, reset the time to be after the data has actually been sent to the SLM.
+        t0 = time.perf_counter()
+
+        # Maybe some of that time will be spent rendering the data in the viewer...
+        if self.viewer is not None:
+            self.viewer.render(self._viewer_frame)
 
         # Optional delay.
         if settle is None:
             settle = self.settle
-        if execute and settle:
-            time.sleep(self.settle_time_s)
+        if block and settle:
+            if isinstance(settle, (bool, np.bool_)):
+                settle = self.settle_time_s
+            time_elapsed = time.perf_counter() - t0
+            time_remaining = float(settle) - time_elapsed
+            if time_remaining > 0:
+                time.sleep(time_remaining)
 
         return self.display
 
-    def _phase2gray(self, phase, out=None):
-        r"""
-        Helper function to convert an array of phases (units of :math:`2\pi`) to an array of
-        :attr:`~slmsuite.hardware.slms.slm.SLM.bitresolution` -scaled and -cropped integers.
-        This is used by :meth:`set_phase()`. See special cases described in :meth:`set_phase()`.
-        Supports both :mod:`numpy` and :mod:`cupy` arrays for GPU acceleration.
+    def write(
+        self,
+        phase,
+        phase_correct=True,
+        settle=False,
+        **kwargs,
+    ):
+        "Backwards-compatibility alias for :meth:`set_phase()`."
+        warnings.warn(
+            "The backwards-compatible alias SLM.write will be deprecated "
+            "in favor of SLM.set_phase in a future release."
+        )
 
-        Parameters
-        ----------
-        phase : numpy.ndarray or cupy.ndarray
-            Array of phases in radians.
-        out : numpy.ndarray or cupy.ndarray
-            Array to store integer values scaled to SLM voltage, i.e. for in-place
-            operations.
-            If ``None``, an appropriate array will be allocated.
-
-        Returns
-        -------
-        out
-        """
-        xp = _xp(phase)
-
-        if out is None:
-            out = xp.zeros(self.shape, dtype=self.dtype)
-        elif xp is cp and not isinstance(out, cp.ndarray):
-            out = cp.zeros(self.shape, dtype=self.dtype)
-            self.display = out
-
-        if self.phase_scaling == 1:
-            # Prepare the 2pi -> integer conversion factor and convert.
-            factor = -(self.bitresolution / 2 / np.pi)
-            phase *= factor
-
-            # There is some randomness involved in casting positive floats to integers.
-            # Avoid this by going all negative.
-            maximum = xp.amax(phase)
-            if maximum >= 0:
-                toshift = self.bitresolution * 2 * float(xp.ceil(maximum / self.bitresolution))
-                phase -= toshift
-
-            # Copy and cast the data to the output (usually self.display)
-            xp.rint(phase, out=phase)
-            xp.copyto(out, phase, casting="unsafe")
-
-            # Restore phase (usually self.phase) as these operations are in-place.
-            phase *= 1 / factor
-
-            # Shift by one so that phase=0 --> display=max. That way, phase will be more continuous.
-            out -= 1
-
-            # This part (along with the choice of type), implements modulo much faster than xp.mod().
-            if self.bitresolution & (self.bitresolution - 1) == 0:
-                active_bits_mask = int(self.bitresolution - 1)
-                xp.bitwise_and(out, active_bits_mask, out=out)
-            else:
-                # Slow backup using xp.mod().
-                xp.mod(out, self.bitresolution, out=out)
-        else:
-            # phase_scaling is not included in the scaling.
-            factor = -(self.bitresolution * self.phase_scaling / 2 / np.pi)
-            phase *= factor
-
-            # Only if necessary, modulo the phase to remain within SLM bounds.
-            if xp.amin(phase) <= -self.bitresolution or xp.amax(phase) > 0:
-                # Minus 1 is to conform with the in-bound case.
-                phase -= 1
-                # xp.mod is the slowest step. It could maybe be faster if phase is converted to
-                # an integer beforehand, but there is an amount of risk for overflow.
-                # For instance, a standard double can represent numbers far larger than
-                # even a 64 bit integer. If this optimization is implemented, take care to
-                # generate checks for the conversion to long integer / etc before the final
-                # conversion to dtype of uint8 or uint16.
-                xp.mod(phase, self.bitresolution * self.phase_scaling, out=phase)
-                phase += self.bitresolution * (1 - self.phase_scaling)
-
-                # Set values still out of range to zero.
-                if self.phase_scaling > 1:
-                    phase[phase < 0] = self.bitresolution - 1
-            else:
-                # Go from negative to positive.
-                phase += self.bitresolution - 1
-
-            # Copy and cast the data to the output (usually self.display)
-            xp.copyto(out, phase, casting="unsafe")
-
-            # Restore phase (though we do not unmodulo)
-            phase *= 1 / factor
-
-        return out
+        return self.set_phase(phase, phase_correct, settle, **kwargs)
 
     # File saving methods
 
@@ -795,7 +1230,7 @@ class SLM(_Picklable, ABC):
         path : str
             Path to directory to save in. Default is current directory.
         name : str OR None
-            Name of the save file. If ``None``, will use :attr:`name` + ``'-phase'``.
+            Name of the save file. If ``None``, will use :attr:`name` + ``'_phase'``.
 
         Returns
         -------
@@ -814,21 +1249,25 @@ class SLM(_Picklable, ABC):
             }
         )
 
+        self.logger.info("Saved phase to '%s'.", file_path)
+
         return file_path
 
     def load_phase(self, file_path=None, settle=False):
         """
         Loads :attr:`~slmsuite.hardware.slms.slm.SLM.display`
-        from a file and writes to the SLM.
+        from a file and writes to the SLM. Logs a warning if the stored
+        :attr:`~slmsuite.hardware.slms.slm.SLM.phase` does not reproduce the stored display.
 
         Parameters
         ----------
         file_path : str OR None
             Full path to the phase file. If ``None``, will
             search the current directory for a file with a name like
-            :attr:`name` + ``'-phase'``.
-        settle : bool
-            Whether to sleep for :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`.
+            :attr:`name` + ``'_phase'``.
+        settle : bool OR float
+            Whether to sleep for :attr:`~slmsuite.hardware.slms.slm.SLM.settle_time_s`, or any
+            number (integers included) of seconds to sleep instead.
 
         Returns
         -------
@@ -839,10 +1278,6 @@ class SLM(_Picklable, ABC):
         ------
         FileNotFoundError
             If a file is not found.
-        Warning
-            Warns the user if the stored
-            :attr:`~slmsuite.hardware.slms.slm.SLM.phase`
-            does not agree with the displayed value.
         """
         if file_path is None:
             path = os.path.abspath(".")
@@ -856,16 +1291,25 @@ class SLM(_Picklable, ABC):
 
         data = load_h5(file_path)
 
-        self._set_phase_hw(data["display"])
-        self.display = data["display"]
-        self.phase = data["phase"]
+        display = self.xp.asarray(data["display"])
+        self.phase = self.xp.asarray(data["phase"], dtype=np.float32)
 
-        if not np.all(np.isclose(data["display"], self._format_phase_hw(data["phase"]))):
-            warnings.warn("Integer data in 'display' does not match 'phase' for this SLM.")
+        self._set_phase_hw(display)
+
+        self.logger.info("Loaded phase from '%s'.", file_path)
+
+        # Verify the file's display against one recomputed from its phase.
+        if not self.xp.all(self.xp.isclose(display, self._format_phase_hw(self.phase))):
+            self.logger.warning("Integer data in 'display' does not match 'phase' for this SLM.")
+
+        self.display = display
 
         # Optional delay.
         if settle:
-            time.sleep(self.settle_time_s)
+            if isinstance(settle, (bool, np.bool_)):
+                settle = self.settle_time_s
+            if float(settle) > 0:
+                time.sleep(float(settle))
 
         return file_path
 
@@ -899,6 +1343,58 @@ class SLM(_Picklable, ABC):
         """
         raise NotImplementedError("This SLM does not support output triggering.")
 
+    # Segmentation
+
+    def segment(
+        self,
+        shape,
+    ):
+        """
+        Splits the area of the SLM into a number of segments.
+
+        Parameters
+        ----------
+        shape : int OR (int, int)
+            Segmentation pattern in ``(rows, columns)``.
+            If a single integer is passed, this is assumed to be the number of columns,
+            i.e. ``(1, shape)``.
+        """
+        # Parse shape
+        if np.isscalar(shape):
+            shape = int(np.rint(shape))
+            shape = (1, shape)
+
+        shape = toolbox.format_shape(shape)
+
+        # Get width and height of segments in pixels.
+        h, w = segment_shape = [s // p for s, p in zip(self.shape, shape)]
+
+        # Shift the grid so that extra area is on the edges.
+        y0, x0 = [((s - p * sp) // 2) for s, p, sp in zip(self.shape, shape, segment_shape)]
+
+        # Import here to avoid circular imports.
+        from slmsuite.hardware.slms.segmented import SegmentedSLM
+
+        # Now make all the children and return.
+        children = []
+
+        for xi in range(shape[1]):
+            for yi in range(shape[0]):
+                x = x0 + xi * w
+                y = y0 + yi * h
+
+                # The last SLM should handle updates by default.
+                child = SegmentedSLM(
+                    parent=self,
+                    window=(x, w, y, h),
+                    name=f"{self.name}_segment_{x}_{y}",
+                    refresh=(xi == shape[1] - 1 and yi == shape[0] - 1)
+                )
+
+                children.append(child)
+
+        return children
+
     # Source and calibration methods
 
     def set_source_analytic(
@@ -929,36 +1425,42 @@ class SLM(_Picklable, ABC):
         Parameters
         ----------
         fit_function : str OR lambda
-            Function name from :mod:`~slmsuite.misc.fitfunctions` used to set the
+            Function name from :mod:`~slmsuite.holography.analysis.fitfunctions` used to set the
             source profile. The function can also be passed directly.
             Defaults to ``"gaussian2d"``.
         units : str in {"norm", "frac", "nm", "um", "mm", "m"}
-            Units for the :math:`(x,y)` grid passed to ``fit_function``. This essentially
-            determines the scaling on the normalized grid stored in the SLM which is
-            passed to the ``fit_function``.
+            Units for the :math:`(x,y)` grid passed to ``fit_function``: ``"norm"``
+            (normalized to wavelengths), ``"frac"`` (each axis divided by the full extent of
+            the SLM along it, so the grid spans :math:`[-1/2, 1/2]`), or a physical length.
+            A ``"frac"`` radius here is thus a fraction of the full extent, which is where
+            :meth:`set_aperture` places the pupil for the same ``"frac"`` ``radius``.
+        phase_offset : float OR numpy.ndarray OR cupy.ndarray
+            Additional phase (of shape :attr:`shape`) added to :attr:`source`.
         sim : bool
             Sets the simulated source distribution if ``True`` or the approximate
             experimental source distribution (in absence of wavefront calibration)
             if ``False``.
-        phase_offset : float OR numpy.ndarray
-            Additional phase (of shape :attr:`shape`) added to :attr:`source`.
         **kwargs
             Arguments passed to ``fit_function`` in addition to the SLM grid in the
             requested ``units``. If the ``fit_function`` is ``"gaussian2d"`` and no
-            keyword arguments have been passed, the radius defaults to 1/2 of the
+            keyword arguments have been passed, the radius defaults to a quarter of the
             smaller of the two SLM dimensions.
 
         Returns
-        --------
+        -------
         dict
             :attr:`~slmsuite.hardware.slms.slm.SLM.source`.
         """
+        # The fit functions are host-only (numpy rejects device arrays), so evaluate
+        # on the host grid and move the result onto this SLM's backend at the end.
+        grid = [as_numpy(g) for g in self.grid]
+
         # Wavelength normalized
         if units == "norm":
             scaling = (1,1)
         # Fractions of the display
         elif units == "frac":
-            scaling = [g.max() - g.min() for g in self.grid]
+            scaling = [g.max() - g.min() for g in grid]
         # Physical units
         else:
             if units in toolbox.LENGTH_FACTORS.keys():
@@ -967,7 +1469,7 @@ class SLM(_Picklable, ABC):
                 raise RuntimeError("Did not recognize units '{}'".format(units))
             scaling = [factor / self.wav_um, factor / self.wav_um]
 
-        xy = [g / s for g,s in zip(self.grid, scaling)]
+        xy = [g / s for g,s in zip(grid, scaling)]
 
         if len(kwargs) == 0 and isinstance(fit_function, str) and fit_function == "gaussian2d":
             w = np.min([np.amax(xy[0]), np.amax(xy[1])]) / 2
@@ -978,265 +1480,263 @@ class SLM(_Picklable, ABC):
 
         source = fit_function(xy, **kwargs)
 
+        # The fit ran on the host, so phase_offset joins it there 
         self.source["amplitude_sim" if sim else "amplitude"] = np.abs(source)
-        self.source["phase_sim" if sim else "phase"] = np.angle(source) + phase_offset
+        self.source["phase_sim" if sim else "phase"] = np.angle(source) + as_numpy(phase_offset)
 
         return self.source
 
-    def fit_source_amplitude(self, method="moments", extent_threshold=.1, force=True):
+    def _center_pix_to_norm(self, center_pix):
+        """Convert a ``(x, y)`` pixel coordinate to the grid's normalized units."""
+        center_pix = np.array(center_pix, dtype=float).ravel()
+        return self.pitch * (center_pix - (np.flip(self.shape) - 1) / 2.0)
+
+    def _fit_source_radius(self, power, method):
         """
-        Extracts various :attr:`source` parameters from the source for use in
-        analytic functions. This is done by analyzing the :attr:`source` ``["amplitude"]``
-        distribution with ``"moments"`` or least squares ``"fit"``.
-        These parameters include the following keys:
+        The ``(x, y)`` pixel center and the :math:`1/e` field-amplitude radius, in the grid's
+        normalized units, of a source ``power`` distribution. Analyzed by moment calculations
+        (``"moments"``, faster) or by a least-squares Gaussian ``"fit"`` (more accurate).
+        """
+        if method == "fit":
+            # The fit is on the amplitude; gaussian2d depends on the widths only through
+            # their squares, so drop the sign.
+            result = analysis.image_fit(np.sqrt(power), plot=False)
+            center = np.array([result[0, 1], result[0, 2]])
+            radius = np.sqrt(2) * np.abs(np.array([result[0, 5], result[0, 6]]))
+        elif method == "moments":
+            center = analysis.image_positions(power)
+            radius = np.sqrt(4 * analysis.image_variances(power, centers=center)[:2])
+        else:
+            raise ValueError(f"method '{method}' not recognized; use 'moments' or 'fit'.")
 
-        -   ``"amplitude_center_pix"`` : (float, float)
+        # Both return coordinates relative to the image center, which analysis.image_moment
+        # defines as (N - 1) / 2 (matching the SLM grid and _center_pix_to_norm). Use the
+        # same convention to recover absolute pixels.
+        center_pix = np.squeeze(center) + (np.flip(self.shape) - 1) / 2.0
 
-            Pixel corresponding to the center of the source.
-            The grid is also changed to be centered on this pixel.
+        return (center_pix, float(np.mean(self.pitch * np.squeeze(radius))))
 
-        -   ``"amplitude_radius"`` : float
+    def _length_to_norm(self, length, units):
+        """
+        Convert a scalar ``length`` in ``units`` to the grid's normalized units.
+        ``units`` is one of ``"norm"``, ``"frac"``, ``"pix"``, or a key of
+        :attr:`~slmsuite.holography.toolbox.LENGTH_FACTORS`.
+        """
+        if units == "norm":
+            factor = 1.0
+        elif units == "frac":
+            # Fraction of the half-extent (the smaller of the two half-dimensions).
+            # Reduce on the grid's own backend, then compare as Python floats: numpy
+            # cannot reduce over a list of device scalars.
+            xp = self.xp
+            factor = min(
+                float(xp.nanmax(self._grid_base[0])),
+                float(xp.nanmax(self._grid_base[1])),
+            )
+        elif units == "pix":
+            factor = float(np.mean(self.pitch))
+        elif units in toolbox.LENGTH_FACTORS:
+            factor = toolbox.LENGTH_FACTORS[units] / self.wav_um
+        else:
+            raise RuntimeError("Did not recognize units '{}'".format(units))
+        return length * factor
 
-            The radial standard deviation of the amplitude distribution in normalized units.
-            For a Gaussian source, this is the :math:`1/e` amplitude radius
-            (:math:`1/e^2` power radius).
-            This is scalar and averages the :math:`x` and :math:`y` distributions.
-            This is used to set the source radius for
-            :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian()`
-            and similar.
+    def set_aperture(self, spec=None, *, radius=None, center=None, units="norm"):
+        r"""
+        Sets the SLM's :attr:`aperture` which defines the working
+        coordinate frame (:attr:`grid` centering), the Zernike lateral scaling
+        (:attr:`zernike_scaling`), the in-use mask (:attr:`aperture_mask`), and the
+        effective (masked) source amplitude and phase.
 
-        -   ``"amplitude_extent"`` : (float, float)
+        Setting an aperture **always** applies it to the source amplitude and phase: the
+        region outside the aperture is masked off everywhere the source is used (e.g.
+        holography, :meth:`set_phase`'s wavefront correction). The default aperture
+        (``"cropped"``) circumscribes the whole grid and so masks nothing.
 
-            The box radii of the smallest rectangle which covers all amplitude
-            larger than ``extent_threshold``, where the maximum of the distribution is
-            normalized to one.
+        Parameters
+        ----------
+        spec : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
+            The aperture shape/scaling, as accepted by
+            :class:`~slmsuite.holography.toolbox.Aperture`
+            (``"circular"`` / ``"elliptical"`` / ``"cropped"`` / ``float`` /
+            ``(float, float)`` / an :class:`~slmsuite.holography.toolbox.Aperture`).
+            Mutually exclusive with ``radius``. If both ``spec`` and ``radius`` are
+            ``None``, the current aperture's spec is kept.
+        radius : float OR None
+            Shorthand for a circular aperture of the given source (:math:`1/e`) radius,
+            interpreted in ``units`` and stored as :attr:`source_radius`. The
+            aperture/pupil itself extends to twice this radius (the lateral scaling is
+            :math:`1 / (2\,r)`). Passing a new ``spec`` instead drops any stored source
+            radius, so :attr:`source_radius` is again derived from the aperture.
+        center : (float, float) OR None
+            The ``(x, y)`` pixel the aperture is centered on. ``None`` (the default)
+            centers the aperture on the geometric center of the SLM.
+        units : str
+            Units for ``radius``: ``"norm"`` (normalized to wavelengths, the default),
+            ``"frac"`` (fraction of the smaller half-extent of the SLM), ``"pix"`` (number
+            of pixels), or a physical length (``"um"``, ``"mm"``, ...). As the pupil extends
+            to twice ``radius``, a ``"frac"`` ``radius`` puts the pupil at that fraction of
+            the full extent of the shorter axis, as in :meth:`set_source_analytic`.
 
-        -   ``"amplitude_extent_radius"`` : float
+        Returns
+        -------
+        :class:`~slmsuite.holography.toolbox.Aperture`
+            The new :attr:`aperture`.
+        """
+        source_radius = None
+        if radius is not None:
+            if spec is not None:
+                raise ValueError("Provide either spec or radius, not both.")
+            source_radius = float(self._length_to_norm(radius, units))
+            spec = 1.0 / (2.0 * source_radius)
 
-            Smallest scalar radius about the center of the that covers all amplitude
-            larger than ``extent_threshold``, where the maximum of the distribution is
-            normalized to one.
-            This is used to determine the scaling for
-            :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture()`:
-            Too small of a scaling is not good because amplitude would
-            overlap outside where Zernike is defined, with divergent phase for higher
-            order Zernike polynomials.
-            Too large of a scaling is not good because one needs to use high order
-            Zernike to attain sufficient spatial resolution at the center of the distribution.
+        # An Aperture may be passed directly; take its spec, and its (already
+        # normalized) center unless an explicit pixel ``center`` overrides it.
+        spec_center_norm = None
+        if isinstance(spec, toolbox.Aperture):
+            spec_center_norm = spec.center
+            spec = spec.spec
 
-        Important
-        ~~~~~~~~~
-        If :attr:`source` ``["amplitude"]`` is not set, then the parameters are guessed
-        as fractions of the grid:
+        if spec is None:
+            # Keeping the current shape keeps its source radius too.
+            spec = self.aperture.spec
+            source_radius = self._source_radius
 
-        -   ``"amplitude_center_pix"``
-            Unchanged from current center.
+        center_norm = (
+            spec_center_norm if center is None else self._center_pix_to_norm(center)
+        )
 
-        -   ``"amplitude_radius"``
-            Guessed as 1/4 of the smallest extent.
+        self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
+        self._source_radius = source_radius
+        self._grid = None
+        return self.aperture
 
-        -   ``"amplitude_extent"``
-            Guessed as the the rectangle that circumscribes the SLM field.
+    def fit_aperture(self, method="moments", edge_level=0.1):
+        r"""
+        Fits the SLM's :attr:`aperture` to the measured source amplitude distribution in
+        :attr:`source` ``["amplitude"]``. Two radii are fit independently:
 
-        -   ``"amplitude_extent_radius"``
-            Guessed as the the radius that circumscribes the SLM field.
+        -   The circular aperture (pupil), which sets :attr:`aperture_mask` and
+            :attr:`zernike_scaling`, is fit to the **rolloff** of the measured source power
+            with :meth:`~slmsuite.holography.analysis.image_aperture_fit()`: its center is
+            that of the circle which best fits the edge where the power falls off, and its
+            radius is where the power has fallen to ``edge_level``. Unlike the power
+            centroid, this is not pulled toward bright regions inside the aperture, and edges
+            which do not belong to the circle (such as a straight clip) are rejected.
+        -   The :attr:`source_radius`: the :math:`1/e` field-amplitude radius
+            (:math:`1/e^2` in intensity) of the measured amplitude, analyzed via
+            ``"moments"`` or least-squares ``"fit"``.
 
-        Important
-        ~~~~~~~~~
-        The ``grid`` is recentered upon the detected center of the source.
-        This ``grid`` is used to generated phase functions like
-        :meth:`~slmsuite.holography.toolbox.phase.lens()` or
-        :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian()`.
-        Such generation works best when centered upon the source; a
-        :meth:`~slmsuite.holography.toolbox.phase.lens()` focuses coaxially and a
-        :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian()` appears symmetric.
+        If no rolloff is found (for instance, for an unclipped Gaussian beam), the aperture
+        is instead centered by ``method``, and the pupil is placed where a Gaussian's power
+        falls to ``edge_level`` of its peak (:math:`\sqrt{\ln(1 / \text{edge\_level}) / 2}`
+        source radii, :math:`\approx 1.07` for the default). A clip where the power has
+        already fallen below about a tenth of its peak (for a Gaussian, beyond about 1.1
+        source radii) is not found as a rolloff; set such an aperture with
+        :meth:`set_aperture` instead.
+
+        If no source amplitude has been measured, the aperture is set to a circular
+        aperture of source radius equal to a quarter of the smallest SLM extent.
 
         Parameters
         ----------
         method : str {"fit", "moments"}
-            Whether to use moment calculations ``"moments"``
-            or a least squares ``"fit"`` to determine
-            ``"amplitude_center_pix"`` and ``"amplitude_radius"``.
-            ``"moments"`` is faster but ``"fit"`` is more accurate.
-        extent_threshold : float
-            Fraction of the maximal amplitude to use as
-            the full extent of the amplitude distribution.
-        force : bool
-            If ``False``, does not calculate if these quantities already exist.
-            ``True`` forces recomputation.
-        """
-        # If we have already done a fit, and we don't want to force a new one, then return.
-        if "amplitude_center_pix" in self.source and not force:
-            return
-
-        center_grid = np.array(
-            [np.argmin(np.abs(self.grid[0][0,:])), np.argmin(np.abs(self.grid[1][:,0]))]
-        )
-
-        if not "amplitude" in self.source:
-            # If there is no measured source amplitude, then make guesses based off of the grid.
-            self.source["amplitude_center_pix"] = center_grid
-            self.source["amplitude_radius"] = .25 * np.min((
-                self.shape[1] * self.pitch[0],
-                self.shape[0] * self.pitch[1]
-            ))
-            self.source["amplitude_extent"] = np.array(
-                [np.max(np.abs(self.grid[0])), np.max(np.abs(self.grid[1]))]
-            )
-            self.source["amplitude_extent_radius"] = np.sqrt(np.amax(
-                np.square(self.grid[0]) + np.square(self.grid[1])
-            ))
-        else:
-            # Otherwise, use the measured amplitude distribution.
-            amp = np.abs(self.source["amplitude"])
-
-            # Parse extent_threshold
-            if extent_threshold > 1:
-                raise RuntimeError("extent_threshold cannot exceed 1 (100%). Use a small value.")
-
-            if method == "fit":
-                result = analysis.image_fit(amp, plot=False)
-                std = np.array([result[0,5], result[0,6]])
-
-                center = np.array([result[0,1], result[0,2]])
-            elif method == "moments":
-                # Do moments in power-space, not amplitude.
-                center = analysis.image_positions(np.square(amp))
-                std = np.sqrt(2 * analysis.image_variances(np.square(amp), centers=center)[:2])
-
-                center = np.squeeze(center)
-
-            center += np.flip(self.shape)/2
-
-            self.source["amplitude_center_pix"] = center
-            self.source["amplitude_radius"] = np.mean(self.pitch * np.squeeze(std))
-
-            # Handle centering.
-            dcenter = center_grid - center
-
-            self.grid[0] += dcenter[0] * self.pitch[0]
-            self.grid[1] += dcenter[1] * self.pitch[1]
-
-            center_grid = np.array(
-                [np.argmin(self.grid[0][0,:]), np.argmin(self.grid[1][:,0])]
-            )
-
-            extent_mask = amp > (extent_threshold * np.amax(amp))
-
-            self.source["amplitude_extent"] = np.array([
-                np.max(np.abs(self.grid[0][extent_mask])),
-                np.max(np.abs(self.grid[1][extent_mask]))
-            ])
-            self.source["amplitude_extent_radius"] = np.sqrt(np.amax(
-                np.square(self.grid[0][extent_mask]) + np.square(self.grid[1][extent_mask])
-            ))
-
-    def set_source_aperture(
-        self,
-        amplitude_center_pix=None,
-        amplitude_radius=None,
-        amplitude_extent=None,
-        amplitude_extent_radius=None,
-    ):
-        """
-        Sets source aperture parameters measured by :meth:`fit_source_amplitude()` and
-        takes appropriate follow-on actions like shifting the grid.
-
-        Parameters
-        ----------
-        amplitude_center_pix : (float, float) OR None
-            Pixel corresponding to the center of the source.
-            If provided, the grid is recentered on this pixel.
-        amplitude_radius : float OR None
-            The radial standard deviation of the amplitude distribution in normalized units.
-            For a Gaussian source, this is the :math:`1/e` amplitude radius
-            (:math:`1/e^2` power radius).
-        amplitude_extent : (float, float) OR None
-            The box radii of the smallest rectangle which covers the desired amplitude extent
-            in normalized units.
-        amplitude_extent_radius : float OR None
-            Scalar radius about the center that covers the desired amplitude extent
-            in normalized units.
+            Whether to use moment calculations (``"moments"``, faster) or a least-squares
+            ``"fit"`` (more accurate) to determine the source radius, and the center when no
+            rolloff is found.
+        edge_level : float
+            Where on the rolloff to place the pupil edge, as a fraction in :math:`(0, 1)` of
+            the way from the background to the power inside the aperture. Smaller values give
+            a larger pupil which includes more of the rolloff; values near :math:`0.5` place it
+            near the steepest descent. The center does not depend on ``edge_level``.
 
         Returns
         -------
-        dict
-            :attr:`~slmsuite.hardware.slms.slm.SLM.source`.
+        :class:`~slmsuite.holography.toolbox.Aperture`
+            The fitted :attr:`aperture`.
         """
-        # Handle center repositioning with grid shift
-        if amplitude_center_pix is not None:
-            amplitude_center_pix = np.array(amplitude_center_pix)
+        if not 0 < edge_level < 1:
+            raise ValueError(f"edge_level must be in (0, 1); got {edge_level}.")
 
-            # Get current center
-            current_center = np.array(
-                [np.argmin(np.abs(self.grid[0][0,:])), np.argmin(np.abs(self.grid[1][:,0]))]
-            )
+        if "amplitude" not in self.source:
+            # No measured amplitude: guess a circular aperture from the grid extent.
+            radius_norm = .25 * float(np.min(np.flip(self.shape) * self.pitch))
+            (center_norm, pupil_norm) = (None, 2.0 * radius_norm)
+        else:
+            power = np.square(np.abs(as_numpy(self.source["amplitude"])), dtype=float)
+            (center_pix, radius_norm) = self._fit_source_radius(power, method)
 
-            # Calculate shift and update grid
-            dcenter = current_center - amplitude_center_pix
-            self.grid[0] += dcenter[0] * self.pitch[0]
-            self.grid[1] += dcenter[1] * self.pitch[1]
+            # Fit the pupil to the rolloff of the source power, not its centroid, which
+            # bright regions inside the aperture pull off center.
+            rolloff = analysis.image_aperture_fit(power, edge_level=edge_level)
 
-            # Store the new center
-            self.source["amplitude_center_pix"] = amplitude_center_pix
+            if rolloff is None:
+                # With no edge, place the pupil where a Gaussian's power falls to edge_level.
+                center_norm = self._center_pix_to_norm(center_pix)
+                pupil_norm = float(np.sqrt(np.log(1 / edge_level) / 2) * radius_norm)
+            else:
+                (edge_center, edge_radius) = rolloff
+                center_norm = self._center_pix_to_norm(edge_center)
+                pupil_norm = float(edge_radius * np.mean(self.pitch))
 
-        # Set the other parameters directly
-        if amplitude_radius is not None:
-            self.source["amplitude_radius"] = float(amplitude_radius)
+        for (name, radius) in (("source", radius_norm), ("aperture", pupil_norm)):
+            if not np.isfinite(radius) or radius <= 0:
+                raise RuntimeError(
+                    f"fit_aperture found a degenerate {name} radius ({radius}); the "
+                    "measured source amplitude carries no usable signal."
+                )
 
-        if amplitude_extent is not None:
-            self.source["amplitude_extent"] = np.array(amplitude_extent)
+        self.aperture = toolbox.Aperture(self._grid_base, 1.0 / pupil_norm, center=center_norm)
+        self._source_radius = float(radius_norm)
+        self._grid = None
+        return self.aperture
 
-        if amplitude_extent_radius is not None:
-            self.source["amplitude_extent_radius"] = float(amplitude_extent_radius)
-
-        return self.source
-
-    def get_source_radius(self):
+    def fit_source_amplitude(self, method="moments", extent_threshold=.1, force=True):
         """
-        Extracts the source radius in normalized units for functions like
-        :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian()`
-        from the scalars computed in
-        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`.
+        Deprecated. Forwards to :meth:`fit_aperture`; ``extent_threshold`` and ``force``
+        are ignored.
         """
-        self.fit_source_amplitude(force=False)
-        return self.source["amplitude_radius"]
-
-    def get_source_zernike_scaling(self):
-        """
-        Extracts the scaling for
-        :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture()`
-        from the scalars computed in
-        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`.
-        """
-        self.fit_source_amplitude(force=False)
-        return np.reciprocal(2 * self.source["amplitude_radius"])
-
-    def get_source_center(self):
-        """
-        Extracts the scaling for
-        :meth:`~slmsuite.holography.toolbox.phase.zernike_aperture()`
-        from the scalars computed in
-        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`.
-        """
-        self.fit_source_amplitude(force=False)
-        return self.source["amplitude_center_pix"]
+        warnings.warn(
+            "fit_source_amplitude is deprecated in favor of fit_aperture and "
+            "will be removed in a future release."
+        )
+        self.fit_aperture(method=method)
 
     def _get_source_amplitude(self):
-        """Deals with the case of an unmeasured source amplitude."""
-        if "amplitude" in self.source:
-            return self.source["amplitude"]
+        """
+        The effective source amplitude: the measured amplitude (or unity if unmeasured)
+        masked by the :attr:`aperture`.
+        """
+        if self.source.get("amplitude") is not None:
+            amp = self.source["amplitude"]
+            if not self.aperture.crops:
+                # No cropping: skip the all-True mask multiply. Copy so callers may
+                # mutate the result without corrupting self.source["amplitude"].
+                return amp.copy()
         else:
-            return np.ones(self.shape)
+            amp = self.xp.ones(self.shape)
+            if not self.aperture.crops:
+                return amp          # Already a fresh, independent array.
+        return amp * as_backend(self.aperture_mask, get_array_module(amp))
 
     def _get_source_phase(self):
-        """Deals with the case of an unmeasured source phase."""
-        if "phase" in self.source:
-            return self.source["phase"]
+        """
+        The effective source phase: the measured phase (or zero if unmeasured) masked by
+        the :attr:`aperture`.
+        """
+        if self.source.get("phase") is not None:
+            phase = self.source["phase"]
+            if not self.aperture.crops:
+                # No cropping: skip the all-True mask multiply. Copy so callers may
+                # mutate the result without corrupting self.source["phase"].
+                return phase.copy()
         else:
-            return np.zeros(self.shape)
+            phase = self.xp.zeros(self.shape)
+            if not self.aperture.crops:
+                return phase        # Already a fresh, independent array.
+        return phase * as_backend(self.aperture_mask, get_array_module(phase))
 
-    def plot_source(self, source=None, sim=False, power=False):
+    def plot_source(self, source=None, sim=False, power=False, aperture=True):
         """
         Plots measured or simulated amplitude and phase distribution
         of the SLM illumination. Also plots the rsquared goodness of fit value if available.
@@ -1250,10 +1750,15 @@ class SLM(_Picklable, ABC):
             source distribution if ``False``.
         power : bool
             If ``True``, plot the power (amplitude squared) instead of the amplitude.
+        aperture : bool
+            If ``True`` (default), overlay the current :attr:`aperture` (when it crops the
+            SLM) on the phase and amplitude panels: an outline, with the masked-off region
+            faded. The data plotted is always the raw source, so that illumination the
+            aperture discards stays visible.
 
         Returns
-        --------
-        matplotlib.pyplot.axis
+        -------
+        matplotlib.axes.Axes
             Axis handles for the generated plot.
         """
         if source is None:
@@ -1271,27 +1776,23 @@ class SLM(_Picklable, ABC):
         # Handle whether we're going to plot the R^2.
         plot_r2 = not sim and "r2" in source
         r2_full_shape = plot_r2 and source["r2"].shape == self.shape
-        plot_r2_contour = plot_r2 and r2_full_shape and "r2_threshold" in source
+        plot_r2_contour = plot_r2 and "r2_threshold" in source
 
-        def r2_contour(ax):
-            if plot_r2_contour:
-                ax.contour(
-                    source["r2"],
-                    levels=[source["r2_threshold"]],
-                    colors="red",
-                    linewidths=1,
-                )
+        phase_raw = as_numpy(source["phase_sim" if sim else "phase"])
+        amplitude_raw = as_numpy(source["amplitude_sim" if sim else "amplitude"])
+        r2_raw = as_numpy(source["r2"]) if plot_r2 else None
 
         # Make the subplots.
         _, axs = plt.subplots(1, 3 if plot_r2 else 2, figsize=(10, 6))
 
         # Panel 1: Phase
         im = axs[0].imshow(
-            np.mod(source["phase_sim" if sim else "phase"], 2*np.pi),
+            np.mod(phase_raw, 2*np.pi),
             cmap=plt.get_cmap("twilight"),
             interpolation="none",
         )
-        r2_contour(axs[0])
+        if aperture:
+            self._plot_aperture(axs[0])
         axs[0].set_title("Simulated Source Phase" if sim else "Source Phase")
         axs[0].set_xlabel("SLM $x$ [pix]")
         axs[0].set_ylabel("SLM $y$ [pix]")
@@ -1303,14 +1804,15 @@ class SLM(_Picklable, ABC):
         # Panel 2: Amplitude or Power
         if power:
             im = axs[1].imshow(
-                np.square(source["amplitude_sim" if sim else "amplitude"]),
+                np.square(amplitude_raw),
                 clim=(0, 1)
             )
             axs[1].set_title("Simulated Source Power" if sim else "Source Power")
         else:
-            im = axs[1].imshow(source["amplitude_sim" if sim else "amplitude"], clim=(0, 1))
+            im = axs[1].imshow(amplitude_raw, clim=(0, 1))
             axs[1].set_title("Simulated Source Amplitude" if sim else "Source Amplitude")
-        r2_contour(axs[1])
+        if aperture:
+            self._plot_aperture(axs[1])
         axs[1].set_xlabel("SLM $x$ [pix]")
         axs[1].set_ylabel("SLM $y$ [pix]")
         divider = make_axes_locatable(axs[1])
@@ -1319,8 +1821,14 @@ class SLM(_Picklable, ABC):
 
         # Panel 3: R^2
         if plot_r2:
-            im = axs[2].imshow(source["r2"], clim=(0, 1))
-            r2_contour(axs[2])
+            im = axs[2].imshow(r2_raw, clim=(0, 1))
+            if plot_r2_contour:
+                axs[2].contour(
+                    r2_raw,
+                    levels=[source["r2_threshold"]],
+                    colors="red",
+                    linewidths=1,
+                )
             axs[2].set_title("Cal Fitting $R^2$")
             if r2_full_shape:
                 axs[2].set_xlabel("SLM $x$ [pix]")
@@ -1334,7 +1842,7 @@ class SLM(_Picklable, ABC):
 
         # Finalize the plot and return the axes.
         plt.tight_layout()
-        plt.show()
+        _slmsuite_plt_show(name="plot_source")
 
         return axs
 
@@ -1352,8 +1860,8 @@ class SLM(_Picklable, ABC):
 
         Returns
         -------
-        numpy.ndarray
-            The point spread function of shape ``padded_shape``.
+        numpy.ndarray OR cupy.ndarray
+            The point spread function of shape ``padded_shape``, on the SLM's backend.
         """
         nearfield = toolbox.pad(self._get_source_amplitude(), padded_shape)
         farfield = np.abs(np.fft.fftshift(np.fft.fft2(np.fft.fftshift(nearfield), norm="ortho")))
@@ -1361,23 +1869,19 @@ class SLM(_Picklable, ABC):
         return farfield
 
     def get_spot_radius_kxy(self):
-        """
-        Approximates the expected standard deviation radius of farfield spots in the
-        ``"kxy"`` basis based on the near-field amplitude distribution
-        stored in :attr:`source`.
-        For a Gaussian source, this is the :math:`1/e` amplitude radius
-        (:math:`1/e^2` power radius).
+        r"""
+        Approximates the :math:`1/e` amplitude (:math:`1/e^2` power) radius of farfield
+        spots in the ``"kxy"`` basis: :math:`1 / (\pi w)` for a Gaussian source of
+        :math:`1/e` amplitude radius :math:`w =` :attr:`source_radius`.
 
         Returns
         -------
         float
             Radius of the farfield spot.
         """
-        self.fit_source_amplitude(force=False)
-
-        rad_norm = self.source["amplitude_radius"]
+        rad_norm = self.source_radius
         rad_pix = rad_norm / np.mean(self.pitch)
-        rad_freq = np.reciprocal(rad_pix)
+        rad_freq = np.reciprocal(np.pi * rad_pix)
 
         psf_kxy = toolbox.convert_vector(
             [rad_freq, rad_freq],
@@ -1393,40 +1897,92 @@ class SLM(_Picklable, ABC):
 
     def test(self):
         """
-        Tests the core hardware methods of :class:`SLM`.
-        Validates that the SLM is connected correctly and all hardware
-        features are supported.
+        Test that the hardware behind this :class:`SLM` responds to every core method.
+
+        Each step is named, so a failure reports which feature is broken. Correctness of
+        the phase mapping is the business of the test suite, not of a hardware check.
         """
-        print(f"Testing SLM: {self.name}")
+        self.logger.info("Testing %s.", self.name)
 
-        print("  Testing set_phase...")
+        orig_phase = self.phase.copy()
+        count = 20
+        phase = np.random.rand(count, *self.shape) * 2 * np.pi
 
+        try:
+            with self._test_step("write a phase"):
+                self.set_phase(phase[0], phase_correct=False)
 
+            with self._test_step("write a wavefront-corrected phase"):
+                self.set_phase(phase[1], phase_correct=True)
 
-        # Benchmark set_phase.
-        n_iter = 20
-        phase = np.random.rand(n_iter, *self.shape) * 2 * np.pi
-        t0 = time.time()
-        for i in range(n_iter):
-            self.set_phase(phase[i,:,:], phase_correct=False)
-        elapsed = time.time() - t0
-        fps = n_iter / elapsed
-        print(f"    set_phase benchmark: {fps:.1f} Hz ({elapsed/n_iter*1e3:.2f} ms/frame)")
+            for trigger in (self.set_input_trigger, self.set_output_trigger):
+                try:
+                    with self._test_step(f"toggle {trigger.__name__}"):
+                        trigger(True)
+                        trigger(False)
+                except AssertionError as error:
+                    if not isinstance(error.__cause__, NotImplementedError):
+                        raise
+                    self.logger.info("%s; unsupported by this SLM.", error)
 
-        print("  Testing set_input_trigger...")
-        for val in [True, False]:
-            try:
-                self.set_input_trigger(val)
-                print(f"    set_input_trigger({val}): OK")
-            except NotImplementedError:
-                print(f"    set_input_trigger({val}): NotImplementedError (expected for base SLM)")
+            with self._test_step("enumerate the connected displays with info"):
+                self.info(verbose=False)
 
-        print("  Testing set_output_trigger...")
-        for val in [True, False]:
-            try:
-                self.set_output_trigger(val)
-                print(f"    set_output_trigger({val}): OK")
-            except NotImplementedError:
-                print(f"    set_output_trigger({val}): NotImplementedError (expected for base SLM)")
+            t0 = time.perf_counter()
+            for i in range(count):
+                self.set_phase(phase[i], phase_correct=False)
+            elapsed = time.perf_counter() - t0
+            self.logger.info(
+                "set_phase: %.1f Hz (%.2f ms/frame)", count / elapsed, 1e3 * elapsed / count
+            )
+        finally:
+            self.set_phase(orig_phase, phase_correct=False)
 
         return True
+
+class _Source(dict):
+    """
+    The :attr:`~slmsuite.hardware.slms.slm.SLM.source` dictionary, which holds every
+    stored array on its SLM's :attr:`~slmsuite.hardware.slms.slm.SLM.xp` backend.
+
+    An SLM's arrays all live on one backend (see :attr:`.SLM.xp`); ``source`` is the one
+    part of that state which arbitrary code writes into --- a wavefront calibration, a
+    vendor correction file, a reloaded ``.h5``, or the user. Coercing on write means a
+    caller can store a host array without stranding a later ``source["phase"] + zernike_sum(slm, ...)``
+    across two backends, which :mod:`cupy` refuses to evaluate.
+
+    Non-array values (``"r2_threshold"``, fit metadata, ...) pass through untouched.
+
+    Note
+    ~~~~
+    Every way of storing into a :class:`dict` has to be routed through
+    :meth:`__setitem__`: ``update`` and ``|=`` (``__ior__``) are C-level slots that would
+    otherwise write past the override and strand an array on the wrong backend.
+    """
+    def __init__(self, slm, *args, **kwargs):
+        super().__init__()
+        # Weak, so that the source does not keep its SLM alive through a reference cycle.
+        self._slm = weakref.ref(slm)
+        self.update(*args, **kwargs)
+
+    def _to_backend(self, value):
+        slm = self._slm()
+        if slm is None or not (isinstance(value, np.ndarray) or is_gpu_array(value)):
+            return value
+        return as_backend(value, slm.xp)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, self._to_backend(value))
+
+    def update(self, *args, **kwargs):
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def __ior__(self, other):
+        self.update(other)
+        return self
+
+    def setdefault(self, key, default=None):
+        if key not in self:
+            self[key] = default
+        return self[key]

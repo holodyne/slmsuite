@@ -34,7 +34,7 @@ Disable "Windows Update"
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 Windows Updates are important to ensure security and stability. However, on an
-experimental setup, these (surprise) updates can wreck havoc. We suggest
+experimental setup, these (surprise) updates can wreak havoc. We suggest
 `disabling Windows Update <https://answers.microsoft.com/en-us/windows/forum/all/how-do-i-permanently-disable-automatic-windows-10/82e1e076-8dff-475e-8c5e-a2061d1a4c5a>`_
 and scheduling a periodic external reminder to install new updates manually.
 
@@ -44,4 +44,4 @@ Building an SLM Setup
 There are a variety of ways to configure an SLM in a beamline, each with advantages and
 disadvantages. In addition, there are known "best practices" to consider when aligning.
 We're in the process of writing a full guide; however, in the interim, the alignment
-tutorial `here <https://aomicroscopy.org/slm-alignment>`_ should get you started!
+tutorial `here <https://aomicroscopy.org/designing-and-aligning-optical-systems-incorporating-liquid-crystal-spatial-light-modulators-slms>`_ should get you started!

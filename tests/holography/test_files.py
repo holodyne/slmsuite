@@ -1,27 +1,14 @@
 """
 Unit tests for slmsuite.holography.analysis.files module.
 """
-import pytest
-import sys
-import tempfile
-import time
 import os
-import warnings
+import sys
+
+import cv2
 import h5py
+import imageio.v3 as iio
 import numpy as np
-from unittest.mock import patch, mock_open
-
-
-def _safe_unlink(path, retries=5, delay=0.1):
-    """Remove a file, retrying on PermissionError (Windows h5py file lock)."""
-    for i in range(retries):
-        try:
-            os.unlink(path)
-            return
-        except PermissionError:
-            if i == retries - 1:
-                raise
-            time.sleep(delay)
+import pytest
 
 from slmsuite.holography.analysis.files import (
     _max_numeric_id, generate_path, latest_path,
@@ -31,492 +18,323 @@ from slmsuite.holography.analysis.files import (
 
 
 def _touch(path, content="test"):
-    """Helper to create a file with minimal content."""
+    """Create a file with minimal content."""
     with open(path, "w") as f:
         f.write(content)
 
 
-def test_max_numeric_id(subtests):
-    """Test _max_numeric_id for files, directories, and edge cases."""
-    with subtests.test("no files returns -1"):
-        with tempfile.TemporaryDirectory() as d:
-            assert _max_numeric_id(d, "test", "txt", "file", 5) == -1
+def test_max_numeric_id(temp_dir, subtests):
+    """Test _max_numeric_id() finds the highest numeric suffix among matching files or dirs."""
+    with subtests.test("no matches returns -1"):
+        assert _max_numeric_id(temp_dir, "empty", "txt", "file", 5) == -1
 
-    with subtests.test("finds highest among files"):
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["test_00001.txt", "test_00003.txt", "test_00002.txt"]:
-                _touch(os.path.join(d, name))
-            assert _max_numeric_id(d, "test", "txt", "file", 5) == 3
+    with subtests.test("finds the highest id among files"):
+        for name in ["alpha_00001.txt", "alpha_00003.txt", "alpha_00002.txt"]:
+            _touch(os.path.join(temp_dir, name))
+        assert _max_numeric_id(temp_dir, "alpha", "txt", "file", 5) == 3
 
-    with subtests.test("finds highest among directories"):
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["test_00001", "test_00005", "test_00003"]:
-                os.makedirs(os.path.join(d, name))
-            assert _max_numeric_id(d, "test", None, "dir", 5) == 5
+    with subtests.test("finds the highest id among directories"):
+        for name in ["beta_00001", "beta_00005", "beta_00003"]:
+            os.makedirs(os.path.join(temp_dir, name))
+        assert _max_numeric_id(temp_dir, "beta", None, "dir", 5) == 5
 
-    with subtests.test("ignores non-matching files"):
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["test_00001.txt", "other_00005.txt", "test_00002.txt", "test.txt"]:
-                _touch(os.path.join(d, name))
-            assert _max_numeric_id(d, "test", "txt", "file", 5) == 2
+    with subtests.test("ignores names that do not match the prefix or digit count"):
+        for name in ["gamma_00001.txt", "other_00099.txt", "gamma_00002.txt", "gamma.txt"]:
+            _touch(os.path.join(temp_dir, name))
+        assert _max_numeric_id(temp_dir, "gamma", "txt", "file", 5) == 2
 
 
-def test_generate_path(subtests):
-    """Test generate_path for single/multiple paths, directories, and options."""
-    with subtests.test("single file path"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", "txt", "file", 5, 1)
-            assert result == os.path.join(d, "test_00000.txt")
+def test_generate_path(temp_dir, subtests):
+    """Test generate_path(): positional and keyword signatures, increments, dirs, and options."""
+    with subtests.test("positional signature"):
+        assert generate_path(temp_dir, "test", "txt", "file", 5, 1) == \
+            os.path.join(temp_dir, "test_00000.txt")
 
-    with subtests.test("multiple file paths"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", "txt", "file", 5, 3)
-            assert isinstance(result, list)
-            assert len(result) == 3
-            assert result[0] == os.path.join(d, "test_00000.txt")
-            assert result[1] == os.path.join(d, "test_00001.txt")
-            assert result[2] == os.path.join(d, "test_00002.txt")
+    with subtests.test("keyword signature, defaults start numbering at zero"):
+        assert generate_path(temp_dir, "data", extension="h5") == \
+            os.path.join(temp_dir, "data_00000.h5")
 
-    with subtests.test("directory path is created"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", None, "dir", 5, 1)
-            assert result == os.path.join(d, "test_00000")
-            assert os.path.isdir(result)
+    with subtests.test("extension=None omits the dot"):
+        assert generate_path(temp_dir, "run", None, "file", 5, 1) == \
+            os.path.join(temp_dir, "run_00000")
 
-    with subtests.test("increments past existing files"):
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["test_00000.txt", "test_00001.txt"]:
-                _touch(os.path.join(d, name))
-            result = generate_path(d, "test", "txt", "file", 5, 1)
-            assert result == os.path.join(d, "test_00002.txt")
+    with subtests.test("digit_count sets the zero-padding width"):
+        assert generate_path(temp_dir, "dig", "txt", "file", 3, 1) == \
+            os.path.join(temp_dir, "dig_000.txt")
+
+    with subtests.test("path_count returns consecutive paths"):
+        assert generate_path(temp_dir, "multi", "txt", "file", 5, 3) == \
+            [os.path.join(temp_dir, f"multi_0000{i}.txt") for i in range(3)]
+
+    with subtests.test("increments past the highest existing id"):
+        for name in ["inc_00000.txt", "inc_00001.txt"]:
+            _touch(os.path.join(temp_dir, name))
+        assert generate_path(temp_dir, "inc", "txt", "file", 5, 1) == \
+            os.path.join(temp_dir, "inc_00002.txt")
+
+    with subtests.test("kind='dir' creates the directory"):
+        result = generate_path(temp_dir, "asdir", None, "dir", 5, 1)
+        assert result == os.path.join(temp_dir, "asdir_00000")
+        assert os.path.isdir(result)
 
     with subtests.test("creates missing parent directories"):
-        with tempfile.TemporaryDirectory() as d:
-            nested = os.path.join(d, "nested", "deep")
-            result = generate_path(nested, "test", "txt", "file", 5, 1)
-            assert os.path.exists(nested)
-            assert result == os.path.join(nested, "test_00000.txt")
-
-    with subtests.test("no extension"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", None, "file", 5, 1)
-            assert result == os.path.join(d, "test_00000")
-
-    with subtests.test("custom digit count"):
-        with tempfile.TemporaryDirectory() as d:
-            result = generate_path(d, "test", "txt", "file", 3, 1)
-            assert result == os.path.join(d, "test_000.txt")
+        nested = os.path.join(temp_dir, "nested", "deep")
+        result = generate_path(nested, "test", "txt", "file", 5, 1)
+        assert os.path.isdir(nested)
+        assert result == os.path.join(nested, "test_00000.txt")
 
 
-def test_latest_path(subtests):
-    """Test latest_path for files and directories."""
-    with subtests.test("no files returns None"):
-        with tempfile.TemporaryDirectory() as d:
-            assert latest_path(d, "test", "txt", "file", 5) is None
+def test_latest_path(temp_dir, subtests):
+    """Test latest_path(): empty case, highest id, name filtering, and directories."""
+    with subtests.test("no matches returns None"):
+        assert latest_path(temp_dir, "test", "txt", "file", 5) is None
 
-    with subtests.test("returns path with highest id"):
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["test_00001.txt", "test_00003.txt", "test_00002.txt"]:
-                _touch(os.path.join(d, name))
-            result = latest_path(d, "test", "txt", "file", 5)
-            assert result == os.path.join(d, "test_00003.txt")
+    with subtests.test("returns the path with the highest id, ignoring other names"):
+        for name in ["test_00001.txt", "test_00003.txt", "test_00002.txt", "other_00099.txt"]:
+            _touch(os.path.join(temp_dir, name))
+        assert latest_path(temp_dir, "test", "txt", "file", 5) == \
+            os.path.join(temp_dir, "test_00003.txt")
 
     with subtests.test("works with directories"):
-        with tempfile.TemporaryDirectory() as d:
-            for name in ["test_00001", "test_00005", "test_00003"]:
-                os.makedirs(os.path.join(d, name))
-            result = latest_path(d, "test", None, "dir", 5)
-            assert result == os.path.join(d, "test_00005")
+        for name in ["dir_00001", "dir_00005", "dir_00003"]:
+            os.makedirs(os.path.join(temp_dir, name))
+        assert latest_path(temp_dir, "dir", None, "dir", 5) == os.path.join(temp_dir, "dir_00005")
 
 
-def _make_tmp_h5():
-    """Create a closed temporary .h5 file and return its path."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".h5", delete=False)
-    tmp.close()
-    return tmp.name
+def test_save_h5(temp_dir, subtests):
+    """Test save_h5() writes data that load_h5() reproduces exactly."""
+    path = os.path.join(temp_dir, "data.h5")
 
-
-def test_save_and_load_h5(subtests):
-    """Test HDF5 save/load roundtrip for various data types and options."""
-    with subtests.test("simple data types"):
-        path = _make_tmp_h5()
-        try:
-            data = {
-                "integer": 42,
-                "float": 3.14,
-                "string": "hello",
-                "array": np.array([1, 2, 3, 4, 5]),
-                "none_value": None,
-            }
-            save_h5(path, data)
-            loaded = load_h5(path)
-
-            assert loaded["integer"] == 42
-            assert loaded["float"] == pytest.approx(3.14)
-            assert loaded["string"] == "hello"
-            np.testing.assert_array_equal(loaded["array"], [1, 2, 3, 4, 5])
-            assert loaded["none_value"] == False  # None becomes False
-        finally:
-            _safe_unlink(path)
-
-    with subtests.test("nested dictionaries"):
-        path = _make_tmp_h5()
-        try:
-            data = {
-                "level1": {
-                    "level2": {
-                        "value": 123,
-                        "array": np.array([[1, 2], [3, 4]]),
-                    },
-                    "simple": "test",
-                },
-                "top_level": 456,
-            }
-            save_h5(path, data)
-            loaded = load_h5(path)
-
-            assert loaded["level1"]["level2"]["value"] == 123
-            np.testing.assert_array_equal(
-                loaded["level1"]["level2"]["array"], [[1, 2], [3, 4]]
-            )
-            assert loaded["level1"]["simple"] == "test"
-            assert loaded["top_level"] == 456
-        finally:
-            _safe_unlink(path)
-
-    with subtests.test("string arrays"):
-        path = _make_tmp_h5()
-        try:
-            data = {
-                "string_array": np.array(["hello", "world", "test"]),
-                "single_string": "test_string",
-            }
-            save_h5(path, data)
-            loaded = load_h5(path)
-
-            np.testing.assert_array_equal(
-                loaded["string_array"], ["hello", "world", "test"]
-            )
-            assert loaded["single_string"] == "test_string"
-        finally:
-            _safe_unlink(path)
+    with subtests.test("round-trip reproduces scalars, strings, arrays, None, and nested dicts"):
+        data = {
+            "integer": 42,
+            "float": 3.14,
+            "string": "hello",
+            "unicode": "café",
+            "int_array": np.array([1, 2, 3], dtype=np.int32),
+            "float_array": np.arange(12.0).reshape(3, 4),
+            "string_array": np.array(["a", "bb", "ccc"]),
+            "none": None,
+            "none_array": np.array([None, None], dtype=object),
+            "nested": {
+                "inner": {"value": 7, "array": np.array([[1, 2], [3, 4]])},
+                "sibling": "leaf",
+            },
+        }
+        save_h5(path, data)
+        loaded = load_h5(path)
+        np.testing.assert_equal(loaded, data)
+        assert loaded["int_array"].dtype == np.int32
 
     with subtests.test("staggered arrays raise ValueError"):
-        path = _make_tmp_h5()
-        try:
-            data = {"staggered": [[1, 2], [3, 4, 5]]}
-            with pytest.raises(ValueError, match="staggered arrays"):
-                save_h5(path, data)
-        finally:
-            if os.path.exists(path):
-                _safe_unlink(path)
+        with pytest.raises(ValueError, match="staggered arrays"):
+            save_h5(path, {"staggered": [[1, 2], [3, 4, 5]]})
 
-    with subtests.test("decode_bytes=True vs False"):
-        path = _make_tmp_h5()
-        try:
-            with h5py.File(path, "w") as f:
-                f["string_data"] = b"hello"
-                f["byte_array"] = np.array([b"hello", b"world"])
+    with subtests.test("exceptions other than ValueError propagate unchanged"):
+        class BadObj:
+            def __array__(self, *args, **kwargs):
+                raise TypeError("cannot convert")
 
-            loaded = load_h5(path, decode_bytes=True)
-            assert loaded["string_data"] == "hello"
-            np.testing.assert_array_equal(
-                loaded["byte_array"], ["hello", "world"]
-            )
+        with pytest.raises(TypeError, match="cannot convert"):
+            save_h5(path, {"bad": BadObj()})
 
-            loaded = load_h5(path, decode_bytes=False)
-            assert loaded["string_data"] == b"hello"
-            assert isinstance(loaded["byte_array"][0], bytes)
-        finally:
-            _safe_unlink(path)
+    with subtests.test("mode='w' overwrites the previous contents"):
+        save_h5(path, {"first": 123}, mode="w")
+        save_h5(path, {"second": 456}, mode="w")
+        assert set(load_h5(path).keys()) == {"second"}
 
-    with subtests.test("backwards-compat aliases read_h5/write_h5"):
-        path = _make_tmp_h5()
-        try:
-            write_h5(path, {"test": 123})
-            loaded = read_h5(path)
-            assert loaded["test"] == 123
-        finally:
-            _safe_unlink(path)
-
-    with subtests.test("mode parameter"):
-        path = _make_tmp_h5()
-        try:
-            save_h5(path, {"first": 123}, mode="w")
-            save_h5(path, {"second": 456}, mode="w")
-            loaded = load_h5(path)
-            assert "second" in loaded
-        finally:
-            _safe_unlink(path)
-
-    with subtests.test("non-ValueError re-raised"):
-        path = _make_tmp_h5()
-        try:
-
-            class BadObj:
-                def __array__(self, *args, **kwargs):
-                    raise TypeError("cannot convert")
-
-            with pytest.raises(TypeError, match="cannot convert"):
-                save_h5(path, {"bad": BadObj()})
-        finally:
-            if os.path.exists(path):
-                _safe_unlink(path)
+    with subtests.test("write_h5 is an alias of save_h5"):
+        write_h5(path, {"aliased": 7})
+        assert load_h5(path)["aliased"] == 7
 
 
-def test_load_image(subtests):
-    """Test _load_image for error handling, basic loading, inversion, and rotation."""
-    with subtests.test("file not found raises ValueError"):
+def test_load_h5(temp_dir, subtests):
+    """Test load_h5() reading of a raw HDF5 structure, independent of save_h5()."""
+    path = os.path.join(temp_dir, "raw.h5")
+
+    with subtests.test("decode_bytes=True decodes strings and byte arrays; False leaves them raw"):
+        with h5py.File(path, "w") as f:
+            f["scalar"] = b"hello"
+            f["array"] = np.array([b"hello", b"world"])
+
+        decoded = load_h5(path, decode_bytes=True)
+        assert decoded["scalar"] == "hello"
+        np.testing.assert_array_equal(decoded["array"], ["hello", "world"])
+
+        raw = load_h5(path, decode_bytes=False)
+        assert raw["scalar"] == b"hello"
+        assert isinstance(raw["array"][0], bytes)
+
+    with subtests.test("the __none__ placeholder decodes to None, or an all-None list with its shape"):
+        with h5py.File(path, "w") as f:
+            f["scalar"] = False
+            f["scalar"].attrs["__none__"] = True
+            f["stack"] = np.zeros((2, 2), dtype=bool)
+            f["stack"].attrs["__none__"] = True
+
+        loaded = load_h5(path)
+        assert loaded["scalar"] is None
+        assert loaded["stack"] == [[None, None], [None, None]]
+
+    with subtests.test("groups become nested dicts"):
+        with h5py.File(path, "w") as f:
+            f.create_group("outer")["value"] = 5
+        assert load_h5(path)["outer"]["value"] == 5
+
+    with subtests.test("read_h5 is an alias of load_h5"):
+        assert read_h5(path)["outer"]["value"] == 5
+
+
+def test_load_image(temp_dir, subtests):
+    """Test _load_image() for missing files, shape padding, and brightness inversion."""
+    with subtests.test("raises ValueError when the file does not exist"):
         with pytest.raises(ValueError, match="Image not found"):
             _load_image("nonexistent_file.png", (100, 100))
 
-    with subtests.test("basic grayscale load"):
-        mock_image = np.ones((100, 100), dtype=np.uint8) * 50
-        with patch("cv2.imread", return_value=mock_image) as mock_imread:
-            result = _load_image("test.png", (100, 100))
+    with subtests.test("pads to the requested shape, with or without an intermediate zoom"):
+        img_path = os.path.join(temp_dir, "test.png")
+        img = np.zeros((100, 100), dtype=np.uint8)
+        img[10:90, 10:90] = 120
+        cv2.imwrite(img_path, img)
+        for target_shape in (None, (80, 80)):
+            result = _load_image(img_path, (100, 100), target_shape=target_shape)
             assert result.shape == (100, 100)
-            mock_imread.assert_called_once_with("test.png", 0)
 
-    with subtests.test("bright image is inverted"):
-        mock_image = np.ones((100, 100), dtype=np.uint8) * 200
-        with patch("cv2.imread", return_value=mock_image):
-            with patch("cv2.bitwise_not") as mock_invert:
-                mock_invert.return_value = np.ones((100, 100), dtype=np.uint8) * 55
-                _load_image("test.png", (100, 100))
-                assert mock_invert.call_count >= 1
+    with subtests.test("a predominantly bright image is inverted before the amplitude is taken"):
+        img_path = os.path.join(temp_dir, "bright.png")
+        cv2.imwrite(img_path, np.full((80, 80), 220, dtype=np.uint8))
+        result = _load_image(img_path, (100, 100))
+        # sqrt() runs on the raw uint8 image, so the amplitude is float16-precision.
+        assert result.max() == pytest.approx(np.sqrt(255 - 220), rel=1e-3)
 
-    with subtests.test("rotation applied"):
-        mock_image = np.ones((100, 100), dtype=np.uint8) * 50
-        with patch("cv2.imread", return_value=mock_image):
-            with patch("scipy.ndimage.rotate", return_value=mock_image) as mock_rot:
-                _load_image("test.png", (100, 100), angle=45)
-                mock_rot.assert_called_once_with(mock_image, 45)
-
-    with subtests.test("target_shape zoom"):
-        mock_image = np.ones((100, 100), dtype=np.uint8) * 50
-        with patch("cv2.imread", return_value=mock_image):
-            result = _load_image("test.png", (200, 200), target_shape=(50, 50))
-            assert result.shape == (200, 200)
-
-    import cv2
-
-    with subtests.test("real image end-to-end"):
-        with tempfile.TemporaryDirectory() as d:
-            img_path = os.path.join(d, "test.png")
-            img = np.zeros((80, 80), dtype=np.uint8)
-            img[20:60, 20:60] = 200
-            cv2.imwrite(img_path, img)
-            dummy = np.zeros((120, 120))
-            with patch("slmsuite.holography.analysis.files.pad", return_value=dummy):
-                result = _load_image(img_path, (120, 120))
-                assert result.shape == (120, 120)
-
-    with subtests.test("real image with target_shape"):
-        with tempfile.TemporaryDirectory() as d:
-            img_path = os.path.join(d, "test2.png")
-            img = np.zeros((100, 100), dtype=np.uint8)
-            img[10:90, 10:90] = 180
-            cv2.imwrite(img_path, img)
-            dummy = np.zeros((200, 200))
-            with patch("slmsuite.holography.analysis.files.pad", return_value=dummy):
-                result = _load_image(img_path, (200, 200), target_shape=(50, 50))
-                assert result.shape == (200, 200)
-
-    with subtests.test("real bright image inverted"):
-        with tempfile.TemporaryDirectory() as d:
-            img_path = os.path.join(d, "bright.png")
-            img = np.ones((80, 80), dtype=np.uint8) * 220
-            cv2.imwrite(img_path, img)
-            dummy = np.zeros((100, 100))
-            with patch("slmsuite.holography.analysis.files.pad", return_value=dummy):
-                result = _load_image(img_path, (100, 100))
-                assert result.shape == (100, 100)
+    with subtests.test("a predominantly dark image is left unchanged"):
+        img_path = os.path.join(temp_dir, "dark.png")
+        cv2.imwrite(img_path, np.full((80, 80), 30, dtype=np.uint8))
+        result = _load_image(img_path, (100, 100))
+        assert result.max() == pytest.approx(np.sqrt(30), rel=1e-3)
 
 
 def test_gray2rgb(subtests):
-    """Test _gray2rgb for various inputs, cmaps, lut, normalization, NaN, borders."""
-    with subtests.test("2D input reshaped to 3D"):
-        img = np.ones((10, 10), dtype=np.uint8) * 100
-        result = _gray2rgb(img)
-        assert result.ndim == 3
-        assert result.shape[0] == 1
+    """Test _gray2rgb() conversion of grayscale images to RGBA."""
+    with subtests.test("2D input gains a leading stack axis"):
+        result = _gray2rgb(np.ones((10, 10), dtype=np.uint8) * 100)
+        assert result.shape == (1, 10, 10)
 
-    with subtests.test("already RGBA passthrough"):
-        img = np.ones((2, 10, 10, 4), dtype=np.uint8) * 100
-        result = _gray2rgb(img)
-        np.testing.assert_array_equal(result, img)
+    with subtests.test("images already carrying an RGB or RGBA channel pass through unchanged"):
+        for channels in (3, 4):
+            img = np.ones((2, 10, 10, channels), dtype=np.uint8) * 100
+            np.testing.assert_array_equal(_gray2rgb(img), img)
 
-    with subtests.test("already RGB passthrough"):
-        img = np.ones((2, 10, 10, 3), dtype=np.uint8) * 100
-        result = _gray2rgb(img)
-        np.testing.assert_array_equal(result, img)
-
-    with subtests.test(">3D invalid shape raises RuntimeError"):
-        img = np.ones((2, 3, 10, 10, 1), dtype=np.uint8)
+    with subtests.test("shapes beyond a stack of 2D images raise RuntimeError"):
         with pytest.raises(RuntimeError, match="could not be parsed"):
-            _gray2rgb(img)
+            _gray2rgb(np.ones((2, 3, 10, 10, 1), dtype=np.uint8))
 
-    with subtests.test("cmap=False grayscale"):
-        img = np.ones((1, 10, 10), dtype=np.uint8) * 128
-        result = _gray2rgb(img, cmap=False)
-        assert result.dtype == np.uint8
-
-    with subtests.test("cmap=True uses default colormap"):
-        img = np.ones((1, 10, 10), dtype=np.uint8) * 50
-        img[0, 5, 5] = 200
-        result = _gray2rgb(img, cmap=True)
-        assert result.shape[-1] == 4  # RGBA
-
-    with subtests.test("cmap='default' treated as True"):
+    with subtests.test("cmap='default'/'grayscale' are aliases for cmap=True/False"):
         img = np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
-        result = _gray2rgb(img, cmap="default")
-        assert result.shape[-1] == 4
+        np.testing.assert_array_equal(_gray2rgb(img, cmap="default"), _gray2rgb(img, cmap=True))
+        np.testing.assert_array_equal(_gray2rgb(img, cmap="grayscale"), _gray2rgb(img, cmap=False))
 
-    with subtests.test("cmap='grayscale' treated as False"):
-        img = np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
-        result = _gray2rgb(img, cmap="grayscale")
-        assert result.dtype == np.uint8
+    cases = {
+        "grayscale": dict(cmap=False),
+        "default colormap": dict(cmap=True),
+        "named colormap, integer lut defaults to the image max": dict(cmap="viridis"),
+        "explicit lut": dict(cmap="viridis", lut=100),
+        "float image, normalized": dict(cmap="viridis", normalize=True, dtype=float),
+        "float image, unnormalized": dict(cmap="viridis", normalize=False, dtype=float),
+        "grayscale with an out-of-range lut": dict(cmap=False, lut=300),
+    }
+    for label, kwargs in cases.items():
+        with subtests.test(f"produces well-formed output: {label}"):
+            kwargs = dict(kwargs)
+            is_float = kwargs.pop("dtype", None) is float
+            img = np.random.rand(1, 10, 10) if is_float else \
+                np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
+            result = _gray2rgb(img, **kwargs)
+            assert result.dtype == np.uint8
+            if kwargs.get("cmap") is not False:
+                assert result.shape[-1] == 4
 
-    with subtests.test("cmap string name"):
-        img = np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
-        result = _gray2rgb(img, cmap="viridis")
-        assert result.shape[-1] == 4
+    with subtests.test("colormap objects are accepted with or without a .colors attribute"):
+        import matplotlib.pyplot as plt
 
-    with subtests.test("float image with normalize"):
-        img = np.random.rand(1, 10, 10).astype(np.float64)
-        result = _gray2rgb(img, cmap="viridis", normalize=True)
-        assert result.dtype == np.uint8
+        class NoColorsCmap:
+            """Colormap-like object exposing N and __call__ but no .colors."""
+            N = 10
 
-    with subtests.test("float image without normalize"):
-        img = np.random.rand(1, 10, 10).astype(np.float64) * 0.5
-        result = _gray2rgb(img, cmap="viridis", normalize=False)
-        assert result.dtype == np.uint8
+            def __call__(self, x):
+                x = np.asarray(x, dtype=float)
+                rgba = np.zeros((*x.shape, 4))
+                rgba[..., 0] = x / self.N
+                rgba[..., 3] = 1.0
+                return rgba
 
-    with subtests.test("integer image with lut"):
-        img = np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
-        result = _gray2rgb(img, cmap="viridis", lut=100)
-        assert result.shape[-1] == 4
+        cases = [
+            (plt.get_cmap("viridis", 64), 64, np.array([[[0, 10], [20, 63]]], dtype=np.uint8)),
+            (NoColorsCmap(), 10, np.array([[[0, 2], [4, 9]]], dtype=np.int32)),
+        ]
+        for cmap, lut, img in cases:
+            assert _gray2rgb(img, cmap=cmap, lut=lut).shape[-1] == 4
 
-    with subtests.test("float image with lut=None uses default"):
-        img = np.random.rand(1, 10, 10).astype(np.float64)
-        result = _gray2rgb(img, cmap=False)
-        assert result.dtype == np.uint8
-
-    with subtests.test("integer image lut=None uses nanmax"):
-        img = np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
-        result = _gray2rgb(img, cmap="viridis")
-        assert result.dtype == np.uint8
-
-    with subtests.test("NaN handling sets transparent"):
-        img = np.ones((1, 10, 10), dtype=np.float64) * 0.5
+    with subtests.test("NaN pixels become fully transparent"):
+        img = np.full((1, 10, 10), 0.5)
         img[0, 3, 3] = np.nan
         result = _gray2rgb(img, cmap="viridis")
-        assert result[0, 3, 3, 3] == 0  # alpha channel zero for NaN
+        assert result[0, 3, 3, 3] == 0
 
-    with subtests.test("border scalar"):
+    with subtests.test("a scalar border paints all four edges the same value"):
         img = np.ones((1, 10, 10), dtype=np.uint8) * 100
         result = _gray2rgb(img, cmap="viridis", border=255)
         assert result[0, 0, 0, 0] == 255
         assert result[0, -1, 0, 0] == 255
         assert result[0, 0, -1, 0] == 255
 
-    with subtests.test("border list"):
+    with subtests.test("a list border sets only the given channels"):
         img = np.ones((1, 10, 10), dtype=np.uint8) * 100
         result = _gray2rgb(img, cmap="viridis", border=[255, 128])
         assert result[0, 0, 0, 0] == 255
         assert result[0, 0, 0, 1] == 128
 
-    with subtests.test("grayscale cmap=False lut > 256 clamped"):
-        img = np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
-        result = _gray2rgb(img, cmap=False, lut=300)
-        assert result.dtype == np.uint8
 
-    with subtests.test("colormap object with N attribute (ListedColormap)"):
-        import matplotlib.pyplot as plt
-        cm = plt.get_cmap("viridis", 64)
-        img = np.array([[[0, 10], [20, 63]]], dtype=np.uint8)
-        result = _gray2rgb(img, cmap=cm, lut=64)
-        assert result.shape[-1] == 4
+@pytest.mark.gpu
+def test_gray2rgb_gpu(has_cupy):
+    """GPU variant of _gray2rgb(): a cupy stack is colored on the host."""
+    import cupy as cp
 
-    with subtests.test("colormap without .colors (mock)"):
-
-        class NoColorsCmap:
-            """Colormap-like object with N but no colors attr."""
-            N = 10
-
-            def __call__(self, x):
-                x = np.asarray(x, dtype=float)
-                rgba = np.zeros((*x.shape, 4))
-                rgba[..., 0] = x / max(self.N, 1)
-                rgba[..., 3] = 1.0
-                return rgba
-
-        cm = NoColorsCmap()
-        img = np.array([[[0, 2], [4, 9]]], dtype=np.int32)
-        result = _gray2rgb(img, cmap=cm, lut=10)
-        assert result.shape[-1] == 4
+    images = np.random.default_rng(0).random((2, 5, 6))
+    np.testing.assert_array_equal(_gray2rgb(cp.asarray(images)), _gray2rgb(images))
 
 
-def test_save_image(subtests):
-    """Test save_image for single images, stacks, and various options."""
-    with subtests.test("single grayscale png"):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "test.png")
-            img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
-            save_image(path, img)
-            assert os.path.exists(path)
+def test_save_image(temp_dir, subtests):
+    """Test save_image() writes files via imageio, with colormap and border options."""
+    rng = np.random.default_rng(0)
+    gray = rng.integers(0, 255, (10, 10), dtype=np.uint8)
+    cases = {
+        "single grayscale png": (gray, "test.png", {}),
+        "single image with a colormap": (gray, "test_cmap.png", {"cmap": "viridis"}),
+        "float image": (rng.random((10, 10)), "test_float.png", {"cmap": "viridis"}),
+        "float image, unnormalized": (
+            rng.random((10, 10)) * 0.5, "test_nonorm.png", {"cmap": "viridis", "normalize": False},
+        ),
+        "border option": (gray, "test_border.png", {"cmap": "viridis", "border": 255}),
+    }
+    for label, (img, name, kwargs) in cases.items():
+        with subtests.test(f"{label} reads back as its _gray2rgb pixels"):
+            path = os.path.join(temp_dir, name)
+            save_image(path, img, **kwargs)
+            np.testing.assert_array_equal(iio.imread(path), _gray2rgb(img, **kwargs)[0])
 
-    with subtests.test("single image with colormap"):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "test_cmap.png")
-            img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
-            save_image(path, img, cmap="viridis")
-            assert os.path.exists(path)
+    with subtests.test("a stack reads back as an animated gif, one gray frame per image"):
+        path = os.path.join(temp_dir, "test.gif")
+        stack = rng.integers(0, 255, (3, 10, 10), dtype=np.uint8)
+        save_image(path, stack)
+        # The gif stores each gray level in all three color channels.
+        np.testing.assert_array_equal(
+            iio.imread(path, index=None), np.stack([_gray2rgb(stack)] * 3, axis=-1)
+        )
 
-    with subtests.test("stack saved as gif"):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "test.gif")
-            imgs = np.random.randint(0, 255, (3, 10, 10), dtype=np.uint8)
-            save_image(path, imgs)
-            assert os.path.exists(path)
-
-    with subtests.test("gif triggers pygifsicle warning"):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "test.gif")
-            imgs = np.random.randint(0, 255, (3, 10, 10), dtype=np.uint8)
-            with patch(
-                "slmsuite.holography.analysis.files.warnings.warn"
-            ) as mock_warn:
-                with patch.dict("sys.modules", {"pygifsicle": None}):
-                    save_image(path, imgs)
-            # pygifsicle not installed → either warns or succeeds silently
-
-    with subtests.test("float image"):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "test_float.png")
-            img = np.random.rand(10, 10).astype(np.float64)
-            save_image(path, img, cmap="viridis")
-            assert os.path.exists(path)
-
-    with subtests.test("normalize=False with float"):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "test_nonorm.png")
-            img = np.random.rand(10, 10).astype(np.float64) * 0.5
-            save_image(path, img, cmap="viridis", normalize=False)
-            assert os.path.exists(path)
-
-    with subtests.test("border parameter"):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "test_border.png")
-            img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
-            save_image(path, img, cmap="viridis", border=255)
-            assert os.path.exists(path)
-
-    with subtests.test("imageio not available raises ValueError"):
-        import sys
-        img = np.random.randint(0, 255, (10, 10), dtype=np.uint8)
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "test.png")
-            with patch.dict(sys.modules, {"imageio": None}):
-                with pytest.raises(ValueError, match="imageio is required"):
-                    save_image(path, img)
+    with subtests.test("raises ValueError when imageio is not installed"):
+        path = os.path.join(temp_dir, "test_missing_imageio.png")
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setitem(sys.modules, "imageio", None)
+            with pytest.raises(ValueError, match="imageio is required"):
+                save_image(path, gray)

@@ -26,10 +26,15 @@ from slmsuite.hardware.cameras.camera import Camera
 try:
     import instrumental.drivers.cameras as instrumental_cameras
     from instrumental.drivers import ParamSet
-    from instrumental import instrument, list_instruments
+    from instrumental import instrument, list_instruments, u
 except ImportError:
     instrument = None
+    u = None
     warnings.warn("instrumental-lib not installed. Install to use Instrumental cameras.")
+
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 
 class Instrumental(Camera):
@@ -40,17 +45,13 @@ class Instrumental(Camera):
     ----------
     cam : instrumental.drivers.cameras.Camera
         Object to talk with the desired camera.
-    exposure_s : float
-        Instrumental doesn't save exposure. It sets the exposure at each
-        :meth:`get_image`. This variable stores the desired exposure.
-        Defaults to .001 (1 ms).
     """
 
     ### Initialization and termination ###
 
-    def __init__(self, cam=None, pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, cam=None, pitch_um=None, **kwargs):
         """
-        Initialize camera and attributes. Initial profile is ``"single"``.
+        Initialize camera and attributes.
 
         Parameters
         ----------
@@ -76,8 +77,6 @@ class Instrumental(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         kwargs
             See :meth:`.Camera.__init__` for permissible options.
 
@@ -96,7 +95,7 @@ class Instrumental(Camera):
                 raise RuntimeError("No instrumental cameras detected.")
             else:
                 if len(instruments) > 1:
-                    warnings.warn(f"Multiple instruments detected; using first of {instruments}")
+                    logger.warning("Multiple instruments detected; using first of %s", instruments)
                 cam = list_instruments()[0]
 
         if isinstance(cam, ParamSet):
@@ -108,7 +107,7 @@ class Instrumental(Camera):
             )
 
         name = kwargs.pop("name", cam.model.decode("utf-8") + "_" + cam.serial.decode("utf-8"))
-        if verbose: print(f"Cam {name} parsing... ", end="")
+        logger.debug("Cam %s parsing...", name)
         self.cam = cam
 
         super().__init__(
@@ -118,7 +117,7 @@ class Instrumental(Camera):
             name=name,
             **kwargs
         )
-        if verbose: print("success")
+        self.logger.debug("Instrumental camera initialized.")
 
     def close(self):
         """
@@ -126,8 +125,10 @@ class Instrumental(Camera):
         """
         try:
             self.cam.close()
-        except:
-            raise RuntimeError("This instrumental camera does not support .close().")
+        except Exception as e:
+            raise RuntimeError(
+                "This instrumental camera failed to close:\n{}".format(e)
+            ) from e
 
     @staticmethod
     def info(verbose=True):
@@ -137,7 +138,7 @@ class Instrumental(Camera):
         Returns
         -------
         list
-            An empty list.
+            Always raises :exc:`RuntimeError`.
         """
         raise RuntimeError(
             ".info() is not applicable to instrumental cameras, which must be "
@@ -146,29 +147,13 @@ class Instrumental(Camera):
 
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
-        return float(self.cam.exposure._magnitude) / 1000
+        # cam.exposure is a Pint quantity; convert via the unit registry rather than
+        # reading the raw magnitude, whose native unit (us/ms/s) is driver-dependent.
+        return float(self.cam.exposure.to("s").magnitude)
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
-        self.cam.exposure = 1000. * float(exposure_s)
-
-    def set_woi(self, woi=None):
-        """
-        Method to narrow the imaging region to a 'window of interest'
-        for faster framerates.
-
-        Parameters
-        ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-            If ``None``, defaults to largest possible.
-
-        Returns
-        ----------
-        woi : list
-            :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-        """
-        raise NotImplementedError()
+        self.cam.exposure = float(exposure_s) * u.s
 
     def _get_image_hw(self, timeout_s):
         """
@@ -184,4 +169,5 @@ class Instrumental(Camera):
         numpy.ndarray
             Array of shape :attr:`~slmsuite.hardware.cameras.camera.Camera.shape`.
         """
+        # TODO: binning and WOI appears to be implemented through grab_image?
         return self.cam.grab_image(timeout=str(timeout_s) + "s", copy=True)

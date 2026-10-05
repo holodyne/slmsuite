@@ -1,16 +1,17 @@
-"""Interface to experimental devices."""
+"""
+Handles pickling of objects.
+"""
 import warnings
 import datetime
 
 from slmsuite import __version__
-from slmsuite.misc.files import generate_path, latest_path, save_h5, load_h5
 
-class _Picklable:
+class _Picklable(object):
     """
     Class for hardware objects to handle state saving.
     """
     _pickle = []        # Baseline parameters to pickle.
-    _pickle_data = []   #
+    _pickle_data = []
 
     def pickle(self, attributes=True, metadata=True):
         """
@@ -29,7 +30,7 @@ class _Picklable:
             ``"__meta__"`` value of a superdictionary which also contains:
             ``"__version__"``, the current slmsuite version,
             ``"__time__"``, the time formatted as a date string, and
-            ``"__timestamp__"``, the time formatting as a floating point timestamp.
+            ``"__timestamp__"``, the time formatted as a floating point timestamp.
             This information is used as standard metadata for calibrations and saving.
         """
         # Parse attributes.
@@ -39,7 +40,7 @@ class _Picklable:
 
         # Assemble the dictionary.
         pickled = {}
-        pickled["__class__"] = str(self)
+        pickled["__class__"] = self.__class__.__name__
 
         for k in attributes:
             if not hasattr(self, k):
@@ -55,6 +56,8 @@ class _Picklable:
         # Return the result.
         if metadata:
             t = datetime.datetime.now()
+            if hasattr(self, "get_log"):
+                pickled["__log__"] = "\n".join(self.get_log())
             return {
                 "__version__" : __version__,
                 "__time__" : str(t),
@@ -63,6 +66,24 @@ class _Picklable:
             }
         else:
             return pickled
+
+    def _unpickle(self, data):
+        """
+        Restores the attributes of :meth:`pickle()` onto an already-constructed
+        object.
+
+        Subclasses override this to restore what their constructor does not
+        take; the base implementation is a no-op. Only genuinely settable state
+        data is restored: much of :attr:`_pickle` is read-only geometry which
+        the constructor already fixed.
+
+        Parameters
+        ----------
+        data : dict
+            The dictionary that :meth:`pickle()` produced for this object, i.e. the
+            ``"__meta__"`` payload without its metadata wrapper.
+        """
+        pass
 
     def save(self, path=".", name=None, **kwargs):
         """
@@ -73,7 +94,7 @@ class _Picklable:
         path : str
             Path to directory to save in. Default is current directory.
         name : str OR None
-            Name of the save file. If ``None``, will use :attr:`name` + ``'-pickle'``.
+            Name of the save file. If ``None``, will use the object's ``name`` + ``'-pickle'``.
         **kwargs
             Passed to :meth:`pickle()` to customize how and what data is saved.
 
@@ -82,6 +103,9 @@ class _Picklable:
         str
             The file path that the pickled data was saved to.
         """
+        # Imported here to keep the analysis stack off the `import slmsuite` path.
+        from slmsuite.misc.files import generate_path, save_h5
+
         if name is None:
             name = self.name + '-pickle'
         file_path = generate_path(path, name, extension="h5")

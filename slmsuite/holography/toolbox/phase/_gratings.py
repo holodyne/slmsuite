@@ -1,0 +1,445 @@
+"""
+Grating phase patterns.
+"""
+import numpy as np
+from scipy.special import jn_zeros
+from typing import Tuple, Union, Callable
+from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
+from slmsuite.misc.xp import as_numpy, get_array_module
+
+# Basic gratings.
+
+def blaze(
+    grid: Union[Tuple[np.ndarray, np.ndarray], object],
+    vector: Tuple[float, float] = (0, 0),
+):
+    r"""
+    Returns a simple `blazed grating <https://en.wikipedia.org/wiki/Blazed_grating>`_,
+    a linear phase ramp, toward a given vector in :math:`k`-space.
+
+    .. math:: \phi(\vec{x}) = 2\pi \cdot \vec{k} \cdot \vec{x}
+
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
+        corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
+        These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
+        such a class can be passed instead of the grids directly.
+    vector : (float, float) OR (float, float, float)
+        :math:`\vec{k}`. Blaze vector in normalized :math:`\frac{k_x}{k}` units.
+        See :meth:`~slmsuite.holography.toolbox.convert_vector()`.
+        If a 3-dimensional vector is passed, a normalized focusing term is added.
+
+    Returns
+    -------
+    numpy.ndarray
+        The phase for this function.
+    """
+    (x_grid, y_grid) = _process_grid(grid)
+    xp = get_array_module(x_grid)
+    vector = np.squeeze(vector)
+
+    # Flatten to plain scalars; an array-valued vector would not broadcast onto a cupy grid.
+    vector = tuple(float(v) for v in np.ravel(as_numpy(vector)))
+
+    # Optimize phase construction based on context.
+    if vector[0] == 0 and vector[1] == 0:
+        result = xp.zeros_like(x_grid)
+    elif vector[1] == 0:
+        result = (2 * np.pi * vector[0]) * x_grid
+    elif vector[0] == 0:
+        result = (2 * np.pi * vector[1]) * y_grid
+    else:
+        result = (2 * np.pi * vector[0]) * x_grid + (2 * np.pi * vector[1]) * y_grid
+
+    if len(vector) > 2:
+        result = result + (np.pi * vector[2]) * (xp.square(x_grid) + xp.square(y_grid))
+
+    return result
+
+
+def triangle(
+    grid: Union[Tuple[np.ndarray, np.ndarray], object],
+    vector: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
+    shift: float = 0,
+    a: float = 2 * np.pi,
+    b: float = 0,
+    bias: float = 0,
+):
+    r"""
+    Returns a triangle wave grating toward a given vector in :math:`k`-space, ramping
+    up over a fraction :math:`d = (\text{bias}+1)/2` of each period and back down over
+    the remainder.
+
+    .. math:: \phi(\vec{x}) =
+        (a-b) \min\left(\frac{t}{d}, \frac{1-t}{1-d}\right) + b,
+        \quad t = \frac{(2\pi \cdot \vec{k} \cdot \vec{x} + s) \,\text{mod}\, 2\pi}{2\pi}
+
+    Important
+    ---------
+    ``bias`` sweeps between the blazed gratings :meth:`.blaze()` toward :math:`+\vec{k}`
+    at :math:`1` and :math:`-\vec{k}` at :math:`-1`, by way of a symmetric triangle at
+    :math:`0`. Power is split between the two by symmetry in between.
+
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
+        corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
+        These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
+        such a class can be passed instead of the grids directly.
+    vector : (float, float)
+        :math:`\vec{k}`. Blaze vector in normalized :math:`\frac{k_x}{k}` units.
+        See :meth:`~slmsuite.holography.toolbox.convert_vector()`.
+    shift : float
+        Radians to laterally shift the period of the grating by.
+    a : float
+        Value at the peak of the triangle.
+    b : float
+        Value at the trough of the triangle.
+    bias : float
+        Position of the peak within the period, on :math:`[-1, 1]`.
+
+    Returns
+    -------
+    numpy.ndarray
+        The phase for this function.
+    """
+    duty_cycle = (float(np.clip(bias, -1, 1)) + 1) / 2
+    b_val = blaze(grid, vector)
+    xp = get_array_module(b_val)
+
+    # Position within the period, on [0, 1).
+    t = xp.mod(b_val + shift, 2 * np.pi) / (2 * np.pi)
+
+    if duty_cycle <= 0:
+        ramp = 1 - t
+    elif duty_cycle >= 1:
+        ramp = t
+    else:
+        ramp = xp.minimum(t / duty_cycle, (1 - t) / (1 - duty_cycle))
+
+    return (a - b) * ramp + b
+
+
+def sinusoid(
+    grid: Union[Tuple[np.ndarray, np.ndarray], object],
+    vector: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
+    shift: float = 0,
+    a: float = float(2 * jn_zeros(0, 1)[0]),
+    b: float = 0,
+):
+    r"""
+    Returns a simple `holographic grating
+    <https://en.wikipedia.org/wiki/Diffraction_grating#SR_(Surface_Relief)_gratings>`_,
+    a sinusoidal grating, toward a given vector in :math:`k`-space.
+
+    .. math:: \phi(\vec{x}) = \frac{a-b}{2} [1 + \cos(2\pi \cdot \vec{k} \cdot \vec{x} + s)] + b
+
+    Important
+    ---------
+    Unlike a blazed grating :meth:`.blaze()`, power will efficiently be deflected toward
+    the mirror -1st order at :math:`-\vec{k}` in addition to the 1st order, by symmetry.
+
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
+        corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
+        These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
+        such a class can be passed instead of the grids directly.
+    vector : (float, float)
+        :math:`\vec{k}`. Blaze vector in normalized :math:`\frac{k_x}{k}` units.
+        See :meth:`~slmsuite.holography.toolbox.convert_vector()`.
+    shift : float
+        Radians to laterally shift the period of the grating by.
+    a : float
+        Value at one extreme of the sinusoid.
+        The :math:`n`\ th order carries :math:`J_n^2(|a-b|/2)`, so the 0th order
+        vanishes at ``|a-b|`` :math:`= 2j_{0,1} = 4.8097`, the default.
+    b : float
+        Value at the other extreme of the sinusoid.
+        Defaults to zero, in which case the phase spans ``[0, a]``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The phase for this function.
+    """
+    if vector[0] == 0 and vector[1] == 0:
+        (x_grid, _) = _process_grid(grid)
+        result = np.full_like(x_grid, (a-b)/2 * (1 + np.cos(shift)))
+    else:
+        result = (a-b)/2 * (1 + np.cos(blaze(grid, vector) + shift))
+
+    # Add offset if provided.
+    if b != 0:
+        result += b
+
+    return result
+
+
+def binary(
+    grid: Union[Tuple[np.ndarray, np.ndarray], object],
+    vector: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
+    shift: float = 0,
+    a: float = np.pi,
+    b: float = 0,
+    duty_cycle: float = .5
+) -> np.ndarray:
+    r"""
+    Returns a simple binary grating toward a given vector in :math:`k`-space.
+
+    .. math:: \phi(\vec{x}) =
+        \left\{
+            \begin{array}{ll}
+                a, & (
+                    [2\pi \cdot \vec{k} \cdot \vec{x} + s] \,\,\,\,\text{mod}\,\,\,\, 2\pi
+                    ) < 2\pi d \\
+                b, & \text{ otherwise}.
+            \end{array}
+        \right.
+
+    To realize a binary grating with a given pixel period, either use
+    :meth:`~slmsuite.holography.toolbox.convert_vector` with ``"freq"`` units
+    or pass a vector with a coordinate larger than 1:
+
+    .. highlight:: python
+    .. code-block:: python
+
+        n_x = 4     # Period in pixels
+
+        # Option 1: convert
+        binary_integer_period = toolbox.phase.binary(
+            grid=slm,
+            vector=toolbox.convert_vector(
+                (1./n_x, 0),
+                from_units="freq",
+                to_units="kxy",
+                hardware=slm
+            )
+        )
+
+        # Option 2: pass directly
+        binary_integer_period = toolbox.phase.binary(
+            grid=slm,
+            vector=(n_x, 0)
+        )
+
+    Note
+    ~~~~
+    This function uses ``np.mod`` on top of
+    :meth:`~slmsuite.holography.toolbox.phase.blaze()` to compute gratings.
+
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
+        corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
+        These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
+        such a class can be passed instead of the grids directly.
+    vector : (float, float)
+        :math:`\vec{k}`. Blaze vector in normalized :math:`\frac{k_x}{k}` units.
+        See :meth:`~slmsuite.holography.toolbox.convert_vector()`.
+
+        If the user passes data greater than 1, this is interpreted
+        as requesting a binary grating with the given period. This feature
+        ignores whatever transformations might have been applied to ``grid``.
+    shift : float
+        Radians to laterally shift the period of the grating by.
+    a : float
+        Value at one extreme of the binary grating.
+    b : float
+        Value at the other extreme of the binary grating. Defaults to zero.
+    duty_cycle : float
+        The grating value is ``a`` for ``duty_cycle * period``.
+        Then the grating value is ``b`` for ``(1 - duty_cycle) * period``.
+
+    Returns
+    -------
+    numpy.ndarray
+        The phase for this function.
+    """
+    grid = (x_grid, y_grid) = _process_grid(grid)
+    dtype = x_grid.dtype
+    duty_cycle = np.clip(float(duty_cycle), 0, 1)
+
+    # Check if we're in pixel period mode.
+    if np.any(np.abs(vector) > 1):
+        # This is not computationally efficient.
+        # Counted from the grid itself, so the indices land on its own backend.
+        ones = np.ones_like(x_grid, dtype=float)
+        grid = (x_grid, y_grid) = (
+            np.cumsum(ones, axis=1) - 1,
+            np.cumsum(ones, axis=0) - 1,
+        )
+        vector = (
+            0 if vector[0] == 0 else 1. / vector[0],
+            0 if vector[1] == 0 else 1. / vector[1]
+        )
+
+    # Check if we're in an orthogonal case.
+    if vector[0] == 0 and vector[1] == 0:
+        decision = np.mod(shift, 2 * np.pi)
+        if np.isclose(decision, 2 * np.pi):
+            decision = 0
+        decision -= 2 * np.pi * duty_cycle
+        phase = a if (decision < 0 and not np.isclose(decision, 0)) else b
+        return np.full_like(x_grid, phase, dtype=dtype)
+
+    # If we have not returned, then we have to use the slow np.mod option.
+    decision = np.mod(blaze(grid, vector) + shift, 2*np.pi)
+    decision[np.isclose(decision, 2*np.pi)] = 0   # Handle edge case
+    decision -= (2 * np.pi * duty_cycle)
+    # An integer level map keeps its kind; a float phase follows the grid.
+    out_dtype = np.result_type(a, b)
+    if out_dtype.kind == "f":
+        out_dtype = dtype
+
+    return np.where(
+        (decision < 0) & ~np.isclose(decision, 0), out_dtype.type(a), out_dtype.type(b)
+    )
+
+
+def _quadrants(
+    grid: Union[Tuple[np.ndarray, np.ndarray], object],
+    vectors: np.ndarray,
+    grating: Callable = blaze,
+) -> np.ndarray:
+    """
+    Given four 2-vectors in top-right bottom-right top-left bottom-left order,
+    fill the quadrants with gratings in the chosen directions.
+    """
+    # Parse vectors
+    vectors = format_2vectors(vectors)
+    if vectors.shape != (2,4):
+        raise ValueError("Expected four 2-vectors (2,4). Found {}.".format(vectors.shape))
+
+    # Parse grid.
+    grid = (x_grid, y_grid) = _process_grid(grid)
+    canvas = np.zeros_like(x_grid)
+    (h, w) = canvas.shape
+
+    # Fill the quadrants; the right and bottom halves take the odd row and column.
+    for i, vector in enumerate(vectors.T):
+        (right, bottom) = ((3-i) // 2, i % 2)
+        # Future: center this on the (0,0) point of the current grid?
+        imprint(
+            matrix=canvas,
+            window=[
+                (w // 2) * right,                           # x
+                (w + right) // 2,                           # w
+                (h // 2) * bottom,                          # y
+                (h + bottom) // 2,                          # h
+            ],
+            function=grating,
+            grid=grid,
+            vector=vector,      # Passed to function=grating
+        )
+
+    return canvas
+
+
+def bahtinov(
+    grid: Union[Tuple[np.ndarray, np.ndarray], object],
+    radius: float = .001,
+    angle: float = 10*np.pi/180,
+    grating: Callable = binary,
+) -> np.ndarray:
+    r"""
+    Returns a `Bahtinov mask <https://en.wikipedia.org/wiki/Bahtinov_mask>`_,
+    commonly used for focusing telescopes.
+    When the farfield pattern resulting from this mask is symmetric, the system is in focus.
+
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
+        corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
+        These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
+        such a class can be passed instead of the grids directly.
+    radius : float
+        Radius of the diffraction pattern in normalized :math:`\frac{k_x}{k}` units.
+        See :meth:`~slmsuite.holography.toolbox.convert_radius()`.
+        Defaults to a milliradian.
+    angle : float
+        Angle of the right two quadrants from the left two quadrants in radians.
+        Defaults to 10 degrees.
+    grating : callable
+        Type of grating to use for the mask. Must have a ``vector=`` argument.
+        Defaults to :meth:`~slmsuite.holography.toolbox.phase.binary()`.
+
+    Returns
+    -------
+    numpy.ndarray
+        The phase for this function.
+    """
+    s = np.sin(angle)
+    c = np.cos(angle)
+
+    vectors = format_2vectors(
+        radius * np.array([
+            (s, c),
+            (s, -c),
+            (0, 1),
+            (0, 1),
+        ]).T
+    )
+
+    return _quadrants(
+        grid=grid,
+        vectors=vectors,
+        grating=grating,
+    )
+
+
+def quadrants(
+    grid: Union[Tuple[np.ndarray, np.ndarray], object],
+    radius: float = .001,
+    center: Tuple[float, float] = (0, 0),
+) -> np.ndarray:
+    r"""
+    Returns a quadrant-based alignment mask similar to
+    :meth:`~slmsuite.holography.toolbox.phase.bahtinov()`.
+    In this case, each quadrant is filled with a blazed grating pointing in the
+    direction of the quadrant. When the source is centered on the SLM, the four
+    resulting spots will have the same intensity (to first order).
+    The position of the spots on the camera can align
+    the SLM to the optical axis of the system.
+
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        :math:`\vec{x}`. Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
+        corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
+        These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
+        such a class can be passed instead of the grids directly.
+    radius : float
+        Radius of the diffraction pattern in normalized :math:`\frac{k_x}{k}` units.
+        See :meth:`~slmsuite.holography.toolbox.convert_radius()`.
+        Defaults to a milliradian.
+    center : (float, float)
+        Center of the diffraction pattern in normalized :math:`\frac{k_x}{k}` units.
+        Defaults to the origin.
+
+    Returns
+    -------
+    numpy.ndarray
+        The phase for this function.
+    """
+    vectors = format_2vectors(
+        (radius / np.sqrt(2)) * np.array([
+            (1, -1),
+            (1, 1),
+            (-1, -1),
+            (-1, 1),
+        ]).T
+    ) + format_2vectors(center)
+
+    return _quadrants(
+        grid=grid,
+        vectors=vectors,
+        grating=blaze,
+    )
+

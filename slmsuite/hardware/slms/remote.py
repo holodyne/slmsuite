@@ -41,7 +41,7 @@ class RemoteSLM(_Client, SLM):
         :param port:
             Port number of the server. Defaults to ``5025`` (commonly used for instrument control).
         :param timeout:
-            Timeout in seconds for the connection. Defaults to ``1.0``.
+            Timeout in seconds for the connection. Defaults to ``5``.
         :param wav_um:
             Wavelength of operation in microns. Defaults to whatever is set on the server.
         :param settle_time_s:
@@ -68,15 +68,22 @@ class RemoteSLM(_Client, SLM):
     def close(self):
         pass
 
-    def _set_phase_hw(self, display, **kwargs):
+    def _set_phase_hw(self, display, execute=None, block=None, **kwargs):
         """
         Hardware-specific implementation for remote SLM connection.
 
         See :meth:`SLM._set_phase_hw` for the base class documentation.
+        ``execute`` and ``block`` are forwarded only when set, as the server's SLM
+        may not accept them.
 
         Parameters
         ----------
         display
             Integer data to display on the SLM. See :meth:`.SLM._set_phase_hw`.
         """
+        if execute is not None:
+            kwargs["execute"] = execute
+        if block is not None:
+            kwargs["block"] = block
+
         self._com(command="_set_phase_hw", kwargs=dict(display=display, **kwargs))

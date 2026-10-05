@@ -1,7 +1,7 @@
 """
 Connects to a camera on a remote :class:`~slmsuite.hardware.remote.Server`.
 """
-import warnings, time
+import time
 from slmsuite.hardware.cameras.camera import Camera
 from slmsuite.hardware.remote import _Client, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT
 
@@ -37,14 +37,14 @@ class RemoteCamera(_Client, Camera):
         the server, as a security precaution.
 
         :param name:
-            Name of the SLM on the server to connect to.
+            Name of the camera on the server to connect to.
         :param host:
             Hostname or IP address of the server. Defaults to ``"localhost"``.
         :param port:
             Port number of the server. Defaults to ``5025`` (commonly used for instrument control).
         :param timeout:
-            Timeout in seconds for the connection. Defaults to ``1.0``.
-        :param **kwargs:
+            Timeout in seconds for the connection. Defaults to ``5``.
+        :param \*\*kwargs:
             See :meth:`.Camera.__init__` for permissible options, except for
             ``resolution``, ``bitdepth``, and ``pitch_um`` which are set by the server.
         """
@@ -63,6 +63,10 @@ class RemoteCamera(_Client, Camera):
             name=self.name,
             **kwargs
         )
+
+        # The server, not this class' forwarding hooks, decides where WOI and binning happen.
+        self._software_woi = pickled.get("_software_woi", True)
+        self._software_binning = pickled.get("_software_binning", True)
 
     def close(self):
         pass
@@ -89,6 +93,27 @@ class RemoteCamera(_Client, Camera):
             kwargs=dict(exposure_s=exposure_s)
         )
 
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        return self._com(command="_set_woi_hw", kwargs=dict(woi=woi))
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        if self.server_attributes["__meta__"].get("_software_woi", True):
+            # The server crops in software; report binned, as get_woi() rescales by binning.
+            return self._woi_untransformed_binned
+        return tuple(self._com(command="_get_woi_hw"))
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        return self._com(command="_set_binning_hw", kwargs=dict(binning=binning))
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        if self.server_attributes["__meta__"].get("_software_binning", True):
+            return self._binning    # The server bins in software; it has no hardware binning.
+        return tuple(self._com(command="_get_binning_hw"))
+
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
         t = time.perf_counter()
@@ -96,13 +121,14 @@ class RemoteCamera(_Client, Camera):
             command="_get_image_hw",
             kwargs=dict(timeout_s=timeout_s)
         )
-        print(time.perf_counter()-t)
+        if getattr(self, "logger", None) is not None:
+            self.logger.debug("get_image latency: %s s", time.perf_counter()-t)
         return img
 
     def _get_images_hw(self, image_count, timeout_s, out=None):
         """See :meth:`.Camera._get_images_hw`."""
-        if out is not None:
-            warnings.warn("Remote camera does not support in-place operations.")
+        if out is not None and getattr(self, "logger", None) is not None:
+            self.logger.warning("Remote camera does not support in-place operations.")
 
         return self._com(
             command="_get_images_hw",

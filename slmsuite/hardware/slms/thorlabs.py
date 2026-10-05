@@ -1,3 +1,3 @@
 """
-Use :class:`screenmirrored`.
+Use :class:`~slmsuite.hardware.slms.screenmirrored.ScreenMirrored`.
 """

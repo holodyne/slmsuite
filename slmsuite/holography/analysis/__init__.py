@@ -6,21 +6,23 @@ import cv2
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from functools import reduce
-from scipy.optimize import curve_fit, minimize
-from scipy.ndimage import binary_erosion
+import enum
+from scipy.optimize import curve_fit, least_squares, minimize
+from scipy.ndimage import binary_erosion, gaussian_filter, map_coordinates, maximum_filter
+from scipy.fft import next_fast_len
 
 import warnings
-try:
-    import cupy as cp   # type: ignore
-except ImportError:
-    cp = np
 
-from slmsuite.holography.toolbox import format_2vectors, _process_grid
-from slmsuite.holography.toolbox.phase import zernike_sum, laguerre_gaussian
-from slmsuite.misc.math import REAL_TYPES
+from slmsuite.holography.toolbox import format_2vectors
+from slmsuite.holography.toolbox.phase import (
+    zernike_sum, ZernikeBasis, _zernike_get_basis, _zernike_fit_grid,
+)
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
+from slmsuite._logging import make_logger
+logger = make_logger(__name__)
 
 # Take and associated functions.
 
@@ -54,21 +56,20 @@ def _generate_grid(w_x, w_y, centered=False, integer=False):
     if centered:
         xs -= _center(w_x, integer=integer)
         ys -= _center(w_y, integer=integer)
-    grid = np.meshgrid(xs, ys)
-    return grid
+    return np.meshgrid(xs, ys)
 
 
 def take(
-        images,
-        vectors,
-        size,
-        centered=True,
-        integrate=False,
-        clip=False,
-        return_mask=False,
-        plot=False,
-        xp=None
-    ):
+    images,
+    vectors,
+    size,
+    centered=True,
+    integrate=False,
+    clip=False,
+    return_mask=False,
+    plot=0,
+    xp=None
+):
     """
     Crop integration regions around an array of ``vectors``, yielding an array of images.
 
@@ -78,21 +79,22 @@ def take(
 
     Parameters
     ----------
-    images : array_like
-        2D image or array of 2D images.
+    images : array_like OR (int, int)
+        2D image of shape ``(h, w)`` or stack of 2D images of shape ``(image_count, h, w)``.
+        If a shape ``(int, int)`` is given, then ``return_mask`` is forced to ``True``.
     vectors : array_like of floats
-        2-vector (or 2-vector array). Location(s) of integration region anchor(s) in pixels,
-        see ``centered``.
+        2-vector (or 2-vector array).
+        Location(s) of integration region anchor(s) in pixels, see ``centered``.
         See :meth:`~slmsuite.holography.toolbox.format_2vectors`.
     size : int or (int, int)
-        Size of the rectangular integration region in ``(w, h)`` format in pixels.
-        If a scalar is given, assume square ``(w, w)``.
+        Size of the rectangular integration region in ``(iw, ih)`` format in pixels.
+        If a scalar is given, assume square ``(iw, iw)``.
     centered : bool
         Whether to center the integration region on the ``vectors``.
         If ``False``, ``vectors`` indicates the upper-left corner of the integration region.
         Defaults to ``True``.
     integrate : bool
-        If ``True``, the spatial dimension are integrated (summed), yielding a result of the
+        If ``True``, the spatial dimensions are integrated (summed), yielding a result of the
         same length as the number of vectors. Forces floating point datatype before the
         summation is done, as integer data (especially for cameras near saturation) can overflow.
         Defaults to ``False``.
@@ -101,15 +103,17 @@ def take(
         the valid area, setting the invalid region to ``np.nan``
         (or zero if the array datatype does not support ``np.nan``).
         ``False`` throws an error upon out of range. Defaults to ``False``.
+        When combined with ``integrate``, the blanked pixels are omitted from the sum.
     return_mask : bool
         If ``True``, returns a boolean mask corresponding to the regions which are taken
         from. Defaults to ``False``. The average user will ignore this.
-    plot : bool
+    plot : int OR bool
         Calls :meth:`take_plot()` to visualize the images regions.
     xp : module OR None
-        If ``images`` are :mod:`cupy` objects, then :mod:`cupy` must be passed as
-        ``xp``. Very useful to minimize the cost of moving data between the GPU and CPU.
-        If ``None``, defaults to :mod:`numpy`.
+        The array module to take with, and the module of the returned data. Keeping
+        :mod:`cupy` ``images`` on the GPU minimizes the cost of moving data to the host.
+        If ``None``, the module backing ``images`` is used. Passing :mod:`numpy` for
+        device ``images`` copies them to the host.
         Indexing variables inside :meth:`take` still use :mod:`numpy` for speed, no
         matter what module is used.
 
@@ -117,10 +121,14 @@ def take(
     -------
     numpy.ndarray OR cupy.ndarray
         If ``integrate`` is ``False``, returns an array containing the images cropped
-        from the regions of size ``(image_count, h, w)``.
-        If ``integrate`` is ``True``, instead returns an array of floats of size ``(image_count,)``
+        from the regions of size ``(vector_count, h, w)``.
+        If ``integrate`` is ``True``, instead returns an array of floats of size ``(vector_count,)``
         where each float corresponds to the :meth:`numpy.sum` of a cropped image.
         If ``xp`` is :mod:`cupy`, then a ``cupy.ndarray`` is returned.
+        If a stack of ``image_count`` images is given, the output is of shape
+        ``(image_count, vector_count, h, w)`` or ``(image_count, vector_count)`` depending on ``integrate``.
+        If ``return_mask`` is ``True``, instead returns a boolean mask of the image shape
+        that is ``True`` inside the regions.
     """
     # Clean variables.
     if np.isscalar(size):
@@ -133,7 +141,11 @@ def take(
     vectors = np.floor(format_2vectors(vectors)).astype(int)
 
     if xp is None:
-        xp = np
+        xp = get_array_module(images)
+
+    # Move to the host for numpy processing.
+    if xp is np and is_gpu_array(images):
+        images = as_numpy(images)
 
     # Prepare helper variables. Future: consider caching for speed, if not negligible.
     edge_x = np.floor(_coordinates(size[0], centered)).astype(int)
@@ -145,39 +157,65 @@ def take(
     integration_x = np.add(region_x.ravel()[:, np.newaxis].T, vectors[:][0][:, np.newaxis])
     integration_y = np.add(region_y.ravel()[:, np.newaxis].T, vectors[:][1][:, np.newaxis])
 
-    images = xp.array(images, copy=(False if np.__version__[0] == '1' else None))
+    # Parse images and shape.
     shape = xp.shape(images)
 
-    if clip:  # Prevent out-of-range errors by clipping.
+    if shape == (2,):
+        shape = (int(images[0]), int(images[1]))
+        return_mask = True
+
+    # The edges are sorted, so the extremes bound every region; if they fit, nothing is clipped.
+    span_x = span_y = None
+    if vectors.shape[1]:
+        (lo, hi) = (np.min(vectors, axis=1), np.max(vectors, axis=1))
+        span_x = (int(lo[0] + edge_x[0]), int(hi[0] + edge_x[-1]))
+        span_y = (int(lo[1] + edge_y[0]), int(hi[1] + edge_y[-1]))
+
+    fits = span_x is None or (
+        span_x[0] >= 0 and span_x[1] < shape[-1] and
+        span_y[0] >= 0 and span_y[1] < shape[-2]
+    )
+
+    if fits:
+        clip = False    # Everything fits; nothing to blank.
+    elif clip:          # Prevent out-of-range errors by clipping.
         mask = (
             (integration_x < 0) | (integration_x >= shape[-1]) |
             (integration_y < 0) | (integration_y >= shape[-2])
         )
 
-        if np.any(mask):
-            # Clip these indices to prevent errors.
-            np.clip(integration_x, 0, shape[-1] - 1, out=integration_x)
-            np.clip(integration_y, 0, shape[-2] - 1, out=integration_y)
-        else:
-            # No clipping needed.
-            clip = False
+        # Clip these indices to prevent errors.
+        np.clip(integration_x, 0, shape[-1] - 1, out=integration_x)
+        np.clip(integration_y, 0, shape[-2] - 1, out=integration_y)
     else:
-        pass  # Don't prevent out-of-range errors.
+        raise IndexError(
+            "Integration regions of size {} about {} vector(s) span x {} and y {}, "
+            "which extends past the image of shape {}. "
+            "Pass clip=True to blank the out-of-range pixels. "
+            "If the regions were expected to be inside the image, check that the "
+            "vectors are in the same coordinate frame as the image; a camera window "
+            "of interest offsets the image relative to the raw sensor.".format(
+                size, vectors.shape[1], span_x, span_y, tuple(shape[-2:])
+            )
+        )
 
     if return_mask:
         if return_mask == 2:
-            canvas = np.full(images.shape, np.nan, dtype=float)
+            canvas = np.zeros_like(images, shape=shape[-2:], dtype=float)
+            canvas[:] = np.nan
             canvas[integration_y, integration_x] = images[integration_y, integration_x]
         else:
-            canvas = np.zeros(shape[:2], dtype=bool)
+            canvas = np.zeros_like(images, shape=shape[-2:], dtype=bool)
             canvas[integration_y, integration_x] = True
 
-        if plot:
-            plt.imshow(canvas)
-            plt.show()
+        if plot >= 1:
+            plt.imshow(as_numpy(canvas))
+            _slmsuite_plt_show(name="take")
 
         return canvas
     else:
+        images = as_backend(images, xp)
+
         # Take the data, depending on the shape of the images.
         if len(shape) == 2:
             result = images[np.newaxis, integration_y, integration_x]
@@ -189,22 +227,33 @@ def take(
         if clip:  # Set values that were out of range to nan instead of erroring.
             try:  # If the datatype of result is incompatible with nan, set to zero instead.
                 result[:, mask] = np.nan
-            except:
+            except Exception:
                 result[:, mask] = 0
-        else:
-            pass
 
-        # Plot if desired
-        if plot:
-            take_plot(xp.reshape(result, (vectors.shape[1], size[1], size[0])), separate_axes=False)
+        if len(shape) == 2:
+            crop_shape = (vectors.shape[1], size[1], size[0])
+        elif len(shape) == 3:
+            crop_shape = (shape[0], vectors.shape[1], size[1], size[0])
 
-        if integrate:  # Sum over the integration axis.
-            return xp.squeeze(xp.sum(result.astype(float), axis=-1))
-        else:  # Reshape the integration axis.
-            return xp.reshape(result, (vectors.shape[1], size[1], size[0]))
+        if plot >= 1:
+            if len(shape) == 2:
+                take_plot(xp.reshape(result, crop_shape), separate_axes=False)
+            elif len(shape) == 3:
+                take_plot(xp.reshape(result, crop_shape)[0], separate_axes=False)
+
+        if integrate:   # Sum over the integration axis.
+            if len(shape) == 2:
+                final_shape = (vectors.shape[1],)
+            elif len(shape) == 3:
+                final_shape = (shape[0], vectors.shape[1],)
+            # Clipped regions were blanked with nan above.
+            summer = xp.nansum if clip else xp.sum
+            return summer(result.astype(float), axis=-1).reshape(final_shape)
+        else:           # Reshape the integration axis.
+            return xp.reshape(result, crop_shape)
 
 
-def take_plot(images, shape=None, separate_axes=False, cbar=True):
+def take_plot(images, shape=None, separate_axes=False, cbar=True, figsize=None):
     """
     Plots non-integrated results of :meth:`.take()` in a square array of subplots.
 
@@ -220,10 +269,23 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
         If ``False``, uses :meth:`take_tile()` to plot all images on a single axes.
     cbar : bool
         Whether to include a colorbar. Currently only applies if ``separate_axes`` is ``False``.
+    figsize : (float, float) OR float OR None
+        Size of the figure in inches. A scalar is interpreted as the larger dimension,
+        with the other dimension set by the aspect ratio of the tiled images.
+        If ``None``, the current figure keeps its size.
     """
     # Gather helper variables and set the min and max of all the subplots.
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
+
+    images = as_numpy(images)
+
+    # Resize the figure only if a size is given.
+    if figsize is not None:
+        aspect = float(N * sx) / float(M * sy)
+        if np.isscalar(figsize):                        # Scalar sets the larger dimension.
+            figsize = (figsize, figsize / aspect) if aspect > 1 else (figsize * aspect, figsize)
+        plt.gcf().set_size_inches(figsize)
 
     if separate_axes:
         sx = sx / 2.0 - 0.5
@@ -233,11 +295,8 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
         vmin = np.nanmin(images)
         vmax = np.nanmax(images)
 
-        # Make the figure and subplots.
-        plt.figure(figsize=(12, 12))
-
         for x in range(img_count):
-            ax = plt.subplot(M, M, x + 1)
+            ax = plt.subplot(M, N, x + 1)
 
             ax.imshow(
                 images[x, :, :],
@@ -248,6 +307,8 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
             )
             ax.axes.xaxis.set_visible(False)
             ax.axes.yaxis.set_visible(False)
+
+        _slmsuite_plt_show(name="take_plot")
     else:
         im = plt.imshow(
             take_tile(images, shape),
@@ -270,6 +331,8 @@ def take_plot(images, shape=None, separate_axes=False, cbar=True):
             # Return the current axes to the original one.
             plt.sca(ax)
 
+        _slmsuite_plt_show(name="take_plot")
+
 
 def _take_parse_shape(images, shape=None):
     """
@@ -284,7 +347,7 @@ def _take_parse_shape(images, shape=None):
         (M, N) = shape
 
     if M*N < img_count:
-        warnings.warn("Not enough space to fit all images. Truncating the image count.")
+        logger.warning("Not enough space to fit all images. Try truncating the image count.")
         img_count = M*N
 
     return img_count, (M, N)
@@ -306,8 +369,8 @@ def take_tile(images, shape=None):
     (img_count, sy, sx) = np.shape(images)
     img_count, (M, N) = _take_parse_shape(images, shape)
 
-    result = np.zeros((M*N, sy, sx), images.dtype)
-    result[:img_count, :, :] = images[:, :, :]
+    result = np.zeros_like(images, shape=(M*N, sy, sx))
+    result[:img_count, :, :] = images[:img_count, :, :]
 
     return result.reshape(M, N, sy, sx).transpose(0, 2, 1, 3).reshape(M*sy, N*sx)
 
@@ -337,9 +400,10 @@ def image_remove_field(images, deviations=1, out=None):
     deviations : int OR None
         Number of standard deviations above the mean to set the threshold.
         If ``None``, uses the median as the threshold instead.
-        Defaults to ``None``.
+        Defaults to ``1``.
     out : numpy.ndarray or None
-        The array to place the output data into. Should be the same shape as ``images``.
+        The array to place the output data into. Should be the same shape as ``images``
+        and of floating point datatype.
         This function operates in-place if ``out`` equals ``images``.
 
     Returns
@@ -349,21 +413,29 @@ def image_remove_field(images, deviations=1, out=None):
     """
     # Parse images. Convert to float.
     images = np.array(images, copy=(False if np.__version__[0] == '1' else None))
-    if not isinstance(images.dtype, np.floating):
+    if not np.issubdtype(images.dtype, np.floating):
         images = np.array(images, copy=(False if np.__version__[0] == '1' else None), dtype=float)  # Hack to prevent integer underflow.
 
     # Parse out.
     if out is None:
         out = np.copy(images)
+    elif not np.issubdtype(np.asarray(out).dtype, np.floating):
+        raise ValueError(
+            "out must be of floating point datatype; "
+            "background subtraction underflows integers."
+        )
     elif not (out is images):
         np.copyto(out, images)
 
-    # Make sure that we're testing 3D images.
+    # Make sure that we're testing 3D images. out_ is a view of out, so in-place
+    # operations on out_ also update out (which is what we return).
     single_image = len(images.shape) == 2
     if single_image:
         images_ = np.reshape(images, (1, images.shape[0], images.shape[1]))
+        out_ = np.reshape(out, (1, out.shape[0], out.shape[1]))
     else:
         images_ = images
+        out_ = out
     img_count = images_.shape[0]
 
     # Generate the threshold.
@@ -374,15 +446,12 @@ def image_remove_field(images, deviations=1, out=None):
             np.nanmean(images_, axis=(1, 2))
             + deviations * np.nanstd(images_, axis=(1, 2))
         )
-    if not single_image:
-        threshold = np.reshape(threshold, (img_count, 1, 1))
-
-    out_max = np.amax(out, axis=(1,2), keepdims=True)
+    threshold = np.reshape(threshold, (img_count, 1, 1))
 
     # Remove the field. This needs the float from before. Unsigned integer could underflow.
-    out -= threshold.astype(out.dtype)
-    out[out < 0] = 0
-    out[out > out_max - threshold] = 0
+    threshold = threshold.astype(out_.dtype)
+    out_ -= threshold
+    out_[out_ < 0] = 0
 
     return out
 
@@ -412,6 +481,58 @@ def image_relative_strehl(images):
         images = np.reshape(images, (1, images.shape[0], images.shape[1]))
 
     return np.amax(images, axis=(1,2)) / np.sum(images, axis=(1,2))
+
+
+def image_strehl(images, reference):
+    r"""
+    Computes the `Strehl ratio <https://en.wikipedia.org/wiki/Strehl_ratio>`_ of a stack
+    of images against a diffraction-limited ``reference``.
+
+    .. math:: S = \left. \frac{\max_{x,y} I}{\sum_{x,y} I}
+                  \middle/ \frac{\max_{x,y} I_0}{\sum_{x,y} I_0} \right.
+
+    Normalizing each image by its own total makes the ratio independent of exposure,
+    gain, and bitdepth, such that only the *concentration* of the light is compared.
+    The ``reference`` is an unaberrated point spread function windowed identically to
+    ``images``: on a simulated system,
+    :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.render()` of a flat
+    phase yields one directly.
+
+    Caution
+    ~~~~~~~
+    ``images`` and ``reference`` must be cropped to the **same** window about the
+    **same** point, otherwise the differing truncation of the point spread function's
+    wings biases the result. Additionally, ``images`` should be background-subtracted
+    (see :meth:`image_remove_field()`) and free of saturated pixels: a pedestal inflates
+    :math:`\sum I` and saturation caps :math:`\max I`, both of which depress :math:`S`.
+    A window that clips the aberrated halo but not the ideal core biases :math:`S` high.
+
+    Caution
+    ~~~~~~~
+    :math:`\max I` is the brightest *pixel*, not the true peak, so this is only the
+    Strehl ratio insofar as the camera resolves the point spread function. A pixel
+    integrates over its own footprint, blunting the sharp ideal core more than a broad
+    aberrated one, so an under-sampled :math:`S` reads high -- increasingly so as the
+    aberration grows. See
+    :meth:`~slmsuite.hardware.cameraslms.FourierSLM.get_farfield_spot_size()`, which
+    reports the sampling.
+
+    Parameters
+    ----------
+    images : numpy.ndarray
+        A matrix in the style of the output of :meth:`take()`, with shape
+        ``(image_count, h, w)``. A single image of shape ``(h, w)`` is interpreted
+        correctly as ``(1, h, w)``.
+    reference : numpy.ndarray
+        The diffraction-limited point spread function, of shape ``(h, w)`` to compare
+        every image against, or ``(image_count, h, w)`` to compare pairwise.
+
+    Returns
+    -------
+    numpy.ndarray
+        The Strehl ratio evaluated for every image, of size ``(image_count,)``.
+    """
+    return image_relative_strehl(images) / image_relative_strehl(reference)
 
 
 def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=True, nansum=False):
@@ -474,6 +595,8 @@ def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=Tru
         -   Providing two full grids of shape ``(h, w)``, one for each direction.
             Note that this case is the most general, and can lead to a rotated grid if a
             transformed grid is provided.
+        -   Providing two stacks of grids of shape ``(image_count, h, w)``, one for each
+            direction, when each image requires its own grid.
 
     normalize : bool
         Whether to normalize ``images``.
@@ -505,7 +628,9 @@ def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=Tru
 
     # Handle normalization.
     if normalize:
-        normalization = np_sum(images, axis=(1, 2), keepdims=False).reshape((img_count, 1, 1))
+        normalization = np_sum(
+            images, axis=(1, 2), keepdims=False
+        ).reshape((img_count, 1, 1)).astype(float)
         reciprocal = np.reciprocal(
             normalization, where=normalization != 0, out=np.zeros((img_count,1,1))
         )
@@ -528,28 +653,26 @@ def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=Tru
         # Parse grid.
         if grid is None or np.isscalar(grid) or (np.isscalar(grid[0]) and np.isscalar(grid[1])):
             # Default to the pixel grid.
+            if grid is None:
+                scale_x = scale_y = 1
+            elif np.isscalar(grid):
+                scale_x = scale_y = grid
+            else:
+                scale_x, scale_y = grid[0], grid[1]
+
             if moment[0] != 0:
-                x_grid = np.reshape(np.arange(w_x) - _center(w_x), (1, 1, w_x)) - c_x
+                x_grid = np.reshape(np.arange(w_x) - _center(w_x), (1, 1, w_x)) * scale_x - c_x
                 if moment[0] != 1:
                     x_grid = np.power(x_grid, moment[0], out=x_grid)
             else:
                 x_grid = 0
 
             if moment[1] != 0:
-                y_grid = np.reshape(np.arange(w_y) - _center(w_y), (1, w_y, 1)) - c_y
+                y_grid = np.reshape(np.arange(w_y) - _center(w_y), (1, w_y, 1)) * scale_y - c_y
                 if moment[1] != 1:
                     y_grid = np.power(y_grid, moment[1], out=y_grid)
             else:
                 y_grid = 0
-
-            # Handle the dx, dy option.
-            if grid is not None:
-                if np.isscalar(grid):
-                    x_grid *= grid[0]
-                    y_grid *= grid[1]
-                else:
-                    x_grid *= grid
-                    y_grid *= grid
         else:
             x_grid, y_grid = grid
 
@@ -559,8 +682,9 @@ def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=Tru
             elif len(np.shape(x_grid)) == 1:                        # 1D grids.
                 x_grid = np.reshape(x_grid, (1, 1, w_x)) - c_x
                 y_grid = np.reshape(y_grid, (1, w_y, 1)) - c_y
-            elif len(np.shape(x_grid)) == 3:
-                pass
+            elif len(np.shape(x_grid)) == 3:                        # Per-image grids.
+                x_grid = x_grid - c_x
+                y_grid = y_grid - c_y
             else:
                 raise ValueError(f"Could not parse grid of shape {x_grid.shape}")
 
@@ -594,21 +718,21 @@ def image_normalization(images, nansum=False):
     Returns
     -------
     numpy.ndarray
-        The normalization factor :math:`M_{11}` in an array of shape ``(image_count,)``.
+        The normalization factor :math:`M_{00}` in an array of shape ``(image_count,)``.
     """
     return image_moment(images, (0, 0), normalize=False, nansum=nansum)
 
 
 def image_normalize(images, nansum=False, remove_field=False):
     """
-    Normalizes of a stack of images via the the zeroth order moments
+    Normalizes a stack of images via the zeroth order moments
     such that each image sums to one.
 
     Parameters
     ----------
     images : numpy.ndarray
         A matrix in the style of the output of :meth:`take()`, with shape ``(image_count, h, w)``, where
-        ``(h, w)`` is the width and height of the 2D images and ``image_count`` is the number of
+        ``(h, w)`` is the height and width of the 2D images and ``image_count`` is the number of
         images. A single image is interpreted correctly as ``(1, h, w)`` even if
         ``(h, w)`` is passed, though the returned image remains shape ``(h, w)`` in that case.
     nansum : bool
@@ -653,7 +777,7 @@ def image_positions(images, grid=None, normalize=True, nansum=False):
     ----------
     images : numpy.ndarray
         A matrix in the style of the output of :meth:`take()`, with shape ``(image_count, h, w)``, where
-        ``(h, w)`` is the width and height of the 2D images and ``image_count`` is the number of
+        ``(h, w)`` is the height and width of the 2D images and ``image_count`` is the number of
         images. A single image is interpreted correctly as ``(1, h, w)`` even if
         ``(h, w)`` is passed.
     grid : float OR (float, float) OR (array_like, array_like) OR None
@@ -664,7 +788,7 @@ def image_positions(images, grid=None, normalize=True, nansum=False):
             ``float`` or an anisotropic ``(float, float)``.
             This corresponds to the pixel's :math:`\Delta x`, :math:`\Delta y`.
         -   Providing lists of length ``w`` and ``h`` as a tuple as the grid dimension.
-        -   Providing full grids of shape ``(w, h)`` in each direction. Note that this
+        -   Providing full grids of shape ``(h, w)`` in each direction. Note that this
             case is the most general, and can lead to a rotated grid if a transformed
             grid is provided.
 
@@ -702,12 +826,12 @@ def image_variances(images, centers=None, grid=None, normalize=True, nansum=Fals
     Specifically, this function returns a stack of the moments :math:`M_{20}` and
     :math:`M_{02}`, along with :math:`M_{11}`, which are the variance in the :math:`x`
     and :math:`y` directions, along with the so-called shear variance.
-    Recall that variance defined as
+    Recall that variance is defined as
 
     .. math:: (\Delta x)^2 = \left<(x - \left<x\right>)^2\right>.
 
     This equation is made central by subtraction of :math:`\left<x\right>`.
-    The user can of course use :meth:`take_moment` directly to access the
+    The user can of course use :meth:`image_moment` directly to access the
     non-central moments; this function is a helper to access useful quantities
     for analysis of spot size and skewness.
 
@@ -715,19 +839,19 @@ def image_variances(images, centers=None, grid=None, normalize=True, nansum=Fals
     ~~~~
     The moment :math:`M_{20} = (\Delta x)^2` is the variance in the
     :math:`x` direction, or the square of the standard deviation :math:`\Delta x`.
-    The standard deviation :math:`\Delta x` is equal to the
-    :math:`1/e` amplitude radius (:math:`1/e^2` power radius) of a Gaussian beam.
+    For the intensity image of a Gaussian beam, the standard deviation :math:`\Delta x` is
+    half the :math:`1/e` amplitude radius (:math:`1/e^2` power radius).
 
     Parameters
     ----------
     images : numpy.ndarray
         A matrix in the style of the output of :meth:`take()`, with shape ``(image_count, h, w)``, where
-        ``(h, w)`` is the width and height of the 2D images and ``image_count`` is the number of
+        ``(h, w)`` is the height and width of the 2D images and ``image_count`` is the number of
         images. A single image is interpreted correctly as ``(1, h, w)`` even if
         ``(h, w)`` is passed.
     centers : numpy.ndarray OR None
         If the user has already computed :math:`\left<x\right>`, for example via
-        :meth:`image_positions()`, then this can be passed though ``centers``. The default
+        :meth:`image_positions()`, then this can be passed through ``centers``. The default
         ``None`` computes ``centers`` internally.
     grid : float OR (float, float) OR (array_like, array_like) OR None
         If ``None`` (the default), the moment is reported in pixels of the image.
@@ -737,7 +861,7 @@ def image_variances(images, centers=None, grid=None, normalize=True, nansum=Fals
             ``float`` or an anisotropic ``(float, float)``.
             This corresponds to the pixel's :math:`\Delta x`, :math:`\Delta y`.
         -   Providing lists of length ``w`` and ``h`` as a tuple as the grid dimension.
-        -   Providing full grids of shape ``(w, h)`` in each direction. Note that this
+        -   Providing full grids of shape ``(h, w)`` in each direction. Note that this
             case is the most general, and can lead to a rotated grid if a transformed
             grid is provided.
 
@@ -763,7 +887,7 @@ def image_variances(images, centers=None, grid=None, normalize=True, nansum=Fals
         images = image_normalize(images, nansum=nansum)
 
     if centers is None:
-        centers = image_positions(images, normalize=False, nansum=nansum)
+        centers = image_positions(images, grid=grid, normalize=False, nansum=nansum)
 
     m20 = image_moment(images, (2, 0), centers=centers, grid=grid, normalize=False, nansum=nansum)
     m02 = image_moment(images, (0, 2), centers=centers, grid=grid, normalize=False, nansum=nansum)
@@ -777,7 +901,7 @@ def image_variances(images, centers=None, grid=None, normalize=True, nansum=Fals
 
 
 def image_std(images, centers=None, grid=None, normalize=True, nansum=False):
-    """Near-alias of :meth:`image_variances()`. Excludes the shear variance."""
+    r"""Standard deviations :math:`\sqrt{M_{20}}`, :math:`\sqrt{M_{02}}`; see :meth:`image_variances()`."""
     return np.sqrt(image_variances(images, centers, grid, normalize, nansum, exclude_shear=True))
 
 
@@ -821,6 +945,7 @@ def image_ellipticity(variances):
     -------
     numpy.ndarray
         Array of ellipticities for the given moments in an array of shape ``(image_count,)``.
+        ``nan`` where :math:`\lambda_+ = 0`, such as for an all-zero image.
     """
     m20 = variances[0, :]
     m02 = variances[1, :]
@@ -831,12 +956,18 @@ def image_ellipticity(variances):
     half_trace = (m20 + m02) / 2
     determinant = m20 * m02 - m11 * m11
 
-    eig_half_difference = np.sqrt(np.square(half_trace) - determinant)
+    eig_half_difference = np.sqrt(np.maximum(np.square(half_trace) - determinant, 0))
 
     eig_plus = half_trace + eig_half_difference
     eig_minus = half_trace - eig_half_difference
 
-    return 1 - (eig_minus / eig_plus)
+    # eig_plus == 0 for an all-zero / uniform image; return nan there instead of dividing.
+    ratio = np.divide(
+        eig_minus, eig_plus,
+        out=np.full_like(eig_plus, np.nan, dtype=float),
+        where=eig_plus != 0,
+    )
+    return 1 - ratio
 
 
 def image_areas(variances):
@@ -889,21 +1020,11 @@ def image_ellipticity_angle(variances):
     m02 = variances[1, :]
     m11 = variances[2, :]
 
-    # Some quick math (see image_ellipticity).
-    half_trace = (m20 + m02) / 2
-    determinant = m20 * m02 - m11 * m11
-
-    eig_plus = half_trace + np.sqrt(np.square(half_trace) - determinant)
-
-    # We know that M * v = eig_plus * v. This yields a system of equations:
-    #   m20 * x + m11 * y = eig_plus * x
-    #   m11 * x + m02 * y = eig_plus * y
-    # We're trying to solve for angle, which is just atan(x/y). We can solve for x/y:
-    #   m11 * x = (eig_plus - m02) * y        ==>         x/y = (eig_plus - m02) / m11
-    return np.arctan2(eig_plus - m02, m11, where=m11 != 0, out=np.zeros_like(m11))
+    # Major-axis orientation of the [[m20, m11], [m11, m02]] covariance.
+    return 0.5 * np.arctan2(2 * m11, m20 - m02)
 
 
-def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
+def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=0):
     """
     Fit each image in a stack of images to a 2D ``function``.
 
@@ -917,31 +1038,28 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
         If ``None``, makes a grid with unit pitch centered on the images.
     function : lambda ((float, float), ... ) -> float
         Some fitfunction which accepts ``(x,y)`` coordinates as first argument.
-        Defaults to :meth:`~slmsuite.misc.fitfunctions.gaussian2d()`.
+        Defaults to :meth:`~slmsuite.holography.analysis.fitfunctions.gaussian2d()`.
     guess : None OR True OR numpy.ndarray (``image_count``, ``parameter_count``)
         - If ``guess`` is ``None`` or ``True``, will construct a guess based on the ``function`` passed.
           Functions for which guesses are implemented include:
 
-          - :meth:`~slmsuite.misc.fitfunctions.gaussian2d()`
+          - :meth:`~slmsuite.holography.analysis.fitfunctions.gaussian2d()`
 
         - If ``guess`` is ``None`` and ``function`` does not have a guess
           implemented, no guess will be provided to the optimizer and the user will be warned.
         - If ``guess`` is ``True`` and ``function`` does not have a guess
           implemented, an error will be raised.
-        - If ``guess`` is a ``numpy.ndarray``, a column of the array will be provided
+        - If ``guess`` is a ``numpy.ndarray``, a row of the array will be provided
           to the optimizer as a guess for the fit parameters for each image.
-    plot : bool
+    plot : int OR bool
         Whether to create a plot for each fit.
-    show : bool
-        Whether or not to call :meth:`matplotlib.pyplot.show` after generating
-        the plot.
 
     Returns
     -------
     numpy.ndarray (``image_count``, ``result_count``)
-        A matrix with the fit results. The first row
+        A matrix with the fit results. The first column
         contains the rsquared quality of each fit.
-        The values in the remaining rows correspond to the parameters
+        The values in the remaining columns correspond to the parameters
         for the supplied fit function, then the errors for each of the parameters.
         Failed fits have an rsquared of ``numpy.nan`` and parameters
         are set to the provided or constructed guess or ``numpy.nan``
@@ -952,7 +1070,8 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
     NotImplementedError
         If the provided ``function`` does not have a guess implemented.
     """
-    # Setup.
+    # Setup. The fit runs on the host.
+    images = as_numpy(images)
     if images.ndim == 2:
         images = images.reshape((1, *images.shape))
     (image_count, w_y, w_x) = images.shape
@@ -960,6 +1079,7 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
 
     if grid is None:
         grid = _generate_grid(w_x, w_y, centered=True)
+    grid = (as_numpy(grid[0]), as_numpy(grid[1]))
     grid_ravel = (np.ravel(grid[0]), np.ravel(grid[1]))
 
     # Number of fit parameters the function accepts (minus 1 for xy).
@@ -972,12 +1092,14 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
     # Construct guesses.
     if guess is None or guess is True:
         if function is gaussian2d:
-            images_normalized = image_normalize(images, remove_field=True)
-            centers = image_positions(images_normalized, grid=grid, normalize=False)
-            variances = image_variances(images_normalized, centers=centers, grid=grid, normalize=False)
+            images_normalized = image_normalize(images, nansum=True, remove_field=True)
+            centers = image_positions(images_normalized, grid=grid, normalize=False, nansum=True)
+            variances = image_variances(
+                images_normalized, centers=centers, grid=grid, normalize=False, nansum=True
+            )
 
-            maxs = np.amax(images, axis=(1, 2))
-            mins = np.amin(images, axis=(1, 2))
+            maxs = np.nanmax(images, axis=(1, 2))
+            mins = np.nanmin(images, axis=(1, 2))
             guess = np.vstack((
                 centers,
                 maxs - mins,
@@ -990,7 +1112,7 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
             if guess is True:
                 raise NotImplementedError(message)
             else:
-                warnings.warn(message)
+                logger.warning(message)
 
     # Fit and plot each image.
     for img_idx in range(image_count):
@@ -1024,7 +1146,7 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
         if fit_succeeded:   # Calculate r2.
             ss_res = np.sum(np.square(img - function(grid_ravel_, *popt)))
             ss_tot = np.sum(np.square(img - np.mean(img)))
-            r2 = 1 - (ss_res / ss_tot)
+            r2 = np.nan if ss_tot == 0 else 1 - (ss_res / ss_tot)
         else:               # r2 is nan and the fit parameters are the guess or nan.
             popt = p0 if p0 is not None else np.full(param_count, np.nan)
             r2 = np.nan
@@ -1036,9 +1158,9 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
         result[img_idx, (param_count+1):] = perr
 
         # Plot.
-        if plot:
+        if plot >= 1:
             # Data.
-            data = np.reshape(img, img_shape)
+            data = images[img_idx, :, :]
             if p0 is not None:
                 guess_ = np.reshape(function(grid_ravel, *p0), img_shape)
             else:
@@ -1066,148 +1188,471 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=False):
             ax2.imshow(result_, vmin=vmin, vmax=vmax)
             ax2.set_title("Result")
 
-            plt.show()
+            _slmsuite_plt_show(name="image_fit")
+
+    return result
+
+
+# Geometry of the ray cast by _aperture_edge_points(), in pixels: how finely each ray is
+# sampled, and the smallest radius at which an edge may be found.
+_APERTURE_STEP = 0.5
+_APERTURE_MIN_RADIUS = 5.0
+
+# How close the fitted center must come to the center the rays were cast from, in pixels,
+# for image_aperture_fit() to stop iterating. See the note at its use.
+_APERTURE_CONVERGENCE = 0.2
+
+
+def _aperture_edge_points(power, center, theta, step, drop, floor, edge_level):
+    """
+    Helper for :meth:`image_aperture_fit()`: casts rays from ``center`` across the smoothed
+    ``power`` and returns, for each ray with a qualifying edge, the ``(2, N)`` pixel
+    coordinates of its steepest descent and of where its power falls to ``edge_level``.
+    """
+    (h, w) = power.shape
+    radii = np.arange(0, np.hypot(h, w), step)
+    rows = np.arange(len(theta))
+
+    x = center[0] + np.outer(np.cos(theta), radii)
+    y = center[1] + np.outer(np.sin(theta), radii)
+    inside = (x >= 0) & (x <= w - 1) & (y >= 0) & (y <= h - 1)
+
+    # Each ray is only usable up to where it first leaves the image.
+    length = np.where(inside.all(axis=1), radii.size, np.argmin(inside, axis=1))
+    profiles = map_coordinates(power, [y.ravel(), x.ravel()], order=1, mode="nearest")
+    profiles = profiles.reshape(x.shape)
+    slope = np.gradient(profiles, axis=1)
+
+    # The candidate edge is the steepest descent which leaves room to compare the power
+    # at 0.8-0.9 of its radius against 1.1-1.2 of its radius, inside the image.
+    index = np.arange(radii.size)[np.newaxis, :]
+    searchable = (index * step >= _APERTURE_MIN_RADIUS) & (
+        np.ceil(1.2 * index) + 1 < length[:, np.newaxis]
+    )
+    k = np.argmin(np.where(searchable, slope, np.inf), axis=1)
+    valid = searchable[rows, k]
+
+    cumulative = np.concatenate((np.zeros((len(theta), 1)), np.cumsum(profiles, axis=1)), axis=1)
+
+    def window_mean(lo, hi):
+        lo = np.floor(lo).astype(int)
+        hi = np.clip(np.ceil(hi).astype(int), lo + 1, radii.size)
+        return (cumulative[rows, hi] - cumulative[rows, lo]) / (hi - lo)
+
+    inner = window_mean(0.8 * k, 0.9 * k)
+    outer = window_mean(1.1 * k, 1.2 * k)
+    valid &= (inner > floor) & (inner - outer >= drop * inner)
+
+    # Refine the steepest descent to a fraction of a sample with a parabola.
+    kc = np.clip(k, 1, radii.size - 2)
+    (s0, s1, s2) = (slope[rows, kc - 1], slope[rows, kc], slope[rows, kc + 1])
+    curvature = s0 - 2 * s1 + s2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        offset = np.where(curvature > 0, 0.5 * (s0 - s2) / curvature, 0)
+    edge = (kc + np.clip(offset, -0.5, 0.5)) * step
+
+    # Beyond the steepest descent, find where the power falls to edge_level of the way from
+    # the background (the lowest power further along the ray) to the power inside the edge.
+    beyond = (index >= k[:, np.newaxis]) & (index < length[:, np.newaxis])
+    background = np.min(np.where(beyond, profiles, np.inf), axis=1)
+    with np.errstate(invalid="ignore"):
+        threshold = background + edge_level * (inner - background)
+    j = np.argmax(beyond & (profiles <= threshold[:, np.newaxis]), axis=1)
+    jm = np.maximum(j - 1, 0)
+    (p0, p1) = (profiles[rows, jm], profiles[rows, j])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fraction = np.where(p0 > p1, (p0 - threshold) / (p0 - p1), 0)
+    level = (jm + np.clip(fraction, 0, 1)) * step
+
+    def coordinates(radius):
+        return np.vstack((
+            center[0] + radius[valid] * np.cos(theta[valid]),
+            center[1] + radius[valid] * np.sin(theta[valid]),
+        ))
+
+    return (coordinates(edge), coordinates(level))
+
+
+def _aperture_circle_fit(points, tolerance, smooth, max_radius, seed, trials=1000):
+    """
+    Helper for :meth:`image_aperture_fit()`: RANSAC circle over ``(2, N)`` edge ``points``,
+    refined by least squares on the consensus. Returns ``(center, radius, inliers)``, or
+    ``None`` if no circle is found.
+    """
+    pts = points.T
+    n = len(pts)
+    rng = np.random.default_rng(seed)
+
+    # Circles through random triplets of points.
+    triplets = np.argsort(rng.random((trials, n)), axis=1)[:, :3]
+    (p1, p2, p3) = (pts[triplets[:, 0]], pts[triplets[:, 1]], pts[triplets[:, 2]])
+    (a, b) = (2 * (p2 - p1), 2 * (p3 - p1))
+    det = a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+    (c1, c2) = (np.sum(p2**2 - p1**2, axis=1), np.sum(p3**2 - p1**2, axis=1))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cx = (c1 * b[:, 1] - a[:, 1] * c2) / det
+        cy = (a[:, 0] * c2 - c1 * b[:, 0]) / det
+    r = np.hypot(p1[:, 0] - cx, p1[:, 1] - cy)
+    plausible = np.isfinite(r) & (r > 0) & (r < max_radius)
+    if not np.any(plausible):
+        return None
+
+    def tolerance_of(radius):
+        """The consensus half-width of a circle of this ``radius``, shaped like it."""
+        if tolerance is not None:
+            return np.broadcast_to(float(tolerance), np.shape(radius))
+        return np.maximum(1.5 * smooth, 0.025 * radius)
+
+    def consensus(center, radius):
+        """Boolean mask of the points which belong to the single circle ``(center, radius)``."""
+        return np.abs(np.hypot(*(pts - center).T) - radius) < tolerance_of(radius)
+
+    # The candidate with the most points inside its consensus wins.
+    (cx, cy, r) = (cx[plausible], cy[plausible], r[plausible])
+    distance = np.hypot(pts[:, 0] - cx[:, np.newaxis], pts[:, 1] - cy[:, np.newaxis])
+    counts = np.sum(np.abs(distance - r[:, np.newaxis]) < tolerance_of(r)[:, np.newaxis], axis=1)
+    best = int(np.argmax(counts))
+    circle = np.array([cx[best], cy[best], r[best]])
+
+    # Refine on the consensus, then refresh the consensus about the refined circle.
+    for _ in range(2):
+        inliers = consensus(circle[:2], circle[2])
+        if np.sum(inliers) < 3:
+            return None
+        q = pts[inliers]
+        circle = least_squares(
+            lambda c: np.hypot(q[:, 0] - c[0], q[:, 1] - c[1]) - c[2], circle
+        ).x
+
+    return (circle[:2], float(circle[2]), consensus(circle[:2], circle[2]))
+
+
+def image_aperture_fit(
+    image,
+    center=None,
+    edge_level=0.1,
+    smooth=None,
+    drop=0.5,
+    floor=0.05,
+    tolerance=None,
+    rays=720,
+    min_points=20,
+    min_coverage=90,
+    iterations=10,
+    seed=0,
+    plot=False,
+):
+    r"""
+    Fits a circle to the rolloff of an illuminated aperture in a 2D power ``image``.
+
+    The power centroid of a clipped beam is pulled toward whatever is brightest inside the
+    aperture. Instead, this function locates the edge of the aperture directly:
+
+    #.  The image is smoothed by a Gaussian of width ``smooth`` pixels.
+    #.  Rays are cast outward from the current center. Along each, the edge candidate is the
+        steepest descent of power. It is kept only if the mean power at :math:`1.1`-:math:`1.2`
+        of its radius is at least ``drop`` below the mean power at :math:`0.8`-:math:`0.9`,
+        and the latter exceeds ``floor`` of the image maximum. This comparison scales with the
+        radius, so the gradual falloff of a Gaussian beam (:math:`\approx 26\%` across this span
+        at its steepest) is not mistaken for an edge, while non-uniform power inside the
+        aperture does not move the edge. Rays which leave the image before the comparison can
+        be made are skipped, so the border of the image is never mistaken for the aperture.
+    #.  A circle is fit to the edge points with RANSAC (deterministic for a given ``seed``),
+        which rejects edges that do not belong to the circle, such as a straight clip. The
+        consensus circle is then refined by least squares.
+    #.  Steps 2 and 3 repeat from the new center until it settles, which takes two or three
+        passes.
+    #.  Along each consensus ray, the power is followed past the steepest descent to where it
+        falls to ``edge_level`` of the way from the background to the power inside the edge.
+        The radius is the median distance of these points from the center.
+
+    Parameters
+    ----------
+    image : array_like
+        2D power (intensity) image.
+    center : (float, float) OR None
+        ``(x, y)`` pixel coordinate to cast rays from at first.
+        If ``None``, starts from the power centroid.
+    edge_level : float
+        Where on the rolloff to place the radius, as a fraction in :math:`(0, 1)` of the way
+        from the background to the power inside the edge. Smaller values give a larger radius
+        which includes more of the rolloff; values near :math:`0.5` place it near the steepest
+        descent. The center does not depend on ``edge_level``.
+    smooth : float OR None
+        Width in pixels of the Gaussian smoothing.
+        If ``None``, defaults to ``max(1, min(image.shape) / 200)``.
+    drop : float
+        Minimum fractional drop in power across an edge.
+    floor : float
+        Minimum power just inside an edge, as a fraction of the (smoothed) image maximum.
+    tolerance : float OR None
+        RANSAC consensus distance in pixels. If ``None``, defaults to the larger of
+        ``1.5 * smooth`` and 2.5% of the circle's radius.
+    rays : int
+        Number of rays to cast.
+    min_points : int
+        Minimum number of consensus edge points for a fit.
+    min_coverage : float
+        Minimum arc, in degrees, that the consensus edge points must span for a fit.
+    iterations : int
+        Maximum number of detect-and-fit passes.
+    seed : int
+        Seed for the RANSAC sampling.
+    plot : bool
+        Whether to plot the image with the detected edge points and the fit.
+
+    Returns
+    -------
+    (numpy.ndarray, float) OR None
+        The ``center`` of the circle as an ``(x, y)`` pixel coordinate, and its ``radius`` in
+        pixels at ``edge_level``. ``None`` if no aperture edge is found, for instance for an
+        unclipped Gaussian beam, or one clipped where its power is below about a tenth of its
+        peak.
+    """
+    image = np.asarray(as_numpy(image), dtype=float)
+    if image.ndim != 2:
+        raise ValueError(f"image_aperture_fit expects a 2D image; got shape {image.shape}.")
+    image = np.nan_to_num(image, nan=0, posinf=0, neginf=0)
+    min_points = max(int(min_points), 3)
+    if not 0 < edge_level < 1:
+        raise ValueError(f"edge_level must be in (0, 1); got {edge_level}.")
+    (h, w) = image.shape
+
+    if smooth is None:
+        smooth = max(1.0, min(h, w) / 200)
+    power = gaussian_filter(image, smooth)
+    peak = float(np.max(power))
+
+    if center is None:
+        # image_positions is relative to the image center at (N - 1) / 2.
+        center = np.squeeze(image_positions(image)) + (np.array([w, h]) - 1) / 2
+    center = np.array(center, dtype=float).ravel()
+
+    theta = np.linspace(0, 2 * np.pi, int(rays), endpoint=False)
+    (points, levels) = (np.zeros((2, 0)), np.zeros((2, 0)))
+    fit = None
+
+    if np.isfinite(peak) and peak > 0 and np.all(np.isfinite(center)):
+        for _ in range(int(iterations)):
+            (points, levels) = _aperture_edge_points(
+                power, center, theta, _APERTURE_STEP, drop, floor * peak, edge_level
+            )
+            fit = None
+            if points.shape[1] < min_points:
+                break
+            fit = _aperture_circle_fit(points, tolerance, smooth, 2 * np.hypot(h, w), seed)
+            if fit is None:
+                break
+            moved = np.hypot(*(fit[0] - center))
+            center = fit[0]
+            # Re-casting the rays from the new center shifts the fit by a fraction of a
+            # percent of its radius, so stop at that scale: a tighter tolerance is below
+            # what the fit can repeat, and the loop would run out its iterations instead.
+            if moved < max(_APERTURE_CONVERGENCE, 0.005 * fit[1]):
+                break
+
+    result = None
+    if fit is not None:
+        (center, _, inliers) = fit
+        # The consensus must span a wide enough arc to pin the circle down.
+        angles = np.sort(np.arctan2(*(points[::-1, inliers] - center[::-1, np.newaxis])) % (2 * np.pi))
+        gaps = np.diff(np.concatenate((angles, [angles[0] + 2 * np.pi]))) if angles.size else [2 * np.pi]
+        coverage = np.degrees(2 * np.pi - np.max(gaps))
+        if np.sum(inliers) >= min_points and coverage >= min_coverage:
+            radius = float(np.median(np.hypot(*(levels[:, inliers] - center[:, np.newaxis]))))
+            result = (center, radius)
+
+    if plot:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.imshow(image)
+        if result is None:
+            ax.scatter(*points, s=4, c="r", label="rejected edges")
+            ax.set_title("No aperture edge found")
+        else:
+            ax.scatter(*levels[:, ~inliers], s=4, c="r", label="rejected edges")
+            ax.scatter(*levels[:, inliers], s=4, c="w", label="aperture edges")
+            ax.add_patch(plt.Circle(center, radius, fill=False, color="c", lw=1.5, label="fit"))
+            ax.plot(*center, "c+", ms=12)
+            ax.set_title(
+                "Aperture fit: center ({:.1f}, {:.1f}), radius {:.1f} at edge_level {:g}"
+                .format(*center, radius, edge_level)
+            )
+        ax.set_xlim(-0.5, w - 0.5)
+        ax.set_ylim(h - 0.5, -0.5)
+        ax.legend(loc="lower right")
+        _slmsuite_plt_show(name="image_aperture_fit")
 
     return result
 
 
 # Helpers for phase images.
 
+def _wrapped_gradient(phase_images, xp):
+    r"""
+    Wrap-aware central differences of stacked ``phase_images``.
+
+    Returns ``(dx, dy)``, the raw two-pixel central differences along the last
+    and second-to-last axes, cropped to the interior (shapes ``(..., h, w-2)``
+    and ``(..., h-2, w)``). Each is reduced modulo :math:`2\pi` and centered on
+    zero, which folds out :math:`2\pi` phase wraps: where the true phase change
+    over two pixels stays within :math:`(-\pi, \pi)` the result equals the true
+    (unwrapped) central difference, so it is correct everywhere except across
+    vortices.
+    """
+    dx = phase_images[..., :, 2:] - phase_images[..., :, :-2]
+    dy = phase_images[..., 2:, :] - phase_images[..., :-2, :]
+    dx = xp.mod(dx + np.pi, 2 * np.pi) - np.pi
+    dy = xp.mod(dy + np.pi, 2 * np.pi) - np.pi
+    return dx, dy
+
+
 def image_zernike_fit(
     phase_images,
-    grid,
+    grid=None,
     order=10,
-    iterations=2,
     leastsquares=True,
-    unwrap=True,
-    **kwargs
+    aperture=None,
+    use_mask=True,
+    gradient=True,
 ):
-    """
-    Fits sets of Zernike polynomials to a stack of ``phase_images``, up to a desired ``order``.
-    This is done in two steps:
+    r"""
+    Fits sets of Zernike polynomials to a stack of ``phase_images``.
 
-    -   First, an iterative approach is used to subtract Zernike orders from each image.
-        If the Zernike aperture is not cropped or occluded, the orthogonality of the Zernike
-        basis makes this a good and exact approach apart from sampling error.
-        However, if the polynomials lose orthogonality, then this process produces a
-        good guess at best.
-    -   Thus, the second step is to refine the guess with a least squares optimization.
-        This can be time consuming.
+    When ``gradient=True``, the fit is performed against the *gradient* of the
+    phase rather than the phase itself. The gradient of a :math:`2\pi`-wrapped
+    phase equals the gradient of the true unwrapped phase everywhere except at
+    vortices, so this recovers accurate coefficients from a phase-wrapped image
+    without any expensive and fragile 2D unwrapping. In this case,
+    fitting Zernike coefficients is a linear least-squares problem
+    (at the cost of the omission of the piston term).
+    This runs on the GPU when ``phase_images`` (or ``grid``) are :mod:`cupy` arrays.
+
+    When ``gradient=False``, the phase is fit directly and must already be unwrapped;
+    phase wraps give inaccurate fits.
 
     Note
     ~~~~
     The piston term (Zernike ANSI index 0) is omitted from the fit return.
 
-    Note
-    ~~~~
-    In the future, we might also fit to the derivatives.
-
     Parameters
     ----------
-    phase_images : numpy.ndarray (``image_count``, ``height``, ``width``)
-        An image or array of phase_images to fit. A single image is interpreted correctly as
-        ``(1, h, w)`` even if ``(h, w)`` is passed.
-    grid : (array_like, array_like) OR None
+    phase_images : numpy.ndarray OR cupy.ndarray (``image_count``, ``height``, ``width``)
+        An image or array of phase_images to fit. A single image is interpreted
+        correctly as ``(1, h, w)`` even if ``(h, w)`` is passed.
+    grid : (array_like, array_like) OR :class:`~slmsuite.holography.toolbox.phase.ZernikeBasis` OR None
         Components of the meshgrid describing coordinates over the phase_images.
         If ``None``, makes a grid with unit pitch centered on the phase_images.
-    order : int
-        Maximal radial Zernike order for the fitting basis.
-    iterations : int
-        Number of times to iterate the subtractive approach.
+
+        Repeated calls against the same grid transparently reuse a cached
+        :class:`~slmsuite.holography.toolbox.phase.ZernikeBasis`, so the basis is
+        built only once. An explicit basis may also be passed, in which case
+        ``order``, ``aperture``, and ``use_mask`` are ignored (they are fixed when
+        the basis is built).
+    order : int OR list of int
+        Maximal radial Zernike order for the fitting basis. If a list of int is
+        provided, these are the ANSI indices of the Zernike polynomials to fit.
+        Ignored if ``grid`` is a :class:`ZernikeBasis`.
     leastsquares : bool
-        Whether to do the least squares optimization step.
-    unwrap : bool
-        Whether to unwrap the phase images before fitting.
-    **kwargs
-        Passed to :meth:`~slmsuite.holography.toolbox.phase.zernike_sum()`.
+        If ``True`` (default), solve the exact least-squares fit via the normal
+        equations. If ``False``, return the cheaper per-mode basis projection
+        :math:`\langle\phi, Z_i\rangle / \langle Z_i, Z_i\rangle`, which ignores
+        cross-terms between modes and is exact only when the basis is orthogonal
+        over the sampled aperture. Requires ``gradient=False``, as the gradient
+        basis is never orthogonal.
+    aperture : :class:`~slmsuite.holography.toolbox.Aperture` OR spec OR None
+        The aperture defining the lateral scaling of the Zernike polynomials. Resolved
+        with :meth:`~slmsuite.holography.toolbox.Aperture.resolve`. Ignored if ``grid``
+        is a :class:`ZernikeBasis`.
+    use_mask : bool
+        Whether to mask the region outside the Zernike pupil. Ignored if ``grid``
+        is a :class:`ZernikeBasis`.
+    gradient : bool
+        If ``True``, fit the wrap-aware phase gradient against the gradient
+        Zernike basis instead of fitting the phase directly. This recovers
+        accurate coefficients from a phase-wrapped ``phase_images`` without
+        unwrapping. See the note above.
+
+    Returns
+    -------
+    numpy.ndarray OR cupy.ndarray
+        The fit Zernike coefficients, of shape ``(D, image_count)``, piston omitted.
     """
     # Setup.
+    if gradient and not leastsquares:
+        raise ValueError(
+            "image_zernike_fit(gradient=True, leastsquares=False) is invalid: the gradient "
+            "basis is not orthogonal, so the per-mode projection is wrong. Use leastsquares=True."
+        )
     if phase_images.ndim == 2:
         phase_images = phase_images.reshape((1, *phase_images.shape))
     image_count = phase_images.shape[0]
 
-    # Unwrap
-    if unwrap:
-        # Adding temporary phase unwrapping solution for testing
-        try:
-            from skimage.restoration import unwrap_phase
-        except ImportError:
-            raise ImportError("Phase unwrapping requires scikit-image.")
+    if grid is None:
+        grid = _zernike_fit_grid(*phase_images.shape[-2:], get_array_module(phase_images))
 
-        phase_images = [unwrap_phase(im) for im in phase_images]
-
-    # Generate Zernike terms and norms.
-    order = int(order + 1)
-    indices_ansi = np.arange((order * (order + 1)) // 2)
-    D = len(indices_ansi)
-    phases = zernike_sum(
-        grid,
-        indices_ansi[np.newaxis, :],
-        np.diag(np.ones((D,))),
-        use_mask=True,
-        **kwargs
-    )
-    norm = np.reciprocal(np.nansum(np.square(phases), (1,2), keepdims=False))
-
-    # Preallocate the result.
-    vectors_zernike = np.zeros((D, image_count))
-    images_remainders = np.copy(phase_images)     # Copy the data
-
-    # First, make a guess of the result based on iteratively subtracting Zernike terms.
-    for _ in range(int(iterations)):
-        for i in range(D):
-            # Compute the weights of the given Zernike term in the images.
-            overlap = np.nansum(images_remainders * phases[[i]] * norm[i], axis=(1,2))
-
-            # Record this value in the result.
-            vectors_zernike[i, :] += overlap
-
-            # Subtract the power from the images.
-            images_remainders -= overlap * phases[[i]]
-
-    # Second, if desired, hone the guess via leastsquares.
-    # This is especially important for a basis that is no longer orthonormal
-    # due to incomplete data or a cropped aperture.
-    if leastsquares:
-        # Make grid.
-        grid = _process_grid(grid)
-        grid_ravel = (np.ravel(grid[0]), np.ravel(grid[1]))
-
-        for j in range(image_count):
-            # Lambda to build the function from test parameters.
-            def zsum(grid, *p):
-                p = np.reshape(p, vectors_zernike.shape)
-
-                return zernike_sum(
-                    grid,
-                    indices_ansi[np.newaxis, :],
-                    p,
-                    use_mask=True,
-                    **kwargs
-                )
-
-            # Try the fit.
-            try:
-                popt, _ = curve_fit(zsum, grid_ravel, phase_images[j].ravel(), ftol=1e-5, p0=vectors_zernike[:, j])
-                vectors_zernike = popt.reshape(vectors_zernike.shape)
-            except RuntimeError:    # The fit failed if scipy says so.
-                pass
-
-    # Return the fit with the piston term omitted.
-    return vectors_zernike[1:, :]
-
-
-def _get_module(matrix):
-    if np == cp:
-        return np
+    # Build the Zernike basis, or reuse a cached one for this grid.
+    if isinstance(grid, ZernikeBasis):
+        basis = grid
+        if np.any(np.atleast_1d(basis.indices) == 0):    # Omit piston (singular gradient).
+            warnings.warn("Piston term (Zernike ANSI index 0) is omitted from the fit.")
+            basis = basis[np.atleast_1d(basis.indices) != 0]
     else:
-        return cp.get_array_module(matrix)
+        if np.isscalar(order):
+            order = int(order + 1)
+            indices_ansi = np.arange((order * (order + 1)) // 2)[1:]    # Omit piston.
+        else:
+            indices_ansi = np.array(order, dtype=int)
+            if 0 in indices_ansi:
+                indices_ansi = indices_ansi[indices_ansi != 0]
+                warnings.warn("Piston term (Zernike ANSI index 0) is omitted from the fit.")
+        basis = _zernike_get_basis(grid, indices_ansi, aperture=aperture, use_mask=use_mask)
+
+    # Work on the basis's array module (GPU when the basis is GPU-resident).
+    xp = get_array_module(basis.basis_flat)
+    phase_images = xp.asarray(phase_images)
+
+    if gradient:
+        dx, dy = _wrapped_gradient(phase_images, xp)
+        # Integer indexing avoids GPU-CPU synchronization from boolean masking in cupy.
+        dx_flat = dx.reshape(image_count, -1)
+        dy_flat = dy.reshape(image_count, -1)
+        stacked = xp.concatenate(
+            [dx_flat[:, basis.grad_idx_x].T, dy_flat[:, basis.grad_idx_y].T], axis=0
+        )                                                               # (2P, image_count)
+
+        # Project the gradient onto the gradient basis.
+        b = basis.grad_basis_flat @ stacked                             # (D, image_count)
+
+        if leastsquares:
+            # Exact least-squares fit: solve via the precomputed inverse of the Gram matrix.
+            # Avoids xp.linalg.solve (cuSOLVER) kernel launch overhead on GPU.
+            vectors_zernike = basis.grad_gram_inv @ b
+        else:
+            # Cheaper per-mode projection (the gradient basis is not orthonormal).
+            vectors_zernike = b / basis.grad_norm[:, np.newaxis]
+
+        return vectors_zernike
+
+    # Flatten to match the basis.
+    phase_flat = phase_images.reshape(image_count, -1)                  # (image_count, h*w)
+
+    # Project the images onto the basis: b[d, n] = <phase_n, Z_d>.
+    b = basis.basis_flat @ phase_flat.T                                 # (D, image_count)
+
+    if leastsquares:
+        # Least-squares fit: solve via the precomputed inverse of the Gram matrix.
+        # Avoids xp.linalg.solve (cuSOLVER) kernel launch overhead on GPU.
+        vectors_zernike = basis.gram_inv @ b
+    else:
+        # Cheaper per-mode projection (exact iff the basis is orthonormal).
+        vectors_zernike = b / basis.norm[:, np.newaxis]
+
+    return vectors_zernike
 
 
 def image_vortices(phase_image):
     """
-    Find the coordinates of phase vortices inside a phase image by computing the
-    winding number directly. The coordinates are returned as an image.
+    Compute the winding number of a phase image directly, at every pixel.
 
     Parameters
     ----------
@@ -1217,13 +1662,14 @@ def image_vortices(phase_image):
     Returns
     -------
     winding_number
-        Image with the integer winding number at each pixel.
+        Image with the integer winding number at each pixel,
+        negated relative to the conventional right-handed sense.
     """
-    xp = _get_module(phase_image)
+    xp = get_array_module(phase_image)
 
     # Discrete derivatives, with appropriate wrapping.
     dd = [
-        xp.mod(xp.diff(phase_image, axis=a, prepend=xp.nan) - xp.pi, 2*xp.pi) for a in range(2)
+        (xp.diff(phase_image, axis=a, prepend=xp.nan) + xp.pi) % (2*xp.pi) - xp.pi for a in range(2)
     ]
 
     # Sum to compute the winding.
@@ -1251,10 +1697,12 @@ def image_vortices_coordinates(phase_image, mask=None):
 
     Returns
     -------
-    coordinates, weights
-        The coordinates and winding number of each coordinate.
+    coordinates : tuple of numpy.ndarray
+        ``(rows, cols)`` index arrays of each vortex.
+    weights : numpy.ndarray
+        Winding number at each coordinate.
     """
-    xp = _get_module(phase_image)
+    xp = get_array_module(phase_image)
 
     winding_number = image_vortices(phase_image)
 
@@ -1286,17 +1734,19 @@ def image_remove_vortices(phase_image, mask=None, return_vortices_negative=False
     Returns
     -------
     phase_image
-        The image or vortices, depending upon ``return_vortices``
+        The image or vortices, depending upon ``return_vortices_negative``
     """
-    xp = _get_module(phase_image)
+    xp = get_array_module(phase_image)
 
     if mask is not None:
-        mask_eroded = binary_erosion(mask, np.ones((5,5)))
+        # scipy erodes on the host; the consumers are on the image's backend.
+        mask_eroded = xp.asarray(binary_erosion(as_numpy(mask), np.ones((5, 5))))
     else:
         mask_eroded = None
 
     coordinates, weights = image_vortices_coordinates(phase_image, mask=mask_eroded)
     grid = _generate_grid(phase_image.shape[1], phase_image.shape[0], integer=False)
+    grid = [xp.asarray(g) for g in grid]
 
     if return_vortices_negative:
         canvas = np.zeros_like(phase_image)
@@ -1309,15 +1759,15 @@ def image_remove_vortices(phase_image, mask=None, return_vortices_negative=False
     return canvas
 
 
-def image_blaze_remove(**kwargs):
+def image_blaze_remove(*args, **kwargs):
     """
     Backwards compatible alias for :meth:`image_remove_blaze()`.
     """
     warnings.warn("image_blaze_remove is deprecated; use image_remove_blaze instead.", DeprecationWarning)
-    return image_remove_blaze(**kwargs)
+    return image_remove_blaze(*args, **kwargs)
 
 
-def image_remove_blaze(phase_image, mask=None, plot=False):
+def image_remove_blaze(phase_image, mask=None, plot=0):
     """
     Remove a global blaze from a phase image.
 
@@ -1329,7 +1779,7 @@ def image_remove_blaze(phase_image, mask=None, plot=False):
         If provided, the mask will weight the significance of the blaze.
         This can be the amplitude image, such that the blaze removal is
         more effective in brighter regions.
-    plot : bool
+    plot : int OR bool
         Whether to enable debug plots.
 
     Returns
@@ -1352,12 +1802,19 @@ def image_remove_blaze(phase_image, mask=None, plot=False):
         dy_mean = np.nansum(dy * mask) / np.nansum(mask)
 
     # Subtract the gradient and re-mod.
-    x = np.arange(phase.shape[1])
-    y = np.arange(phase.shape[0])
-    X, Y = np.meshgrid(x, y)
+    if np.ndim(phase) != 2:
+        raise ValueError(
+            "image_remove_blaze expects a single 2D phase image; got shape {}."
+            .format(np.shape(phase))
+        )
+
+    # Counted from the image so the indices land on its own backend.
+    ones = np.ones_like(phase, dtype=float)
+    X = np.cumsum(ones, axis=1) - 1
+    Y = np.cumsum(ones, axis=0) - 1
     result = np.mod(phase - dx_mean * X - dy_mean * Y, 2 * np.pi)
 
-    if plot:
+    if plot >= 1:
         plt.figure(figsize=(20, 10))
 
         plt.subplot(1, 4, 1)
@@ -1375,12 +1832,12 @@ def image_remove_blaze(phase_image, mask=None, plot=False):
         plt.subplot(1, 4, 4)
         plt.imshow(result)
         plt.title('removed')
-        plt.show()
+        _slmsuite_plt_show(name="image_remove_blaze")
 
     return result
 
 
-def image_reduce_wraps(phase_image, mask=None, steps=10, plot=False):
+def image_reduce_wraps(phase_image, mask=None, steps=10, plot=0):
     """
     Reduce the number of phase wraps in the image by adding a global offset.
 
@@ -1394,7 +1851,7 @@ def image_reduce_wraps(phase_image, mask=None, steps=10, plot=False):
         light.
     steps : int
         The number of steps to try for the phase offset.
-    plot : bool
+    plot : int OR bool
         Whether to enable debug plots.
 
     Returns
@@ -1427,24 +1884,25 @@ def image_reduce_wraps(phase_image, mask=None, steps=10, plot=False):
             fom_min = fom
             result = phase_shifted
 
-            # If the mask is smaller than the 0 -> 2pi range, shift to either end.
-            min = np.nanmin(result)
-            mean = np.nanmean(result)
-            max = np.nanmax(result)
+    # Shift the chosen winner to either end of the 0 -> 2pi range.
+    if result is not None:
+        min = np.nanmin(result)
+        mean = np.nanmean(result)
+        max = np.nanmax(result)
 
-            if mean - min < max - mean:
-                result -= min
-            else:
-                result -= max - 2 * np.pi
+        if mean - min < max - mean:
+            result = result - min
+        else:
+            result = result - (max - 2 * np.pi)
 
-            result = np.mod(result, 2 * np.pi)
+        result = np.mod(result, 2 * np.pi)
 
     return result
 
 
 # Array fitting functions.
 
-def fit_affine(x, y, guess_affine=None, plot=False):
+def fit_affine(x, y, guess_affine=None, plot=0):
     r"""
     For two sets of ordered points with equal length, find the best-fit affine
     transformation that transforms from the first basis to the second.
@@ -1460,7 +1918,7 @@ def fit_affine(x, y, guess_affine=None, plot=False):
         The user may provide a guess to immediately proceed with least squares fitting.
         This guess must be in the form of a dictionary with fields ``"M"`` and ``"b"``.
         If ``None``, a guess is computed based on centroiding and moment matching.
-    plot : bool
+    plot : int OR bool
         Whether to produce a debug plot.
 
     Returns
@@ -1470,7 +1928,11 @@ def fit_affine(x, y, guess_affine=None, plot=False):
     """
     x = format_2vectors(x)
     y = format_2vectors(y)
-    assert x.shape == y.shape
+    if x.shape != y.shape:
+        raise ValueError(
+            "x and y must have the same shape; got {} and {}."
+            .format(x.shape, y.shape)
+        )
 
     # If the user does not provide a guess, compute one based on centroiding and moment matching.
     if guess_affine is None:
@@ -1494,12 +1956,12 @@ def fit_affine(x, y, guess_affine=None, plot=False):
         # This could probably be vectorized more. Also not sure if all corner cases work.
         M_guess = np.array([
             [
-                np.nanmean(np.divide(y_[0,:], x_[0,:], where=x_[0,:] > threshold, out=nan_list.copy())),
-                np.nanmean(np.divide(y_[0,:], x_[1,:], where=x_[1,:] > threshold, out=nan_list.copy()))
+                np.nanmean(np.divide(y_[0,:], x_[0,:], where=np.abs(x_[0,:]) > threshold, out=nan_list.copy())),
+                np.nanmean(np.divide(y_[0,:], x_[1,:], where=np.abs(x_[1,:]) > threshold, out=nan_list.copy()))
             ],
             [
-                np.nanmean(np.divide(y_[1,:], x_[0,:], where=x_[0,:] > threshold, out=nan_list.copy())),
-                np.nanmean(np.divide(y_[1,:], x_[1,:], where=x_[1,:] > threshold, out=nan_list.copy()))
+                np.nanmean(np.divide(y_[1,:], x_[0,:], where=np.abs(x_[0,:]) > threshold, out=nan_list.copy())),
+                np.nanmean(np.divide(y_[1,:], x_[1,:], where=np.abs(x_[1,:]) > threshold, out=nan_list.copy()))
             ]
         ])
 
@@ -1533,12 +1995,14 @@ def fit_affine(x, y, guess_affine=None, plot=False):
 
         M = np.array([[p[0], p[1]], [p[2], p[3]]])
         b = format_2vectors([p[4], p[5]])
-    except:     # Fail elegantly (warn the user?).
+    except Exception as e:
+        # Returning the caller's guess is a fallback, not a fit, and must say so.
+        logger.warning("fit_affine could not improve on the guess (%s); returning it.", e)
         M = M_guess
         b = b_guess
 
     # Debug plot if desired.
-    if plot and x.shape[0] == 2:
+    if plot >= 1 and x.shape[0] == 2:
         plt.scatter(y[0,:], y[1,:], s=20, fc="b", ec="b")
 
         result_guess = np.matmul(M_guess, x) + b_guess
@@ -1548,16 +2012,16 @@ def fit_affine(x, y, guess_affine=None, plot=False):
         plt.scatter(result[0,:], result[1,:], s=60, fc="none", ec="g")
 
         plt.gca().set_aspect("equal")
-        plt.show()
+        _slmsuite_plt_show(name="fit_affine")
 
     # Return as a dictionary
     return {"M":M, "b":b}
 
 
 def blob_detect(
-    img,
+    image,
     filter=None,
-    plot=False,
+    plot=0,
     **kwargs
 ):
     """
@@ -1571,33 +2035,26 @@ def blob_detect(
 
     Parameters
     ----------
-    img : numpy.ndarray
+    image : numpy.ndarray
         The image to perform blob detection on.
     filter : {"dist_to_center", "max_amp"} OR None
-        One of ``dist_to_center`` or ``max_amp``.
-    plot : bool
+        Keeps only the blob nearest the center of ``image``, or only the blob
+        collecting the most power. ``None`` keeps every blob.
+    plot : int OR bool
         Whether to show a debug plot.
-    title : str
-        Plot title.
-    fig : matplotlib.figure.Figure
-        Figure for plotting.
-    axs : list of matplotlib.axes.Axis or matplotlib.axes.Axis
-        Axes for plotting.
-    show : bool
-        Whether or not to show the plot.
     **kwargs
        Extra arguments for :class:`cv2.SimpleBlobDetector`.
 
     Returns
     -------
     blobs : ndarray
-        List of blobs found by  ``detector``.
+        List of blobs found by ``detector``.
     detector : :class:`cv2.SimpleBlobDetector`
         A blob detector with customized parameters.
     """
     # Need copy for some reason:
     # https://github.com/opencv/opencv/issues/18120
-    img_8bit = _make_8bit(np.copy(img))
+    image_8bit = _make_8bit(np.copy(image))
     params = cv2.SimpleBlobDetector_Params()
 
     # Configure default parameters
@@ -1605,7 +2062,6 @@ def blob_detect(
     params.minThreshold = 10
     params.maxThreshold = 255
     params.thresholdStep = 10
-    # params.minArea = 0
     params.filterByArea = False  # Can be changed to compute rel to diffraction limit
     params.filterByCircularity = False
     params.filterByConvexity = False
@@ -1617,90 +2073,670 @@ def blob_detect(
 
     # Create the detector and detect blobs
     detector = cv2.SimpleBlobDetector_create(params)
-    blobs = detector.detect(img_8bit)
+    blobs = detector.detect(image_8bit)
 
     if len(blobs) == 0:
         return [], detector
-        #raise Exception("No blobs found! Try blurring image.")
 
-    # Sort blobs according to `filter`.
+    # Keep the single best blob according to `filter`.
+    if filter is not None:
+        centers = format_2vectors(np.vstack([blob.pt for blob in blobs]).T)
+
     if filter == "dist_to_center":
-        dist_to_center = [
-            np.linalg.norm(np.array(blob.pt) - np.array(img.shape[::-1]) / 2)
-            for blob in blobs
-        ]
-        blobs = [blobs[np.argmin(dist_to_center)]]
+        distance = np.linalg.norm(
+            centers - format_2vectors(np.flip(np.shape(image)) / 2), axis=0
+        )
+        blobs = [blobs[int(np.argmin(distance))]]
     elif filter == "max_amp":
-        bin_size = int(np.mean([blob.size for blob in blobs]))
-        for i, blob in enumerate(blobs):
-            # Try fails when blob is on edge of camera.
-            try:
-                blobs[i].response = float(
-                    img_8bit[
-                        np.ix_(
-                            int(blob.pt[1]) + np.arange(-bin_size, bin_size),
-                            int(blob.pt[0]) + np.arange(-bin_size, bin_size),
-                        )
-                    ].sum()
-                )
-            except Exception:
-                blobs[i].response = float(0)
-        blobs = [blobs[np.argmax([blob.response for blob in blobs])]]
+        power = np.nan_to_num(take(
+            image_8bit, centers, 2 * int(np.mean([blob.size for blob in blobs])),
+            centered=True, integrate=True, clip=True,
+        ))
+        blobs = [blobs[int(np.argmax(power))]]
 
-    if plot:
-        # Get blob statistics.
-        blob_count = len(blobs)
-        blob_centers = np.zeros((2, blob_count))
-        blob_diameters = np.zeros(blob_count)
-        for (blob_idx, blob) in enumerate(blobs):
-            blob_centers[:, blob_idx] = blob.pt
-            blob_diameters[blob_idx] = blob.size
-        blob_xs = blob_centers[0, :]
-        blob_ys = blob_centers[1, :]
-        blob_xmin = np.min(blob_xs)
-        blob_xmax = np.max(blob_xs)
-        blob_ymin = np.min(blob_ys)
-        blob_ymax = np.max(blob_ys)
-        zoom_padx = 2 * (blob_xmax - blob_xmin) / blob_count
-        zoom_pady = 2 * (blob_ymax - blob_ymin) / blob_count
-
-        # Full image.
-        vmin = np.min(img_8bit)
-        vmax = np.max(img_8bit)
-        im = plt.imshow(img_8bit, vmin=vmin, vmax=vmax)
-        ax = plt.gca()
+    if plot >= 1:
+        plt.imshow(image_8bit)
         plt.colorbar()
-
-        # Blob patches
-        for blob_idx in range(blob_count):
-                patch = matplotlib.patches.Circle(
-                    (float(blob_centers[0, blob_idx]), float(blob_centers[1, blob_idx])),
-                    radius=float(blob_diameters[blob_idx] / 2),
-                    color="red",
-                    linewidth=1,
-                    fill=None
-                )
-                ax.add_patch(patch)
+        for blob in blobs:
+            plt.gca().add_patch(matplotlib.patches.Circle(
+                blob.pt, radius=blob.size / 2, color="red", linewidth=1, fill=None
+            ))
 
     return blobs, detector
 
 
+def image_lattice_detect(image, method="autocorrelation", plot=0, **kwargs):
+    r"""
+    Detect the primitive lattice vectors of a periodic array of spots in an image.
+
+    This recovers the lattice (pitch, rotation, shear) but **not** the absolute
+    position of the array. The two returned vectors are unordered and defined only
+    up to sign: resolving that dihedral ambiguity requires a feature which breaks
+    the lattice's symmetry, such as the fiducial spots that
+    :meth:`blob_array_detect()` looks for.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        2D image of the spot array.
+    method : {"autocorrelation", "fourier"}
+        Whether to look for the lattice in the image's autocorrelation, whose 0th
+        order is only as wide as a *spot*, or for the reciprocal lattice in its
+        Fourier transform, whose 0th order is as wide as the whole *array* and so
+        hides the lattice of a coarse one. Both survive the array being cropped.
+    plot : int OR bool
+        Whether to enable debug plots.
+    **kwargs
+        Passed to the chosen method.
+
+    Returns
+    -------
+    numpy.ndarray
+        Lattice matrix of shape ``(2, 2)`` whose columns are the two primitive
+        lattice vectors, in image coordinates (pixels).
+
+    Raises
+    ------
+    RuntimeError
+        If no prominent periodicity is found in the image.
+    ValueError
+        If ``method`` is not recognized.
+    """
+    if method == "autocorrelation":
+        return _lattice_autocorrelation(image, plot=plot, **kwargs)
+    elif method == "fourier":
+        return _lattice_fourier(image, plot=plot, **kwargs)
+    else:
+        raise ValueError(f"Unrecognized lattice detection method '{method}'.")
+
+
+def _lattice_autocorrelation(image, spot_size=2, threshold=0.2, plot=0):
+    """
+    Lattice of a spot array from the peaks of the image's autocorrelation.
+    See :meth:`image_lattice_detect()`.
+
+    Parameters
+    ----------
+    spot_size : float
+        Size of a spot in pixels, used to mask the autocorrelation's central peak.
+        Overestimating this hides fine lattices; underestimating it lets the central
+        peak masquerade as one.
+    threshold : float
+        Peaks below this fraction of the brightest off-center peak are ignored.
+    """
+    if np.ndim(image) != 2:
+        raise RuntimeError(f"Cannot interpret image with shape {np.shape(image)}")
+
+    # Autocorrelation by the Wiener-Khinchin theorem, zero displacement centered.
+    # Transformed at an FFT-friendly size, which is faster than an awkward camera shape
+    # and, padding rather than cropping, leaves the autocorrelation linear not circular.
+    image = np.asarray(image, dtype=float)
+    size = [next_fast_len(n, real=True) for n in np.shape(image)]
+    correlation = np.fft.fftshift(
+        np.fft.ifft2(np.abs(np.fft.fft2(image - image.mean(), s=size)) ** 2).real
+    )
+    center = np.array([correlation.shape[1] // 2, correlation.shape[0] // 2])
+
+    # Mask the central (zero-displacement) peak, then find local maxima. This is
+    # done over the whole plane so that a peak straddling two pixels suppresses its
+    # own shoulder, and only afterwards restricted to one half plane, the
+    # autocorrelation being symmetric.
+    (yy, xx) = np.indices(correlation.shape)
+    masked = np.where(
+        np.hypot(xx - center[0], yy - center[1]) < max(2.0, spot_size),
+        -np.inf,
+        correlation,
+    )
+
+    peaks = (
+        (masked == maximum_filter(masked, size=3))
+        & np.isfinite(masked)
+        & ((yy > center[1]) | ((yy == center[1]) & (xx > center[0])))
+    )
+    (py, px) = np.nonzero(peaks)
+    if len(px) < 2:
+        raise RuntimeError(
+            "Lattice fitting looks for prominent periodicity, but the image's "
+            "autocorrelation has no clear peaks. The array may be too dim, too "
+            "cropped, or too finely spaced to resolve."
+        )
+
+    values = masked[py, px]
+    keep = values >= threshold * values.max()
+
+    # A real lattice peak stands above the valley between it and the origin, whereas
+    # the central peak's shoulder is still descending. This also drops peaks at even
+    # multiples of the lattice, whose midpoint is itself a peak, which costs some
+    # leverage in the fit below but no accuracy.
+    keep &= values > correlation[
+        np.rint(0.5 * (py + center[1])).astype(int),
+        np.rint(0.5 * (px + center[0])).astype(int),
+    ]
+
+    vectors = np.vstack((px[keep] - center[0], py[keep] - center[1])).astype(float)
+
+    if vectors.shape[1] < 2:
+        raise RuntimeError(
+            "Lattice fitting looks for prominent periodicity, but the image's "
+            "autocorrelation has no clear peaks. The array may be too dim, too "
+            "cropped, or too finely spaced to resolve."
+        )
+
+    # The two shortest independent peaks are the primitive vectors.
+    order = np.argsort(np.linalg.norm(vectors, axis=0))
+    first = vectors[:, order[0]]
+    lattice = None
+    for index in order[1:]:
+        second = vectors[:, index]
+        cross = np.abs(first[0] * second[1] - first[1] * second[0])
+        if cross > 0.3 * np.linalg.norm(first) * np.linalg.norm(second):
+            lattice = np.vstack((first, second)).T
+            break
+
+    if lattice is None:
+        raise RuntimeError(
+            "Lattice fitting found periodicity in only one direction. The array may "
+            "be cropped to a single row or column of spots."
+        )
+
+    # The peaks above are quantized to whole pixels, which is a large error for a
+    # fine lattice. Refine by fitting every peak to its (integer) lattice index;
+    # distant peaks have the most leverage. Repeated, since a quantized guess can
+    # mis-index the most distant (and most informative) peaks.
+    for _ in range(3):
+        indices = np.rint(np.linalg.solve(lattice, vectors))
+        residual = vectors - lattice @ indices
+        inliers = np.linalg.norm(residual, axis=0) < 0.25 * np.min(
+            np.linalg.norm(lattice, axis=0)
+        )
+        if np.sum(inliers) < 3:
+            break
+        (design, target) = (indices[:, inliers], vectors[:, inliers])
+        lattice = np.linalg.solve(
+            design @ design.T, design @ target.T
+        ).T
+
+    if plot >= 1:
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6), facecolor="white")
+
+        plt_img = _make_8bit(np.where(np.isfinite(masked), masked, 0))
+
+        # The fit uses one half plane; the plot shows both, the correlation being even.
+        mirrored = np.hstack((vectors, -vectors))
+        (x, y) = (mirrored[0] + center[0], mirrored[1] + center[1])
+
+        # Determine the bounds of the zoom region, padded by zoom_pad
+        zoom_pad = 50
+        xl = [
+            np.clip(np.amin(x) - zoom_pad, 0, plt_img.shape[1]),
+            np.clip(np.amax(x) + zoom_pad, 0, plt_img.shape[1]),
+        ]
+        yl = [
+            np.clip(np.amin(y) - zoom_pad, 0, plt_img.shape[0]),
+            np.clip(np.amax(y) + zoom_pad, 0, plt_img.shape[0]),
+        ]
+
+        # Plot the unzoomed figure
+        axs[0].imshow(plt_img)
+
+        # Plot a red rectangle to show the extents of the zoom region
+        rect = plt.Rectangle(
+            (float(xl[0]), float(yl[0])),
+            float(np.diff(xl).item()), float(np.diff(yl).item()),
+            ec="r", fc="none"
+        )
+        axs[0].add_patch(rect)
+        axs[0].set_title("Autocorrelation - Full")
+        axs[0].set_xticks([])
+        axs[0].set_yticks([])
+
+        # Plot the zoomed figure
+        axs[1].imshow(plt_img)
+        xx = x - center[0]
+        yy = y - center[1]
+        rr = (xx**2 + yy**2)
+        I = np.argsort(rr)
+        if len(I) > 16:
+            I = I[:16] # First 16 peaks, sorted by distance from the center
+        axs[1].scatter(
+            xx[I], yy[I], facecolors="none", edgecolors="r", marker="o", s=100, linewidths=0.5
+        )
+        for i in [0, 1]:
+            axs[1].plot(
+                [center[0] - lattice[0, i], center[0] + lattice[0, i]],
+                [center[1] - lattice[1, i], center[1] + lattice[1, i]],
+                marker=".", c="r",
+            )
+
+        for spine in ["top", "bottom", "right", "left"]:
+            axs[1].spines[spine].set_color("r")
+            axs[1].spines[spine].set_linewidth(1.5)
+        axs[1].set_title("Autocorrelation - Zoom")
+        axs[1].set_xticks([])
+        axs[1].set_yticks([])
+        axs[1].set_xlim(xl)
+        axs[1].set_ylim(np.flip(yl))
+
+        for ax in axs:
+            ax.set_xlabel("Image Displacement $x$ [pix]")
+            ax.set_ylabel("Image Displacement $y$ [pix]")
+        fig.tight_layout(pad=4.0)
+
+        _slmsuite_plt_show(name="image_lattice_detect")
+
+    return lattice
+
+
+def _array_indices(array_shape, pad=0):
+    """
+    Centered index offsets of an ``array_shape`` spot array grown by ``pad`` on every side,
+    ordered as :meth:`~slmsuite.holography.algorithms.SpotHologram.make_rectangular_array()`
+    orders its spots; at ``pad=0`` the last two are the withheld fiducials.
+    """
+    (x, y) = np.meshgrid(*[
+        np.arange(array_shape[axis] + 2 * pad) - (array_shape[axis] + 2 * pad - 1) / 2.0
+        for axis in range(2)
+    ])
+    return np.vstack((x.ravel(), y.ravel()))
+
+
+def _score_array_orientation(image, M, b, array_shape, psf, threshold=0.2):
+    """
+    Scores each orientation of a rectangular spot array against an image.
+
+    An array is unchanged by a rotation or flip of its axes, and by an offset of a
+    whole pitch, so its lattice alone leaves eight possible affines. The two spots
+    that :meth:`~slmsuite.holography.algorithms.SpotHologram.make_rectangular_array()`
+    withholds break both ties: only at the true orientation do they land on darkness.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        Image of the array, with its background already removed.
+    M, b : array_like
+        Affine mapping array indices to image coordinates.
+    array_shape : (int, int)
+        Size of the array in number of spots.
+    psf : int
+        Width of the window that each spot's power is collected over.
+    threshold : float
+        Fraction of a typical spot's power above which a spot counts as lit.
+
+    Returns
+    -------
+    (OrientationTransform.D_4, float, float, float) OR None
+        The best orientation, the fraction of its spots that are lit, the power at
+        its withheld pair relative to a spot, and the median distance from the spots
+        to their predictions. ``None`` if too little of the array is in view. A ``dark``
+        approaching a spot's brightness means the orientation is unverified. A wrong
+        lattice can leave its pair dark too, but not every spot lit.
+    """
+    centers = _array_indices(array_shape)
+    b = format_2vectors(b)
+    (h, w) = np.shape(image)
+    scored = []
+
+    for code in OrientationTransform.D_4:
+        predicted = (
+            np.matmul(M, np.matmul(OrientationTransform.from_code(code).M(), centers)) + b
+        )
+
+        # Only spots that are actually in view can be checked.
+        visible = (
+            (predicted[0] > 1) & (predicted[0] < w - 2)
+            & (predicted[1] > 1) & (predicted[1] < h - 2)
+        )
+        (fiducial, spots) = (visible.copy(), visible.copy())
+        fiducial[:-2] = False
+        spots[-2:] = False
+        if np.sum(spots) < 4:
+            continue
+
+        windows = np.nan_to_num(take(
+            image, predicted, psf, centered=True, integrate=False, clip=True
+        ))
+        power = np.sum(windows, axis=(1, 2))
+        reference = np.median(power[spots])
+        if reference <= 0:
+            continue
+
+        lit = np.mean(power[spots] > threshold * reference)
+        # A pair pushed off the camera cannot be checked, so it scores as though it
+        # were lit rather than passing for free.
+        dark = np.median(power[fiducial]) / reference if np.any(fiducial) else 1.0
+        # take() floors its positions; undo that to measure from the prediction.
+        shift = image_positions(windows) - (predicted - np.floor(predicted))
+        residual = float(np.median(np.linalg.norm(shift[:, spots], axis=0)))
+
+        scored.append((code, lit, dark, residual))
+
+    # Rank by the contrast between the spots and the withheld pair.
+    scored.sort(key=lambda s: s[2] - s[1])
+
+    return scored[0] if scored else None
+
+
+def _lattice_fourier(image, dft_threshold=100, dft_padding=0, k=8, tol=0.1, plot=0):
+    """
+    Lattice of a spot array from the peaks of the image's Fourier transform, which
+    are the reciprocal lattice. See :meth:`image_lattice_detect()`.
+    """
+    # 1) FFT to find array pitch and orientation.
+    # 1.1) Subtract the background field before the FFT.
+    # A noisy camera background can dominate the FFT's 0th order.
+    image_centered = image_remove_field([image], deviations=None)[0]
+
+    # 1.2) Take the largest dimension rounded down to nearest power of 2.
+    # FUTURE: clean this up to behave like other parts of the package.
+    fft_size = int(2 ** (np.floor(np.log2(np.max(np.shape(image)))) + dft_padding))
+
+    # 1.3) Actually FFT.
+    dft = np.abs(np.fft.fftshift(np.fft.fft2(image_centered, s=[fft_size, fft_size])))
+
+    # 2) Detect and plot FFT peaks
+    # 2.1) Prepare some helper variables, mainly for filtering out the 0th order.
+    fft_blur_size = int(np.clip(fft_size/200, 1, 5))*2 + 1
+    downscaling = 1
+    dft_amp = None
+    zo_size = 8*fft_blur_size
+    if fft_size <= zo_size*4:
+        raise ValueError(f"Image of shape {image.shape} is too small to detect a lattice by Fourier transform.")
+    zo_x, zo_y = np.meshgrid(
+        np.linspace(-zo_size/2, zo_size/2, zo_size),
+        np.linspace(-zo_size/2, zo_size/2, zo_size)
+    )
+    zo_filter = gaussian2d([zo_x, zo_y], 0, 0, -1, 1, fft_blur_size/2, fft_blur_size/2)
+    points = []
+    blobs = None
+    i = 0
+
+    # 2.2) Look for peaks with progressively greater downscaled blurring. This helps
+    # to mitigate noise on the DFT peaks and enhance the most prominent peaks.
+    while fft_size / downscaling > zo_size*4:
+        dft_amp = cv2.GaussianBlur(dft, (fft_blur_size, fft_blur_size), fft_blur_size/4)
+
+        # Filter 0 order (dominates in the presence of a slowly varying background)
+        zo_i = int(fft_size/2/downscaling-zo_size/2)
+        zo_j = zo_i+zo_size
+        dft_amp[zo_i:zo_j, zo_i:zo_j] *= zo_filter
+
+        thresholdStep = 10
+        blobs, _ = blob_detect(
+            dft_amp,
+            minThreshold=dft_threshold,
+            thresholdStep=thresholdStep,
+        )
+        points += [np.array(blob.pt) * downscaling for blob in blobs]
+
+        # Exit if we've already got enough points.
+        if len(points) > 4 * (i+1):
+            break
+
+        # Downscale so we can try to find peaks again with greater blurring.
+        if fft_size / downscaling > zo_size*4:
+            if not fft_size / (2*downscaling) > zo_size*4:
+                break
+            dft = dft[0::2, 0::2] + dft[0::2, 1::2] + dft[1::2, 0::2] + dft[1::2, 1::2]
+            downscaling *= 2
+            i += 1
+
+    if len(points) < 4:
+
+        # Plot which diffraction orders we used
+        if plot >= 1:
+            plt.imshow(image)
+            plt.title("Image")
+            _slmsuite_plt_show(name="blob_array_detect_img")
+
+            plt.imshow(dft)
+            plt.title("DFT")
+            _slmsuite_plt_show(name="blob_array_detect_dft")
+
+            plt.imshow(dft_amp)
+            plt.title("Processed DFT")
+            _slmsuite_plt_show(name="blob_array_detect_processed_dft")
+
+        raise RuntimeError(
+            "Array fitting looks for prominent periodicity, "
+            "but failed to find such in the given image. Try the following:\n"
+            "- Verify that the camera is returning an image of the array. "
+            "For instance, the SLM `settle_time_s` could be too fast for the "
+            "camera to record the settled response, or "
+            "the camera interface could be returning stale frames. "
+            "Pass `plot>=1` to see debug plots. You can also view `cam.last_image`.\n"
+            "- Increasing exposure time to enhance the prominence of spots,\n"
+            "- Increasing the pitch of the array in the image, "
+            "which can isolate spots from neighboring crosstalk,\n"
+            "- Create an issue at https://github.com/holodyne/slmsuite/issues, "
+            "attaching the image data that is resulting in failure. "
+            "You can use `cam.save()` to record the last image alongside metadata."
+        )
+
+    # 3) Fit the primitive lattice vectors
+    # 3.1) Make a list of displacements to each peak's k nearest neighbors
+    def get_kNN(points, k):
+        "Return list of k closest points for each x"
+        dx = points[:,0][:,np.newaxis] - points[:,0][:,np.newaxis].T
+        dy = points[:,1][:,np.newaxis] - points[:,1][:,np.newaxis].T
+        d = np.sqrt(dx**2 + dy**2)
+        inds = np.argsort(d, axis=0)
+        kNN = points[inds[1:k+1,:]] - points
+        kNN = kNN.reshape((points.shape[0]*k, 2))
+
+        # Make inverted copies to avoid group separation based upon arb. branch cut.
+        kNN = np.vstack((kNN, -kNN))
+
+        return kNN
+
+    # Get rid of the points closest to the center - these are noise on the 0th order.
+    points = np.array(points)
+
+    points_lengths = np.sqrt((points[:,0]-fft_size/2)**2 + (points[:,1]-fft_size/2)**2)
+    points = points[points_lengths > .5*np.mean(points_lengths), :]
+    points = np.concatenate((points, np.array([[fft_size/2, fft_size/2]])))
+
+    # Now compute the differences of lattice vectors.
+    k = min(k, len(points)-1)
+    kNN = get_kNN(points, k)
+
+    # 3.2) Cluster into lattice vectors.
+    def cluster(points, k, tol=tol):
+        "Cluster points from k nearest neighbors into groups and return the centers"
+
+        # Find matrix of normalized displacements between points.
+        dx = points[:,0][:,np.newaxis] - points[:,0][:,np.newaxis].T
+        dy = points[:,1][:,np.newaxis] - points[:,1][:,np.newaxis].T
+        dnorm = np.sqrt(dx**2 + dy**2) / np.linalg.norm(points, axis=1)
+
+        # Normalized inverted displacements.
+        dx = points[:,0][:,np.newaxis] + points[:,0][:,np.newaxis].T
+        dy = points[:,1][:,np.newaxis] + points[:,1][:,np.newaxis].T
+        inorm = np.sqrt(dx**2 + dy**2) / np.linalg.norm(points, axis=1)
+
+        # Find groups of points separated by dnorm less than tol.
+        group = 1
+        tags = np.zeros(points.shape[0])
+        for i in np.arange(points.shape[0]):
+            # Assign if they are within tol and have not been assigned yet.
+            new = ((dnorm[i,:] < tol) | (inorm[i,:] < tol)) & np.array(tags == 0) #  | (inorm[i,:] < tol)
+            tags[new] = group
+            if np.any(new): group += 1
+
+        # Get the centerpoint of each group
+        def mean_group(points):
+            len0 = np.sum(np.square(points[0, :]))
+            diff = np.sum(np.square(points - points[[0], :]), axis=1)
+            points[diff > len0] = -points[diff > len0]
+
+            final = np.mean(points, axis=0)
+
+            if final[0] < 0:
+                final *= -1
+
+            return final
+
+        # Filter by the k most populated clusters.
+        tag, count = np.unique(tags, return_counts=True)
+        k = min(k, len(count))
+        best_groups = np.argsort(-count)[:k]
+        centers = np.array([
+            mean_group(points[tags == tag[group]])
+            for group in best_groups
+        ])
+        count = count[best_groups]
+
+        # Order by closest point to center. Choose the closest as our base vector.
+        distance_to_center = np.sqrt(np.square(centers[:, 0]) + np.square(centers[:, 1]))
+        distance_to_center /= np.max(distance_to_center)    # normalize
+        best_groups = np.argsort(distance_to_center)
+        count = count[best_groups]
+        centers = centers[best_groups, :]
+
+        # Weight by orthogonality to the first vector.
+        centers_length = np.sqrt(np.sum(np.square(centers), 1, keepdims=True))
+        centers_norm = centers / centers_length
+        cross_product = (
+            centers_norm[:, 0] * centers_norm[0, 1] -
+            centers_norm[:, 1] * centers_norm[0, 0]
+        )
+
+        # A pair spanning the smallest cell is primitive; a larger cell skips lattice points.
+        area = np.abs(cross_product) * centers_length[:, 0]
+        area[np.abs(cross_product) < tol] = np.inf
+        primitive = area <= (1 + tol) * np.min(area)
+
+        # Prefer primitive pairs, then orthogonal vectors, then distance to center.
+        fom = 1e4 * (np.abs(cross_product) + 2 * primitive) - distance_to_center
+        fom[0] = np.inf
+        best_groups = np.argsort(-fom)
+        count = count[best_groups]
+        centers = centers[best_groups, :]
+
+        return centers
+
+    centers = cluster(kNN, k).T
+
+    # 3.3) Primitive lattice vectors are the best two.
+    lv = np.array([centers[:,0], centers[:,1]]).T
+
+    if plot >= 2:
+        # Plot the points, kNN, and the chosen lattice vecs
+        fig, ax = plt.subplots(constrained_layout=True)
+        kNN_plt = ax.scatter(kNN[:,0], kNN[:,1], fc='none', ec='k', zorder=0)
+
+        for center in centers.T:
+            for s in [-1, 1]:
+                cir = matplotlib.patches.Circle(
+                    (s*center[0], s*center[1]),
+                    np.linalg.norm(center)*.1,
+                    fill=False,
+                    ec='r',
+                    zorder=10,
+                )
+                circ = ax.add_patch(cir)
+
+        for i in [0, 1]:
+            lv_plt = ax.plot([-lv[0,i], lv[0,i]], [-lv[1,i], lv[1,i]], marker='.', c='r')
+        lv_plt = ax.scatter(lv[0,:], lv[1,:], marker='.', c='r')
+
+        ax.set_aspect('equal')
+        ax.set_title('Reciprocal Lattice Vector Fitting')
+        ax.legend([kNN_plt, circ, lv_plt], ['Peak Spacing', '$k$ Clusters', 'Lattice Vectors'])
+        ax.grid()
+        _slmsuite_plt_show(name="blob_array_detect_lattice")
+
+    # 3.4) Convert to image space: the real-space basis is dual to the reciprocal one.
+    M = fft_size * np.linalg.inv(lv).T
+
+    # Plot which diffraction orders we used
+    if plot >= 2:
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6), facecolor='white')
+
+        plt_img = _make_8bit(dft_amp.copy())
+
+        # Determine the bounds of the zoom region, padded by zoom_pad
+        zoom_pad = 50
+
+        # x = np.array([blob.pt[0] for blob in blobs])
+        x = points[:, 0] / downscaling
+        xl = [
+            np.clip(np.amin(x) - zoom_pad, 0, dft_amp.shape[1]),
+            np.clip(np.amax(x) + zoom_pad, 0, dft_amp.shape[1]),
+        ]
+
+        # y = np.array([blob.pt[1] for blob in blobs])
+        y = points[:, 1] / downscaling
+        yl = [
+            np.clip(np.amin(y) - zoom_pad, 0, dft_amp.shape[0]),
+            np.clip(np.amax(y) + zoom_pad, 0, dft_amp.shape[0]),
+        ]
+
+        # Plot the unzoomed figure
+        axs[0].imshow(plt_img)
+
+        # Plot a red rectangle to show the extents of the zoom region
+        rect = plt.Rectangle(
+            (float(xl[0]), float(yl[0])),
+            float(np.diff(xl).item()), float(np.diff(yl).item()),
+            ec="r", fc="none"
+        )
+        axs[0].add_patch(rect)
+        axs[0].set_title(f"DFT Result ({downscaling}x downscale) - Full")
+        axs[0].set_xticks([])
+        axs[0].set_yticks([])
+
+        # Plot the zoomed figure
+        axs[1].imshow(plt_img)
+        axs[1].scatter(
+            x,
+            y,
+            facecolors="none",
+            edgecolors="r",
+            marker="o",
+            s=100,
+            linewidths=0.5
+        )
+        c = fft_size/2/downscaling
+        lv /= downscaling
+        for i in [0, 1]:
+            lv_plt = axs[1].plot([c-lv[0,i], c+lv[0,i]], [c-lv[1,i], c+lv[1,i]], marker='.', c='r')
+
+        for spine in ["top", "bottom", "right", "left"]:
+            axs[1].spines[spine].set_color("r")
+            axs[1].spines[spine].set_linewidth(1.5)
+        axs[1].set_title(f"DFT Result ({downscaling}x downscale) - Zoom")
+        axs[1].set_xticks([])
+        axs[1].set_yticks([])
+        axs[1].set_xlim(xl)
+        axs[1].set_ylim(np.flip(yl))
+
+        for ax in axs:
+            ax.set_xlabel("Image Reciprocal $x$ [1/pix]")
+            ax.set_ylabel("Image Reciprocal $y$ [1/pix]")
+        fig.tight_layout(pad=4.0)
+
+        _slmsuite_plt_show(name="blob_array_detect_reciprocal_lattice")
+
+    return M
+
+
 def blob_array_detect(
-    img,
-    size,
+    image,
+    array_shape,
     orientation=None,
     orientation_check=True,
     dft_threshold=100,
     dft_padding=0,
     k=8,
     tol=0.1,
-    plot=False,
+    plot=0,
+    method="autocorrelation",
 ):
     r"""
     Detect an array of spots and return the orientation as an affine transformation.
     Primarily used for calibration.
 
-    For a rectangular array of spots imaged in ``img``,
+    For a rectangular array of spots imaged in ``image``,
     find the variables :math:`\vec{M}` and :math:`\vec{b}` for the  affine transformation
 
     .. math:: \vec{y} = M \cdot \vec{x} + \vec{b}
@@ -1709,11 +2745,11 @@ def blob_array_detect(
 
     Parameters
     ----------
-    img : numpy.ndarray
+    image : numpy.ndarray
         The image in question.
-    size : (int, int) OR int
-        The size of the rectangular array in number of spots ``(Nx, Ny)``.
-        If a single ``int`` size is given, then assume ``(N, N)``.
+    array_shape : (int, int) OR int
+        The shape of the rectangular array in number of spots ``(Nx, Ny)``.
+        If a single ``int`` is given, then assume ``(N, N)``.
     orientation : dict or None
         Guess array orientation (same format as the returned) from previous known results.
         If ``None`` (the default), orientation is estimated from looking for peaks in the
@@ -1721,12 +2757,12 @@ def blob_array_detect(
     orientation_check : bool
         If enabled, looks for two missing spots at one corner as a parity check on rotation.
         Used by :meth:`~slmsuite.hardware.cameraslms.FourierSLM.fourier_calibrate()`.
-        See :meth:`~slmsuite.hardware.cameraslms.FourierSLM.make_rectangular_array()`.
+        See :meth:`~slmsuite.holography.algorithms.SpotHologram.make_rectangular_array()`.
     dft_threshold : float in [0, 255]
-        Minimum value of peak in blob detect of the DFT of ``img`` when ``orientation`` is ``None``.
+        Minimum value of peak in blob detect of the DFT of ``image`` when ``orientation`` is ``None``.
         Passed as keyword argument to :meth:`blob_detect` with keyword ``minThreshold``.
     dft_padding : int
-        Increases the dimensions of the padded ``img`` before the DFT is taken when ``orientation``
+        Increases the dimensions of the padded ``image`` before the DFT is taken when ``orientation``
         is ``None``. Dimensions are increased by a factor of ``2 ** dft_padding``.
         Increasing this value increases the :math:`k`-space resolution of the DFT,
         and can improve orientation detection.
@@ -1736,342 +2772,71 @@ def blob_array_detect(
     tol : float
         Difference in normalized displacement between reciprocal lattice points to
         be considered members of the same group when lattice fitting. Defaults to 10%.
-    plot : bool
-        Whether or not to plot debug plots. Default is ``False``.
+    plot : int OR bool
+        Whether to provide visual feedback, options are:
+
+        - ``0``, ``False`` : No plots.
+        - ``1``, ``True`` : Plots on fits and essentials.
+        - ``2`` : Plots on everything.
+    method : {"autocorrelation", "fourier"}
+        How to find the array's lattice, when ``orientation`` is not given.
+        Defaults to ``"autocorrelation"``, whose 0th order does not hide a coarse
+        lattice. Passed to :meth:`image_lattice_detect()`, which details the trade-off.
 
     Returns
-    --------
+    -------
     dict
         Orientation dictionary with the following keys, corresponding to
         the affine transformation:
 
         - ``"M"`` : ``numpy.ndarray`` (2, 2).
         - ``"b"`` : ``numpy.ndarray`` (2, 1).
+        - ``"residual"`` : ``float``, the median distance in camera pixels between the
+          detected spots and the fitted array, or ``nan`` when no spot was measurable.
+          This gauges how tightly the spots fit the returned lattice, not whether that
+          lattice is the right one: a fit locked onto the wrong site scores near zero.
     """
-    if len(np.shape(img)) != 2:
-        raise RuntimeError(f"Cannot interpret image with shape {np.shape(img)}")
+    if len(np.shape(image)) != 2:
+        raise RuntimeError(f"Cannot interpret image with shape {np.shape(image)}")
 
-    img_8bit = _make_8bit(img)
+    # Parse array_shape.
+    if np.isscalar(array_shape):
+        array_shape = (int(array_shape), int(array_shape))
 
-    if np.amax(img_8bit) == 0:
+    image_8bit = _make_8bit(image)
+
+    if np.amax(image_8bit) == 0:
         raise RuntimeError(
             "Cannot fit an image of all zeros. "
             "Check your camera to make sure it is snapping correctly."
         )
 
-    # If an orientation was provided, use this as a guess.
+    # If an orientation was provided, use this as a guess. Otherwise, measure
+    # the lattice that the array's spots sit on.
     if orientation is not None:
         M = orientation["M"]
-
-    # Otherwise, find a guess orientation.
     else:
-        # 1) FFT to find array pitch and orientation.
-        # Take the largest dimension rounded down to nearest power of 2.
-        # FUTURE: clean this up to behave like other parts of the package.
-        fft_size = int(2 ** (np.floor(np.log2(np.max(np.shape(img)))) + dft_padding))
-        dft = np.abs(np.fft.fftshift(np.fft.fft2(img, s=[fft_size, fft_size])))
-
-        # 2) Detect and plot FFT peaks
-        # 2.1) Prepare some helper variables, mainly for filtering out the 0th order.
-        fft_blur_size = int(np.clip(fft_size/200, 1, 5))*2 + 1
-        downscaling = 1
-        dft_amp = None
-        zo_size = 8*fft_blur_size
-        if fft_size <= zo_size*4:
-            raise ValueError(f"Image of shape {img.shape} is too small to use with blob_array_detect.")
-        zo_x, zo_y = np.meshgrid(
-            np.linspace(-zo_size/2, zo_size/2, zo_size),
-            np.linspace(-zo_size/2, zo_size/2, zo_size)
+        M = image_lattice_detect(
+            image,
+            method=method,
+            plot=plot>=2,
+            **(
+                dict(dft_threshold=dft_threshold, dft_padding=dft_padding, k=k, tol=tol)
+                if method == "fourier" else {}
+            ),
         )
-        zo_filter = gaussian2d([zo_x, zo_y], 0, 0, -1, 1, fft_blur_size/2, fft_blur_size/2)
-        points = []
-        blobs = None
-        i = 0
 
-        # 2.2) Look for peaks with progressively greater downscaled blurring. This helps
-        # to mitigate noise on the DFT peaks and enhance the most prominent peaks.
-        while fft_size / downscaling > zo_size*4:
-            dft_amp = cv2.GaussianBlur(dft, (fft_blur_size, fft_blur_size), fft_blur_size/4)
-
-            # Filter 0 order (dominates in the presence of a slowly varying background)
-            zo_i = int(fft_size/2/downscaling-zo_size/2)
-            zo_j = zo_i+zo_size
-            dft_amp[zo_i:zo_j, zo_i:zo_j] *= zo_filter
-
-            thresholdStep = 10
-            blobs, _ = blob_detect(
-                dft_amp,
-                minThreshold=dft_threshold,
-                thresholdStep=thresholdStep,
-            )
-            points += [np.array(blob.pt) * downscaling for blob in blobs]
-
-            # Exit if we've already got enough points.
-            if len(points) > 4 * (i+1):
-                break
-
-            # Downscale so we can try to find peaks again with greater blurring.
-            if fft_size / downscaling > zo_size*4:
-                if not fft_size / (2*downscaling) > zo_size*4:
-                    break
-                dft = dft[0::2, 0::2] + dft[0::2, 1::2] + dft[1::2, 0::2] + dft[1::2, 1::2]
-                downscaling *= 2
-                i += 1
-
-        if len(points) < 4:
-
-            # Plot which diffraction orders we used
-            if plot:
-                plt.imshow(img)
-                plt.title("Image")
-                plt.show()
-
-                plt.imshow(dft)
-                plt.title("DFT")
-                plt.show()
-
-                plt.imshow(dft_amp)
-                plt.title("Processed DFT")
-                plt.show()
-
-            raise RuntimeError(
-                "Array fitting looks for prominent periodicity, "
-                "but failed to find such in the given image. Try the following:\n"
-                "- Verify that the camera is returning an image of the array. "
-                "For instance, the SLM `settle_time_s` could be too fast for the "
-                "camera to record the settled response, or "
-                "the camera interface could be returning stale frames. "
-                "Pass `plot>=1` to see debug plots. You can also view `cam.last_image`.\n"
-                "- Increasing exposure time to enhance the prominence of spots,\n"
-                "- Increasing the pitch of the array in the image, "
-                "which can isolate spots from neighboring crosstalk,\n"
-                "- Create an issue at https://github.com/holodyne/slmsuite/issues, "
-                "attaching the image data that is resulting in failure. "
-                "You can use `cam.save()` to record the last image alongside metadata."
-            )
-
-        # 3) Fit the primitive lattice vectors
-        # 3.1) Make a list of displacements to each peak's k nearest neighbors
-        def get_kNN(points, k):
-            "Return list of k closest points for each x"
-            dx = points[:,0][:,np.newaxis] - points[:,0][:,np.newaxis].T
-            dy = points[:,1][:,np.newaxis] - points[:,1][:,np.newaxis].T
-            d = np.sqrt(dx**2 + dy**2)
-            inds = np.argsort(d, axis=0)
-            kNN = points[inds[1:k+1,:]] - points
-            kNN = kNN.reshape((points.shape[0]*k, 2))
-
-            # Make inverted copies to avoid group separation based upon arb. branch cut.
-            kNN = np.vstack((kNN, -kNN))
-
-            return kNN
-
-        # Get rid of the points closest to the center - these are noise on the 0th order.
-        points = np.array(points)
-
-        points_lengths = np.sqrt((points[:,0]-fft_size/2)**2 + (points[:,1]-fft_size/2)**2)
-        points = points[points_lengths > .5*np.mean(points_lengths), :]
-        points = np.concatenate((points, np.array([[fft_size/2, fft_size/2]])))
-
-        # Now compute the differences of lattice vectors.
-        k = min(k, len(points)-1)
-        kNN = get_kNN(points, k)
-
-        # 3.2) Cluster into lattice vectors.
-        def cluster(points, k, tol=tol):
-            "Cluster points from k nearest neighbors into groups and return the centers"
-
-            # Find matrix of normalized displacements between points.
-            dx = points[:,0][:,np.newaxis] - points[:,0][:,np.newaxis].T
-            dy = points[:,1][:,np.newaxis] - points[:,1][:,np.newaxis].T
-            dnorm = np.sqrt(dx**2 + dy**2) / np.linalg.norm(points, axis=1)
-
-            # Normalized inverted displacements.
-            dx = points[:,0][:,np.newaxis] + points[:,0][:,np.newaxis].T
-            dy = points[:,1][:,np.newaxis] + points[:,1][:,np.newaxis].T
-            inorm = np.sqrt(dx**2 + dy**2) / np.linalg.norm(points, axis=1)
-
-            # Find groups of points separated by dnorm less than tol.
-            group = 1
-            tags = np.zeros(points.shape[0])
-            for i in np.arange(points.shape[0]):
-                # Assign if they are within tol and have not been assigned yet.
-                new = ((dnorm[i,:] < tol) | (inorm[i,:] < tol)) & np.array(tags == 0) #  | (inorm[i,:] < tol)
-                tags[new] = group
-                if np.any(new): group += 1
-                
-            # Get the centerpoint of each group
-            def mean_group(points):
-                len0 = np.sum(np.square(points[0, :]))
-                diff = np.sum(np.square(points - points[[0], :]), axis=1)
-                points[diff > len0] = -points[diff > len0]
-
-                final = np.mean(points, axis=0)
-
-                if final[0] < 0:
-                    final *= -1
-
-                return final
-
-            # Filter by the k most populated clusters.
-            tag, count = np.unique(tags, return_counts=True)
-            k = min(k, len(count))
-            best_groups = np.argsort(-count)[:k]
-            centers = np.array([
-                mean_group(points[tags == tag[group]])
-                for group in best_groups
-            ])
-            count = count[best_groups]
-
-            # Order by closest point to center. Choose the closest as our base vector.
-            distance_to_center = np.sqrt(np.square(centers[:, 0]) + np.square(centers[:, 1]))
-            distance_to_center /= np.max(distance_to_center)    # normalize
-            best_groups = np.argsort(distance_to_center)
-            count = count[best_groups]
-            centers = centers[best_groups, :]
-            
-            # Weight by orthogonality to the first vector.
-            centers_length = np.sqrt(np.sum(np.square(centers), 1, keepdims=True))
-            centers_norm = centers / centers_length
-            cross_product = (
-                centers_norm[:, 0] * centers_norm[0, 1] -
-                centers_norm[:, 1] * centers_norm[0, 0]
-            )
-            cross_product[0] = 2
-
-            # Prefer orthogal vectors most, then prefer distance to center.
-            fom = 1e4 * (np.abs(cross_product)) - distance_to_center
-            best_groups = np.argsort(-fom)
-            count = count[best_groups]
-            centers = centers[best_groups, :]
-
-            return centers
-
-        centers = cluster(kNN, k).T
-
-        # 3.3) Primitive lattice vectors are the best two.
-        lv = np.array([centers[:,0], centers[:,1]]).T
-
-        if plot > 1:
-            # Plot the points, kNN, and the chosen lattice vecs
-            fig, ax = plt.subplots(constrained_layout=True)
-            kNN_plt = ax.scatter(kNN[:,0], kNN[:,1], fc='none', ec='k', zorder=0)
-
-            for center in centers.T:
-                for s in [-1, 1]:
-                    cir = matplotlib.patches.Circle(
-                        (s*center[0], s*center[1]),
-                        np.linalg.norm(center)*.1,
-                        fill=False,
-                        ec='r',
-                        zorder=10,
-                    )
-                    circ = ax.add_patch(cir)
-
-            for i in [0, 1]:
-                lv_plt = ax.plot([-lv[0,i], lv[0,i]], [-lv[1,i], lv[1,i]], marker='.', c='r')
-            lv_plt = ax.scatter(lv[0,:], lv[1,:], marker='.', c='r')
-
-            ax.set_aspect('equal')
-            ax.set_title('Reciprocal Lattice Vector Fitting')
-            ax.legend([kNN_plt, circ, lv_plt], ['Peak Spacing', '$k$ Clusters', 'Lattice Vectors'])
-            ax.grid()
-            plt.show()
-
-        # 3.4) Convert to image space (dx = 1/dk)
-        M = fft_size*lv/(np.linalg.norm(lv, axis=0)**2)
-
-        # Plot which diffraction orders we used
-        if plot > 1:
-            fig, axs = plt.subplots(1, 2, figsize=(12, 6), facecolor='white')
-
-            plt_img = _make_8bit(dft_amp.copy())
-
-            # Determine the bounds of the zoom region, padded by zoom_pad
-            zoom_pad = 50
-
-            # x = np.array([blob.pt[0] for blob in blobs])
-            x = points[:, 0] / downscaling
-            xl = [
-                np.clip(np.amin(x) - zoom_pad, 0, dft_amp.shape[1]),
-                np.clip(np.amax(x) + zoom_pad, 0, dft_amp.shape[1]),
-            ]
-
-            # y = np.array([blob.pt[1] for blob in blobs])
-            y = points[:, 1] / downscaling
-            yl = [
-                np.clip(np.amin(y) - zoom_pad, 0, dft_amp.shape[0]),
-                np.clip(np.amax(y) + zoom_pad, 0, dft_amp.shape[0]),
-            ]
-
-            # Plot the unzoomed figure
-            axs[0].imshow(plt_img)
-
-            # Plot a red rectangle to show the extents of the zoom region
-            rect = plt.Rectangle(
-                (float(xl[0]), float(yl[0])),
-                float(np.diff(xl).item()), float(np.diff(yl).item()),
-                ec="r", fc="none"
-            )
-            axs[0].add_patch(rect)
-            axs[0].set_title(f"DFT Result ({downscaling}x downscale) - Full")
-            axs[0].set_xticks([])
-            axs[0].set_yticks([])
-
-            # Plot the zoomed figure
-            axs[1].imshow(plt_img)
-            axs[1].scatter(
-                x,
-                y,
-                facecolors="none",
-                edgecolors="r",
-                marker="o",
-                s=100,
-                linewidths=0.5
-            )
-            c = fft_size/2/downscaling
-            lv /= downscaling
-            for i in [0, 1]:
-                lv_plt = axs[1].plot([c-lv[0,i], c+lv[0,i]], [c-lv[1,i], c+lv[1,i]], marker='.', c='r')
-
-            for spine in ["top", "bottom", "right", "left"]:
-                axs[1].spines[spine].set_color("r")
-                axs[1].spines[spine].set_linewidth(1.5)
-            axs[1].set_title(f"DFT Result ({downscaling}x downscale) - Zoom")
-            axs[1].set_xticks([])
-            axs[1].set_yticks([])
-            axs[1].set_xlim(xl)
-            axs[1].set_ylim(np.flip(yl))
-
-            for ax in axs:
-                ax.set_xlabel("Image Reciprocal $x$ [1/pix]")
-                ax.set_ylabel("Image Reciprocal $y$ [1/pix]")
-            fig.tight_layout(pad=4.0)
-
-            plt.show()
-
-    # 4) Make the array kernel for convolutional detection of the array center.
-    # Make lists that we will use to make the kernel: the array...
-    x_list = np.arange(-(size[0] - 1) / 2.0, (size[0] + 1) / 2.0)
-    y_list = np.arange(-(size[1] - 1) / 2.0, (size[1] + 1) / 2.0)
-
-    x_centergrid, y_centergrid = np.meshgrid(x_list, y_list)
-    centers = np.vstack((x_centergrid.ravel(), y_centergrid.ravel()))
-
-    # ...and the array padded by one (penalize the border to avoid off-by-one errors).
-    pad = 1
-    p = int(pad * 2)
-
-    x_list_larger = np.arange(-(size[0] + p - 1) / 2.0, (size[0] + p + 1) / 2.0)
-    y_list_larger = np.arange(-(size[1] + p - 1) / 2.0, (size[1] + p + 1) / 2.0)
-
-    x_centergrid_larger, y_centergrid_larger = np.meshgrid(x_list_larger, y_list_larger)
-    centers_larger = np.vstack(
-        (x_centergrid_larger.ravel(), y_centergrid_larger.ravel())
-    )
+    # (4) [after orientation detection] 
+    # Make the array kernel for convolutional detection of the array center:
+    # the array, and the array padded by one to penalize the border against
+    # off-by-one errors.
+    centers = _array_indices(array_shape)
+    centers_larger = _array_indices(array_shape, pad=1)
 
     # If we're not sure about how things are flipped, consider alternatives...
-    if size[0] != size[1] and orientation is None:
+    # A guessed `orientation` fixes the lattice but not which vector is which:
+    # the alternative is tried for a guess too, and scored by template match.
+    if array_shape[0] != array_shape[1]:
         M_alternative = np.array([[M[0, 1], M[0, 0]], [M[1, 1], M[1, 0]]])
         M_options = [M, M_alternative]
     else:
@@ -2114,91 +2879,78 @@ def blob_array_detect(
 
         # Make a mask with negative power at the border, positive
         # at the array, with integrated intensity of 0.
-        area = size[0] * size[1]
-        perimeter = 2 * (size[0] + size[1]) + 4
+        area = array_shape[0] * array_shape[1]
+        perimeter = 2 * (array_shape[0] + array_shape[1]) + 4
 
         mask[y_larger, x_larger] = -area/perimeter
         mask[y_array, x_array] = 1
 
         mask = _make_8bit(mask)
 
-        # 5) Do the autocorrelation
+        # 5) Locate the array. The template match locates the kernel, which
+        # coincides with the array only when the array is symmetric about it, so a
+        # guessed position is scored against it rather than either being trusted.
+        candidates = []
+
+        if orientation is not None and "b" in orientation:
+            candidates.append(format_2vectors(orientation["b"]).astype(float))
+
         try:
-            res = cv2.matchTemplate(img_8bit, mask, cv2.TM_CCOEFF)
-            _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        except:
-            max_val = 0
-            max_loc = [0, 0]
+            res = cv2.matchTemplate(image_8bit, mask, cv2.TM_CCOEFF)
+            _, _, _, max_loc = cv2.minMaxLoc(res)
+            candidates.append(
+                np.array(max_loc, dtype=float)[:, np.newaxis]
+                + np.flip(mask.shape)[:, np.newaxis] / 2
+            )
+        except Exception:
+            pass
 
-        b_fixed = (
-            np.array(max_loc)[:, np.newaxis] + np.flip(mask.shape)[:, np.newaxis] / 2
-        )
+        if len(candidates) == 0:
+            candidates.append(np.flip(mask.shape)[:, np.newaxis] / 2.0)
 
-        # Parity check
-        if orientation is None and orientation_check:
+        def spot_power(b):
+            """Typical power collected where this position would place the spots."""
+            return float(np.nanmedian(take(
+                image_8bit, np.matmul(M_trial, centers) + b, 3,
+                centered=True, integrate=True, clip=True,
+            )))
+
+        scores = [spot_power(b) for b in candidates]
+        b_fixed = candidates[int(np.argmax(scores))]
+        max_val = np.max(scores)
+
+        # Parity check. A guess constrains the lattice vectors but not the
+        # rotation and flip between them, which only the fiducial spots reveal.
+        if orientation_check:
             try:
-                cam_array_ind = np.ix_(
-                    max_loc[1] + np.arange(mask.shape[0]),
-                    max_loc[0] + np.arange(mask.shape[1]),
+                # Parity is decided by the fiducials, so a cropped array cannot
+                # decide it; the position is the one chosen above, not the template
+                # match, which may have lost to the guess.
+                corner = np.rint(
+                    np.squeeze(b_fixed) - np.flip(mask.shape) / 2
+                ).astype(int)
+                if np.any(corner < 0) or np.any(
+                    np.flip(corner) + mask.shape > image_8bit.shape
+                ):
+                    raise IndexError("Array is not wholly within the image.")
+
+                best = _score_array_orientation(
+                    image_remove_field(image, deviations=None),
+                    M_trial,
+                    b_fixed,
+                    array_shape,
+                    2 * np.max([1, int(0.2 * max_pitch)]) + 1,
                 )
-                match = img_8bit[cam_array_ind]
+                if best is None:
+                    raise IndexError("The orientation scorer found no candidate.")
 
-                # TODO: replace with take
-                wmask = 0.2
-                w = np.max([1, int(wmask * max_pitch)])
-                edge = np.arange(-w, w + 1)
-
-                integration_x, integration_y = np.meshgrid(edge, edge)
-
-                rotated_integration_x = np.rint(np.add(
-                    integration_x.ravel()[:, np.newaxis].T,
-                    rotated_centers[:][0][:, np.newaxis],
-                )).astype(int)
-                rotated_integration_y = np.rint(np.add(
-                    integration_y.ravel()[:, np.newaxis].T,
-                    rotated_centers[:][1][:, np.newaxis],
-                )).astype(int)
-
-                spotpowers = np.reshape(
-                    np.sum(match[rotated_integration_y, rotated_integration_x], 1),
-                    np.flip(size),
+                M_fixed = np.matmul(
+                    M_trial, OrientationTransform.from_code(best[0]).M()
                 )
-
-                # Find the two dimmest pixels.
-                spotbooleans = spotpowers <= np.sort(spotpowers.ravel())[1]
-
-                assert np.sum(spotbooleans) == 2
-
-                # Find whether the corners are dimmest.
-                corners = spotbooleans[[-1, -1, 0, 0], [-1, 0, 0, -1]]
-
-                assert np.sum(corners) == 1
-
-                # We want a dim corner at -1, -1.
-                rotation_parity = np.where(corners)[0][0]
-                spotbooleans_rotated = np.rot90(spotbooleans, rotation_parity)
-
-                theta = rotation_parity * np.pi / 2
-                c = np.cos(theta)
-                s = np.sin(theta)
-                rotation = np.array([[c, -s], [s, c]])
-
-                # Look for the second missing spot.
-                flip_parity = (
-                    int(spotbooleans_rotated[-1, -2]) -
-                    int(spotbooleans_rotated[-2, -1])
-                )
-
-                assert abs(flip_parity) == 1
-
-                if flip_parity == 1:
-                    flip = np.array([[1, 0], [0, 1]])
-                else:
-                    flip = np.array([[0, 1], [1, 0]])
-
-                M_fixed = np.matmul(M_trial, np.matmul(rotation, flip))
-                parity_success = True
-            except Exception as e:
+                # Only the true orientation lights every spot and leaves the withheld pair dark.
+                parity_success = best[1] == 1 and best[2] < 0.5
+            except IndexError as e:
+                logger.debug("Array parity could not be determined (%s).", e)
                 M_fixed = M_trial
                 parity_success = False
         else:
@@ -2209,21 +2961,25 @@ def blob_array_detect(
 
     if len(results) == 1:
         index = 0
+    elif results[0][3] != results[1][3]:
+        # Index is the one that satisfied the parity check.
+        index = int(results[1][3])
     else:
-        # Default to max_val if the parity check results in the same thing.
-        if results[0][3] == results[1][3]:
-            index = int(results[1][0] > results[0][0])
-        else:
-            # Index is the one that satisfied the parity check
-            index = int(results[1][3])
+        # Fall back to the collected spot power, which compares across trials.
+        index = int(results[1][0] > results[0][0])
 
     orientation = {"M": results[index][2], "b": results[index][1]}
+    if not bool(results[index][3]):
+        logger.warning(
+            "Array orientation was not verified; the affine may be reflected or rotated."
+        )
 
     # Hone the center of our fit by averaging the positional deviations of spots.
     # We do this multiple times to allow outliers (1 std error above) to stabilize.
     # FUTURE: Use a more physics-based psf, optimize for speed, maybe remove_field.
     hone_count = 3
     region_fraction = 1
+    true_positions = None
     for _ in range(hone_count):
         guess_positions = np.matmul(orientation["M"], centers) + orientation["b"]
 
@@ -2233,66 +2989,85 @@ def blob_array_detect(
 
         # Grab windows (sized by psf) about the guess_positions.
         regions = take(
-            img, guess_positions, psf, centered=True, integrate=False, clip=True
+            image, guess_positions, psf, centered=True, integrate=False, clip=True
         )
-        region_fraction = np.sum(regions) / np.sum(img)
+        region_fraction = np.nansum(regions) / np.nansum(image)
 
         # Get the first order moment rint each of the guess windows.
-        shift = image_positions(regions) - (guess_positions - np.rint(guess_positions))
+        shift = image_positions(regions) - (guess_positions - np.floor(guess_positions))
 
-        # Remove outliers.
+        # Remove outliers. An empty window has no centroid to contribute.
+        shift[:, np.nansum(regions, axis=(1, 2)) <= 0] = np.nan
         shift_error = np.sqrt(np.square(shift[0, :]) + np.square(shift[1, :]))
-        thresh = np.mean(shift_error) + np.std(shift_error)
+        if not np.any(np.isfinite(shift_error)):
+            break       # No window holds a spot, so there is nothing to hone against.
+        thresh = np.nanmean(shift_error) + np.nanstd(shift_error)
         shift[:, shift_error > thresh] = np.nan
 
         # Locally fit an affine based on the measured positions.
         true_positions = guess_positions + shift
         orientation = fit_affine(centers, true_positions, orientation)
 
+    # How far the measured spots sit from the array that was fitted to them.
+    if true_positions is None:
+        orientation["residual"] = float("nan")
+    else:
+        predicted = np.matmul(orientation["M"], centers) + orientation["b"]
+        orientation["residual"] = float(
+            np.nanmedian(np.linalg.norm(predicted - true_positions, axis=0))
+        )
+    min_pitch = float(np.min(np.linalg.norm(orientation["M"], axis=0)))
+    if np.isnan(orientation["residual"]):
+        logger.warning("No spot was measurable, so the array fit was never honed.")
+    elif min_pitch > 0 and orientation["residual"] > 0.1 * min_pitch:
+        logger.warning(
+            "Spots sit a median %.2f px from the fitted array, %.0f%% of its pitch. "
+            "The fit is loose.",
+            orientation["residual"], 100 * orientation["residual"] / min_pitch,
+        )
+
     # Warn the user if the mask was >= (or close to) camera size.
-    if np.any(mask.shape > 0.95 * np.array(img_8bit.shape)):
-        warnings.warn(
+    if np.any(mask.shape > 0.95 * np.array(image_8bit.shape)):
+        logger.warning(
             "The computed Fourier grid size exceeds or approaches the camera size; "
             "calibration results may be improperly centered as a result."
         )
     # Also warn if computed positions approach camera FOV boundary.
-    elif np.any(np.nanmax(true_positions, axis=1) > 0.95 * np.array(img_8bit.shape)) or \
-         np.any(np.nanmin(true_positions, axis=1) < 0.05 * np.array(img_8bit.shape)):
-        warnings.warn(
+    elif true_positions is not None and (
+        np.any(np.nanmax(true_positions, axis=1) > 0.95 * np.flip(np.array(image_8bit.shape))) or
+        np.any(np.nanmin(true_positions, axis=1) < 0.05 * np.flip(np.array(image_8bit.shape)))
+    ):
+        logger.warning(
             "The fitted spot array approaches or exceeds the camera FOV; "
             "calibration results may be improperly centered as a result."
         )
     # Warn if the array does not match the received pattern on the camera.
     if region_fraction < .5:
-        warnings.warn(
-            f"{(1-region_fraction)*100:.1f}% of the image's power outside the spot array. "
-            "This might have caused the array fit to be poor."
+        logger.warning(
+            "%.1f%% of the image's power outside the spot array. "
+            "This might have caused the array fit to be poor.", (1 - region_fraction) * 100
         )
 
-    if plot:
+    if plot >= 1:
         array_center = orientation["b"]
         true_centers = np.matmul(orientation["M"], centers) + orientation["b"]
 
-        showmatch = False
-
-        fig, axs = plt.subplots(
-            1, 2 + showmatch, figsize=(12, 12)
-        )
+        fig, axs = plt.subplots(1, 2, figsize=(12, 12))
 
         # Determine the bounds of the zoom region, padded by 50.
         x = true_centers[0, :]
         xl = [
-            np.clip(np.amin(x) - max_pitch, 0, img.shape[1]),
-            np.clip(np.amax(x) + max_pitch, 0, img.shape[1]),
+            np.clip(np.amin(x) - max_pitch, 0, image.shape[1]),
+            np.clip(np.amax(x) + max_pitch, 0, image.shape[1]),
         ]
         y = true_centers[1, :]
         yl = [
-            np.clip(np.amin(y) - max_pitch, 0, img.shape[0]),
-            np.clip(np.amax(y) + max_pitch, 0, img.shape[0]),
+            np.clip(np.amin(y) - max_pitch, 0, image.shape[0]),
+            np.clip(np.amax(y) + max_pitch, 0, image.shape[0]),
         ]
 
         # Plot the zoom window, with red axes.
-        axs[1].imshow(img)
+        axs[1].imshow(image)
         axs[1].scatter(
             x[:-2], y[:-2], facecolors="none", edgecolors="r", marker="o", s=80, linewidths=0.5
         )
@@ -2311,7 +3086,7 @@ def blob_array_detect(
             axs[1].spines[spine].set_linewidth(1.5)
 
         # Plot the non-zoom axes.
-        axs[0].imshow(img_8bit)
+        axs[0].imshow(image_8bit)
         axs[0].scatter(array_center[0], array_center[1], c="r", marker="x", s=10)
 
         # Plot a red rectangle to show the extents of the zoom region
@@ -2323,24 +3098,20 @@ def blob_array_detect(
         axs[0].add_patch(rect)
         axs[0].set_title("Result - Full")
 
-        if showmatch:
-            axs[2].imshow(match)
-            axs[2].set_title("Result - Match")
-
         # Handle xy labels.
         for ax in axs[:2]:
             ax.set_xlabel("Image $x$ [pix]")
             ax.set_ylabel("Image $y$ [pix]")
         fig.tight_layout(pad=4.0)
 
-        plt.show()
+        _slmsuite_plt_show(name="blob_array_detect")
 
     return orientation
 
 
 # Other image helper functions.
 
-def _make_8bit(img):
+def _make_8bit(image):
     """
     Convert an image to ``numpy.uint8``, scaling to the limits.
 
@@ -2349,57 +3120,362 @@ def _make_8bit(img):
 
     Parameters
     ----------
-    img : numpy.ndarray
+    image : numpy.ndarray
         The image in question.
 
     Returns
     -------
     ndarray
-        img as an 8-bit image.
+        The image as ``numpy.uint8``.
     """
-    img = img.astype(float)
+    image = image.astype(float)
 
-    img -= np.amin(img)
-    max = np.amax(img)
-    if max > 0: img = img / max * (2 ** 8 - 1)
+    image -= np.amin(image)
+    max = np.amax(image)
+    if max > 0: image = image / max * (2 ** 8 - 1)
 
-    return img.astype(np.uint8)
+    return image.astype(np.uint8)
+
+
+# Transformations
+
+class Affine(object):
+    """
+    Implements 2D affine transformation.
+    """
+    def __init__(self, M, b, a=None):
+        self.M = np.array(M).astype(float)
+        self.b = format_2vectors(b).astype(float)
+        if a is not None:
+            self.b -= np.matmul(self.M, format_2vectors(a).astype(float))
+
+    def __mul__(self, x):
+        return self.__matmul__(x)
+
+    def __matmul__(self, x):
+        if isinstance(x, Affine):
+            M_new = np.matmul(self.M, x.M)
+            b_new = np.matmul(self.M, x.b) + self.b
+            return Affine(M_new, b_new)
+        elif isinstance(x, np.ndarray):
+            return np.matmul(self.M, x) + self.b
+        else:
+            raise TypeError(
+                "Unsupported operand type(s) for @: "
+                f"'Affine' and '{type(x).__name__}'"
+            )
+
+    @property
+    def inv(self):
+        """The inverse affine transformation."""
+        M_inv = np.linalg.inv(self.M)
+        b_inv = -np.matmul(M_inv, self.b)
+        return Affine(M_inv, b_inv)
+
+    def det(self):
+        """Determinant of ``M``, the area scaling of the transformation."""
+        return np.linalg.det(self.M)
+
+    def to_dict(self):
+        """Returns the ``{"M", "b", "a"}`` dictionary stored in :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations`."""
+        return {"M": self.M, "b": self.b, "a": 0 * self.b}
+
+
+class OrientationTransform:
+    """
+    Camera-specific orientation transform.
+
+    The group elements are combinations of 90 deg rotations and flips.
+    All image transforms are zero-copy numpy view operations.
+
+    .. note::
+        ``D_4`` names each element in the order it composes, flip first, while these
+        parameters apply the flip last. The two orders invert the rotation between them, so
+        ``rot="90", fliplr=True`` is ``D_4.FLIP_ROT270``.
+
+    Parameters
+    ----------
+    rot : str or int
+        Rotation in CCW degrees: ``"0"``, ``"90"``, ``"180"``, ``"270"`` or equivalently
+        the :func:`numpy.rot90` step counts ``0``, ``1``, ``2``, ``3``.
+    fliplr : bool
+        Apply a left-right flip *after* rotation. ``fliplr=True, flipud=True`` is
+        equivalent to a 180 degree rotation and will be collapsed accordingly.
+    flipud : bool
+        Apply an up-down flip *after* rotation.
+    """
+    # Dihedral group elements.
+    class D_4(enum.IntEnum):
+        """Enums for image orientations."""
+        IDENTITY    = 0  # no transform
+        ROT90       = 1  # 90 deg CCW
+        ROT180      = 2  # 180 deg
+        ROT270      = 3  # 270 deg CCW  (= 90 deg CW)
+        FLIP        = 4  # left-right flip               (fliplr)
+        FLIP_ROT90  = 5  # left-right flip then 90 deg CCW  (= transpose)
+        FLIP_ROT180 = 6  # left-right flip then 180 deg     (= up-down flip)
+        FLIP_ROT270 = 7  # left-right flip then 270 deg CCW (= anti-transpose)
+
+    # Inverse elements
+    _INVERSE_D_4 = [0, 3, 2, 1, 4, 5, 6, 7]
+
+    # 2x2 matrix
+    _MATRICES = (
+        ((1, 0), (0, 1)),  ((0, 1), (-1, 0)), ((-1, 0), (0, -1)), ((0, -1), (1, 0)),
+        ((-1, 0), (0, 1)), ((0, 1), (1, 0)),  ((1, 0), (0, -1)),  ((0, -1), (-1, 0)),
+    )
+
+    _COMPOSITION_TABLE = [
+        [0, 1, 2, 3, 4, 5, 6, 7],   # IDENTITY
+        [1, 2, 3, 0, 5, 6, 7, 4],   # ROT90
+        [2, 3, 0, 1, 6, 7, 4, 5],   # ROT180
+        [3, 0, 1, 2, 7, 4, 5, 6],   # ROT270
+        [4, 7, 6, 5, 0, 3, 2, 1],   # FLIP
+        [5, 4, 7, 6, 1, 0, 3, 2],   # FLIP_ROT90
+        [6, 5, 4, 7, 2, 1, 0, 3],   # FLIP_ROT180
+        [7, 6, 5, 4, 3, 2, 1, 0],   # FLIP_ROT270
+    ]
+
+    def __init__(self, rot="0", fliplr=False, flipud=False):
+        if rot in ("90", 1):
+            rot_steps = 1
+        elif rot in ("180", 2):
+            rot_steps = 2
+        elif rot in ("270", 3):
+            rot_steps = 3
+        else:
+            rot_steps = 0
+
+        # Canonicalize: flipud == fliplr + rot180; both flips == rot180
+        if fliplr and flipud:
+            has_flip, extra_rot = False, 2
+        elif flipud:
+            has_flip, extra_rot = True, 2
+        else:
+            has_flip, extra_rot = bool(fliplr), 0
+
+        # A flip applied after the rotation reverses it: F R^k = R^-k F.
+        if has_flip:
+            rot_steps = -rot_steps
+
+        self.code = self.D_4((rot_steps + extra_rot) % 4 + (4 if has_flip else 0))
+
+    @classmethod
+    def from_code(cls, code):
+        """Construct directly from a :class:`D_4` value or integer (0-7)."""
+        obj = cls.__new__(cls)
+        obj.code = cls.D_4(int(code))
+        return obj
+
+    def __mul__(self, other):
+        return self.__matmul__(other)
+
+    def __matmul__(self, other):
+        """Return the composition of this transform with another (``self * other``)."""
+        if not isinstance(other, OrientationTransform):
+            raise TypeError(
+                "Unsupported operand type(s) for *: "
+                f"'OrientationTransform' and '{type(other).__name__}'"
+            )
+        new_code = self._COMPOSITION_TABLE[self.code.value][other.code.value]
+        return OrientationTransform.from_code(new_code)
+
+    # Properties
+
+    @property
+    def swaps_xy(self):
+        """bool : True if x and y axes are exchanged (image shape changes for non-square inputs)."""
+        return self.code in (
+            self.D_4.ROT90, self.D_4.ROT270,
+            self.D_4.FLIP_ROT90, self.D_4.FLIP_ROT270,
+        )
+
+    @property
+    def inverse(self):
+        """OrientationTransform : The inverse transformation."""
+        return self.from_code(self._INVERSE_D_4[self.code.value])
+
+    def M(self):
+        """
+        numpy.ndarray : 2x2 matrix transformation
+        """
+        return np.array(self._MATRICES[self.code.value], dtype=float)
+
+    def b(self, shape):
+        """
+        numpy.ndarray : 2-vector translation.
+        """
+        H, W = shape
+        M = self.M()
+        return np.array([
+            max(0., -M[0, 0]) * (W - 1) + max(0., -M[0, 1]) * (H - 1),
+            max(0., -M[1, 0]) * (W - 1) + max(0., -M[1, 1]) * (H - 1),
+        ])
+
+    def affine(self, shape):
+        """
+        Return an :class:`Affine` for the pixel-space transform of a ``(H, W)`` image.
+
+        Parameters
+        ----------
+        shape : (int, int)
+            Image shape ``(H, W)`` in the original (untransformed) space.
+
+        Returns
+        -------
+        Affine
+        """
+        return Affine(self.M(), self.b(shape))
+
+    # Actual transform
+
+    def __call__(self, image):
+        """
+        Apply the orientation transform to an image or stack of images.
+
+        Parameters
+        ----------
+        image : array_like
+            Image or image stack. The last two axes are treated as ``(H, W)``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Transformed array. Shape is ``(..., H, W)`` for transforms that preserve
+            axis order or ``(..., W, H)`` for transforms that swap the spatial axes
+            (90 and 270 degree rotations and their flip variants).
+        """
+        xp = get_array_module(image)
+        image = xp.asarray(image)
+        c = self.code
+        C = self.D_4
+        # Operates on the last two axes, so 2D and ND (batched) inputs share one path.
+        if   c == C.IDENTITY:
+            return image
+        elif c == C.ROT90:
+            return xp.rot90(image, 1, axes=(-2, -1))
+        elif c == C.ROT180:
+            return image[..., ::-1, ::-1]
+        elif c == C.ROT270:
+            return xp.rot90(image, 3, axes=(-2, -1))
+        elif c == C.FLIP:
+            return image[..., ::-1]
+        elif c == C.FLIP_ROT90:
+            return image.swapaxes(-2, -1)
+        elif c == C.FLIP_ROT180:
+            return image[..., ::-1, :]
+        else:
+            return image[..., ::-1, ::-1].swapaxes(-2, -1)  # FLIP_ROT270
+
+    def transform_shape(self, shape):
+        """
+        Return the image shape after applying this transformation.
+
+        Parameters
+        ----------
+        shape : (int, int)
+            Image shape ``(H, W)`` before transformation.
+
+        Returns
+        -------
+        (int, int)
+            Shape ``(H', W')`` after transformation.
+        """
+        H, W = shape
+        return (W, H) if self.swaps_xy else (H, W)
+
+    # ---- WOI transform ----------------------------------------------------
+
+    def transform_woi(self, woi, shape, binning_in=1, binning_out=1):
+        """
+        Transform a window of interest (WOI) from the original image space into the
+        transformed image space.
+
+        Parameters
+        ----------
+        woi : (int, int, int, int)
+            Window of interest ``(x0, w, y0, h)`` in the original space, where
+            ``x0``, ``y0`` are the column/row of the top-left corner and ``w``, ``h``
+            are the width and height. Must satisfy ``x0 + w <= W`` and
+            ``y0 + h <= H`` (at ``binning_in`` scale).
+        shape : (int, int)
+            Full image shape ``(H, W)`` in the original space at ``binning_in`` scale.
+        binning_in : int or (int, int)
+            Pixel binning of the input coordinate space: scalar or ``(bx, by)``.
+            A value of 1 (default) means native (un-binned) pixels.
+        binning_out : int or (int, int)
+            Pixel binning of the output (transformed) coordinate space.
+
+        Returns
+        -------
+        (int, int, int, int)
+            Transformed WOI ``(x0', w', y0', h')`` in the transformed space at
+            ``binning_out`` scale.
+        """
+        bxi, byi = (binning_in, binning_in) if np.isscalar(binning_in) else tuple(binning_in)
+        bxo, byo = (binning_out, binning_out) if np.isscalar(binning_out) else tuple(binning_out)
+
+        x0, w, y0, h = woi
+        isfloat = any(isinstance(v, float) for v in (x0, w, y0, h))
+        H, W = shape
+
+        # Scale to native pixels (binning_in = 1)
+        x0n, wn = x0 * bxi, w * bxi
+        y0n, hn = y0 * byi, h * byi
+        Wn, Hn = W * bxi, H * byi
+
+        # Apply orientation transform in native coords.
+        (a, b), (c_, d) = self._MATRICES[self.code.value]
+        ox = max(0, -a) * Wn + max(0, -b) * Hn
+        oy = max(0, -c_) * Wn + max(0, -d) * Hn
+        xs = (a * x0n + b * y0n + ox, a * (x0n + wn) + b * (y0n + hn) + ox)
+        ys = (c_ * x0n + d * y0n + oy, c_ * (x0n + wn) + d * (y0n + hn) + oy)
+        x0t, wt = min(xs), abs(a) * wn + abs(b) * hn
+        y0t, ht = min(ys), abs(c_) * wn + abs(d) * hn
+
+        if isfloat:
+            return (x0t / bxo, wt / bxo, y0t / byo, ht / byo)
+        else:
+            return (x0t // bxo, wt // bxo, y0t // byo, ht // byo)
+
+    def inverse_woi(self, woi, transformed_shape, binning_in=1, binning_out=1):
+        """
+        Inverse of :meth:`transform_woi`: map a WOI from the transformed space back to
+        the original image space.
+        """
+        return self.inverse.transform_woi(
+            woi, transformed_shape, binning_in=binning_out, binning_out=binning_in
+        )
+
+    def __repr__(self):
+        return f"OrientationTransform({self.code.name})"
+
+    def __eq__(self, other):
+        if isinstance(other, OrientationTransform):
+            return self.code == other.code
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self.code)
 
 
 def get_orientation_transformation(rot="0", fliplr=False, flipud=False):
     """
-    Compile a transformation lambda from simple rotates and flips.
-
-    Useful to turn an image to an orientation which is user-friendly.
-    Used by :class:`~slmsuite.hardware.cameras.camera.Camera` and subclasses.
+    Compile an image orientation transformation from rotate/flip parameters.
 
     Parameters
     ----------
-    rot : str OR int
-        Rotates returned image by the corresponding degrees in ``["90", "180", "270"]``
-        or :meth:`numpy.rot90` code in ``[1, 2, 3]``. Defaults to no rotation otherwise.
+    rot : str or int
+        Rotation in degrees: ``"0"``, ``"90"``, ``"180"``, ``"270"`` or
+        :func:`numpy.rot90` step counts ``0``-``3``.
     fliplr : bool
-        Flips returned image left right.
+        Flip left-right after rotation.
     flipud : bool
-        Flips returned image up down.
+        Flip up-down after rotation.
 
     Returns
     -------
-    function (array_like) -> numpy.ndarray
-        Compiled image transformation.
+    OrientationTransform
+        Callable transformation object.
     """
-    transforms = list()
-
-    if fliplr == True:
-        transforms.append(np.fliplr)
-    if flipud == True:
-        transforms.append(np.flipud)
-
-    if rot == "90" or rot == 1:
-        transforms.append(lambda img: np.rot90(img, 1))
-    elif rot == "180" or rot == 2:
-        transforms.append(lambda img: np.rot90(img, 2))
-    elif rot == "270" or rot == 3:
-        transforms.append(lambda img: np.rot90(img, 3))
-
-    return reduce(lambda f, g: lambda x: f(g(x)), transforms, lambda x: x)
+    return OrientationTransform(rot=rot, fliplr=fliplr, flipud=flipud)

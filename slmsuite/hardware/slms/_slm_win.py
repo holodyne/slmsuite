@@ -18,7 +18,6 @@ from ctypes.wintypes import HANDLE
 from ctypes.wintypes import LONG
 from ctypes.wintypes import UINT
 from ctypes.wintypes import LPSTR
-from ctypes.wintypes import LPCSTR
 from ctypes.wintypes import LPCWSTR
 from ctypes.wintypes import FILETIME
 
@@ -62,13 +61,13 @@ SLM_DRIVEBOARD_ERROR = {
     0x01 : "Startup error 1 (Drive board)",
     0x02 : "Startup error 2 (Drive board)",
     0x04 : "Video signal error (No signal)",
-    0x08 : "Drive board temperature error (70°C or higher)"
+    0x08 : "Drive board temperature error (70 C or higher)"
 }
 SLM_OPTIONBOARD_ERROR = {
     0x01 : "Startup error 1 (Option board)",
     0x02 : "Startup error 2 (Option board)",
     0x04 : "Voltage level error (DC 5.0V)",
-    0x08 : "Option board temperature error (70°C or higher)"
+    0x08 : "Option board temperature error (70 C or higher)"
 }
 
 # SLM_STATUS
@@ -255,10 +254,10 @@ SLM_Ctrl_ReadTM.restype = SLM_STATUS
 SLM_Ctrl_ReadTM.argtypes = [DWORD, LPDWORD]
 SLM_Ctrl_ReadTM.__doc__ = """SLM_Ctrl_ReadTM(DWORD SLMNumber, DWORD *onoff)"""
 
-SLM_Ctrl_ReadTM = _libraries[_libname].SLM_Ctrl_ReadTM
-SLM_Ctrl_ReadTM.restype = SLM_STATUS
-SLM_Ctrl_ReadTM.argtypes = [DWORD, DWORD]
-SLM_Ctrl_ReadTM.__doc__ = """SLM_Ctrl_WriteTC(DWORD SLMNumber, DWORD order)"""
+SLM_Ctrl_WriteTC = _libraries[_libname].SLM_Ctrl_WriteTC
+SLM_Ctrl_WriteTC.restype = SLM_STATUS
+SLM_Ctrl_WriteTC.argtypes = [DWORD, DWORD]
+SLM_Ctrl_WriteTC.__doc__ = """SLM_Ctrl_WriteTC(DWORD SLMNumber, DWORD order)"""
 
 SLM_Ctrl_ReadTC = _libraries[_libname].SLM_Ctrl_ReadTC
 SLM_Ctrl_ReadTC.restype = SLM_STATUS

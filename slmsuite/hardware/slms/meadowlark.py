@@ -17,7 +17,7 @@ To choose otherwise, pass the path to the desired SDK.
 """
 import os
 import ctypes
-import warnings
+import ctypes.wintypes
 from enum import IntEnum
 from pathlib import Path
 import numpy as np
@@ -25,11 +25,13 @@ from platform import system
 from typing import Union, Optional, Tuple, List
 
 from slmsuite.hardware.slms.slm import SLM
+from slmsuite.misc.xp import as_numpy
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 #: str: Default location in which Meadowlark Optics software is installed
 _DEFAULT_MEADOWLARK_PATH = "C:\\Program Files\\Meadowlark Optics\\"
-
-from enum import IntEnum
 
 class _SDK_MODE(IntEnum):
     #: No connection
@@ -93,16 +95,13 @@ class Meadowlark(SLM):
         lut_path: Optional[str] = None,
         wav_um: float = 1,
         pitch_um: Optional[Tuple[float, float]] = None,
-        verbose: bool = True,
         **kwargs,
     ):
         r"""
         Initializes an instance of a Meadowlark SLM.
 
-        Arguments
-        ---------
-        verbose : bool
-            Whether to print extra information.
+        Parameters
+        ----------
         slm_number : int
             The board number of the SLM to connect to,
             in the case of multiple PCIe SLMs. Defaults to 1.
@@ -120,7 +119,7 @@ class Meadowlark(SLM):
             the path otherwise. Keep in mind that different versions of the SDK may not
             be compatible with given hardware (HDMI, PCIe, etc.).
             See the compatibility table at
-            :module:`slmsuite.hardware.slms.meadowlark` for more information.
+            :mod:`slmsuite.hardware.slms.meadowlark` for more information.
         lut_path : str OR None
             Passed to :meth:`load_lut`. Looks for the voltage 'look-up table' data
             which is necessary to run the SLM.
@@ -140,8 +139,7 @@ class Meadowlark(SLM):
         """
         # Validates the DPI awareness of this context, which is presumably important
         # for scaling.
-        if verbose:
-            print("Validating DPI awareness...", end="")
+        logger.debug("Validating DPI awareness...")
 
         awareness = ctypes.c_int()
         error_get = ctypes.windll.shcore.GetProcessDpiAwareness(
@@ -157,17 +155,13 @@ class Meadowlark(SLM):
                 f"{awareness.value}"
             )
 
-        if verbose:
-            print("success")
-            print("Constructing Blink SDK...", end="")
+        logger.debug("Constructing Blink SDK...")
 
         # Locate the blink wrapper file in the sdk_path. If no sdk_path is provided,
         # search for the most recently installed SDK (if it exists)
         self.sdk_mode: _SDK_MODE = self._load_lib(sdk_path)
         if self.sdk_mode == _SDK_MODE.NULL:
             raise ValueError(f"Could not find SDK within path '{sdk_path}'")
-        elif verbose:
-            print("success")
 
         # Parse slm_number
         self.slm_number = int(slm_number)
@@ -195,11 +189,10 @@ class Meadowlark(SLM):
             Meadowlark._slm_lib[self.sdk_mode].Set_true_frames(ctypes.c_int(3))
 
         # Load LUT.
-        if verbose:
-            print("Loading LUT file...", end="")
+        logger.debug("Loading LUT file...")
         true_lut_path = self.load_lut(lut_path)
-        if verbose and true_lut_path != lut_path:
-            print(f"success\n(loaded from '{true_lut_path}')")
+        if true_lut_path != lut_path:
+            logger.debug("Loaded LUT from '%s'", true_lut_path)
 
         # If using a legacy 512x512, then the SLM needs to be powered on
         if self.sdk_mode == _SDK_MODE.PCIE_LEGACY:
@@ -219,7 +212,7 @@ class Meadowlark(SLM):
         )
 
         if self.bitdepth > 8:
-            warnings.warn(
+            logger.warning(
                 f"Bitdepth of {self.bitdepth} > 8 detected; "
                 "this has not been tested and might fail.",
                 stacklevel=2,
@@ -229,7 +222,7 @@ class Meadowlark(SLM):
 
     def close(self) -> None:
         """
-        Use :meth:`.SLM.close_sdk` to close the SDK, though this might break
+        Use :meth:`.Meadowlark.close_sdk` to close the SDK, though this might break
         other SLMs on the same SDK. See :meth:`.SLM.close`.
         """
         pass
@@ -262,13 +255,16 @@ class Meadowlark(SLM):
         try:
             Meadowlark._slm_lib[self.sdk_mode].Delete_SDK()
         except OSError as exc:
-            warnings.warn(f"Failed to delete SDK: {exc}", stacklevel=2)
+            logger.warning(f"Failed to delete SDK: {exc}", stacklevel=2)
         finally:
             # noinspection PyProtectedMember
             if not unloader(Meadowlark._slm_lib[self.sdk_mode]._handle):
-                raise OSError(f"Failed to unload DLL {self.sdk_path}; "
+                raise OSError(f"Failed to unload DLL {Meadowlark._sdk_path[self.sdk_mode]}; "
                               f"error_code: {ctypes.get_last_error()}.")
             del Meadowlark._slm_lib[self.sdk_mode]
+            del Meadowlark._slm_lib_trace[self.sdk_mode]
+            del Meadowlark._sdk_path[self.sdk_mode]
+            del Meadowlark._number_of_boards[self.sdk_mode]
 
     # General SDK inspection methods.
     @staticmethod
@@ -280,7 +276,7 @@ class Meadowlark(SLM):
         Parameters
         ----------
         verbose : bool
-            Whether to print the information.discovered
+            Whether to print the information discovered.
         sdk_path : str
             Path of the Blink SDK installation folder to explore.
 
@@ -291,8 +287,10 @@ class Meadowlark(SLM):
 
         Raises
         ------
+        RuntimeError
+            If the SDK fails to load.
         NotImplementedError
-            If multiple SLMs are not supported for this SDK
+            If the SDK cannot report a board's serial number, size, or bitdepth.
         """
         mode = Meadowlark._load_lib(sdk_path=sdk_path)
 
@@ -309,13 +307,15 @@ class Meadowlark(SLM):
             )
             for board in range(1, Meadowlark._number_of_boards[mode] + 1)
         ]
+
         if verbose:
-            print(f"Using {_SDK_MODE_NAMES[mode]} SDK at '{Meadowlark._sdk_path[mode]}'")
+            print(f"SLMs detected using {_SDK_MODE_NAMES[mode]} SDK at '{Meadowlark._sdk_path[mode]}':")
             if len(info):
                 for board, dims in info:
-                    print(f"SLM {board}: {dims}")
+                    print(f"{board} ({dims})")
             else:
                 print("No boards found.")
+
         return info
 
     @staticmethod
@@ -478,7 +478,7 @@ class Meadowlark(SLM):
 
         Raises
         ------
-        Not Implemented Error
+        NotImplementedError
             If the temperature reading is not supported for the SLM.
         """
         sdk = Meadowlark._slm_lib[self.sdk_mode]
@@ -510,7 +510,7 @@ class Meadowlark(SLM):
 
         Raises
         ------
-        Not Implemented Error
+        NotImplementedError
             If the coverglass voltage reading is not supported for the SLM.
         """
         sdk = Meadowlark._slm_lib[self.sdk_mode]
@@ -586,7 +586,7 @@ class Meadowlark(SLM):
                 Meadowlark._slm_lib[self.sdk_mode].SetOutputPulse(slm_number, ctypes.c_bool(on))
             elif self.sdk_mode == _SDK_MODE.PCIE_MODERN_6:
                 if on_refresh is not None:
-                    warnings.warn(
+                    logger.warning(
                         "on_refresh argument is ignored for this SDK version.",
                         stacklevel=2,
                     )
@@ -624,23 +624,27 @@ class Meadowlark(SLM):
             Whether to actually send the image to the SLM. See :meth:`.SLM._set_phase_hw`.
         block : bool
             Whether to block the thread until the image is fully written.
+            HDMI writes are synchronous, so this has no effect in HDMI mode.
             See :meth:`.SLM._set_phase_hw`.
         timeout_s : float
             Timeout for SLM trigger.
         """
+        display = as_numpy(display)   # The driver needs host memory.
+
         slm_number = ctypes.c_uint(self.slm_number)
         if self.sdk_mode == _SDK_MODE.HDMI:
-            if Meadowlark._slm_lib_trace[_SDK_MODE.HDMI][1] == 2:       # 2 arguments
-                Meadowlark._slm_lib[self.sdk_mode].Write_image(
-                    display.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
-                    ctypes.c_uint(self.bitdepth == 8),  # Is 8-bit
-                )
-            elif Meadowlark._slm_lib_trace[_SDK_MODE.HDMI][1] == 3:     # 3 arguments
-                Meadowlark._slm_lib[self.sdk_mode].Write_image(
-                    slm_number,
-                    display.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
-                    ctypes.c_uint(self.bitdepth == 8),  # Is 8-bit
-                )
+            if execute:
+                if Meadowlark._slm_lib_trace[_SDK_MODE.HDMI][1] == 2:       # 2 arguments
+                    Meadowlark._slm_lib[self.sdk_mode].Write_image(
+                        display.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
+                        ctypes.c_uint(self.bitdepth == 8),  # Is 8-bit
+                    )
+                elif Meadowlark._slm_lib_trace[_SDK_MODE.HDMI][1] == 3:     # 3 arguments
+                    Meadowlark._slm_lib[self.sdk_mode].Write_image(
+                        slm_number,
+                        display.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
+                        ctypes.c_uint(self.bitdepth == 8),  # Is 8-bit
+                    )
         elif self.sdk_mode.is_pcie:
             wait_for_trigger = ctypes.c_bool(self._wait_for_trigger)
             # WARN: Do not change this, as doing so will loses the guarantee that
@@ -754,7 +758,7 @@ class Meadowlark(SLM):
         # If we got to here, we need to actually load the SDK.
         if len(cases) > 1:
             options = ',\n'.join([f"'{case[1]}' ({_SDK_MODE_NAMES[case[0]]})" for case in cases])
-            warnings.warn(
+            logger.warning(
                 f"Multiple Meadowlark SDKs located. "
                 f"Defaulting to the most recent one"
                 f" '{dll_path}'. "
@@ -835,8 +839,8 @@ class Meadowlark(SLM):
                     raise RuntimeError("SDK call failed.")
 
                 Meadowlark._number_of_boards[mode] = number_of_boards.value
-        except Exception as exc:
-            print("Failed to construct SDK.")
+        except Exception:
+            logger.error("Failed to construct SDK.")
             raise
 
         return mode
@@ -866,9 +870,12 @@ class Meadowlark(SLM):
                         trace.append(0)
                     else:
                         trace.append(len(split2.split(",")))
-                except:
+                except Exception:
                     trace = None
                     break
+
+            if trace is None:    # Header was unparseable; treat as "not recognized".
+                return _SDK_MODE.NULL, "", None
 
             trace = tuple(trace)
 
@@ -877,7 +884,7 @@ class Meadowlark(SLM):
                     return mode, dll_path, trace
 
             if warn:
-                warnings.warn(
+                logger.warning(
                     f"Your SDK's header has (create, write) argument trace {trace}, which is not "
                     "recognized. Contact Meadowlark and slmsuite support to update your SDK version."
                 )
@@ -885,10 +892,10 @@ class Meadowlark(SLM):
             return _SDK_MODE.NULL, "", None
         elif dll_present:
             if warn:
-                warnings.warn(f"Found dll '{dll_path}' but not header '{header_path}'.")
+                logger.warning(f"Found dll '{dll_path}' but not header '{header_path}'.")
         elif header_present:
             if warn:
-                warnings.warn(f"Found header '{header_path}' but not dll '{dll_path}'.")
+                logger.warning(f"Found header '{header_path}' but not dll '{dll_path}'.")
         return _SDK_MODE.NULL, "", None
 
     # LUT stuff
@@ -951,13 +958,15 @@ class Meadowlark(SLM):
         # Finally, actually load the LUT file
         try:
             if self.sdk_mode == _SDK_MODE.HDMI:
-                Meadowlark._slm_lib[self.sdk_mode].Load_lut(lut_path)
+                success = Meadowlark._slm_lib[self.sdk_mode].Load_lut(lut_path)
+                if success != 1:
+                    logger.warning(f"Failed to load LUT file: '{lut_path}'")
             elif self.sdk_mode.is_pcie:
                 success = Meadowlark._slm_lib[self.sdk_mode].Load_LUT_file(
                     ctypes.c_int(self.slm_number), lut_path.encode("utf-8")
                 )
                 if success != 1:
-                    warnings.warn(f"Failed to load LUT file: '{lut_path}'")
+                    logger.warning(f"Failed to load LUT file: '{lut_path}'")
             else:
                 raise RuntimeError("Failed to load LUT file due to unknown SDK mode")
         except RuntimeError as exc:
@@ -1008,7 +1017,7 @@ class Meadowlark(SLM):
                     return str(files.pop())
             # If there are still multiple LUTs, default to the most recent one.
             lut_path_ = max(files, key=os.path.getctime)
-            warnings.warn(
+            logger.warning(
                 f"Multiple LUT files located. Defaulting to the most recent one: "
                 f"{lut_path_}.",
                 stacklevel=3,

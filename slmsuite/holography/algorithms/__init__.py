@@ -4,10 +4,12 @@ GPU-accelerated holography algorithms.
 This module is currently focused on
 `Gerchberg-Saxton (GS) <http://www.u.arizona.edu/~ppoon/GerchbergandSaxton1972.pdf>`_
 iterative Fourier transform phase retrieval algorithms
-via the :class:`~slmsuite.holography.algorithms.Hologram` class;
-however, support for complex holography and other algorithms
+via the :class:`~slmsuite.holography.algorithms.Hologram` class,
+with gradient-based optimization
 (e.g. `gradient descent algorithms <https://doi.org/10.1364/AO.21.002758>`_)
-is also planned. Additionally, so-called Weighted Gerchberg-Saxton (WGS) algorithms for hologram
+through :mod:`torch` as the ``"CG"`` method of
+:meth:`~slmsuite.holography.algorithms.Hologram.optimize`. Support for complex holography
+is planned. Additionally, so-called Weighted Gerchberg-Saxton (WGS) algorithms for hologram
 generation with or without closed-loop camera feedback are supported, especially for
 the `generation of optical focus arrays <https://doi.org/10.1364/OL.44.003178>`_,
 a subset of general image formation. We also support `Mixed Region Amplitude Freedom (MRAF)
@@ -33,6 +35,7 @@ to enhance clarity and reduce file length.
 - ``_feedback.py`` : Infrastructure for image feedback (:class:`FeedbackHologram`).
 - ``_spots.py`` : Infrastructure for spot-specific holography
   (:class:`SpotHologram`, :class:`CompressedSpotHologram`).
+- ``_multiplane.py`` : Holography across several planes (:class:`MultiplaneHologram`).
 """
 from slmsuite.holography.algorithms._header import *
 

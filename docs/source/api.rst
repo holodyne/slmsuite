@@ -5,12 +5,14 @@ API Reference
 This page provides an auto-generated summary of |slmsuite|_'s API. You can
 find the source on `GitHub <https://github.com/holodyne/slmsuite>`_.
 
-|slmsuite|_ is divided into two modules:
+|slmsuite|_ is divided into two subpackages, plus package-level settings:
 algorithms and analysis in :mod:`~slmsuite.holography` and
 connectivity to physical devices via :mod:`~slmsuite.hardware`.
 
 Holography
 ==========
+
+.. py:module:: slmsuite.holography
 
 As a core functionality, |slmsuite|_ **optimizes** nearfield phase profiles
 (applied to :mod:`~slmsuite.hardware.slms`) to produce desired farfield results
@@ -39,9 +41,11 @@ divided into SLM- and camera- centric categories:
 Hardware
 ========
 
+.. py:module:: slmsuite.hardware
+
 A central concept of |slmsuite|_ is **experimental** holography.
 Thus, we require interfaces to control the hardware used in experiment.
-While some common hardware implementions are included, we welcome
+While some common hardware implementations are included, we welcome
 `contributions <https://github.com/holodyne/slmsuite/blob/main/CONTRIBUTING.md>`_
 to expand the scope and utility of the package!
 Hardware is divided into two main categories:
@@ -74,6 +78,36 @@ We also support hosting cameras and SLMs on remote servers:
    :recursive:
 
    remote
+
+Package
+=======
+
+.. py:module:: slmsuite
+
+|slmsuite|_ reports its progress through the standard :mod:`logging` module and shows
+plots through :mod:`matplotlib`. Package-wide settings for both are provided at the
+top level:
+
+.. currentmodule:: slmsuite
+.. autosummary::
+   :toctree: _autosummary
+
+   configure_logging
+   get_log
+   make_logger
+   configure_plotting
+
+With :mod:`cupy` installed, holograms and SLMs (unless ``gpu=False``) keep their arrays
+on the GPU; camera frames are returned in host memory unless requested with
+``get_image(get=False)``.
+Helpers for moving data between :mod:`numpy` and :mod:`cupy` are provided in:
+
+.. currentmodule:: slmsuite.misc
+.. autosummary::
+   :toctree: _autosummary
+   :template: custom-module-template.rst
+
+   xp
 
 API Formalism
 =============
@@ -122,7 +156,7 @@ for coordinate bases can be converted to these standard bases using
        implemented by the optical train separating the two).
 
        The edge of Fourier space **that is accessible to the SLM** corresponds to
-       :math:`\pm\frac{\lambda}{2\Delta x}` radians, dependant on the pixel size
+       :math:`\pm\frac{\lambda}{2\Delta x}` radians, dependent on the pixel size
        :math:`\Delta x` of the SLM. For most SLMs and wavelengths, this angle
        corresponds to a few degrees at most.
        Thus, this edge is generally within the small angle approximation.
@@ -154,12 +188,29 @@ for coordinate bases can be converted to these standard bases using
        ``shape`` of ``"knm"`` space increases the resolution of the grid in Fourier
        space, as the edge of ``"knm"`` space is fixed by the SLM.
    * - ``"ij"``
-     - Pixel basis of the camera.
-       Centered at ``(i, j) = (cam.shape[1]/2, cam.shape[0]/2)``.
+     - Pixel basis of the image returned by
+       :meth:`~slmsuite.hardware.cameras.camera.Camera.get_image()`.
+       Centered at :attr:`~slmsuite.hardware.cameras.camera.Camera.center`,
+       ``(i, j) = (cam.shape[1]/2, cam.shape[0]/2)``.
        Is in the image space of the camera.
+
+       This is the frame the user sees, so it follows the camera's current
+       window of interest (WOI), binning, and orientation (flips and 90 degree rotations).
+       The same physical point has different ``"ij"`` coordinates after any of these
+       change.
 
        The bounds of pixel space may be larger or smaller than Fourier or Nyquist space,
        depending upon the imaging optics that separate the camera and SLM.
+   * - ``"ijraw"``
+     - Pixel basis of the physical camera sensor: full frame, unbinned, and without the
+       orientation transform. Its origin is the corner of the sensor.
+
+       Unlike ``"ij"``, this basis does not change with the camera's WOI, binning, or
+       orientation. Calibrations are stored in it (e.g. the
+       :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations` ``"fourier"`` entry),
+       so a calibration stays valid when the camera is cropped, binned, or rotated.
+       :meth:`~slmsuite.holography.toolbox.convert_vector()` converts between ``"ijraw"``
+       and ``"ij"`` given the camera's current settings.
 
 See the first tip in :class:`~slmsuite.holography.algorithms.Hologram`
 to learn more about ``"kxy"`` and ``"knm"`` space.
