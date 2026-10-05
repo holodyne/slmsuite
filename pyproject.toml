@@ -145,21 +145,13 @@ include = [
 ]
 
 [tool.ruff]
+required-version = ">=0.16"
 line-length = 100
-target-version = "py310"
-extend-exclude = [
-    "docs",
-    ".venv",
-    "build",
-    "dist",
-    "*.ipynb",
-]
+# target-version is inferred from project.requires-python.
+# .venv, build, dist, and .gitignore'd paths are excluded by default.
+extend-exclude = ["docs", "*.ipynb"]
 
 [tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "auto"
 docstring-code-format = true               # format code blocks inside docstrings
 docstring-code-line-length = "dynamic"
 
@@ -178,6 +170,12 @@ select = [
     "NPY",  # numpy-specific lints
     "RUF",  # Ruff-specific
     "D",    # pydocstyle (numpy convention — see ignores below)
+    "G",    # flake8-logging-format (lazy %-args, not f-strings, in logger calls)
+    "PGH",  # pygrep-hooks (no blanket `# type: ignore` / `# noqa`)
+    "PLE",  # pylint errors
+    "RSE",  # flake8-raise (no needless `()` on raised exception classes)
+    "FURB", # refurb (small modernizations)
+    "PT006", "PT007", "PT011",  # pytest: parametrize style, and `raises` without `match=`
 ]
 ignore = [
     "B028",    # no-explicit-stacklevel
@@ -189,37 +187,31 @@ ignore = [
     "SIM108",  # ternary-instead-of-if — often less readable for math
     "SIM117",  # combine nested with-statements — hurts readability w/ hardware
     "PERF203", # try/except in loop — often unavoidable around hardware I/O
-    # pydocstyle — keep numpy convention, drop the noisiest "missing" rules
+    # pydocstyle — numpy convention already disables D107, D203, D212, D415, ...
+    # Additionally drop the noisiest "missing" rules and prose-style rules:
     "D100",    # missing docstring in public module
     "D101",    # missing docstring in public class
     "D102",    # missing docstring in public method
     "D103",    # missing docstring in public function
     "D104",    # missing docstring in public package
     "D105",    # missing docstring in magic method
-    "D107",    # missing docstring in __init__
     "D200",    # one-line docstring should fit on one line — cosmetic, lots of churn
-    "D203",    # 1 blank line before class docstring (conflicts w/ D211)
     "D205",    # 1 blank line between summary and description
-    "D212",    # multi-line summary first line (conflicts w/ D213; numpy uses D213)
     "D400",    # missing trailing period — false positives on math/symbols
     "D401",    # imperative mood — too opinionated for scientific prose
-    "D415",    # first line ends with period — false positives on math/symbols
 ]
+# Rewriting `a + [b]` as `[*a, b]` changes meaning when `a` is an ndarray (broadcast add).
+unfixable = ["RUF005"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]                        # re-exports & star-imports are intentional
 "slmsuite/hardware/**/*.py" = ["F401"]                  # vendor SDK imports gated by try/except
 "slmsuite/holography/algorithms/_header.py" = ["F401"]  # re-exports meant for star-import in other modules
+"slmsuite/holography/algorithms/_*.py" = ["F403", "F405"]  # shared numpy/scipy/cupy symbols star-imported from _header
 "slmsuite/misc/files.py" = ["F403"]                     # backwards-compat re-export shim
 "slmsuite/misc/fitfunctions.py" = ["F403"]              # backwards-compat re-export shim
 "slmsuite/hardware/cameras/template.py" = ["F821"]      # placeholder TODO markers
 "slmsuite/hardware/slms/template.py" = ["F821"]         # placeholder TODO markers
-# Algorithm modules pull shared numpy/scipy/cupy symbols from _header via star import.
-"slmsuite/holography/algorithms/_feedback.py" = ["F403", "F405"]
-"slmsuite/holography/algorithms/_hologram.py" = ["F403", "F405"]
-"slmsuite/holography/algorithms/_multiplane.py" = ["F403", "F405"]
-"slmsuite/holography/algorithms/_spots.py" = ["F403", "F405"]
-"slmsuite/holography/algorithms/_stats.py" = ["F403", "F405"]
 "tests/**/*.py" = ["B011", "D", "SIM", "F403", "F405", "NPY002"]  # asserts, docstrings, star imports, and the global RNG that conftest seeds
 
 [tool.ruff.lint.isort]

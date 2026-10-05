@@ -76,7 +76,7 @@ class Template(SLM):
 
     def close(self):
         """Close the SLM and delete related objects."""
-        raise NotImplementedError()
+        raise NotImplementedError
 
     @staticmethod
     def info(verbose=True):
@@ -94,7 +94,7 @@ class Template(SLM):
         list of str
             List of serial numbers or identifiers.
         """
-        raise NotImplementedError()
+        raise NotImplementedError
         serial_list = get_serial_list()  # TODO: Fill in proper function.
         return serial_list
 
@@ -118,7 +118,7 @@ class Template(SLM):
         """
         display = as_numpy(display)  # The driver needs host memory.
         # TODO: Insert code here to write raw phase data to the SLM.
-        raise NotImplementedError()
+        raise NotImplementedError
 
     # def _format_phase_hw(self, phase):
     #     """

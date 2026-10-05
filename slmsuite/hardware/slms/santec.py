@@ -384,7 +384,7 @@ class Santec(SLM):
 
             return phase
         except Exception as e:
-            logger.warning(f"Error while loading phase correction.\n{e}")
+            logger.warning("Error while loading phase correction.\n%s", e)
             return self.source.get("phase")
 
     def close(self):

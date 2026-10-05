@@ -602,7 +602,7 @@ class FeedbackHologram(Hologram):
         """
         # Probably local autocorrelation algorithm.
 
-        raise NotImplementedError()
+        raise NotImplementedError
 
     # Weighting and stats.
     def _update_weights(self):

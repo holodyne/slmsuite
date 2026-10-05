@@ -278,7 +278,7 @@ class AlliedVision(Camera):
             try:
                 print(prop.get_description(), end="\n")
             except Exception:
-                print("")
+                print()
 
     def set_adc_bitdepth(self, bitdepth):
         """

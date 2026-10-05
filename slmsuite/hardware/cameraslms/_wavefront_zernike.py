@@ -178,7 +178,7 @@ class _WavefrontCalibrationZernike:
                     result = np.full((N, M), np.nan, dtype=this_result.dtype)
 
                 if len(this_result) != M:
-                    raise RuntimeError()
+                    raise RuntimeError
                 else:
                     result[i, :] = this_result
 

@@ -29,7 +29,7 @@ from slmsuite.holography.toolbox.phase._zernike import (
 
 # Public API: names defined in the submodules above, so that the documentation
 # (autosummary with ``autosummary_ignore_module_all = False``) lists them here.
-__all__ = sorted(
+__all__ = sorted(  # noqa: PLE0605 (built from the submodules' public names)
     name
     for name, obj in list(globals().items())
     if not name.startswith("_") and getattr(obj, "__module__", "").startswith(__name__ + ".")

@@ -315,7 +315,9 @@ def test_imprint(slm, subtests, benchmark):
         # The window slices the leading axes, so a stack would otherwise imprint nothing.
         for clip in (True, False):
             mat = np.zeros((3, H, W))
-            with pytest.raises(ValueError):
+            with pytest.raises(
+                ValueError, match=r"Imprint window extends past|Expected shape with 2 dimensions"
+            ):
                 imprint(mat, [2, 5, 3, 4], 1.0, clip=clip)
             np.testing.assert_array_equal(mat, 0)
 
@@ -346,7 +348,7 @@ def test_format_vectors(subtests):
             format_vectors(vec3, 2, "error")
 
     with subtests.test("malformed input raises"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Expected 3-vectors"):
             format_vectors(np.array([[1, 2]]), expected_dimension=3)
         with pytest.raises(ValueError, match="not recognized"):
             format_vectors(np.array([1, 2]), handle_dimension="bad")
@@ -391,7 +393,9 @@ def test_build_affine(subtests):
             {"units": "mm"},
             {"units": "bogus", "cam_pitch_um": 5.0},
         ):
-            with pytest.raises(ValueError):
+            with pytest.raises(
+                ValueError, match=r"is required for unit|not recognized as a length"
+            ):
                 build_affine(1.0, **kwargs)
 
 
@@ -939,7 +943,7 @@ class TestAperture:
 
     def test_init(self, normalized_grid, subtests):
         with subtests.test("an invalid spec raises eagerly at construction"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="is not implemented"):
                 Aperture(normalized_grid, "invalid")
             with pytest.raises(ValueError, match="not recognized"):
                 Aperture(normalized_grid, object())

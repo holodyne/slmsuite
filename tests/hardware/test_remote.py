@@ -289,7 +289,7 @@ def test_info(hardware, serve, subtests):
         thread = threading.Thread(target=reply_garbage, daemon=True)
         thread.start()
         try:
-            with pytest.raises(Exception) as excinfo:
+            with pytest.raises(Exception) as excinfo:  # noqa: PT011 (any failure but a timeout)
                 _Client.info(host=HOST, port=other.getsockname()[1], verbose=False)
             assert not isinstance(excinfo.value, TimeoutError)
         finally:

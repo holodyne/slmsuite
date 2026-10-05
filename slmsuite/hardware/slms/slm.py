@@ -399,7 +399,7 @@ class SLM(_Common, ABC):
     @abstractmethod
     def close(self):
         """Abstract method to close the SLM and delete related objects."""
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def __del__(self):
         try:

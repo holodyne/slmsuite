@@ -152,7 +152,7 @@ class FLIR(Camera):
                 else:
                     logger.warning("BlackLevel is not writable; could not set to 0.0.")
             except PySpin.SpinnakerException as ex:
-                logger.warning(f"BlackLevel configuration failed: {ex}")
+                logger.warning("BlackLevel configuration failed: %s", ex)
 
             # Gamma: disable for linear sensor response
             try:
@@ -167,7 +167,7 @@ class FLIR(Camera):
                     else:
                         logger.warning("Gamma is not writable; could not set to 1.0.")
                 except PySpin.SpinnakerException as ex:
-                    logger.warning(f"Gamma configuration failed: {ex}")
+                    logger.warning("Gamma configuration failed: %s", ex)
 
             # Configure pixel format
             bitdepth = self._configure_adc_depth(bitdepth=bitdepth)
@@ -201,7 +201,7 @@ class FLIR(Camera):
             self._configure_frame_rate()
 
         except PySpin.SpinnakerException as ex:
-            logger.warning(f"Failed to configure camera: {ex}")
+            logger.warning("Failed to configure camera: %s", ex)
 
         # Begin acquisition
         try:

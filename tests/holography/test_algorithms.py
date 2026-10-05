@@ -91,7 +91,7 @@ def _random_hologram(shape, slm_shape, seed):
 
 # An odd shape is where fftshift and ifftshift differ.
 TRANSFORM_SHAPES = pytest.mark.parametrize(
-    "shape, slm_shape",
+    ("shape", "slm_shape"),
     [((64, 64), (64, 64)), ((64, 64), (40, 48)), ((65, 63), (65, 63))],
     ids=["unpadded", "padded", "odd"],
 )
@@ -127,7 +127,7 @@ class TestHologram:
 
         with subtests.test("rejects non-float dtypes"):
             for spelling in (np.complex64, np.int32):
-                with pytest.raises(ValueError):
+                with pytest.raises(ValueError, match="not supported; use float32 or float64"):
                     Hologram((16, 16), dtype=spelling)
 
         with subtests.test("slm_shape defaults to the computational shape"):
@@ -155,7 +155,7 @@ class TestHologram:
             assert h.amp.dtype == h.dtype
 
         with subtests.test("an amp that does not match slm_shape raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="The shape of amplitude"):
                 Hologram(target=np.zeros((64, 64)), phase=np.zeros((64, 64)), amp=np.ones((32, 32)))
 
     def test_reset(self, subtests):
@@ -325,7 +325,7 @@ class TestHologram:
                 )
 
         with subtests.test("an unrecognized stat group raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="not recognized"):
                 Hologram(target=np.zeros((64, 64))).optimize(
                     method="GS", maxiter=1, verbose=False, stat_groups=["INVALID_GROUP"]
                 )
@@ -671,7 +671,7 @@ class TestHologram:
             h._update_flags("GS", None, ["experimental_knm", "experimental_ij"])
 
         with subtests.test("but are not valid feedback"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="not recognized as a feedback option"):
                 h._update_flags("GS", "experimental_knm", [])
 
     def test_save_stats(self, tmp_path):
@@ -1494,11 +1494,11 @@ class TestMultiplaneHologram:
             assert mph.holograms[0].phase is mph.holograms[1].phase
 
         with subtests.test("a non-hologram child is rejected"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="must be provided child holograms"):
                 MultiplaneHologram([mph.holograms[0], "not a hologram"])
 
         with subtests.test("a nested MultiplaneHologram is rejected"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="recursion is not supported"):
                 MultiplaneHologram([mph, mph.holograms[0]])
 
         with subtests.test("the caller's weights are copied, not normalized in place"):
@@ -1788,7 +1788,7 @@ class TestMultiplaneHologram:
 
     # "odd-pad": an odd shape difference makes `unpad` return a 0-based slice that under-covers.
     @pytest.mark.parametrize(
-        "shape, slm_shape",
+        ("shape", "slm_shape"),
         [((64, 64), (64, 64)), ((64, 64), (32, 32)), ((65, 65), (64, 64))],
         ids=["unpadded", "padded", "odd-pad"],
     )

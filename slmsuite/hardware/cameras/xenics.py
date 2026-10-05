@@ -508,7 +508,7 @@ class Cheetah640(Camera):
                         print(f"Property[{x}]       Value: {cvalue.value}")
 
                 if verbose:
-                    print("")
+                    print()
 
                 # Save current settings to file if desired
                 if save_file_path is not None:

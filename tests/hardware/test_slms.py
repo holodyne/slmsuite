@@ -92,7 +92,7 @@ class TestSLM:
             slm.set_aperture("cropped")
 
         with subtests.test("invalid pitch_um raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Expected positive"):
                 SimulatedSLM(resolution=(128, 128), pitch_um=(0, 8))
 
         with subtests.test("gpu=False keeps the data in numpy"):
@@ -375,14 +375,14 @@ class TestSLM:
             assert len(as_numpy(s.gamma)) == B
 
         with subtests.test("invalid input raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="power of two"):
                 s.set_gamma(ideal, lut_size=1000)
             for bad in (ideal[:-1], [0.5]):
                 with pytest.raises(ValueError, match="span all"):
                     s.set_gamma(bad)
             degenerate = ideal.copy()
             degenerate[3] = np.nan
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Expected finite gamma"):
                 s.set_gamma(degenerate)
 
         s.close()
@@ -655,7 +655,7 @@ class TestSLM:
                 )
 
         with subtests.test("spec and radius are mutually exclusive"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="not both"):
                 slm.set_aperture("circular", radius=0.3)
 
         with subtests.test("source_radius rejects an anisotropic aperture"):
@@ -1079,7 +1079,7 @@ class TestScreenMirrored:
             assert np.all(self._pack(gray, self._blank())[:, :, 3] == 255)
 
         with subtests.test("mismatched shape raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="could not broadcast"):
                 self._pack(np.zeros((3, 3), dtype=np.uint8), self._blank())
 
     @pytest.mark.gpu

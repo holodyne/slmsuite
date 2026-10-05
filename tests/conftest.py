@@ -101,7 +101,7 @@ def random_seed():
 
     # Log the seed for reproducibility
     logger = logging.getLogger("conftest")
-    logger.info(f"Random seed for this session: {seed}")
+    logger.info("Random seed for this session: %s", seed)
     print(f"\nRandom seed for this session: {seed}")
 
     return seed
@@ -1036,7 +1036,7 @@ def test_logger(request):
     # Log test result
     if hasattr(request.node, "rep_call"):
         outcome = request.node.rep_call.outcome
-        logger.info(f"=== {outcome.upper()} ===")
+        logger.info("=== %s ===", outcome.upper())
 
 
 @pytest.hookimpl(hookwrapper=True)

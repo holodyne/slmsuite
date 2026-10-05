@@ -424,9 +424,9 @@ def test_zernike_convert_index(subtests):
         )
 
     with subtests.test("an unknown convention raises"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r"From index .* not recognized"):
             phase.zernike_convert_index([0], from_index="bogus", to_index="ansi")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r"To index .* not recognized"):
             phase.zernike_convert_index([0], "ansi", "bogus")
 
     # The full matrix of conventions, over a range every convention can express.
@@ -1230,7 +1230,9 @@ def test_zernike_indices_parse(subtests):
             {"indices": [1, 2, 3], "D": 5, "smaller_okay": False},
             {"indices": None, "D": None},
         ):
-            with pytest.raises(ValueError):
+            with pytest.raises(
+                ValueError, match=r"common size with indices|Either dimension or indices"
+            ):
                 _zernike_indices_parse(**kwargs)
 
 
@@ -1254,7 +1256,7 @@ def test_inverse_cantor_pairing(subtests):
         np.testing.assert_array_equal(_inverse_cantor_pairing(np.array([-1]))[0], [-1, 0])
 
     with subtests.test("a non-1D input raises"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Expected a list of shape"):
             _inverse_cantor_pairing(np.array([[1, 2]]))
 
 

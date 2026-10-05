@@ -184,7 +184,7 @@ class TestSimulateCameraFraming:
 
     @pytest.mark.parametrize(
         "orientation",
-        ({"rot": "90"}, {"rot": "180"}, {"fliplr": True}, {"rot": "270", "flipud": True}),
+        [{"rot": "90"}, {"rot": "180"}, {"fliplr": True}, {"rot": "270", "flipud": True}],
         ids=("rot90", "rot180", "fliplr", "rot270_flipud"),
     )
     def test_orientation_transform(self, orientation, subtests):
@@ -392,7 +392,7 @@ class TestLoad:
         img = fs.cam.get_image()
         return np.flip(np.unravel_index(np.argmax(img), img.shape)).astype(float)
 
-    @pytest.mark.parametrize("woi", (None, (20, 64, 30, 48)), ids=("full", "woi"))
+    @pytest.mark.parametrize("woi", [None, (20, 64, 30, 48)], ids=("full", "woi"))
     def test_camera_is_placed_by_the_calibration(self, woi, temp_dir, subtests):
         # The WOI goes on before the calibration, since a calibration's metadata is a
         # snapshot of the hardware as it was when the calibration was taken.

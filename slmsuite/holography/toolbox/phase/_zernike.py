@@ -13,7 +13,7 @@ import weakref
 import numpy as np
 
 try:
-    import cupy as cp  # type: ignore
+    import cupy as cp  # type: ignore[import-not-found]
 except ImportError:
     cp = np
 from math import comb, factorial, perm

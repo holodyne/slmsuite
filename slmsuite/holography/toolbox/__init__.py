@@ -1969,7 +1969,7 @@ def unpad(matrix, shape):
 # Public API: names defined here or in private submodules (e.g. ``Aperture``), plus public
 # submodules (``phase``), so that the documentation (autosummary with
 # ``autosummary_ignore_module_all = False``) lists them.
-__all__ = [
+__all__ = [  # noqa: PLE0604 (built from the public names of this module)
     *sorted(
         name
         for name, obj in list(globals().items())

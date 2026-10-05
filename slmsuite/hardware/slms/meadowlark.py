@@ -211,16 +211,14 @@ class Meadowlark(SLM):
             bitdepth=Meadowlark._get_bitdepth(self.sdk_mode, self.slm_number),
             name=kwargs.pop("name", Meadowlark._get_serial(self.sdk_mode, self.slm_number)),
             wav_um=wav_um,
-            pitch_um=(
-                pitch_um if pitch_um else Meadowlark._get_pitch(self.sdk_mode, self.slm_number)
-            ),
+            pitch_um=(pitch_um or Meadowlark._get_pitch(self.sdk_mode, self.slm_number)),
             **kwargs,
         )
 
         if self.bitdepth > 8:
             logger.warning(
-                f"Bitdepth of {self.bitdepth} > 8 detected; "
-                "this has not been tested and might fail.",
+                "Bitdepth of %s > 8 detected; this has not been tested and might fail.",
+                self.bitdepth,
                 stacklevel=2,
             )
 
@@ -261,7 +259,7 @@ class Meadowlark(SLM):
         try:
             Meadowlark._slm_lib[self.sdk_mode].Delete_SDK()
         except OSError as exc:
-            logger.warning(f"Failed to delete SDK: {exc}", stacklevel=2)
+            logger.warning("Failed to delete SDK: %s", exc, stacklevel=2)
         finally:
             # noinspection PyProtectedMember
             if not unloader(Meadowlark._slm_lib[self.sdk_mode]._handle):
@@ -760,11 +758,13 @@ class Meadowlark(SLM):
         if len(cases) > 1:
             options = ",\n".join([f"'{case[1]}' ({_SDK_MODE_NAMES[case[0]]})" for case in cases])
             logger.warning(
-                f"Multiple Meadowlark SDKs located. "
-                f"Defaulting to the most recent one"
-                f" '{dll_path}'. "
-                f"This is a {_SDK_MODE_NAMES[mode]} SDK.\n"
-                f"Other options:\n{options}"
+                "Multiple Meadowlark SDKs located. "
+                "Defaulting to the most recent one '%s'. "
+                "This is a %s SDK.\n"
+                "Other options:\n%s",
+                dll_path,
+                _SDK_MODE_NAMES[mode],
+                options,
             )
 
         # First load the .dll
@@ -886,17 +886,18 @@ class Meadowlark(SLM):
 
             if warn:
                 logger.warning(
-                    f"Your SDK's header has (create, write) argument trace {trace}, which is not "
-                    "recognized. Contact Meadowlark and slmsuite support to update your SDK version."
+                    "Your SDK's header has (create, write) argument trace %s, which is not recognized. "
+                    "Contact Meadowlark and slmsuite support to update your SDK version.",
+                    trace,
                 )
 
             return _SDK_MODE.NULL, "", None
         elif dll_present:
             if warn:
-                logger.warning(f"Found dll '{dll_path}' but not header '{header_path}'.")
+                logger.warning("Found dll '%s' but not header '%s'.", dll_path, header_path)
         elif header_present:
             if warn:
-                logger.warning(f"Found header '{header_path}' but not dll '{dll_path}'.")
+                logger.warning("Found header '%s' but not dll '%s'.", header_path, dll_path)
         return _SDK_MODE.NULL, "", None
 
     # LUT stuff
@@ -965,13 +966,13 @@ class Meadowlark(SLM):
             if self.sdk_mode == _SDK_MODE.HDMI:
                 success = Meadowlark._slm_lib[self.sdk_mode].Load_lut(lut_path)
                 if success != 1:
-                    logger.warning(f"Failed to load LUT file: '{lut_path}'")
+                    logger.warning("Failed to load LUT file: '%s'", lut_path)
             elif self.sdk_mode.is_pcie:
                 success = Meadowlark._slm_lib[self.sdk_mode].Load_LUT_file(
                     ctypes.c_int(self.slm_number), lut_path.encode("utf-8")
                 )
                 if success != 1:
-                    logger.warning(f"Failed to load LUT file: '{lut_path}'")
+                    logger.warning("Failed to load LUT file: '%s'", lut_path)
             else:
                 raise RuntimeError("Failed to load LUT file due to unknown SDK mode")
         except RuntimeError as exc:
@@ -1021,7 +1022,8 @@ class Meadowlark(SLM):
             # If there are still multiple LUTs, default to the most recent one.
             lut_path_ = max(files, key=os.path.getctime)
             logger.warning(
-                f"Multiple LUT files located. Defaulting to the most recent one: {lut_path_}.",
+                "Multiple LUT files located. Defaulting to the most recent one: %s.",
+                lut_path_,
                 stacklevel=3,
             )
             return str(lut_path_)

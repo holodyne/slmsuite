@@ -110,7 +110,7 @@ class Webcam(Camera):
     @staticmethod
     def info(verbose=True):
         """Not supported by :class:`Webcam`."""
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def get_auto_exposure(self):
         """Returns the OpenCV auto exposure setting (``CAP_PROP_AUTO_EXPOSURE``)."""

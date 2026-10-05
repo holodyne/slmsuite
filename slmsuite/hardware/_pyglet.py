@@ -299,9 +299,7 @@ def _screen_id(screen):
                 # e.g. '\\?\DISPLAY#DLP03C9#5&4c0ed3&1&UID4353#{e6f07b5f-ee97-...}'
                 # Drop interface GUID.
                 device_id = device.DeviceID.split("#{")[0]
-                if device_id.startswith("\\\\?\\"):
-                    # Drop interface prefix.
-                    device_id = device_id[4:]
+                device_id = device_id.removeprefix("\\\\?\\")  # Drop interface prefix.
                 if device_id:
                     return device_id
         except Exception as e:

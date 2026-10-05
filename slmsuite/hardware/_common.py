@@ -76,7 +76,7 @@ class _Common(_Viewable, _Loggable, ABC):
     @abstractmethod
     def close(self):
         """Abstract method to close the hardware."""
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def __del__(self):
         try:

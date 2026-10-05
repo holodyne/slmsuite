@@ -851,7 +851,7 @@ def test_image_zernike_fit(subtests):
         assert np.allclose(coeffs[:2, 0], np.sqrt(2) * np.array([0.3, 0.5]), atol=1e-6)
 
     with subtests.test("leastsquares=False is rejected against the gradient basis"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="gradient basis is not orthogonal"):
             analysis.image_zernike_fit(
                 0.5 * grid_small[0], grid_small, order=3, leastsquares=False, gradient=True
             )
@@ -992,7 +992,7 @@ def test_image_remove_blaze(subtests):
         assert np.ptp(masked[interior]) < 0.2 * np.ptp(analysis.image_remove_blaze(mixed)[interior])
 
     with subtests.test("a stack of phase images is rejected"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="too small to calculate a numerical gradient"):
             analysis.image_remove_blaze(ramp[np.newaxis])
 
     with subtests.test("plot renders the phase, both gradients, and the result"):
@@ -1090,7 +1090,7 @@ def test_fit_affine(subtests):
 
     with subtests.test("mismatched point counts raise a ValueError, not an assertion"):
         # An assert vanishes under python -O, which would return the guess as a fit.
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="must have the same shape"):
             analysis.fit_affine(x[:, :5], x[:, :6])
 
     with subtests.test("a failed optimization falls back to the guess"):
@@ -1180,7 +1180,7 @@ def test_image_lattice_detect(subtests):
         assert_reduced_basis(detected, lattices["coarse"])
 
     with subtests.test("unknown method raises"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unrecognized lattice detection method"):
             analysis.image_lattice_detect(np.zeros((64, 64)), method="bogus")
 
     for method in ("autocorrelation", "fourier"):

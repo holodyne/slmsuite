@@ -10,7 +10,7 @@ This is a placeholder for future fully-featured backend handling in slmsuite.
 import numpy as np
 
 try:
-    import cupy as cp  # type: ignore
+    import cupy as cp  # type: ignore[import-not-found]
 except ImportError:
     cp = np
 

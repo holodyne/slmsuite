@@ -41,7 +41,7 @@ def test_configure_plotting(tmp_path, restore_handler, subtests):
         assert plt.get_fignums() == []
 
     with subtests.test("mode='save' without save_dir raises ValueError"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="save_dir is required"):
             slmsuite.configure_plotting(mode="save")
 
     with subtests.test("mode='save' defaults to a .png extension"):
@@ -109,7 +109,7 @@ def test_configure_plotting(tmp_path, restore_handler, subtests):
         assert _plotting._current_handler is handler
 
     with subtests.test("an unrecognized mode raises ValueError"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unknown mode"):
             slmsuite.configure_plotting(mode="bogus")
 
 

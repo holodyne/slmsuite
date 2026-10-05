@@ -53,12 +53,12 @@ class Template(Camera):
 
         # Most cameras have an SDK that needs to be loaded before the camera
         logger.debug("Template SDK initializing...")
-        raise NotImplementedError()
+        raise NotImplementedError
         Template.sdk = something()  # TODO: Fill in proper function.
 
         # Then we load the camera from the SDK
         logger.debug("'%s' initializing...", serial)
-        raise NotImplementedError()
+        raise NotImplementedError
         self.cam = sdk.something(serial)  # TODO: Fill in proper function.
 
         # ... Other setup.
@@ -75,7 +75,7 @@ class Template(Camera):
 
     def close(self):
         """See :meth:`.Camera.close`."""
-        raise NotImplementedError()
+        raise NotImplementedError
         self.cam.close()  # TODO: Fill in proper function.
         del self.cam
 
@@ -95,7 +95,7 @@ class Template(Camera):
         list of str
             List of serial numbers or identifiers.
         """
-        raise NotImplementedError()
+        raise NotImplementedError
         serial_list = Template.sdk.get_serial_list()  # TODO: Fill in proper function.
         return serial_list
 
@@ -106,19 +106,19 @@ class Template(Camera):
 
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
-        raise NotImplementedError()
+        raise NotImplementedError
         return float(self.cam.get_exposure()) / 1e3  # TODO: Fill in proper function.
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
-        raise NotImplementedError()
+        raise NotImplementedError
         self.cam.set_exposure(1e3 * exposure_s)  # TODO: Fill in proper function.
 
     ## Core imaging
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
-        raise NotImplementedError()
+        raise NotImplementedError
         # The core method: grabs an image from the camera.
         # Note: the camera superclass' get_image function performs follow-on processing
         # (similar to how the SLM superclass' set_phase method pairs with _set_phase_hw methods

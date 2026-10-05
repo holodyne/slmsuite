@@ -266,7 +266,7 @@ class TestFourierSLM:
             assert "__meta__" in cal
 
         with subtests.test("non-positive pitch raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="array_pitch must be positive"):
                 fourierslm.fourier_calibrate(array_pitch=-1, array_shape=5, plot=False)
 
     @pytest.mark.slow
@@ -300,7 +300,7 @@ class TestFourierSLM:
             assert np.allclose(np.squeeze(fourierslm.cam.b), np.squeeze(b))
 
         with subtests.test("wrong-shape M raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Expected a 2x2 matrix"):
                 fourierslm.fourier_calibrate_analytic(np.eye(3), b)
 
     def test_fourier_calibration_build(self, fourierslm, subtests):
@@ -416,7 +416,7 @@ class TestFourierSLM:
                 fs.cam.set_woi(None)
 
         with subtests.test("bad basis raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Unrecognized basis"):
                 fs.get_farfield_spot_size(slm_size=1.0, basis="badvalue")
 
     def test_get_effective_focal_length(self, simulated_system_factory, subtests):
@@ -483,7 +483,7 @@ class TestFourierSLM:
             assert mask.any()
 
         with subtests.test("a mask in a string basis raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="return_mask must be False"):
                 fourierslm_calibrated.get_camera_extent(units="kxy", return_mask=True)
 
     def test_simulate(self, fourierslm_calibrated, simulated_system_factory, subtests):
@@ -551,7 +551,7 @@ class TestFourierSLM:
                 fs_new.load_calibration(path)
 
         with subtests.test("saving a calibration that was never taken raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Could not find calibration"):
                 fourierslm_calibrated.save_calibration("nonexistent", path=temp_dir)
 
     def test_load(
@@ -1046,7 +1046,7 @@ class TestFourierSLM:
 
         with subtests.test("a factor outside [0, 1] raises"):
             for kwargs in ({"smoothing": 1.5}, {"smoothing_xy": -0.1}):
-                with pytest.raises(ValueError):
+                with pytest.raises(ValueError, match="Smoothing factor must be between 0 and 1"):
                     fs.wavefront_calibrate_zernike_smooth(**kwargs)
 
         with subtests.test("focus smoothing is not implemented"):
