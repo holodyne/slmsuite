@@ -12,9 +12,11 @@
 
 import base64
 import os
+import re
 import sys
 import inspect
 import shutil
+import types
 
 import requests
 
@@ -32,12 +34,22 @@ for module_path in module_paths:
 
 from examples import download_example_notebooks
 
+# Without a system pandoc, nbsphinx uses the one pypandoc_binary bundles.
+if shutil.which("pandoc") is None:
+    try:
+        import pypandoc
+        os.environ["PATH"] = os.path.dirname(pypandoc.get_pandoc_path()) + os.pathsep + os.environ["PATH"]
+    except (ImportError, OSError):
+        pass
+
 # -- Project information -----------------------------------------------------
 
 project = "slmsuite"
 copyright = "2021-2025 slmsuite Developers. 2026 Holodyne Labs, Inc."
 author = "Holodyne Labs, Inc."
-release = "0.4.1"
+# Read the version from the package, as pyproject.toml does, so it never needs a manual bump.
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "slmsuite", "__init__.py")) as f:
+    release = re.search(r"""^__version__ = ['"]([^'"]+)['"]""", f.read(), re.M).group(1)
 
 # -- General configuration ---------------------------------------------------
 
@@ -50,6 +62,7 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx_autodoc_typehints",
     "sphinx.ext.extlinks",
+    "sphinx.ext.intersphinx",
     "sphinx.ext.linkcode",
     "sphinx_design",
     "IPython.sphinxext.ipython_directive",
@@ -63,6 +76,15 @@ extensions = [
 extlinks = {
     "issue": ("https://github.com/holodyne/slmsuite/issues/%s", "GH"),
     "pull": ("https://github.com/holodyne/slmsuite/pull/%s", "PR"),
+}
+
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "numpy": ("https://numpy.org/doc/stable", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy", None),
+    "cupy": ("https://docs.cupy.dev/en/stable", None),
+    "torch": ("https://docs.pytorch.org/docs/stable", None),
+    "matplotlib": ("https://matplotlib.org/stable", None),
 }
 
 # Adapted from https://github.com/DisnakeDev/disnake/blob/7853da70b13fcd2978c39c0b7efa59b34d298186/docs/conf.py#L192
@@ -103,6 +125,7 @@ toc_object_entries_show_parents = 'hide'
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 autosummary_generate = True
+autosummary_ignore_module_all = False  # Respect __all__ (e.g. toolbox.phase re-exports).
 autodoc_member_order = "bysource"   # This doesn't work for autosummary unfortunately
                                     # https://github.com/sphinx-doc/sphinx/issues/5379
 # autodoc_typehints = "signature"
@@ -202,8 +225,99 @@ def skip(app, what, name, obj, would_skip, options):
     # Don't document private things.
     elif name[0] == '_':
         skip_ = True
+    # Don't document members inherited from C builtins (e.g. ``int.to_bytes`` on an ``IntEnum``).
+    elif isinstance(obj, (
+        types.BuiltinFunctionType, types.MethodDescriptorType, types.WrapperDescriptorType,
+        types.GetSetDescriptorType, types.MemberDescriptorType, types.ClassMethodDescriptorType,
+    )):
+        skip_ = True
 
     return skip_
+
+def public_bases(app, name, obj, options, bases):
+    """
+    Show each base class as its nearest public ancestor, by its public path (e.g.
+    ``algorithms.FeedbackHologram`` rather than ``algorithms._feedback.FeedbackHologram``).
+    """
+    import importlib
+
+    def public(cls):
+        if cls is object:
+            return []
+        module = ".".join(p for p in cls.__module__.split(".") if not p.startswith("_"))
+        try:
+            twin = getattr(importlib.import_module(module), cls.__name__, None)
+        except ImportError:
+            twin = None
+        if (
+            cls.__name__.startswith("_") or not isinstance(twin, type)
+            or twin is obj or not issubclass(twin, cls)
+        ):
+            return [p for base in cls.__bases__ for p in public(base)]
+        return [cls if twin is cls and module == cls.__module__ else f":class:`~{module}.{cls.__name__}`"]
+
+    bases[:] = list(dict.fromkeys(p for base in bases for p in public(base))) or [object]
+
+def resolve_relative(app, env, node, contnode):
+    """
+    Resolve relative references to slmsuite objects that Sphinx misses. Docstrings are
+    written from the perspective of their own class, so ``:attr:`aperture``` in an
+    inherited method documented on a subclass page should link to the base class's
+    attribute. Tries, in order: the context class's MRO, then a unique match among the
+    documented objects. References to private names render as plain code.
+    """
+    import importlib
+    from sphinx.util.nodes import make_refnode
+
+    if node.get("refdomain") != "py":
+        return None
+    target = node["reftarget"].lstrip("~").lstrip(".")
+    objects = env.get_domain("py").objects
+
+    def unique(names):
+        """Collapse aliases (e.g. ``toolbox.phase._zernike.ZernikeBasis``) of one object."""
+        anchors = {}
+        for name in names:
+            anchors.setdefault((objects[name].docname, objects[name].node_id), name)
+        return list(anchors.values())
+
+    def link(name):
+        entry = objects[name]
+        return make_refnode(app.builder, node["refdoc"], entry.docname, entry.node_id, contnode, name)
+
+    # 1) Walk the MRO of the class this docstring is documented under.
+    module, cls = node.get("py:module"), node.get("py:class")
+    if module and cls:
+        try:
+            obj = importlib.import_module(module)
+            for part in cls.split("."):
+                obj = getattr(obj, part)
+            for base in getattr(obj, "__mro__", ()):
+                # The documented (public) path of this base, e.g. ``algorithms._hologram``
+                # is documented as ``algorithms``.
+                public = ".".join(p for p in base.__module__.split(".") if not p.startswith("_"))
+                name = f"{public}.{base.__name__}.{target}"
+                if name in objects:
+                    return link(name)
+        except (ImportError, AttributeError):
+            pass
+
+    # 2) A unique module member (``func``, ``Class.attr``); not :mod:, e.g. the external pylablib.
+    if node.get("reftype") != "mod":
+        modules = env.get_domain("py").modules
+        matches = unique([
+            n for n in objects
+            if n.startswith("slmsuite") and n.endswith("." + target)
+            and n[:-len(target) - 1] in modules
+        ])
+        if len(matches) == 1:
+            return link(matches[0])
+
+    # 3) Private names are undocumented by design: show them as code, without a link.
+    if target.split(".")[-1].startswith("_"):
+        return contnode
+
+    return None
 
 # relative to this directory
 examples_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_examples")
@@ -214,7 +328,8 @@ images_path = os.path.join(
 
 def setup(app):
     app.connect("autodoc-skip-member", skip)
-    app.add_css_file('css/custom.css')
+    app.connect("autodoc-process-bases", public_bases)
+    app.connect("missing-reference", resolve_relative)
 
     # Use local notebooks
     # examples_source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../..", "slmsuite-examples/examples")

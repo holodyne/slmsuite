@@ -1,3 +1,4 @@
+from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.holography.algorithms._header import *
 
 
@@ -33,18 +34,15 @@ class _HologramStats:
             only the derived and compressed statistics.
         """
         # Downgrade to numpy if necessary
-        if xp == np and (hasattr(feedback_amp, "get") or hasattr(target_amp, "get")):
-            if hasattr(feedback_amp, "get"):
-                feedback_amp = feedback_amp.get()
-
-            if hasattr(target_amp, "get"):
-                target_amp = target_amp.get()
+        if xp == np and (is_gpu_array(feedback_amp) or is_gpu_array(target_amp)):
+            feedback_amp = as_numpy(feedback_amp)
+            target_amp = as_numpy(target_amp)
 
             if total is not None:
                 total = float(total)
 
-        feedback_amp = xp.array(feedback_amp, copy=(False if np.__version__[0] == "1" else None))
-        target_amp = xp.array(target_amp, copy=(False if np.__version__[0] == "1" else None))
+        feedback_amp = xp.array(feedback_amp, copy=True)
+        target_amp = xp.array(target_amp, copy=True)
 
         feedback_pwr = xp.square(feedback_amp)
         target_pwr = xp.square(target_amp)
@@ -54,20 +52,23 @@ class _HologramStats:
             efficiency = xp.nansum(feedback_pwr) / total
             # self._stats_pinned[0]
 
-        # Normalize.
-        feedback_pwr_sum = xp.sum(feedback_pwr)
-        feedback_pwr *= 1 / feedback_pwr_sum
-        feedback_amp *= 1 / xp.sqrt(feedback_pwr_sum)
+        # Normalize. Guard against an all-zero feedback/target (e.g. a blank target or a
+        # dark first frame), which would otherwise divide by zero and poison every stat.
+        feedback_pwr_sum = xp.nansum(feedback_pwr)
+        if feedback_pwr_sum > 0:
+            feedback_pwr *= 1 / feedback_pwr_sum
+            feedback_amp *= 1 / xp.sqrt(feedback_pwr_sum)
 
         target_pwr_sum = xp.nansum(target_pwr)
-        target_pwr *= 1 / target_pwr_sum
-        target_amp *= 1 / xp.sqrt(target_pwr_sum)
+        if target_pwr_sum > 0:
+            target_pwr *= 1 / target_pwr_sum
+            target_amp *= 1 / xp.sqrt(target_pwr_sum)
 
         if total is None:
             # Efficiency overlap integral.
             efficiency_intermediate = xp.nansum(xp.multiply(target_amp, feedback_amp))
             efficiency = xp.square(float(efficiency_intermediate))
-            if efficiency_compensation:
+            if efficiency_compensation and efficiency != 0:
                 feedback_pwr *= 1 / efficiency
 
         # Make some helper lists; ignoring power where target is zero.
@@ -79,13 +80,18 @@ class _HologramStats:
         ratio_pwr = xp.divide(feedback_pwr_masked, target_pwr_masked)
         pwr_err = target_pwr_masked - feedback_pwr_masked
 
-        # Compute the remaining stats.
-        rmin = float(xp.amin(ratio_pwr))
-        rmax = float(xp.amax(ratio_pwr))
-        uniformity = 1 - (rmax - rmin) / (rmax + rmin)
+        # Compute the remaining stats. An empty mask (all-zero/all-nan target) leaves the
+        # derived stats undefined rather than crashing amin/amax.
+        if ratio_pwr.size == 0:
+            rmin = rmax = uniformity = np.nan
+            pkpk_err = std_err = np.nan
+        else:
+            rmin = float(xp.amin(ratio_pwr))
+            rmax = float(xp.amax(ratio_pwr))
+            uniformity = 1 - (rmax - rmin) / (rmax + rmin) if (rmax + rmin) != 0 else np.nan
 
-        pkpk_err = pwr_err.size * float(xp.amax(pwr_err) - xp.amin(pwr_err))
-        std_err = pwr_err.size * float(xp.std(pwr_err))
+            pkpk_err = pwr_err.size * float(xp.amax(pwr_err) - xp.amin(pwr_err))
+            std_err = pwr_err.size * float(xp.std(pwr_err))
 
         final_stats = {
             "efficiency": float(efficiency),
@@ -95,14 +101,15 @@ class _HologramStats:
         }
 
         if raw:
-            ratio_pwr_full = np.full_like(target_pwr, np.nan)
+            # Force a host array, else a device array leaks into the saved stats.
+            ratio_pwr_full = np.full(target_pwr.shape, np.nan)
 
             if xp == np:
                 final_stats["raw_pwr"] = np.square(feedback_amp)
                 ratio_pwr_full[mask] = ratio_pwr
             else:
                 final_stats["raw_pwr"] = xp.square(feedback_amp).get()
-                ratio_pwr_full[mask] = ratio_pwr.get()
+                ratio_pwr_full[mask.get()] = ratio_pwr.get()
 
             final_stats["raw_pwr_ratio"] = ratio_pwr_full
 
@@ -193,10 +200,9 @@ class _HologramStats:
             if diff > 0:
                 self.stats["raw_farfield"].extend([np.nan for _ in range(diff)])
 
-            if hasattr(self.farfield, "get"):
-                farfield = self.farfield.get()
-            else:
-                farfield = self.farfield.copy()
+            # .copy() so the recorded stat never aliases the live farfield; as_numpy
+            # alone does not copy when self.farfield is already on the host.
+            farfield = as_numpy(self.farfield).copy()
 
             self.stats["raw_farfield"][self.iter] = farfield
 
@@ -217,14 +223,22 @@ class _HologramStats:
 
         self._update_stats_dictionary(stats)
 
+    # These functions are somewhat superseded by pickle.
+
     def save_stats(self, file_path, include_state=True):
         """
         Uses :meth:`save_h5` to export the statistics hierarchy to a given h5 file.
 
+        Tip
+        ~~~
+        Enabling the ``"raw_stats"`` flag will save feedback data from each iteration
+        instead of only derived statistics. Consider enabling this to save more detailed
+        information.
+
         Parameters
         ----------
         file_path : str
-            Full path to the file to read the data from.
+            Full path to the file to write the data to.
         include_state : bool
             If ``True``, also includes all other attributes of :class:`Hologram`
             except for :attr:`dtype` (cannot pickle) and :attr:`amp_ff` (can regenerate).
@@ -246,7 +260,6 @@ class _HologramStats:
                 "weights",
                 "phase_ff",
                 "iter",
-                "method",
                 "flags",
             ]
             to_save = {}
@@ -254,10 +267,8 @@ class _HologramStats:
             for key in to_save_keys:
                 value = getattr(self, key)
 
-                if hasattr(value, "get") and not isinstance(value, dict):
-                    to_save[key] = value.get()
-                else:
-                    to_save[key] = value
+                # is_gpu_array, not hasattr(value, "get"): dicts have a .get() too.
+                to_save[key] = as_numpy(value) if is_gpu_array(value) else value
 
         # Save stats.
         to_save["stats"] = self.stats
@@ -266,13 +277,8 @@ class _HologramStats:
 
     def load_stats(self, file_path, include_state=True):
         """
-        Uses :meth:`save_h5` to import the statistics hierarchy from a given h5 file.
+        Uses :meth:`load_h5` to import the statistics hierarchy from a given h5 file.
 
-        Tip
-        ~~~
-        Enabling the ``"raw_stats"`` flag will export feedback data from each iteration
-        instead of only derived statistics. Consider enabling this to save more detailed
-        information upon export.
 
         Parameters
         ----------
@@ -292,6 +298,7 @@ class _HologramStats:
                 )
 
             is_cupy = ["phase", "amp", "target", "weights", "phase_ff"]
+            is_shape = ["shape", "slm_shape"]
             for key in from_save:
                 if key != "stats":
                     if key in is_cupy:
@@ -304,11 +311,25 @@ class _HologramStats:
                                 copy=(False if np.__version__[0] == "1" else None),
                             ),
                         )
+                    elif key in is_shape:
+                        setattr(self, key, tuple(int(i) for i in from_save[key]))
                     else:
                         setattr(self, key, from_save[key])
 
-        # Overwrite stats
-        self.stats = from_save["stats"]
+        # Overwrite stats, restoring the lists which the update path appends to.
+        stats = from_save["stats"]
+
+        stats["method"] = np.asarray(stats["method"]).tolist()
+        for key, value in stats["flags"].items():
+            stats["flags"][key] = np.asarray(value).tolist()
+        for group in stats["stats"].values():
+            # Only the outer axis is a list; raw stats hold an array per iteration.
+            for key, value in group.items():
+                group[key] = list(value)
+        if "raw_farfield" in stats:
+            stats["raw_farfield"] = list(stats["raw_farfield"])
+
+        self.stats = stats
 
     # Visualization helper functions.
     @staticmethod
@@ -347,6 +368,8 @@ class _HologramStats:
 
         Parameters
         ----------
+        source : array_like OR None
+            Source to plot. If ``None``, defaults to the current amplitude and phase.
         title : str
             Title of the plots.
         padded : bool
@@ -371,21 +394,15 @@ class _HologramStats:
                 amp = np.abs(source)
                 phase = np.angle(source)
 
-        if isinstance(amp, float):
-            im_amp = axs[0].imshow(
-                toolbox.pad(
-                    amp * np.ones(self.slm_shape),
-                    self.shape if padded else self.slm_shape,
-                ),
-                vmin=0,
-                vmax=amp,
-            )
-        else:
-            im_amp = axs[0].imshow(
-                toolbox.pad(amp, self.shape if padded else self.slm_shape),
-                vmin=0,
-                vmax=np.amax(amp),
-            )
+        # A uniform amplitude is stored as a scalar; broadcast it to the full SLM shape.
+        if np.ndim(amp) == 0:
+            amp = amp * np.ones(self.slm_shape)
+
+        im_amp = axs[0].imshow(
+            toolbox.pad(amp, self.shape if padded else self.slm_shape),
+            vmin=0,
+            vmax=np.amax(amp),
+        )
 
         im_phase = axs[1].imshow(
             toolbox.pad(np.mod(phase, 2 * np.pi) / np.pi, self.shape if padded else self.slm_shape),
@@ -414,7 +431,7 @@ class _HologramStats:
             fig.colorbar(im_phase, cax=cax, orientation="vertical", format=r"%1.1f$\pi$")
 
         fig.tight_layout()
-        plt.show()
+        _slmsuite_plt_show(name="plot_nearfield")
 
     def plot_farfield(
         self,
@@ -468,21 +485,39 @@ class _HologramStats:
             Used ``limits``, which may be autocomputed. Autocomputed limits are returned
             as integers.
         """
-        # Parse source.
         if source is None:
-            source = self.amp_ff
+            source = "amp_ff"
 
-            if source is None or len(source.shape) == 1:
-                source = self.get_farfield(get=False)
+        if isinstance(source, str):
+            titles = {
+                "amp_ff": "Farfield Amplitude",
+                "phase_ff": "Farfield Phase",
+                "target": "Target Amplitude",
+            }
+            if source in titles:
+                source_str = source
+                source = getattr(self, source)
 
-            if limits is None and len(self.target.shape) == 2:
-                if np == cp:
-                    limits = self._compute_limits(self.target, limit_padding=limit_padding)
-                else:
-                    limits = self._compute_limits(self.target.get(), limit_padding=limit_padding)
+                if source is None or len(source.shape) == 1:
+                    if source_str == "amp_ff":
+                        source = self.get_farfield(get=False)
+                    else:
+                        raise ValueError(f"Could not retrieve source={source_str}")
 
-            if len(title) == 0:
-                title = "Farfield Amplitude"
+                if len(title) == 0:
+                    title = titles[source_str]
+
+                if limits is None and len(self.target.shape) == 2:
+                    if np == cp:
+                        limits = self._compute_limits(self.target, limit_padding=limit_padding)
+                    else:
+                        limits = self._compute_limits(
+                            self.target.get(), limit_padding=limit_padding
+                        )
+            else:
+                raise ValueError(
+                    f"Did not recognize source {source}. Must be one of {list(titles.keys())}"
+                )
 
         # Interpret source and convert to numpy for plotting.
         isphase = "phase" in title.lower()
@@ -512,14 +547,15 @@ class _HologramStats:
         if limits is None:
             limits = self._compute_limits(npsource, limit_padding=limit_padding)
         # Check the limits in case the user provided them.
-        for a in [0, 1]:
-            limits[a] = np.clip(np.array(limits[a], dtype=int), 0, npsource.shape[1 - a] - 1)
-            if np.diff(limits[a])[0] == 0:
-                raise ValueError("Clipped limit has zero length.")
+        limits = [
+            np.clip(np.array(limits[a], dtype=int), 0, npsource.shape[1 - a] - 1) for a in [0, 1]
+        ]
+        if any(np.diff(limit)[0] == 0 for limit in limits):
+            raise ValueError("Clipped limit has zero length.")
 
         # Start making the plot
         if axs is None:
-            fig, axs = plt.subplots(1, 2, figsize=figsize)
+            _fig, axs = plt.subplots(1, 2, figsize=figsize)
             _show = True
         else:
             _show = False
@@ -619,7 +655,7 @@ class _HologramStats:
                 np.any(_cam_points[0, :4] < 0)
                 or np.any(_cam_points[1, :4] < 0)
                 or np.any(_cam_points[0, :4] >= npsource.shape[1])
-                or np.any(_cam_points[1, :4] >= npsource.shape[1])
+                or np.any(_cam_points[1, :4] >= npsource.shape[0])
             )
 
             # If so, plot a labeled green rectangle to show the extents of knm space.
@@ -713,11 +749,11 @@ class _HologramStats:
         # Add colorbar if desired
         if cbar:
             cax = make_axes_locatable(axs[1]).append_axes("right", size="5%", pad=0.05)
-            fig.colorbar(zoom, cax=cax, orientation="vertical")
+            axs[1].get_figure().colorbar(zoom, cax=cax, orientation="vertical")
 
         if _show:
             plt.tight_layout()
-            plt.show()
+            _slmsuite_plt_show(name="plot_farfield")
 
         return limits
 
@@ -736,7 +772,7 @@ class _HologramStats:
             Allows the user to pass in desired y limits.
             If ``None``, the default y limits are used.
         show : bool
-            Whether or not to immediately show the plot. Defaults to false.
+            Whether or not to immediately show the plot. Defaults to ``False``.
         """
         if stat_groups is None:
             stat_groups = []
@@ -821,6 +857,6 @@ class _HologramStats:
         ax.set_xlim([-0.75, len(stats_dict["method"]) - 0.25])
 
         if show:
-            plt.show()
+            _slmsuite_plt_show(name="plot_stats")
 
         return ax

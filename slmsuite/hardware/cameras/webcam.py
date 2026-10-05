@@ -7,7 +7,10 @@ import time
 import cv2
 import numpy as np
 
+from slmsuite._logging import make_logger
 from slmsuite.hardware.cameras.camera import Camera
+
+logger = make_logger(__name__)
 
 
 class Webcam(Camera):
@@ -29,11 +32,11 @@ class Webcam(Camera):
     Attributes
     ----------
     cam : cv2.VideoCapture
-        Most cameras will wrap some handle which connects to the the hardware.
+        Most cameras will wrap some handle which connects to the hardware.
     """
 
     def __init__(
-        self, identifier=0, capture_api=cv2.CAP_ANY, pitch_um=None, verbose=True, **kwargs
+        self, identifier=0, resolution=None, capture_api=cv2.CAP_ANY, pitch_um=None, **kwargs
     ):
         """
         Initialize camera and attributes.
@@ -45,6 +48,15 @@ class Webcam(Camera):
             (numbered by the OS) or a string URL of a videostream
             (e.g. ``protocol://host:port/script_name?script_params|auth``).
             The OS's default camera (index of ``0``) is used as the default.
+        resolution : (int, int) OR None
+            Desired ``(width, height)`` in pixels. If ``None``, uses the camera's
+            current resolution. The camera may round to the nearest supported
+            mode; the actual resolution is read back after setting.
+
+            Note
+            ~~~~
+            Webcam resolution changes the scale of the full sensor output; this is not a
+            WOI crop. All supported resolutions cover the same field of view.
         capture_api : int
             The ``cv2.VideoCaptureAPI`` to use for capturing.
             Essentially, this is the driver that should be used.
@@ -52,15 +64,11 @@ class Webcam(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
-        # Then we load the camera from the SDK
         id = f"{identifier}" if isinstance(identifier, str) else identifier
-        if verbose:
-            print(f"Webcam {id} initializing... ", end="")
+        logger.debug("Webcam %s initializing...", id)
         self.cam = cv2.VideoCapture(identifier, capture_api)
         time.sleep(0.5)
         if not self.cam.isOpened():
@@ -68,7 +76,13 @@ class Webcam(Camera):
 
         time.sleep(0.5)
 
-        # Finally, use the superclass constructor to initialize other required variables.
+        # Request the desired resolution before reading back the actual values.
+        if resolution is not None:
+            self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, int(resolution[0]))
+            self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, int(resolution[1]))
+            time.sleep(0.5)
+
+        # Read back the actual resolution the camera settled on.
         super().__init__(
             (
                 int(self.cam.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -86,8 +100,7 @@ class Webcam(Camera):
         time.sleep(0.5)
         self.set_exposure(self.get_exposure())
         time.sleep(0.5)
-        if verbose:
-            print("success")
+        self.logger.debug("Webcam initialized.")
 
     def close(self):
         """See :meth:`.Camera.close`."""
@@ -99,26 +112,12 @@ class Webcam(Camera):
         """Not supported by :class:`Webcam`."""
         raise NotImplementedError()
 
-    def set_woi(self, woi=None):
-        if woi is not None:
-            self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, woi[1])
-            self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, woi[3])
-
-            self.shape = self.default_shape = (
-                int(self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                int(self.cam.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            )
-
-            time.sleep(1)
-
-        return (0, self.shape[1], 0, self.shape[0])
-
-    ### Property Configuration ###
-
     def get_auto_exposure(self):
+        """Returns the OpenCV auto exposure setting (``CAP_PROP_AUTO_EXPOSURE``)."""
         return self.cam.get(cv2.CAP_PROP_AUTO_EXPOSURE)
 
     def set_auto_exposure(self, tf):
+        """Enables (``True``) or disables (``False``) auto exposure."""
         self.cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
         self.cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3 if tf else 1)
 

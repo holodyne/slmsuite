@@ -5,9 +5,9 @@ along with error handling and status dictionaries.
 See santec.py.
 """
 
+import ctypes
 from ctypes import (
     POINTER,
-    WinDLL,
     byref,
     c_char,
     c_char_p,
@@ -23,7 +23,6 @@ from ctypes import (
     c_ushort,
     c_void_p,
     c_wchar,
-    windll,
 )
 import os
 
@@ -49,13 +48,13 @@ if hasattr(os, "add_dll_directory"):  # python >= 3.8
     os.add_dll_directory(os.path.dirname(os.path.abspath(__file__)))
     _libname = "SLMFunc.dll"
     _libraries = {}
-    _libraries[_libname] = WinDLL(_libname)
+    _libraries[_libname] = ctypes.WinDLL(_libname)
 else:  # python < 3.8
     _libname = "SLMFunc.dll"
     _libpath = os.path.dirname(os.path.abspath(__file__))
     os.environ["PATH"] = _libpath + os.pathsep + os.environ["PATH"]
     _libraries = {}
-    _libraries[_libname] = windll.LoadLibrary(_libname)
+    _libraries[_libname] = ctypes.windll.LoadLibrary(_libname)
 
 # ctypes
 USHORT = c_ushort
@@ -84,13 +83,13 @@ SLM_DRIVEBOARD_ERROR = {
     0x01: "Startup error 1 (Drive board)",
     0x02: "Startup error 2 (Drive board)",
     0x04: "Video signal error (No signal)",
-    0x08: "Drive board temperature error (70°C or higher)",
+    0x08: "Drive board temperature error (70 C or higher)",
 }
 SLM_OPTIONBOARD_ERROR = {
     0x01: "Startup error 1 (Option board)",
     0x02: "Startup error 2 (Option board)",
     0x04: "Voltage level error (DC 5.0V)",
-    0x08: "Option board temperature error (70°C or higher)",
+    0x08: "Option board temperature error (70 C or higher)",
 }
 
 # SLM_STATUS
@@ -276,10 +275,10 @@ SLM_Ctrl_ReadTM.restype = SLM_STATUS
 SLM_Ctrl_ReadTM.argtypes = [DWORD, LPDWORD]
 SLM_Ctrl_ReadTM.__doc__ = """SLM_Ctrl_ReadTM(DWORD SLMNumber, DWORD *onoff)"""
 
-SLM_Ctrl_ReadTM = _libraries[_libname].SLM_Ctrl_ReadTM
-SLM_Ctrl_ReadTM.restype = SLM_STATUS
-SLM_Ctrl_ReadTM.argtypes = [DWORD, DWORD]
-SLM_Ctrl_ReadTM.__doc__ = """SLM_Ctrl_WriteTC(DWORD SLMNumber, DWORD order)"""
+SLM_Ctrl_WriteTC = _libraries[_libname].SLM_Ctrl_WriteTC
+SLM_Ctrl_WriteTC.restype = SLM_STATUS
+SLM_Ctrl_WriteTC.argtypes = [DWORD, DWORD]
+SLM_Ctrl_WriteTC.__doc__ = """SLM_Ctrl_WriteTC(DWORD SLMNumber, DWORD order)"""
 
 SLM_Ctrl_ReadTC = _libraries[_libname].SLM_Ctrl_ReadTC
 SLM_Ctrl_ReadTC.restype = SLM_STATUS

@@ -1,0 +1,134 @@
+"""
+Lens phase patterns.
+"""
+
+import numpy as np
+
+from slmsuite.holography.toolbox import _process_grid
+from slmsuite.holography.toolbox.phase._misc import _determine_source_radius
+from slmsuite.misc.math import REAL_TYPES
+from slmsuite.misc.xp import get_array_module
+
+# Basic lenses.
+
+
+def _parse_focal_length(f):
+    """Helper function to parse focal length used by `lens` and `axicon`."""
+    if isinstance(f, REAL_TYPES):
+        f = [f, f]
+    if isinstance(f, (list, tuple, np.ndarray)):
+        f = np.squeeze(f)
+
+        if f.size != 2:
+            raise ValueError(f"Expected two terms in focal list. Found {f}.")
+        if np.any(f == 0):
+            raise ValueError(f"Cannot interpret a focal length of zero. Found {f}.")
+
+        f = tuple(float(x) for x in f)
+
+    return f
+
+
+def lens(grid, f=(np.inf, np.inf)):
+    r"""
+    Returns a simple
+    `thin parabolic lens <https://en.wikipedia.org/wiki/Thin_lens#Physical_optics>`_.
+
+    When the focal length :math:`f` is isotropic,
+
+    .. math:: \phi(\vec{x}) = \frac{\pi}{f}|\vec{x}|^2
+
+    Otherwise :math:`\vec{\,f\,}` represents an elliptical lens,
+
+    .. math:: \phi(x, y) = \pi \left[\frac{x^2}{f_x} + \frac{y^2}{f_y} \right]
+
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
+        corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
+        These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
+        such a class can be passed instead of the grids directly.
+    f : float OR (float, float)
+        Focus in normalized :math:`\frac{x}{\lambda}` units.
+        Defaults to infinity (no lens).
+        Scalars are interpreted as a non-cylindrical isotropic lens.
+        See :meth:`~slmsuite.holography.toolbox.convert_vector` to convert depths in
+        focal power units (inverse of :math:`f`) into other units and back.
+
+    Returns
+    -------
+    numpy.ndarray
+        The phase for this function.
+    """
+    (x_grid, y_grid) = _process_grid(grid)
+    f = _parse_focal_length(f)
+    xp = get_array_module(x_grid)
+
+    # Optimize phase construction based on context (for speed, to avoid square, etc).
+    if np.isfinite(f[0]) and np.isfinite(f[1]):
+        return (np.pi / f[0]) * xp.square(x_grid) + (np.pi / f[1]) * xp.square(y_grid)
+    elif np.isfinite(f[0]):
+        return (np.pi / f[0]) * xp.square(x_grid)
+    elif np.isfinite(f[1]):
+        return (np.pi / f[1]) * xp.square(y_grid)
+    else:
+        return xp.zeros_like(x_grid)
+
+
+def axicon(grid, f=(np.inf, np.inf), w=None):
+    r"""
+    Returns an `axicon <https://en.wikipedia.org/wiki/Axicon>`_ lens,
+    the phase farfield for a Bessel beam. An (elliptically)-cylindrical axicon blazes
+    according to :math:`\vec{k}_g = w / \vec{\,f\,} / 2` where
+    :math:`w` is the radius of the axicon. With a flat input amplitude over
+    :math:`[-w, w]`, this will produce a Bessel beam focused at :math:`z = \vec{f}`.
+
+    .. math:: \phi(\vec{x}) = 2\pi \, \mathrm{sgn}(f) \sqrt{(k_{g,x} x)^2 + (k_{g,y} y)^2}
+
+    A negative ``f`` gives a diverging axicon.
+
+    Parameters
+    ----------
+    grid : (array_like, array_like) OR :class:`~slmsuite.hardware.slms.slm.SLM`
+        Meshgrids of normalized :math:`\frac{x}{\lambda}` coordinates
+        corresponding to SLM pixels, in ``(x_grid, y_grid)`` form.
+        These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
+        such a class can be passed instead of the grids directly.
+    f : float OR (float, float)
+        Focal length (center of the axicon diamond) in normalized :math:`\frac{x}{\lambda}` units.
+        Scalars are interpreted as a non-cylindrical isotropic axicon.
+        Defaults to infinity (no axicon).
+    w : float OR None
+        If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
+        passed as ``grid``, or else a quarter of the grid's smaller half-extent.
+
+    Returns
+    -------
+    numpy.ndarray
+        The phase for this function.
+    """
+    (x_grid, y_grid) = _process_grid(grid)
+    w = _determine_source_radius(grid, w)
+    f = _parse_focal_length(f)
+    xp = get_array_module(x_grid)
+
+    angle = [w / f[0] / 2, w / f[1] / 2]  # Notice that this fraction is in radians.
+
+    # Optimize phase construction based on context (for speed, to avoid sqrt, etc).
+    if angle[0] == 0 and angle[1] == 0:
+        return 0 * x_grid
+    elif angle[0] == 0:
+        return (2 * np.pi * angle[1]) * xp.abs(y_grid)
+    elif angle[1] == 0:
+        return (2 * np.pi * angle[0]) * xp.abs(x_grid)
+    else:
+        if angle[0] * angle[1] < 0:
+            raise ValueError(
+                "A cylindrical axicon cannot converge on one axis and diverge on the other. "
+                f"Found {f}."
+            )
+        # sqrt discards the sign of f, so reapply it; a diverging axicon is f < 0.
+        return (2 * np.pi * float(np.sign(angle[0]))) * xp.sqrt(
+            xp.square(x_grid * angle[0]) + xp.square(y_grid * angle[1])
+        )

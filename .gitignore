@@ -3,7 +3,11 @@
 *.py[cod]
 *$py.class
 *egg-info
+build/
+dist/
 .conda/
+.benchmarks/
+build/
 
 # venv
 .venv/

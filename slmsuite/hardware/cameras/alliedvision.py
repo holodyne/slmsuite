@@ -15,11 +15,13 @@ Color camera functionality is not currently implemented, and will lead to undefi
 """
 
 import time
-import warnings
 
 import numpy as np
 
+from slmsuite._logging import make_logger
 from slmsuite.hardware.cameras.camera import Camera
+
+logger = make_logger(__name__)
 
 try:
     import vmbpy
@@ -34,11 +36,11 @@ except ImportError:
         vimba_system = vimba.Vimba
         vimba_name = "vimba"
 
-        warnings.warn("vmbpy not installed; falling back to vimba")
+        logger.warning("vmbpy not installed; falling back to vimba")
     except ImportError:
         vimba_system = None
         vimba_name = ""
-        warnings.warn("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
+        logger.warning("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
 
 
 class AlliedVision(Camera):
@@ -59,23 +61,23 @@ class AlliedVision(Camera):
     to be used in concert with ``with`` statements. Unfortunately, this does not mesh with the
     architecture of :mod:`slmsuite`, where notebook-style operation is desired.
     Using ``with`` statements inside :class:`.AlliedVision` methods is likewise not an option,
-    as the methods to :meth:`__enter__()` and :meth:`__exit__()` the ``with`` are time-consuming
-    due to calls to :meth:`_open()` and :meth:`_close()` the objects, to the point of
+    as the methods to ``__enter__()`` and ``__exit__()`` the ``with`` are time-consuming
+    due to calls to ``_open()`` and ``_close()`` the objects, to the point of
     :math:`\mathcal{O}(\text{s})` overhead. :class:`.AlliedVision` disables these protections by
-    calling :meth:`__enter__()` and :meth:`__exit__()` directly during :meth:`.__init__()` and
+    calling ``__enter__()`` and ``__exit__()`` directly during :meth:`.__init__()` and
     :meth:`.close()`, instead of inside ``with`` statements.
     """
 
     sdk = None
 
-    def __init__(self, serial="", pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, serial="", pitch_um=None, **kwargs):
         """
         Initialize camera and attributes.
 
         Caution
         ~~~~~~~
         AlliedVision cameras sometimes have different attribute names depending on the
-        model. This constructor tries to set some default properties, but if they fail, it will print
+        model. This constructor tries to set some default properties, but if they fail, it will log a
         warning and continue. The user will need to configure the :mod:`vmbpy` handle
         directly in this case, or in the case where the default configuration is not desired.
 
@@ -89,8 +91,6 @@ class AlliedVision(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -100,25 +100,19 @@ class AlliedVision(Camera):
             )
 
         if AlliedVision.sdk is None:
-            if verbose:
-                print(f"{vimba_name} initializing... ", end="")
+            logger.debug("%s initializing...", vimba_name)
             AlliedVision.sdk = vimba_system.get_instance()
             AlliedVision.sdk.__enter__()
-            if verbose:
-                print("success")
 
-        if verbose:
-            print("Looking for cameras... ", end="")
+        logger.debug("Looking for cameras...")
         camera_list = AlliedVision.sdk.get_all_cameras()
-        if verbose:
-            print("success")
 
         serial_list = [cam.get_serial() for cam in camera_list]
         if serial == "":
             if len(camera_list) == 0:
                 raise RuntimeError(f"No cameras found by {vimba_name}.")
-            if len(camera_list) > 1 and verbose:
-                print(f"No serial given... Choosing first of {serial_list}")
+            if len(camera_list) > 1:
+                logger.debug("No serial given; choosing first of %s", serial_list)
 
             self.cam = camera_list[0]
             serial = self.cam.get_serial()
@@ -130,29 +124,26 @@ class AlliedVision(Camera):
                     f"Serial {serial} not found by {vimba_name}. Available: {serial_list}"
                 )
 
-        if verbose:
-            print(f"{vimba_name} sn '{serial}' initializing... ", end="")
+        logger.debug("%s sn '%s' initializing...", vimba_name, serial)
         self.cam.__enter__()
-        if verbose:
-            print("success")
 
         # Try to set some default properties, with warnings if they fail.
         try:
             self.cam.BinningHorizontal.set(1)
             self.cam.BinningVertical.set(1)
         except Exception:
-            print("Warning: failed to set binning to 1.")
+            logger.warning("Failed to set binning to 1.")
 
         try:
             self.cam.GainAuto.set("Off")
         except Exception:
-            print("Warning: failed to turn autogain off.")
+            logger.warning("Failed to turn autogain off.")
 
         try:
             self.cam.ExposureAuto.set("Off")
             self.cam.ExposureMode.set("Timed")
         except Exception:
-            print("Warning: failed to set exposure mode to timed.")
+            logger.warning("Failed to set exposure mode to timed.")
 
         try:
             self.cam.AcquisitionMode.set("SingleFrame")
@@ -163,7 +154,7 @@ class AlliedVision(Camera):
             self.cam.TriggerActivation.set("RisingEdge")
             self.cam.TriggerSource.set("Software")
         except Exception:
-            print("Warning: failed to set acquisition and trigger configuration.")
+            logger.warning("Failed to set acquisition and trigger configuration.")
 
         # Cache whether the camera has ExposureTimeAbs or ExposureTime, for use
         # in the get/set exposure methods.
@@ -175,22 +166,26 @@ class AlliedVision(Camera):
             self._exposure_time_has_abs = None
 
         # Populate the rest of the class.
+        # PixelSize often reports an enum string like "Bpp8"/"Bpp10"/"Bpp12", so extract
+        # the digits rather than int(...) directly (which would raise for those models).
+        pixel_size = str(self.cam.PixelSize.get())
         super().__init__(
             (self.cam.SensorWidth.get(), self.cam.SensorHeight.get()),
-            bitdepth=int(self.cam.PixelSize.get()),
+            bitdepth=int("".join(char for char in pixel_size if char.isdigit())),
             pitch_um=pitch_um,
             name=serial,
             **kwargs,
         )
 
-    def close(self, close_sdk=True):
+    def close(self, close_sdk=False):
         """
         See :meth:`.Camera.close`
 
         Parameters
         ----------
         close_sdk : bool
-            Whether or not to close the :mod:`vmbpy` instance.
+            Whether or not to close the :mod:`vmbpy` instance,
+            which is shared by every open :class:`.AlliedVision`.
         """
         self.cam.__exit__(None, None, None)
 
@@ -230,9 +225,8 @@ class AlliedVision(Camera):
         serial_list = [cam.get_serial() for cam in camera_list]
 
         if verbose:
-            print(f"{vimba_name} serials:")
             for serial in serial_list:
-                print(f"'{serial}'")
+                print(serial)
 
         if close_sdk:
             AlliedVision.close_sdk()
@@ -302,6 +296,7 @@ class AlliedVision(Camera):
             if str(bitdepth) in value[0]:
                 self.cam.SensorBitDepth.set(value[1])
                 break
+        else:
             raise RuntimeError(f"ADC bitdepth {bitdepth} not found.")
 
     def get_adc_bitdepth(self):
@@ -335,44 +330,39 @@ class AlliedVision(Camera):
         else:
             raise RuntimeError("Camera does not have ExposureTime or ExposureTimeAbs property.")
 
-    def _set_woi(self, woi):
-        """
-        Sets the window of interest (WOI).
-
-        Parameters
-        ----------
-        woi : list, None
-            See :attr:`~slmsuite.hardware.cameras.camera.Camera.woi`.
-        """
-        # Set the width and height to very small values
-        # such that setting the offsets will not error.
-        self.cam.Height.set(8)
-        self.cam.Width.set(8)
-
-        # Now set the WOI.
-        x, w, y, h = woi
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`."""
+        # AlliedVision (GenICam): OffsetX/OffsetY/Width/Height are in
+        # binned output pixels when binning is active (same convention as Basler).
+        x, w, y, h = [int(v) for v in woi]
+        self.cam.OffsetX.set(0)
+        self.cam.OffsetY.set(0)
+        self.cam.Width.set(w)
+        self.cam.Height.set(h)
         self.cam.OffsetX.set(x)
         self.cam.OffsetY.set(y)
-        self.cam.Height.set(h)
-        self.cam.Width.set(w)
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        maxwoi = (0, self.cam.WidthMax.get(), 0, self.cam.HeightMax.get())
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`."""
+        return (
+            int(self.cam.OffsetX.get()),
+            int(self.cam.Width.get()),
+            int(self.cam.OffsetY.get()),
+            int(self.cam.Height.get()),
+        )
 
-        # Default WOI to max.
-        if woi is None:
-            woi = maxwoi
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`."""
+        binx, biny = int(binning[0]), int(binning[1])
+        self.cam.BinningHorizontal.set(binx)
+        self.cam.BinningVertical.set(biny)
 
-        try:
-            # Try to set the WOI.
-            self._set_woi(woi)
-            self.woi = woi
-        except Exception as e:
-            # Reset to previous WOI (max if undefined) upon failure.
-            woi = self.woi if self.woi is not None else maxwoi
-            self._set_woi(woi)
-            raise e
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`."""
+        return (
+            int(self.cam.BinningHorizontal.get()),
+            int(self.cam.BinningVertical.get()),
+        )
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
@@ -382,10 +372,7 @@ class AlliedVision(Camera):
         frame = self.cam.get_frame(timeout_ms=int(1e3 * timeout_s))
         frame = frame.as_numpy_ndarray()
 
-        # We have noticed that sometimes the camera gets into a state where
-        # it returns a frame of all zeros apart from one pixel with value of 31.
-        # This method is admittedly a hack to try getting a frame a few more times.
-        # We welcome contributions to fix this.
+        # Retry: the camera sometimes returns an all-zero frame with one pixel at 31.
         while np.sum(frame) == np.amax(frame) == 31 and time.time() - t < timeout_s:
             frame = self.cam.get_frame(timeout_ms=int(1e3 * timeout_s))
             frame = frame.as_numpy_ndarray()

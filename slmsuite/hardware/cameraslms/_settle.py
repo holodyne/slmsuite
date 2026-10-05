@@ -1,0 +1,246 @@
+import time
+
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy import optimize
+
+from slmsuite import tqdm
+from slmsuite._plotting import _slmsuite_plt_show
+from slmsuite.holography import analysis, toolbox
+
+
+class _SettleCalibration:
+    """
+    Hidden superclass with settle calibration methods
+    (time for the measurement to stabilize).
+    """
+
+    ### Settle Time Calibration ###
+
+    def settle_calibrate(
+        self, vector=(0.005, 0.005), size=None, times=None, autoexpose=True, plot=0
+    ):
+        """
+        Approximates the settle time of the SLM: the communication delay plus four
+        :math:`1/e` relaxation times.
+        This is done by successively removing and applying a blaze to the SLM,
+        measuring the intensity at the first order spot versus time delay.
+
+        **(This feature is experimental.)**
+
+        Parameters
+        ----------
+        vector : array_like
+            Point to measure settle time at via a simple blaze in the ``"kxy"`` basis.
+        size : int
+            Size in pixels of the integration region in the ``"ij"`` basis.
+            If ``None``, sets to sixteen times the approximate size of a diffraction-limited spot.
+        times : array_like OR None OR int
+            List of times to sweep over in search of the settle time.
+            If ``None``, defaults to 21 points over one second.
+            If an integer, defaults to that given number of points over one second.
+            The SLM is given the longest of these times to settle between measurements.
+        autoexpose : bool OR dict
+            Whether or not to automatically set the camera exposure on the blazed
+            spot. If a dictionary is passed, it is passed to
+            :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexpose()`.
+            The camera's exposure is restored afterward.
+        plot : int OR bool
+            If ``>= 1``, shows a debug plot with the exponential fit.
+            If ``< 0``, also suppresses the progress bar.
+
+        Returns
+        -------
+        dict
+            :attr:`calibrations["settle"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`.
+        """
+        # Parse vector.
+        point = self.kxyslm_to_ijcam(vector)
+        blaze = toolbox.phase.blaze(grid=self.slm, vector=vector)
+
+        # Parse size.
+        if size is None:
+            size = 16 * toolbox.convert_radius(
+                self.slm.get_spot_radius_kxy(), to_units="ij", hardware=self
+            )
+        size = int(size)
+
+        # Parse times.
+        if times is None:
+            times = 21
+        if np.isscalar(times):
+            times = np.linspace(0, 1, int(times), endpoint=True)
+        times = np.ravel(times)
+        settle_time_s = float(np.max(times))
+
+        # Create mask.
+        mask = analysis.take(
+            self.cam.shape, point, size, centered=True, clip=True, return_mask=True
+        )
+
+        exposure_prev = self.cam.get_exposure()
+        try:
+            # Optional step -- expose
+            self.slm.set_phase(blaze, phase_correct=False, settle=settle_time_s)
+
+            if autoexpose or isinstance(autoexpose, dict):
+                self.cam.autoexpose(
+                    window=mask, **(autoexpose if isinstance(autoexpose, dict) else {})
+                )
+            exposure_s = self.cam.get_exposure()
+
+            self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
+
+            # If desired, plot to show how the unblazed state compares with the blazed state.
+            if plot >= 2:
+                _fig, ax = plt.subplots()
+                self.cam.plot(ax=ax, title="Zeroth Order (phase=None)")
+                ax.contour(mask, levels=[0.5], colors="r")
+
+                _slmsuite_plt_show("settle_calibrate_none")
+
+                self.slm.set_phase(blaze, phase_correct=False, settle=settle_time_s)
+
+                _fig, ax = plt.subplots()
+                self.cam.plot(ax=ax, title="Target (phase=blaze)")
+                ax.contour(mask, levels=[0.5], colors="r")
+
+                _slmsuite_plt_show("settle_calibrate_target")
+
+                self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
+
+            results = np.zeros(len(times))
+            results_set_phase_time = np.zeros(len(times))
+            results_get_image_time = np.zeros(len(times))
+
+            I = np.random.default_rng().permutation(len(times))
+
+            iterations = tqdm(I) if plot >= 0 else I
+
+            # Collect data
+            self.cam.flush()
+
+            for i in iterations:
+                # Reset the pattern and wait for it to settle
+                self.slm.set_phase(None, phase_correct=False, settle=settle_time_s)
+
+                # Turn on the pattern and wait for time t
+                t0 = time.perf_counter()
+                self.slm.set_phase(blaze, settle=False, phase_correct=False)
+                t1 = time.perf_counter()
+                time.sleep(times[i])
+                t2 = time.perf_counter()
+                image = self.cam.get_image()
+                t3 = time.perf_counter()
+
+                results[i] = float(
+                    np.nansum(analysis.take(image, point, size, centered=True, clip=True))
+                )
+                results_set_phase_time[i] = t1 - t0
+                results_get_image_time[i] = t3 - t2
+        finally:
+            self.cam.set_exposure(exposure_prev)
+
+        self.calibrations["settle"] = {
+            "data": np.array(results),
+            "times": times,
+            "exposure_s": exposure_s,
+            "set_phase_time": np.array(results_set_phase_time),
+            "get_image_time": np.array(results_get_image_time),
+        }
+        self.calibrations["settle"].update(self._get_calibration_metadata())
+
+        self.settle_calibration_process(plot=plot)
+
+        return self.calibrations["settle"]
+
+    def settle_calibration_process(self, plot=0):
+        """
+        Fits an exponential to the measured data to approximate the settle time of the
+        SLM: the communication delay plus four :math:`1/e` relaxation times.
+
+        Parameters
+        ----------
+        plot : int OR bool
+            Whether to show a debug plot with the exponential fit.
+
+        Returns
+        -------
+        dict
+            The settle time and communication time measured.
+        """
+        times = self.calibrations["settle"]["times"]
+        results = np.ravel(self.calibrations["settle"]["data"])
+
+        # Estimate the step location and pre-step footer from the data.
+        plateau = np.median(results[results > 0.5 * np.max(results)])
+        on = np.flatnonzero(results > 0.05 * plateau)
+        if len(on) == 0:
+            raise RuntimeError("Settle calibration measured no signal.")
+        x0_guess = times[on[0] - 1] if on[0] > 0 else times[0]
+        before = times < x0_guess
+        footer_guess = np.median(results[before]) if np.any(before) else 0
+
+        # Function to interpolate: flat footer before the step,
+        # exponential relaxation to the plateau after.
+        def exponential(x, x0, a, b, c):
+            return np.where(x < x0, (c - a), c - a * np.exp(-(x - x0) / b))
+
+        # Fit the data with the function
+        params, _ = optimize.curve_fit(
+            exponential,
+            times,
+            results,
+            p0=(x0_guess, plateau - footer_guess, np.ptp(times) / 10, plateau),
+            bounds=((np.min(times), 0, 1e-6, 0), (np.max(times), np.inf, np.ptp(times), np.inf)),
+            maxfev=10000,
+        )
+        x0, _a, b, _c = params
+        self.logger.debug("settle fit params: %s", params)
+
+        relax_time = b
+        com_time = x0
+        settle_time = com_time + relax_time * 4
+
+        if settle_time < 0 or settle_time > np.max(times):
+            self.logger.warning(
+                "Fitted settle time %.3g s is outside the swept range [0, %.3g] s; "
+                "the response is likely unresolved at this sampling.",
+                settle_time,
+                np.max(times),
+            )
+
+        if plot >= 1:
+            # Evaluate the fitting function in the interval
+            x_interp = np.linspace(min(times), max(times), 100)
+            y_interp = exponential(x_interp, *params)
+
+            plt.plot(times, results, "k.", markersize=7, label="Measurement")
+            plt.plot(x_interp, y_interp, "--", linewidth=2, color="red", label="Fit")
+
+            labels = (
+                f"Communication time: {int(1e3 * com_time)} ms",
+                # f"$1/e$ Relaxation time: {int((1e3*relax_time))} ms",
+                f"Suggested $1/e^4$ Settle time: {int(1e3 * settle_time)} ms",
+            )
+            times = [com_time, settle_time]
+            style = ["-", "--"]
+
+            for l, t, s in zip(labels, times, style):
+                plt.axvline(x=t, alpha=0.5, linestyle=s, zorder=-1, label=l)
+
+            plt.xlabel("Time [sec]")
+            plt.ylabel("Signal [a.u.]")
+            plt.legend()
+
+            _slmsuite_plt_show(name="settle_calibration_process")
+
+        # Update dictionary with results. FUTURE: Return error bars?
+        processed = {
+            "settle_time": settle_time,
+            "relax_time": relax_time,
+            "communication_time": com_time,
+        }
+        self.calibrations["settle"].update(processed)
+
+        return processed

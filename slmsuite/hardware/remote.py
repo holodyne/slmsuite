@@ -46,6 +46,8 @@ The server hosts a simulated SLM and camera:
         port=5025,
     )
 
+    server.listen()  # Blocks; call server.stop() from another thread to exit.
+
 The client connects to this hardware:
 
 .. highlight:: python
@@ -56,12 +58,12 @@ The client connects to this hardware:
     from slmsuite.hardware.cameras.remote import RemoteCamera
 
     slm = RemoteSLM(
-        name="remote_slm"
+        name="remote_slm",
         host="localhost",
         port=5025,
     )
     cam = RemoteCamera(
-        name="remote_camera"
+        name="remote_camera",
         host="localhost",
         port=5025,
     )
@@ -75,19 +77,27 @@ The client connects to this hardware:
 import base64
 from datetime import date, datetime, timedelta
 import json
+import re
 import socket
-import sys
 import time
 import traceback
 from typing import Any
 import urllib.parse as urllib
-import warnings
 import zlib
 
 import numpy as np
 
+try:
+    import cupy as cp  # type: ignore
+except ImportError:
+    cp = None
+
 from slmsuite import __version__
-from slmsuite.hardware import _Picklable
+from slmsuite._logging import make_logger
+from slmsuite._pickling import _Picklable
+from slmsuite.misc.xp import as_numpy, is_gpu_array
+
+logger = make_logger(__name__)
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 5025  # Commonly used for instrument control.
@@ -104,9 +114,14 @@ def _recurse_decompress(msg):
     """
     if isinstance(msg, dict):
         if "__zlib__" in msg and len(msg) == 3:
-            return np.frombuffer(
-                zlib.decompress(base64.b64decode(msg["__zlib__"])), dtype=np.dtype(msg["__dtype__"])
-            ).reshape(msg["__shape__"])
+            return (
+                np.frombuffer(
+                    zlib.decompress(base64.b64decode(msg["__zlib__"])),
+                    dtype=np.dtype(msg["__dtype__"]),
+                )
+                .copy()
+                .reshape(msg["__shape__"])
+            )
         elif "__dtype__" in msg and len(msg) == 1:
             return np.dtype(msg["__dtype__"])
         else:
@@ -122,6 +137,9 @@ def _recurse_decompress(msg):
 # https://codetinkering.com/numpy-encoder-json/
 class _NpEncoder(json.JSONEncoder):
     def default(self, obj):
+        # GPU arrays (e.g. a GPU SLM's display) -> numpy for serialization.
+        if is_gpu_array(obj):
+            obj = as_numpy(obj)
         if isinstance(obj, np.bool_):
             return bool(obj)
         if isinstance(obj, np.floating):  # , np.complexfloating
@@ -140,6 +158,9 @@ class _NpEncoder(json.JSONEncoder):
             return obj.isoformat()
         if isinstance(obj, timedelta):
             return str(obj)
+        # Scalar types (e.g. np.float64) -> the dtype they name.
+        if isinstance(obj, type) and issubclass(obj, np.generic):
+            obj = np.dtype(obj)
         if isinstance(obj, np.dtype):
             return {"__dtype__": str(obj)}
         return super().default(obj)
@@ -149,22 +170,38 @@ class _NpEncoder(json.JSONEncoder):
 def _recv(sock, timeout):
     recv_buffer = 4096 * 64
     buffer = ""
-    t = time.time()
+    closed = False
 
-    # Pull data into the buffer until we hit timeout or deliminator.
-    while time.time() - t < timeout:
-        data = sock.recv(recv_buffer).decode()
+    # Pull data into the buffer until the peer idles past timeout or we hit the deliminator.
+    old_timeout = sock.gettimeout()
+    sock.settimeout(timeout)
+    try:
+        while True:
+            try:
+                data = sock.recv(recv_buffer).decode()
+            except TimeoutError:
+                break  # No data within the timeout window.
 
-        buffer += data
-        if data[-1] == _delim:
-            msg = json.loads(urllib.unquote_plus(buffer[0 : -len(_delim)]))
+            if data == "":
+                closed = True
+                break  # Peer closed the connection.
 
-            msg = _recurse_decompress(msg)
+            buffer += data
+            if buffer.endswith(_delim):
+                msg = json.loads(urllib.unquote_plus(buffer[0 : -len(_delim)]))
 
-            return msg
+                msg = _recurse_decompress(msg)
 
-    # Failed timeout returns empty.
-    return False, f"Timeout: {len(buffer)} bytes received."
+                return msg
+    finally:
+        sock.settimeout(old_timeout)
+
+    # Receive failed. Distinguish a clean disconnect from a timeout so the caller
+    # (and client) sees the real cause. On success a dict is returned above, so the
+    # caller distinguishes failure with isinstance(message, dict).
+    if closed:
+        return False, f"Connection closed by peer after {len(buffer)} bytes received."
+    return False, f"Timeout: only {len(buffer)} bytes received before {timeout}s of silence."
 
 
 # Server which hosts slmsuite hardware.
@@ -178,6 +215,7 @@ class Server:
         hardware: list[object],
         port: int = DEFAULT_PORT,
         timeout: float = SERVER_WAIT_TIMEOUT,
+        recv_timeout: float = DEFAULT_TIMEOUT,
         allowlist: list[str] | None = None,
     ):
         """
@@ -192,7 +230,13 @@ class Server:
             Port number to serve on. Defaults to ``5025``
             (commonly used for instrument control).
         :param timeout:
-            Timeout in seconds for the server to wait for a client.
+            Timeout in seconds for the server to wait (poll) for a client connection.
+            Kept small so the server stays responsive to shutdown.
+        :param recv_timeout:
+            Timeout in seconds that a connected client is allowed to idle mid-request.
+            Must be large enough to cover network stalls while megapixel phase masks /
+            camera images stream in, so this is decoupled from (and larger than) ``timeout``.
+            Defaults to ``DEFAULT_TIMEOUT``.
         :param allowlist:
             List of IP addresses to allow to connect. Defaults to ``None`` (allow all).
             Keep in mind that IP addresses can be spoofed, so this ``allowlist``
@@ -217,6 +261,8 @@ class Server:
             raise ValueError(f"Invalid port number: {port}. Use a port between 1024 and 65535.")
         self.port = port
         self.timeout = timeout
+        self.recv_timeout = recv_timeout
+        self._listening = False
 
         # Only allow clients in the allowlist to connect.
         self.allowlist = allowlist
@@ -230,10 +276,15 @@ class Server:
             "_get_exposure_hw",
             "_get_image_hw",
             "_get_images_hw",
+            "_set_woi_hw",
+            "_get_woi_hw",
+            "_set_binning_hw",
+            "_get_binning_hw",
         ]
 
     @staticmethod
     def identify_hardware(hw: object) -> str:
+        """Returns ``"camera"`` or ``"slm"`` for the type of ``hw``, or ``None`` if neither."""
         if hasattr(hw, "_get_image_hw"):
             return "camera"
         elif hasattr(hw, "_set_phase_hw"):
@@ -241,14 +292,10 @@ class Server:
         else:
             return None
 
-    def listen(self, verbose: bool = True):
+    def listen(self):
         """
         Blocking command to listen for client commands and process them once they are
-        given.
-
-        :param verbose:
-            Whether to print feedback that the server is online alongside a log of
-            client actions.
+        received. Returns upon :meth:`stop` or ``KeyboardInterrupt``.
         """
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -256,75 +303,74 @@ class Server:
         sock.bind(("", self.port))
         sock.listen(5)
 
-        i = 0
+        logger.info("Hosting on port %s with hardware %s", self.port, list(self.hardware.keys()))
 
-        if verbose:
-            print(f"Hosting on port {self.port} with hardware {list(self.hardware.keys())}")
+        self._listening = True
 
         try:
-            while True:
-                i += 1
+            while self._listening:
+                connection = None
                 try:
-                    # Wait for connection with fancy print.
-                    if verbose:
-                        print("Waiting for connection" + ("." * (1 + (i % 3))) + "     ", end="\r")
-
                     # This blocks for self.timeout unless a client connects.
                     connection, client_addr = sock.accept()
 
-                    # Cleanup the print.
-                    if verbose:
-                        print("                              ", end="\r")
-
                     # Check if the client is allowed to connect.
                     if (self.allowlist is not None) and (client_addr[0] not in self.allowlist):
-                        if verbose:
-                            stamp = str(datetime.now())
-                            print(
-                                f"{stamp} Rejected connection from {client_addr}, not in allowlist {self.allowlist}."
-                            )
+                        logger.warning(
+                            "Rejected connection from %s, not in allowlist %s.",
+                            client_addr,
+                            self.allowlist,
+                        )
                         result = False, f"Client {client_addr} not in allowlist."
                     else:
                         # Receive, handle, and reply to message.
-                        message = _recv(connection, self.timeout)
-                        result = self._handle(message, client_addr, verbose)
+                        message = _recv(connection, self.recv_timeout)
+                        if isinstance(message, dict):
+                            result = self._handle(message, client_addr)
+                        else:
+                            # _recv returned its (False, reason) failure sentinel
+                            # (receive timeout or peer disconnect); reply with it
+                            # directly rather than feeding the tuple to _handle.
+                            result = message
 
                     reply = (
                         urllib.quote_plus(json.dumps(result, cls=_NpEncoder)) + _delim
                     ).encode()
-                    print(f"replied with {len(reply)} bytes.")
+                    logger.debug("Replied with %d bytes.", len(reply))
 
                     connection.sendall(reply)
-                    connection.close()
-                except OSError:
-                    # This is a timeout error. Just continue.
+                except TimeoutError:
+                    # accept() poll timed out waiting for a client; keep listening.
                     pass
-                except Exception as e:
-                    # Pass to the outer try for all other errors.
-                    raise e
+                except Exception:
+                    # A single client's error (disconnect, bad payload, etc.) must not
+                    # tear down the server loop.
+                    logger.error("Error handling connection:\n%s", traceback.format_exc())
+                finally:
+                    # Always release the per-connection socket.
+                    if connection is not None:
+                        try:
+                            connection.close()
+                        except Exception:
+                            pass
         except KeyboardInterrupt:
             # Standard way to kill the thread.
-            if verbose:
-                print("Closing server! Goodbye!")
-            try:
-                connection.close()
-            except Exception:
-                pass
+            pass
+        finally:
+            logger.info("Closing server! Goodbye!")
+            self._listening = False
             sock.close()
-        except Exception as e:
-            # There was an error in the server communication protocol. This kills the thread.
-            # Note that hardware errors are handled in _handle and the loop continues.
-            if verbose:
-                print(traceback.format_exc())
-            try:
-                connection.close()
-            except Exception:
-                pass
-            sock.close()
-            raise e
+
+    def stop(self):
+        """
+        Requests a :meth:`listen` loop to exit, which it does within ``timeout``.
+        """
+        self._listening = False
 
     def _handle(
-        self, message: str, client_addr: str | None = None, verbose: bool = False
+        self,
+        message: str,
+        client_addr: str | None = None,
     ) -> tuple[bool, Any]:
         """
         Handle a message from a client.
@@ -337,9 +383,7 @@ class Server:
 
             instrument = f"{name}.{command}"
 
-            if verbose:
-                stamp = str(datetime.now())
-                print(f"{stamp} {client_addr} {instrument}")
+            logger.info("%s %s", client_addr, instrument)
 
             # Initial parse of command.
             if command is None:
@@ -354,6 +398,10 @@ class Server:
                     f"Did not recognize hardware '{name}'. Options: {list(self.hardware.keys())}.",
                 )
 
+            # A client-supplied list of attribute names would make pickle an arbitrary read.
+            if command == "pickle":
+                kwargs["attributes"] = bool(kwargs.get("attributes", True))
+
             if command in self.allowcommands and hasattr(self.hardware[name], command):
                 attribute = getattr(self.hardware[name], command)
                 if callable(attribute):
@@ -362,8 +410,20 @@ class Server:
                     return False, f"{instrument} is not callable."
             else:
                 return False, f"{instrument} not present."
-        except Exception:
-            return False, traceback.format_exc()
+        except Exception as e:
+            # A traceback would name filesystem paths and frames to an unauthenticated peer.
+            logger.error("Error handling %s:\n%s", client_addr, traceback.format_exc())
+
+            # A keyword rejected by the signature pushes no frame, so it names only the API.
+            if isinstance(e, TypeError) and e.__traceback__.tb_next is None:
+                unsupported = re.search(r"unexpected keyword argument '(\w+)'", str(e))
+                if unsupported is not None:
+                    return (
+                        False,
+                        f"{instrument} does not support the argument '{unsupported.group(1)}'.",
+                    )
+
+            return False, "Server error. See the server log for details."
 
 
 # Abstract client which connects to a server.
@@ -410,13 +470,16 @@ class _Client(_Picklable):
         self.server_attributes = pickled
 
         if "__version__" not in pickled:
-            warnings.warn(
-                f"Server did not provide version information; "
-                f"cannot verify compatibility with client version {__version__}."
+            logger.warning(
+                "Server did not provide version information; "
+                "cannot verify compatibility with client version %s.",
+                __version__,
             )
         elif pickled["__version__"] != __version__:
-            warnings.warn(
-                f"Client version {__version__} does not match server version {pickled['__version__']}."
+            logger.warning(
+                "Client version %s does not match server version %s.",
+                __version__,
+                pickled["__version__"],
             )
 
     def _com(
@@ -447,41 +510,33 @@ class _Client(_Picklable):
             args = []
         if kwargs is None:
             kwargs = {}
-        # Create a TCP/IP socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        try:
-            sock.connect((host, port))
-        except (TimeoutError, ConnectionRefusedError) as e:
-            raise ValueError(f"An slmsuite server is not active at {host}:{port}.") from e
-        except Exception as e:
-            raise e
 
-        # Send the message.
-        sock.sendall(
-            (
-                urllib.quote_plus(
-                    json.dumps(
-                        {"name": name, "command": command, "args": args, "kwargs": kwargs},
-                        cls=_NpEncoder,
+        # Create a TCP/IP socket, closed on every path out.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            try:
+                sock.connect((host, port))
+            except (TimeoutError, ConnectionRefusedError) as e:
+                raise TimeoutError(f"An slmsuite server is not responsive at {host}:{port}.") from e
+
+            # Send the message.
+            sock.sendall(
+                (
+                    urllib.quote_plus(
+                        json.dumps(
+                            {"name": name, "command": command, "args": args, "kwargs": kwargs},
+                            cls=_NpEncoder,
+                        )
                     )
-                )
-                + _delim
-            ).encode()
-        )
+                    + _delim
+                ).encode()
+            )
 
-        # Wait for a reply.
-        try:
+            # Wait for a reply.
             success, reply = _recv(sock, timeout)
-            if not success:
-                raise RuntimeError(f"Server {host}:{port} communication failed. Message:\n{reply}")
-        except Exception as e:
-            sock.close()
 
-            raise e
-
-        # Always close.
-        sock.close()
+        if not success:
+            raise RuntimeError(f"Server {host}:{port} communication failed. Message:\n{reply}")
 
         return reply
 
@@ -503,15 +558,13 @@ class _Client(_Picklable):
             Which port to connect to. Defaults to ``5025`` (commonly used for instrument
             control).
         :param timeout:
-            Timeout in seconds for the connection. Defaults to ``1.0``.
+            Timeout in seconds for the connection. Defaults to ``5``.
         :return:
-            List of hardware at the server in ``name:kind`` pairs, where ``kind`` is
-            either ``"camera"`` or ``"slm"``. Returns empty dict if no server is found.
+            Dictionary mapping the name of each hardware at the server to its kind,
+            either ``"camera"`` or ``"slm"``. Raises :exc:`TimeoutError` if no server is found.
         """
         try:
             hardware = _Client.__com(None, host, port, timeout, command="ping")
-        except (TimeoutError, ConnectionRefusedError) as e:
-            raise TimeoutError(f"Did not find a server at {host}:{port}.") from e
         except Exception as e:
             raise e
 

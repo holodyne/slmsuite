@@ -75,7 +75,7 @@ Why Python?
 With easy-to-learn syntax and good readability, Python is ideal for scientists and
 experimentalists interested in quick development and refinement.
 Itself being `open-source <https://github.com/python/cpython>`_,
-Python is a goto language for open-source projects, to the point that it is the
+Python is a go-to language for open-source projects, to the point that it is the
 `most pull-requested language <https://madnight.github.io/githut/#/pull_requests/2024/1>`_
 on GitHub.
 
@@ -86,7 +86,7 @@ The default implementation of the Python language,
 Scientific computing packages such as |numpy|_ and |scipy|_ implement
 algorithms in fast C code, leading to a paradigm where 'heavy lifting' is done in C,
 while higher-level logic or 'heavy coding' is done in the more user-friendly Python.
-Importantly, the accessiblity of the C backend means that hardware interfaces
+Importantly, the accessibility of the C backend means that hardware interfaces
 (often written in C) are
 `easy to implement <https://docs.python.org/3/library/ctypes.html>`_
 in Python. This is critical for
@@ -114,6 +114,13 @@ acceleration, implemented here with |cupy|_. In most cases, |cupy|_ is a
 for |numpy|_ and |scipy|_, which are used as a backup if a GPU is not present.
 We repeatably measure around two orders of magnitude speedup for standard
 optimization when using |cupy|_, compared with the |numpy|_ equivalent.
+
+|slmsuite|_ uses GPU acceleration by default whenever |cupy|_ is installed:
+holograms and SLMs store and process their data with |cupy|_, while camera frames
+are returned in host memory unless a simulated camera is called with
+``get_image(get=False)``.
+|numpy|_ is used as a backup if |cupy|_ is not installed, or for an SLM
+constructed with ``gpu=False``.
 
 .. Linked modules
 

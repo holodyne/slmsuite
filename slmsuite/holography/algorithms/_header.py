@@ -13,7 +13,11 @@ from scipy.ndimage import (
     gaussian_filter as sp_gaussian_filter,
     gaussian_filter1d as sp_gaussian_filter1d,
 )
-from tqdm.auto import tqdm
+
+from slmsuite import tqdm
+
+# Shared host/device helpers, re-exported to every algorithms module via `import *`.
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
 
 # Try to import cupy, but revert to base numpy/scipy upon ImportError.
 try:
@@ -35,6 +39,15 @@ except ImportError:
     warnings.warn(
         "cupy is not installed; using numpy. Install cupy for faster GPU-based holography."
     )
+
+# Warm up cupy's cuBLAS handle before PyTorch is imported, else CUBLAS_STATUS_INVALID_VALUE.
+if cp is not np:
+    try:
+        _w = cp.zeros((2, 2), dtype=cp.float32)
+        _w @ _w
+        cp.cuda.runtime.deviceSynchronize()
+    except Exception:
+        pass
 
 try:
     import torch
@@ -58,8 +71,6 @@ from slmsuite.misc.math import REAL_TYPES
 # Tip: In general, decreasing the feedback exponent (from 1) improves
 #      stability at the cost of slower convergence. The default (0.8)
 #      is an empirically derived value for a reasonable tradeoff.
-# Caution: The order of these algorithms is used in other parts of the code
-#          such as ALGORITHM_INDEX to numerically encode feedback methods.
 ALGORITHM_DEFAULTS = {
     "GS": {"feedback": "computational"},  # No feedback for bare GS, but initializes var.
     "WGS-Leonardo": {"feedback": "computational", "feedback_exponent": 0.8},
@@ -79,7 +90,6 @@ ALGORITHM_DEFAULTS = {
         "loss": None,
     },
 }
-ALGORITHM_INDEX = {key: i for i, key in enumerate(ALGORITHM_DEFAULTS.keys())}
 
 # List of feedback options. See the documentation for the feedback keyword in optimize().
 FEEDBACK_OPTIONS = [
@@ -89,3 +99,6 @@ FEEDBACK_OPTIONS = [
     "experimental_spot",
     "external_spot",
 ]
+
+# List of statistics groups. See the documentation for the stat_groups keyword in optimize().
+STAT_GROUP_OPTIONS = [*FEEDBACK_OPTIONS, "experimental_ij", "experimental_knm"]

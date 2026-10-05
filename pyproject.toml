@@ -49,6 +49,7 @@ torch = ["torch"]
 slms = [
     "pyglet",
     "hidapi",
+    "pyyaml",
 ]
 cameras = [
     "pylablib",
@@ -59,12 +60,12 @@ cameras = [
 images = [
     "imageio",
     "pygifsicle",
-    "scikit-image",
     "av",
 ]
 jupyter = [
     "jupyter",
     "ipywidgets",
+    "ipyevents",
     "slmsuite[images]",
 ]
 docs = [
@@ -74,9 +75,8 @@ docs = [
     "sphinx",
     "sphinx_copybutton",
     "sphinx_last_updated_by_git",
-    "sphinx_rtd_theme",
     "requests",
-    "pandoc",
+    "pypandoc_binary",     # Bundles the pandoc binary that nbsphinx needs.
     "pydata-sphinx-theme",
     "sphinx_design",
     "sphinx-autodoc-typehints",
@@ -85,16 +85,19 @@ test = [
     "imageio",
     "pytest",
     "pytest-benchmark",
+    "pytest-cov",
     "pytest-subtests",
     "pytest-notebook",
     "nbformat",
-    "imageio",
+    "pyyaml",
+    "ipywidgets",
 ]
 dev = [
     "slmsuite[test]",
     "slmsuite[jupyter]",
     "slmsuite[docs]",
     "slmsuite[gpu]",
+    "slmsuite[torch]",
     "slmsuite[slms]",
     "slmsuite[cameras]",
     "line-profiler",
@@ -104,7 +107,7 @@ dev = [
 
 [project.urls]
 "Homepage" = "https://github.com/holodyne/slmsuite"
-"Documentation" = "https://slmsuite.readthedocs.io/en/latest/"
+"Documentation" = "https://slmsuite.holodyne.com/en/latest/"
 
 [tool.setuptools.dynamic]
 version = { attr = "slmsuite.__version__" }
@@ -113,11 +116,33 @@ version = { attr = "slmsuite.__version__" }
 include = ["slmsuite*"]
 
 [tool.setuptools.package-data]
-slmsuite = ["holography/toolbox/cuda.cu"]
+slmsuite = [
+    "holography/toolbox/phase/cuda.cu",
+    "hardware/slms/texasinstruments.yaml",
+    "hardware/slms/meadowlark.csv",
+]
 
 [tool.uv]
 # pyqt5-qt5 >= 5.15.3 dropped Windows wheels; cap to last working version.
 constraint-dependencies = ["pyqt5-qt5<=5.15.2"]
+
+[tool.coverage.run]
+# Don't include hardware drivers in coverage reports, as we cannot autotest them.
+include = [
+    "slmsuite/*.py",
+    "slmsuite/hardware/_common.py",
+    "slmsuite/hardware/remote.py",
+    "slmsuite/hardware/cameraslms/*.py",
+    "slmsuite/hardware/cameras/camera.py",
+    "slmsuite/hardware/cameras/simulated.py",
+    "slmsuite/hardware/cameras/remote.py",
+    "slmsuite/hardware/slms/slm.py",
+    "slmsuite/hardware/slms/simulated.py",
+    "slmsuite/hardware/slms/remote.py",
+    "slmsuite/hardware/slms/segmented.py",
+    "slmsuite/holography/**/*.py",
+    "slmsuite/misc/*.py",
+]
 
 [tool.ruff]
 line-length = 100
@@ -195,7 +220,7 @@ ignore = [
 "slmsuite/holography/algorithms/_multiplane.py" = ["F403", "F405"]
 "slmsuite/holography/algorithms/_spots.py" = ["F403", "F405"]
 "slmsuite/holography/algorithms/_stats.py" = ["F403", "F405"]
-"tests/**/*.py" = ["B011", "D", "SIM", "F403", "F405"]  # asserts, docstrings, and star-import flex in tests
+"tests/**/*.py" = ["B011", "D", "SIM", "F403", "F405", "NPY002"]  # asserts, docstrings, star imports, and the global RNG that conftest seeds
 
 [tool.ruff.lint.isort]
 known-first-party = ["slmsuite"]

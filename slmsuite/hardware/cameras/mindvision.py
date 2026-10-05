@@ -9,12 +9,15 @@ The python header can also be found in the `dddomodossola/nastroprint
 GitHub package.
 """
 
-import time
 import warnings
 
 import numpy as np
 
+from slmsuite._logging import make_logger
 from slmsuite.hardware.cameras.camera import Camera
+
+logger = make_logger(__name__)
+
 
 try:
     import mvsdk as _mvsdk
@@ -28,10 +31,10 @@ class MindVision(Camera):
     MindVision camera subclass for interfacing with the :mod:`mvsdk`.
     """
 
-    # Class variable (same for all instances of MindVision) pointing to a singleton SDK.
+    #: Class variable (same for all instances of MindVision) pointing to a singleton SDK.
     sdk = None
 
-    def __init__(self, serial="", pitch_um=None, verbose=True, **kwargs):
+    def __init__(self, serial="", pitch_um=None, **kwargs):
         """
         Initialize the MindVision camera and attributes.
 
@@ -45,8 +48,6 @@ class MindVision(Camera):
         pitch_um : (float, float) OR None
             Fill in extra information about the pixel pitch in ``(dx_um, dy_um)`` form
             to use additional calibrations.
-        verbose : bool
-            Whether or not to print extra information.
         **kwargs
             See :meth:`.Camera.__init__` for permissible options.
         """
@@ -54,15 +55,12 @@ class MindVision(Camera):
             raise ImportError("mvsdk not installed.")
 
         if MindVision.sdk is None:
-            if verbose:
-                print("mvsdk initializing... ", end="")
+            logger.debug("mvsdk initializing...")
             _mvsdk._Init()
-            if verbose:
-                print("success")
+            MindVision.sdk = _mvsdk
 
         # Grab the list of cameras.
-        if verbose:
-            print("Looking for cameras... ", end="")
+        logger.debug("Looking for cameras...")
         camera_list = _mvsdk.CameraEnumerateDevice()
         if not camera_list:
             raise RuntimeError("No cameras found by mvsdk.")
@@ -75,20 +73,17 @@ class MindVision(Camera):
                 raise RuntimeError(f"Serial {serial} not found.\nAvailable: {serial_list}")
         else:
             self.cam = camera_list[0]
-            if len(camera_list) > 1 and verbose:
-                print(f"No serial given... Choosing first of {serial_list}...")
-        if verbose:
-            print("success")
+            if len(camera_list) > 1:
+                logger.debug("No serial given; choosing first of %s", serial_list)
         serial = self.cam.GetSn()
 
         # Turn the camera on.
-        if verbose:
-            print(f"Initializing sn '{serial}'... ", end="")
+        logger.debug("Initializing sn '%s'...", serial)
         self.handle = 0
         try:
             self.handle = _mvsdk.CameraInit(self.cam, -1, -1)
         except _mvsdk.CameraException as e:
-            print(f"CameraInit Failed ({e.error_code}):\n{e.message}")
+            logger.error("CameraInit failed (%s): %s", e.error_code, e.message)
             raise e
 
         # Fill in parameters from the capability class.
@@ -98,7 +93,7 @@ class MindVision(Camera):
             _mvsdk.CameraSetIspOutFormat(self.handle, _mvsdk.CAMERA_MEDIA_TYPE_MONO8)
         else:
             _mvsdk.CameraSetIspOutFormat(self.handle, _mvsdk.CAMERA_MEDIA_TYPE_BGR8)
-            warnings.warn("Camera is not grayscale. Color cameras may cause issues in slmsuite.")
+            logger.warning("Camera is not grayscale. Color cameras may cause issues in slmsuite.")
         _mvsdk.CameraSetTriggerMode(self.handle, 1)
         _mvsdk.CameraSetAeState(self.handle, 0)
         _mvsdk.CameraSetExposureTime(self.handle, 30 * 1000)
@@ -129,8 +124,7 @@ class MindVision(Camera):
             name=serial,
             **kwargs,
         )
-        if verbose:
-            print("success")
+        self.logger.debug("MindVision camera initialized.")
 
     def close(self):
         """
@@ -161,12 +155,16 @@ class MindVision(Camera):
                 "mvsdk not installed. Copy mvsdk.py from dddomodossola/nastroprint to use Mindvision cameras."
             )
 
+        if MindVision.sdk is None:
+            _mvsdk._Init()
+            MindVision.sdk = _mvsdk
+
         camera_list = _mvsdk.CameraEnumerateDevice()
         serial_list = [cam.GetSn() for cam in camera_list]
 
         if verbose:
             for cam in camera_list:
-                print(f"'{cam.GetSn()}': {cam.GetFriendlyName()} ({cam.GetPortType()})")
+                print(f"{cam.GetSn()} ({cam.GetFriendlyName()}, {cam.GetPortType()})")
 
         return serial_list
 
@@ -219,9 +217,60 @@ class MindVision(Camera):
         """See :meth:`.Camera._set_exposure_hw`."""
         _mvsdk.CameraSetExposureTime(self.handle, exposure_s * 1e6)
 
-    def set_woi(self, woi=None):
-        """See :meth:`.Camera.set_woi`."""
-        return
+    def _set_woi_hw(self, woi):
+        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
+        # MindVision iHOffsetFOV/iVOffsetFOV/iWidthFOV/iHeightFOV are physical (unbinned) sensor pixels.
+        # iWidth/iHeight are the output (binned) dimensions.
+        binx, biny = self._binning
+        x, w, y, h = [int(v) for v in woi]
+        resolution = _mvsdk.CameraGetImageResolution(self.handle)
+        resolution.iIndex = 0xFF
+        resolution.iHOffsetFOV = x * binx
+        resolution.iWidthFOV = w * binx
+        resolution.iVOffsetFOV = y * biny
+        resolution.iHeightFOV = h * biny
+        resolution.iWidth = w
+        resolution.iHeight = h
+        _mvsdk.CameraSetImageResolution(self.handle, resolution)
+
+    def _get_woi_hw(self):
+        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
+        # Physical FOV coordinates; divide by binning to get binned coords.
+        binx, biny = self._binning
+        resolution = _mvsdk.CameraGetImageResolution(self.handle)
+        return (
+            int(resolution.iHOffsetFOV) // binx,
+            int(resolution.iWidthFOV) // binx,
+            int(resolution.iVOffsetFOV) // biny,
+            int(resolution.iHeightFOV) // biny,
+        )
+
+    def _set_binning_hw(self, binning):
+        """See :meth:`.Camera._set_binning_hw`. **(Untested)**"""
+        # MindVision binning via uBinSumMode: bit 0 = 2x2, bit 1 = 3x3, bit 2 = 4x4.
+        binx, biny = int(binning[0]), int(binning[1])
+        if biny != binx:
+            raise ValueError(
+                f"MindVision requires symmetric binning. Received (binx={binx}, biny={biny})."
+            )
+        resolution = _mvsdk.CameraGetImageResolution(self.handle)
+        resolution.iIndex = 0xFF
+        if biny <= 1:
+            resolution.uBinSumMode = 0
+            resolution.uBinAverageMode = 0
+        else:
+            resolution.uBinSumMode = 1 << (biny - 2)
+            resolution.uBinAverageMode = 0
+        resolution.iWidth = resolution.iWidthFOV // binx
+        resolution.iHeight = resolution.iHeightFOV // biny
+        _mvsdk.CameraSetImageResolution(self.handle, resolution)
+
+    def _get_binning_hw(self):
+        """See :meth:`.Camera._get_binning_hw`. **(Untested)**"""
+        resolution = _mvsdk.CameraGetImageResolution(self.handle)
+        mode = int(resolution.uBinSumMode) or int(resolution.uBinAverageMode)
+        b = mode.bit_length() + 1 if mode else 1
+        return (b, b)
 
     def _get_image_hw(self, timeout_s):
         # TODO: are the following two commands necessary for every call?
@@ -243,13 +292,18 @@ class MindVision(Camera):
             _mvsdk.CameraReleaseImageBuffer(self.handle, raw_data)
 
             # Reshape the buffer as a numpy array, and return a copy.
+            # Use the raw, untransformed hardware frame shape; the base class applies
+            # self.transform afterward.
             frame_data = (_mvsdk.c_ubyte * frame_head.uBytes).from_address(self.buffer)
 
             if self.mono:
-                return np.copy(np.frombuffer(frame_data, dtype=np.uint8).reshape(self.shape))
+                return np.copy(
+                    np.frombuffer(frame_data, dtype=np.uint8).reshape(self._hw_image_shape)
+                )
             else:
-                rgb_shape = (self.shape[0], self.shape[1], 3)
+                rgb_shape = (self._hw_image_shape[0], self._hw_image_shape[1], 3)
                 return np.copy(np.frombuffer(frame_data, dtype=np.uint8).reshape(rgb_shape))
 
         except _mvsdk.CameraException as e:
-            print(f"CameraGetImageBuffer failed ({e.error_code}):\n{e.message}")
+            # Re-raise so _get_image_hw_tolerant can retry.
+            raise RuntimeError(f"CameraGetImageBuffer failed ({e.error_code}):\n{e.message}") from e

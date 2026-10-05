@@ -3,7 +3,6 @@ Common fit functions.
 """
 
 import numpy as np
-from scipy.special import factorial
 
 # 1D
 
@@ -51,7 +50,7 @@ def parabola(x, a, x0, y0):
     Returns
     -------
     y : numpy.ndarray
-        Line evaluated at all ``x``.
+        Parabola evaluated at all ``x``.
     """
     return a * np.square(x - x0) + y0
 
@@ -69,7 +68,7 @@ def hyperbola(z, w0, z0, zr):
     w0 : float
         Beamradius at :math:`z = z_0`.
     z0 : float
-        Plane of focus :math:`x_0`, the center of the hyperbola.
+        Plane of focus :math:`z_0`, the center of the hyperbola.
     zr : float
         Rayleigh length :math:`z_R`, the depth of focus.
 
@@ -125,7 +124,7 @@ def lorentzian(x, x0, a, c, w):
     c : float
         Constant offset.
     w : float
-        Full width at half maximum (FWHM).
+        Half width at half maximum (HWHM).
 
     Returns
     -------
@@ -150,10 +149,10 @@ def gaussian(x, x0, a, c, w):
     a : float
         Amplitude.
     c : float
-        constant offset.
+        Constant offset.
     w : float
         The standard deviation of the normal distribution.
-        Equivalent to the :math:`1/e` radius.
+        The :math:`1/e` radius is :math:`\sqrt{2}w`.
         This is related to the full width at half maximum (FWHM)
         by a factor of :math:`2\sqrt{2\ln{2}}`.
 
@@ -182,7 +181,7 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
                                 \frac{(y-y_0)^2}{2w_y^2}
                                 \right].
 
-    When ``wxy`` is nonzero, the 2D Gaussian to have second
+    When ``wxy`` is nonzero, this allows the 2D Gaussian to have second
     order central moments (equivalent to variance;
     see :meth:`~slmsuite.holography.analysis.image_variances()`) satisfying:
 
@@ -197,12 +196,12 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
                     w_{xy} & w_y^2
                 \end{bmatrix}.
 
-    The following satisfies satisfying the above condition:
+    The following satisfies the above condition:
 
     .. math:: z(x,y) = c + a \exp \left[
                                 -\frac{1}{2}\left(
                                 K_{00}(x-x_0)^2 +
-                                2*K_{10}(x-x_0)(y-y_0) +
+                                2K_{10}(x-x_0)(y-y_0) +
                                 K_{11}(y-y_0)^2
                                 \right)
                                 \right].
@@ -224,10 +223,9 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
 
     Note
     ~~~~
-    The shear variance ``wxy`` is currently bounded to magnitudes below ``wx*wy``.
-    Higher values lead to solutions which cannot be normalized.
-    When ``wxy = wx*wy``, this distribution is a line (an ellipse with zeroed minor
-    axis).
+    The shear variance ``|wxy|`` is clamped to ``wx*wy``, where the covariance is
+    singular: there the shear is dropped when the inversion fails, and the distribution
+    is numerically degenerate otherwise. Keep ``|wxy|`` below ``wx*wy``.
 
     Parameters
     ----------
@@ -238,10 +236,10 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
     a : float
         Amplitude.
     c : float
-        constant offset.
+        Constant offset.
     wx, wy : float
         The standard deviation of the normal distribution.
-        Equivalent to the :math:`1/e` radius.
+        The :math:`1/e` radius is :math:`\sqrt{2}w`.
         This is related to the full width at half maximum (FWHM)
         by a factor of :math:`2\sqrt{2\ln{2}}`.
     wxy : float
@@ -255,7 +253,7 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
     x = xy[0] - x0
     y = xy[1] - y0
 
-    wxy = np.sign(wxy) * np.min([np.abs(wxy), wx * wy])
+    wxy = np.sign(wxy) * np.min([np.abs(wxy), np.abs(wx * wy)])
 
     try:
         M = np.linalg.inv([[wx * wx, wxy], [wxy, wy * wy]])
@@ -273,7 +271,7 @@ def tophat2d(xy, x0, y0, R, a=1, c=0):
 
     .. math:: z(x,y) =  \left\{
                             \begin{array}{ll}
-                                a + c, & x^2 + y^2 < R^2 \\
+                                a + c, & x^2 + y^2 \leq R^2 \\
                                 c, & \text{ otherwise}.
                             \end{array}
                         \right.
@@ -305,8 +303,8 @@ def sinc2d(xy, x0, y0, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     r"""
     For fitting a 2D rectangular :math:`\text{sinc}^2` distribution, potentially with a sinusoidal modulation.
 
-    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right) *
-                        \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
+    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right)
+                        \text{sinc}^2(\pi (x-x_0) / R) \, \text{sinc}^2(\pi (y-y_0) / R).
 
     where
 
@@ -351,9 +349,9 @@ def sinc2d(xy, x0, y0, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
 
 def _sinc2d_nomod(xy, x0, y0, R, a=1, d=0):
     r"""
-    For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
+    For fitting a 2D rectangular sinc distribution, without sinusoidal modulation.
 
-    .. math:: z(x,y) =  d + a * \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
+    .. math:: z(x,y) =  d + a \, \text{sinc}^2(\pi (x-x_0) / R) \, \text{sinc}^2(\pi (y-y_0) / R).
 
     where
 
@@ -380,46 +378,12 @@ def _sinc2d_nomod(xy, x0, y0, R, a=1, d=0):
     return a * np.square(np.sinc((1 / R) * (xy[0] - x0)) * np.sinc((1 / R) * (xy[1] - y0))) + d
 
 
-def _sinc2d_nomod_taylor(xy, x0, y0, R, a=1, d=0):
-    r"""
-    For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
-
-    .. math:: z(x,y) =  d + a * \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
-
-    where
-
-    .. math:: \text{sinc}(x) = \frac{\sin(x)}{x}
-
-    Parameters
-    ----------
-    xy : numpy.ndarray
-        Points to fit upon (x, y).
-    x0, y0 : float
-        Vector offset.
-    R : float
-        Square radius of the sinc (radius of the first zero).
-    a : float
-        Peak amplitude.
-    d : float
-        Global offset.
-
-    Returns
-    -------
-    z : numpy.ndarray
-        Rectangular sinc fit evaluated at all ``(x,y)`` in ``xy``.
-    """
-    return (
-        a * np.square(_sinc_taylor((1 / R) * (xy[0] - x0)) * _sinc_taylor((1 / R) * (xy[1] - y0)))
-        + d
-    )
-
-
 def _sinc2d_centered(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     r"""
     For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
 
-    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right) *
-                        \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
+    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right)
+                        \text{sinc}^2(\pi x / R) \, \text{sinc}^2(\pi y / R).
 
     where
 
@@ -440,7 +404,7 @@ def _sinc2d_centered(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     d : float
         Global offset.
     kx, ky : float
-        Vector phase scale factor. Default is 1.
+        Vector phase scale factor. Default is 0.
 
     Returns
     -------
@@ -454,72 +418,9 @@ def _sinc2d_centered(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     )
 
 
-def _sinc2d_centered_taylor(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
-    r"""
-    For fitting a 2D rectangular sinc distribution, potentially with a sinusoidal modulation.
-
-    .. math:: z(x,y) =  d + \left(c + \frac{a}{2} \left[1+\cos(k_xx+k_yy-b) \right]\right) *
-                        \text{sinc}^2(\pi (x-x_0) / R) * \text{sinc}^2(\pi (y-y_0) / R).
-
-    where
-
-    .. math:: \text{sinc}(x) = \frac{\sin(x)}{x}
-
-    Parameters
-    ----------
-    xy : numpy.ndarray
-        Points to fit upon (x, y).
-    R : float
-        Square radius of the sinc (radius of the first zero).
-    a : float
-        Peak amplitude.
-    b : float
-        Phase offset.
-    c : float
-        Sinusoidal amplitude offset.
-    d : float
-        Global offset.
-    kx, ky : float
-        Vector phase scale factor. Default is 1.
-
-    Returns
-    -------
-    z : numpy.ndarray
-        Rectangular sinc fit evaluated at all ``(x,y)`` in ``xy``.
-    """
-    return (
-        np.square(_sinc_taylor((1 / R) * xy[0]) * _sinc_taylor((1 / R) * xy[1]))
-        * (a * 0.5 * (1 + np.cos(kx * xy[0] + ky * xy[1] - b)) + c)
-        + d
-    )
-
-
-def _sinc_taylor(x, order=12):
-    """
-    Taylor series approximation for sinc. We use the numpy normalization.
-
-    Parameters
-    ----------
-    x : numpy.ndarray
-        Array to approximate sinc(x) upon.
-    order : int
-        Order of 12 approximates well up to the second zero.
-    """
-    squared = np.square(np.pi * x)
-    monomial = squared.copy()
-    result = 1
-
-    for n in range(2, order + 2, 2):
-        if n != 2:
-            monomial *= squared
-        result += monomial * ((-1 if n % 4 == 2 else 1) / factorial(n + 1))
-
-    return result
-
-
 def _sinc2d_centered_jacobian(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     r"""
-    Jacobian of :meth:`.sinc2d_centered()`.
+    Jacobian of ``_sinc2d_centered()``.
 
     Returns
     -------
@@ -528,8 +429,8 @@ def _sinc2d_centered_jacobian(xy, R, a=1, b=0, c=0, d=0, kx=0, ky=0):
     """
     scx = np.sinc((1 / R) * xy[0])
     scy = np.sinc((1 / R) * xy[1])
-    cx = np.cos((1 / R) * xy[0])
-    cy = np.cos((1 / R) * xy[1])
+    cx = np.cos(np.pi * (1 / R) * xy[0])
+    cy = np.cos(np.pi * (1 / R) * xy[1])
     sinc_term = np.square(scx * scy)
     cos_term = 0.5 * (1 + np.cos(kx * xy[0] + ky * xy[1] - b))
     dcos_term = -0.5 * np.sin(kx * xy[0] + ky * xy[1] - b)

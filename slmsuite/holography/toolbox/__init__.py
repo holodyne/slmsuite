@@ -9,7 +9,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.spatial import Voronoi, distance, voronoi_plot_2d
 
+from slmsuite._logging import make_logger
+from slmsuite._plotting import _slmsuite_plt_show
+from slmsuite.holography.toolbox._aperture import Aperture as Aperture
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.misc.xp import as_backend, as_numpy, get_array_module
+
+logger = make_logger(__name__)
+
 
 # Unit definitions.
 
@@ -24,7 +31,9 @@ LENGTH_FACTORS = {
 LENGTH_LABELS = {k: k for k in LENGTH_FACTORS}
 LENGTH_LABELS["um"] = r"$\mu$m"
 
-CAMERA_UNITS = ["ij"]
+# Camera pixel units need only a Camera affine (no pixel pitch).
+CAMERA_PIXEL_UNITS = ["ij", "ijraw"]
+CAMERA_UNITS = list(CAMERA_PIXEL_UNITS)
 
 BLAZE_LABELS = {
     "rad": (r"$\theta_x$ [rad]", r"$\theta_y$ [rad]"),
@@ -37,11 +46,12 @@ BLAZE_LABELS = {
     "lpmm": (r"$k_x/2\pi$ [1/mm]", r"$k_y/2\pi$ [1/mm]"),
     "zernike": (r"$x = Z_2 = Z_1^1$ [Zernike rad]", r"$y = Z_1 = Z_1^{-1}$ [Zernike rad]"),
     "ij": (r"Camera $i$ [pix]", r"Camera $j$ [pix]"),
+    "ijraw": (r"Sensor $i$ [raw pix]", r"Sensor $j$ [raw pix]"),
 }
 for prefix, name in zip(["", "mag_"], ["Camera", "Experiment"]):
     for k in LENGTH_FACTORS:
         u = LENGTH_LABELS[k]
-        BLAZE_LABELS[prefix + k] = ((f"{name} $x$ [{u}]", f"{name} $y$ [{u}]"),)
+        BLAZE_LABELS[prefix + k] = (f"{name} $x$ [{u}]", f"{name} $y$ [{u}]")
         CAMERA_UNITS.append(prefix + k)
 
 BLAZE_UNITS = list(BLAZE_LABELS.keys())
@@ -56,7 +66,7 @@ def convert_blaze_vector(*args, **kwargs):
     for backwards compatibility.
     """
     warnings.warn(
-        "The backwards-compatible alias convert_blaze_vector will be depreciated "
+        "The backwards-compatible alias convert_blaze_vector will be deprecated "
         "in favor of convert_vector in a future release."
     )
 
@@ -73,13 +83,13 @@ def convert_blaze_radius(*args, **kwargs):
     for backwards compatibility.
     """
     warnings.warn(
-        "The backwards-compatible alias convert_blaze_radius will be depreciated "
+        "The backwards-compatible alias convert_blaze_radius will be deprecated "
         "in favor of convert_radius in a future release."
     )
 
     if "slm" in kwargs:
         kwargs["hardware"] = kwargs.pop("slm")
-        warnings.warn("convert_vector(slm=) was renamed convert_vector(hardware=).")
+        warnings.warn("convert_radius(slm=) was renamed convert_radius(hardware=).")
 
     return convert_radius(*args, **kwargs)
 
@@ -127,34 +137,45 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
         These functions are defined within the unit disk, and canonically have amplitude
         of :math:`\pm 1` at the edges.
-        The size of the disk when scaled onto the SLM is pulled from radial fits
-        derived from the amplitude distribution of the SLM.
-        See :meth:`~slmsuite.hardware.slms.slm.SLM.get_source_zernike_scaling()` and
-        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_source_amplitude()`, especially
-        the ``extent_threshold`` keyword which determines the size of the disk.
+        The size of the disk when scaled onto the SLM is pulled from the SLM's
+        :attr:`~slmsuite.hardware.slms.slm.SLM.aperture` (see
+        :attr:`~slmsuite.hardware.slms.slm.SLM.zernike_scaling` and
+        :meth:`~slmsuite.hardware.slms.slm.SLM.fit_aperture()`).
         Requires a :class:`~slmsuite.hardware.slms.slm.SLM` or
         :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``.
 
     -  ``"ij"``
-        Camera pixel units, relative to the origin of the camera.
-        Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``.
+        Camera sensor pixel units, the coordinates of the image array returned by
+        :meth:`~slmsuite.hardware.cameras.camera.Camera.get_image()` using numpy ``img[y, x]`` convention.
+        When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
+        Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
+        unless converting only between camera units (see ``"ijraw"``), in which case a
+        :class:`~slmsuite.hardware.cameras.camera.Camera` suffices.
         See :meth:`~slmsuite.hardware.cameraslms.FourierSLM.kxyslm_to_ijcam`
         and :meth:`~slmsuite.hardware.cameraslms.FourierSLM.ijcam_to_kxyslm`.
 
+    -  ``"ijraw"``
+        Raw camera sensor pixel units: the **unbinned, un-WOI'd, untransformed** coordinate
+        system of the physical sensor, as opposed to ``"ij"`` which lives in the WOI-,
+        binning-, and orientation-applied frame of the returned image.  Requires a
+        :class:`~slmsuite.hardware.cameras.camera.Camera`
+        (or :class:`~slmsuite.hardware.cameraslms.FourierSLM`) to be passed to ``hardware``.
+        The mapping to ``"ij"`` is the camera's current window, binning, and orientation.
+
     -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
-        Camera position in metric length units, relative to the origin of the camera.
+        Camera position in metric length units, relative to the origin of the camera (potentially with WOI applied).
+        When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
         along with knowledge of the camera pixel size ``pitch_um``.
 
     -  ``"mag_m"``, ``"mag_cm"``, ``"mag_mm"``, ``"mag_um"``, ``"mag_nm"``
         Scales the corresponding metric length unit according to the value stored in
-        :attr:`~slmsuite.hardware.cameraslms.FourierSLM.mag` to match the true
-        dimensions of the experiment plane, apposed to the camera plane.
+        :attr:`~slmsuite.hardware.cameraslms.CameraSLM.mag` to match the true
+        dimensions of the experiment plane, as opposed to the camera plane.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
         along with knowledge of the camera pixel size ``pitch_um``.
 
-    3D Vectors
-    ~~~~~~~~~~
+    .. rubric:: 3D Vectors
 
     If an array of 3D vectors is given, then the depth (:math:`z`) direction is handled
     differently than the field (:math:`xy`).
@@ -167,7 +188,12 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         zernike focus term necessary to focus at the given depth.
 
     -  ``"ij"``
-        True cartesian distance relative to the **camera plane** in pixels.
+        True cartesian distance relative to the **camera plane** in camera pixels.
+        Cameras with rectangular (anisotropic) pixels average the pixel dimensions.
+
+    -  ``"ijraw"``
+        True cartesian distance relative to the **camera plane** in raw (unbinned) sensor
+        pixels. This differs from ``"ij"`` by the isotropic binning scale.
 
     -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
         True cartesian distance relative to the **camera plane** in metric units.
@@ -175,8 +201,9 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     -  ``"mag_m"``, ``"mag_cm"``, ``"mag_mm"``, ``"mag_um"``, ``"mag_nm"``
         True cartesian distance relative to the **experiment plane** in metric units.
         Importantly, :math:`x` and :math:`y` are divided by
-        :attr:`~slmsuite.hardware.cameraslms.FourierSLM.mag`,
-        while :math:`z` is multiplied by it.
+        :attr:`~slmsuite.hardware.cameraslms.CameraSLM.mag`,
+        while :math:`z` is divided by its square, the longitudinal magnification
+        between planes of equal refractive index.
 
     Some of these units will not make sense in a system with anisotropic focusing, for
     instance due to cylindrical lenses in the optical train.
@@ -184,7 +211,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     Warning
     ~~~~~~~
     The units ``"freq"``, ``"knm"``, and ``"lpmm"`` depend on SLM pixel size,
-    so a SLM should be passed to ``hardware``
+    so an SLM should be passed to ``hardware``
     (otherwise returns an array of ``nan`` values).
     The unit ``"zernike"`` also requires an SLM.
     The unit ``"knm"`` additionally requires the ``shape`` of the computational space.
@@ -193,6 +220,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     camera and require calibration data stored in a
     :class:`~slmsuite.hardware.cameraslms.FourierSLM`,
     so this must be passed to ``hardware``.
+    The exception is conversions **only between camera units** (e.g. ``"ij"``,
+    ``"ijraw"``, ``"um"``), which require no Fourier calibration; a bare
+    :class:`~slmsuite.hardware.cameras.camera.Camera` may be passed to ``hardware`` in this
+    case. The ``"mag_..."`` units still require a
+    :class:`~slmsuite.hardware.cameraslms.FourierSLM` (for its ``mag``).
 
     Parameters
     ----------
@@ -203,11 +235,13 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     from_units, to_units : str
         Units which we are converting between. See the listed units above for options.
         Defaults to ``"norm"``.
-    hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
+    hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameras.camera.Camera` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Relevant hardware to pull calibration data from in the case of
         ``"freq"``, ``"knm"``, ``"lpmm"``, or ``"zernike"``.
         If :class:`~slmsuite.hardware.cameraslms.FourierSLM`, the unit ``"ij"`` and other
         length units can be processed too.
+        If a bare :class:`~slmsuite.hardware.cameras.camera.Camera`, conversions only
+        between camera units (e.g. ``"ij"`` and ``"ijraw"``) are supported.
     shape : (int, int) OR None
         Shape of the computational SLM space. Needed for ``"knm"``.
         Defaults to ``slm.shape`` if ``hardware`` is not ``None``.
@@ -220,13 +254,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     # Parse units.
     if from_units not in BLAZE_UNITS:
         raise ValueError(
-            f"From unit '{from_units}' not recognized \
-                         as a valid unit. Options: {BLAZE_UNITS}"
+            f"From unit '{from_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
         )
     if to_units not in BLAZE_UNITS:
         raise ValueError(
-            f"To unit '{to_units}' not recognized \
-                         as a valid unit. Options: {BLAZE_UNITS}"
+            f"To unit '{to_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
         )
 
     # Parse vectors.
@@ -243,29 +275,57 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     else:
         vector_z = None
 
-    # Determine whether a CameraSLM was passed (to enable "ij" units and related).
-    if hasattr(hardware, "slm") and hasattr(hardware, "cam"):
-        cameraslm = hardware
-        slm = hardware.slm
-    else:
-        cameraslm = None
-        slm = hardware
+    # Determine which hardware was passed, duck typed to avoid a circular import.
+    if hasattr(hardware, "slm") and hasattr(hardware, "cam"):  # CameraSLM
+        cameraslm, slm, cam = hardware, hardware.slm, hardware.cam
+    elif hasattr(hardware, "_get_ijcam_to_ijraw"):  # bare Camera
+        cameraslm, slm, cam = None, None, hardware
+    elif hasattr(hardware, "set_phase"):  # bare SLM
+        cameraslm, slm, cam = None, hardware, None
+    else:  # None / unknown
+        cameraslm, slm, cam = None, None, None
+
+    # Camera-only conversions skip the kxy round-trip and need no CameraSLM.
+    camera_only = from_units in CAMERA_UNITS and to_units in CAMERA_UNITS
 
     if from_units in CAMERA_UNITS or to_units in CAMERA_UNITS:
-        if cameraslm is None or "fourier" not in cameraslm.calibrations:
-            warnings.warn(
-                f"CameraSLM must be passed as slm for conversion '{from_units}' to '{to_units}'"
+        if cam is None:
+            logger.warning(
+                "A Camera or CameraSLM must be passed as hardware for conversion '%s' to '%s'",
+                from_units,
+                to_units,
             )
             return np.full_like(vector_parsed, np.nan)
 
-        cam_pitch_um = cameraslm.cam.pitch_um
+        if not camera_only and (cameraslm is None or "fourier" not in cameraslm.calibrations):
+            logger.warning(
+                "A Fourier-calibrated CameraSLM must be passed as hardware "
+                "for conversion '%s' to '%s'",
+                from_units,
+                to_units,
+            )
+            return np.full_like(vector_parsed, np.nan)
+
+        # "mag_..." units require the CameraSLM magnification.
+        if ("mag_" in from_units or "mag_" in to_units) and cameraslm is None:
+            logger.warning(
+                "A CameraSLM must be passed as hardware for 'mag_...' conversion '%s' to '%s'",
+                from_units,
+                to_units,
+            )
+            return np.full_like(vector_parsed, np.nan)
+
+        cam_pitch_um = cam.pitch_um
 
         if cam_pitch_um is None:
-            # Don't error if ij.
-            if from_units in CAMERA_UNITS[1:] or to_units in CAMERA_UNITS[1:]:
-                warnings.warn(
-                    "Camera must have filled attribute pitch_um "
-                    "for conversion '{from_units}' to '{to_units}'"
+            # Only length (non-pixel) camera units need the pixel pitch.
+            if (from_units in CAMERA_UNITS and from_units not in CAMERA_PIXEL_UNITS) or (
+                to_units in CAMERA_UNITS and to_units not in CAMERA_PIXEL_UNITS
+            ):
+                logger.warning(
+                    "Camera must have filled attribute pitch_um for conversion '%s' to '%s'",
+                    from_units,
+                    to_units,
                 )
                 return np.full_like(vector_parsed, np.nan)
         else:
@@ -274,7 +334,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     # Generate conversion factors for various units.
     if from_units == "freq" or to_units == "freq":
         if slm is None:
-            warnings.warn("slm is required for unit 'freq'")
+            logger.warning("slm is required for unit 'freq'")
             pitch_um = np.nan
             wav_um = np.nan
         else:
@@ -283,20 +343,21 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units == "lpmm" or to_units == "lpmm":
         if slm is None:
-            warnings.warn("slm is required for units 'lpmm'")
+            logger.warning("slm is required for units 'lpmm'")
             wav_um = np.nan
         else:
             wav_um = slm.wav_um
 
     if from_units == "knm" or to_units == "knm":
         if slm is None:
+            logger.warning("slm is required for unit 'knm'")
             pitch = np.nan
         else:
             pitch = format_2vectors(slm.pitch)
 
         if shape is None:
             if slm is None:
-                warnings.warn("shape or slm is required for unit 'knm'")
+                logger.warning("shape or slm is required for unit 'knm'")
                 shape = (np.nan, np.nan)
             else:
                 shape = np.array(slm.shape, dtype=float)
@@ -309,13 +370,19 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     if from_units == "zernike" or to_units == "zernike":
         if slm is None:
+            logger.warning("slm is required for unit 'zernike'")
             zernike_scale = np.nan
         else:
-            zernike_scale = 2 * np.pi * np.reciprocal(slm.get_source_zernike_scaling())
+            zernike_scale = 2 * np.pi * np.reciprocal(slm.aperture._isotropic_scale())
+
+    if "ijraw" in (from_units, to_units):
+        # Camera affine for "ijraw" xy; depth uses the arithmetic mean of the binning.
+        ijcam_to_ijraw = cam._get_ijcam_to_ijraw()
+        ijraw_z_scale = np.mean(cam.binning)
 
     # XY
 
-    # Convert the xy input to normalized "kxy" units.
+    # Convert the xy input to its domain intermediate ("kxy" or "ijcam" pixels).
     if from_units == "norm" or from_units == "kxy" or from_units == "rad":
         rad = vector_xy
     elif from_units == "mrad":
@@ -331,14 +398,22 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     elif from_units == "zernike":
         rad = vector_xy / zernike_scale
     elif from_units == "ij":
-        rad = cameraslm.ijcam_to_kxyslm(vector_xy)
+        ij = vector_xy
+    elif from_units == "ijraw":
+        ij = ijcam_to_ijraw.inv @ vector_xy
     elif from_units in CAMERA_UNITS:
         unit = from_units.split("_")[-1]
         if "mag_" in from_units:
-            vector_xy *= cameraslm.mag
-        rad = cameraslm.ijcam_to_kxyslm(vector_xy * LENGTH_FACTORS[unit] / cam_pitch_um)
+            vector_xy = vector_xy * cameraslm.mag
+        ij = vector_xy * LENGTH_FACTORS[unit] / cam_pitch_um
 
-    # Convert from normalized "kxy" units to the desired xy output units.
+    # Bridge the "ijcam" pixel and "kxy" domains, only when crossing between them.
+    if from_units in CAMERA_UNITS and to_units not in CAMERA_UNITS:
+        rad = cameraslm.ijcam_to_kxyslm(ij)
+    elif to_units in CAMERA_UNITS and from_units not in CAMERA_UNITS:
+        ij = cameraslm.kxyslm_to_ijcam(rad)
+
+    # Convert the domain intermediate to the desired xy output units.
     if to_units == "norm" or to_units == "kxy" or to_units == "rad":
         vector_xy = rad
     elif to_units == "mrad":
@@ -354,41 +429,49 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     elif to_units == "zernike":
         vector_xy = rad * zernike_scale
     elif to_units == "ij":
-        vector_xy = cameraslm.kxyslm_to_ijcam(rad)
+        vector_xy = ij
+    elif to_units == "ijraw":
+        vector_xy = ijcam_to_ijraw @ ij
     elif to_units in CAMERA_UNITS:
         unit = to_units.split("_")[-1]
-        vector_xy = cameraslm.kxyslm_to_ijcam(rad) * cam_pitch_um / LENGTH_FACTORS[unit]
+        vector_xy = ij * cam_pitch_um / LENGTH_FACTORS[unit]
         if "mag_" in to_units:
-            vector_xy /= cameraslm.mag
+            vector_xy = vector_xy / cameraslm.mag
 
     # Z
 
     if vector_z is not None:
-        # Convert the z input to normalized "focal power" units.
-        if from_units in CAMERA_UNITS:
-            if from_units != "ij":
-                unit = from_units.split("_")[-1]
-                vector_z *= LENGTH_FACTORS[unit] / np.mean(cam_pitch_um)
-                if "mag_" in from_units:
-                    vector_z /= cameraslm.mag
-
-            focal_power = cameraslm._ijcam_to_kxyslm_depth(vector_z)
-
+        # Convert the z input to its domain intermediate ("focal power" or "ijcam" depth).
+        if from_units == "ij":
+            z_ij = vector_z
+        elif from_units == "ijraw":
+            z_ij = vector_z / ijraw_z_scale
+        elif from_units in CAMERA_UNITS:
+            unit = from_units.split("_")[-1]
+            z_ij = vector_z * LENGTH_FACTORS[unit] / np.mean(cam_pitch_um)
+            if "mag_" in from_units:
+                z_ij = z_ij * cameraslm.mag**2
         elif from_units == "zernike":
             focal_power = vector_z * ((8 * np.pi) / (zernike_scale * zernike_scale))
         else:
             focal_power = vector_z
 
-        # Convert the normalized "focal power" units to the desired z output units.
-        if to_units in CAMERA_UNITS:
-            vector_z = cameraslm._kxyslm_to_ijcam_depth(focal_power)
+        # Bridge the "ijcam" depth and "focal power" domains, only when crossing between them.
+        if from_units in CAMERA_UNITS and to_units not in CAMERA_UNITS:
+            focal_power = cameraslm._ijcam_to_kxyslm_depth(z_ij)
+        elif to_units in CAMERA_UNITS and from_units not in CAMERA_UNITS:
+            z_ij = cameraslm._kxyslm_to_ijcam_depth(focal_power)
 
-            if to_units != "ij":
-                unit = to_units.split("_")[-1]
-                vector_z *= np.mean(cam_pitch_um) / LENGTH_FACTORS[unit]
-                if "mag_" in to_units:
-                    vector_z *= cameraslm.mag
-
+        # Convert the domain intermediate to the desired z output units.
+        if to_units == "ij":
+            vector_z = z_ij
+        elif to_units == "ijraw":
+            vector_z = z_ij * ijraw_z_scale
+        elif to_units in CAMERA_UNITS:
+            unit = to_units.split("_")[-1]
+            vector_z = z_ij * np.mean(cam_pitch_um) / LENGTH_FACTORS[unit]
+            if "mag_" in to_units:
+                vector_z = vector_z / cameraslm.mag**2
         elif to_units == "zernike":
             vector_z = focal_power * ((zernike_scale * zernike_scale) / (8 * np.pi))
         else:
@@ -437,7 +520,7 @@ def convert_radius(radius, from_units="norm", to_units="norm", hardware=None, sh
         The scalar radius to convert.
     from_units, to_units : str
         Passed to :meth:`convert_vector`.
-    hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.CameraSLM` OR None
+    hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Passed to :meth:`convert_vector`.
     shape : (int, int) OR None
         Passed to :meth:`convert_vector`.
@@ -464,29 +547,31 @@ def convert_radius(radius, from_units="norm", to_units="norm", hardware=None, sh
 
 def window_slice(window, shape=None, centered=False, circular=False):
     """
-    Parses the slices that describe the window's view into the larger array.
+    Parses the slices that describe the window's view into the larger 2D array.
 
     Parameters
     ----------
-    window : (int, int, int, int) OR (array_like, array_like) OR array_like
+    window : (int, int, int, int) OR (array_like, array_like) OR array_like OR None
         A number of formats are accepted:
 
         - List in ``(x, w, y, h)`` format, where ``w`` and ``h`` are the width and height of
           the region and  ``(x,y)`` is the upper-left coordinate.
 
-          - If ``centered``, then ``(x,y)`` is instead the center of the region to imprint.
-          - If ``circular``, then an elliptical region circumscribed by the rectangular region is returned.
+            - If ``centered``, then ``(x,y)`` is instead the center of the region to imprint.
+            - If ``circular``, then an elliptical region circumscribed by the rectangular region is returned.
 
-        - Tuple containing arrays of identical length corresponding to y and x indices.
+        - Tuple containing arrays of identical length corresponding to y and x indices of points in the window.
           ``centered`` and ``circular`` are ignored.
         - Boolean array of same ``shape`` as ``matrix``; the window is defined where ``True`` pixels are.
           ``centered`` and ``circular`` are ignored.
+        - If ``None``, the window is the full slice of the 2D array.
 
     shape : (int, int) OR None
         The (height, width) of the array that the window is a view into.
         If not ``None``, indices beyond those allowed by ``shape`` will be clipped.
     centered : bool
-        See ``window``.
+        See ``window``. The window is indexed like an FFT, so ``(x,y)`` lands at
+        offset ``w // 2``; an even-width window is not symmetric about it.
     circular : bool
         See ``window``.
 
@@ -498,25 +583,33 @@ def window_slice(window, shape=None, centered=False, circular=False):
     if shape is not None:
         shape = format_shape(shape)
 
-    # Case 1: (v.x, w, v.y, h) format
-    if len(window) == 4:
-        # Prepare helper vars
-        xi = int(window[0] - ((window[1] - 2) / 2 if centered else 0))
+    # Case 0: No window, so return the full slice.
+    if window is None:
+        slice_ = (slice(None), slice(None))
+    # Case 3: Boolean mask. Tested before cases 1 and 2, as a 2- or 4-row mask has their length.
+    elif _is_mask(window):
+        slice_ = window
+    # Case 1: (x, w, y, h) format
+    elif len(window) == 4:
+        # Windows are indexed like an FFT: the center sits at offset w // 2.
+        (dx, dy) = (int(window[1]) // 2, int(window[3]) // 2)
+
+        xi = int(window[0]) - (dx if centered else 0)
         xf = xi + int(window[1])
-        yi = int(window[2] - ((window[3] - 2) / 2 if centered else 0))
+        yi = int(window[2]) - (dy if centered else 0)
         yf = yi + int(window[3])
 
+        xc = xi + dx
+        yc = yi + dy
+
         if shape is not None:
-            [xi, xf] = np.clip([xi, xf], 0, shape[1] - 1)
-            [yi, yf] = np.clip([yi, yf], 0, shape[0] - 1)
+            [xi, xf] = np.clip([xi, xf], 0, shape[1])
+            [yi, yf] = np.clip([yi, yf], 0, shape[0])
 
         if circular:  # If a circular window is desired, compute this.
             x_list = np.arange(xi, xf)
             y_list = np.arange(yi, yf)
             x_grid, y_grid = np.meshgrid(x_list, y_list)
-
-            xc = xi + int((window[1] - 1) / 2)
-            yc = yi + int((window[3] - 1) / 2)
 
             rr_grid = (window[3] ** 2) * np.square(x_grid.astype(float) - xc) + (
                 window[1] ** 2
@@ -538,7 +631,7 @@ def window_slice(window, shape=None, centered=False, circular=False):
             x_ind = np.clip(x_ind, 0, shape[1] - 1)
             y_ind = np.clip(y_ind, 0, shape[0] - 1)
         slice_ = (y_ind, x_ind)
-    # Case 3: Boolean numpy array.
+    # Case 4: Any other 2D array passes through as an index array.
     elif np.ndim(window) == 2:
         slice_ = window
     else:
@@ -547,19 +640,26 @@ def window_slice(window, shape=None, centered=False, circular=False):
     return slice_
 
 
+def _is_mask(window):
+    """Whether ``window`` is a 2D boolean mask, on any backend."""
+    return getattr(window, "dtype", None) == bool and getattr(window, "ndim", 0) == 2  # noqa: E721 (numpy dtype, not a type)
+
+
 def window_extent(window, padding_frac=0, padding_pix=0):
     """
-    Find a square that covers the active region of the 2D boolean mask ``window``.
+    Find a rectangle that covers the active region of the 2D boolean mask ``window``.
 
     Parameters
     ----------
-    window : numpy.ndarray<bool> (height, width)
-        Boolean mask.
+    window : numpy.ndarray<bool> OR (int, int, int, int) OR (array_like, array_like)
+        Boolean mask of shape ``(height, width)``, a rectangle ``(x, w, y, h)``,
+        or ``(y_indices, x_indices)`` lists of active pixels.
     padding_frac : float
         If this default window has width ``w`` and height ``h``,
         ``padding_frac`` proportionally changes these dimensions all sides.
         For instance, ``padding_frac=.5`` would modify the dimensions to be
-        ``w = 1.5w`` and ``h = 1.5h``.
+        ``w = 1.5w`` and ``h = 1.5h`` and adjust the position of the window
+        accordingly to keep it centered on the same region.
     padding_pix : float
         Additional padding to add, in pixels.
         This is applied after ``padding_frac``.
@@ -567,18 +667,24 @@ def window_extent(window, padding_frac=0, padding_pix=0):
     Returns
     -------
     window_extent : (int, int, int, int)
-        A rectangle that centered on the active region of ``window``
+        A rectangle centered on the active region of ``window``
         in the format ``(x, w, y, h)`` where
         ``(x, y)`` is the upper left coordinate, and
         ``(w, h)`` define the extent.
-        This result is clipped to be within ``shape`` of the window.
+        For a boolean mask, this result is clipped to be within ``shape`` of the window.
     """
     limits = []
+    is_mask = _is_mask(window)
+    if is_mask:
+        window = as_numpy(window)
 
     # For each axis...
     for a in [0, 1]:
-        if len(window) == 2:  # Handle two list case
-            limit = np.array([np.amin(window[a]), np.amax(window[a]) + 1])
+        if len(window) == 4 and not is_mask:  # Handle the (x, w, y, h) case
+            b = 2 * a
+            limit = np.array([window[b], window[b] + window[b + 1]])
+        elif len(window) == 2 and not is_mask:  # Handle two list case: window = (y_ind, x_ind)
+            limit = np.array([np.amin(window[1 - a]), np.amax(window[1 - a]) + 1])
         elif np.ndim(window) == 2:  # Handle the boolean array case
             collapsed = np.where(np.any(window, axis=a))  # Collapse the other axis
             limit = np.array([np.amin(collapsed), np.amax(collapsed) + 1])
@@ -586,11 +692,11 @@ def window_extent(window, padding_frac=0, padding_pix=0):
             raise ValueError("Unrecognized format for `window`.")
 
         # Add padding if desired.
-        padding_ = int((np.floor(np.diff(limit) * padding_frac) + padding_pix).item())
+        padding_ = int((np.floor(np.diff(limit) * padding_frac / 2) + padding_pix).item())
         limit += np.array([-padding_, padding_])
 
         # Clip the padding to shape.
-        if np.ndim(window) == 2:
+        if isinstance(window, np.ndarray) and np.ndim(window) == 2:
             limit = np.clip(limit, 0, window.shape[1 - a])
 
         limits.append(tuple(limit))
@@ -628,8 +734,9 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
     radius : float
         Cells on the edge of the set of cells might be very large. This parameter bounds
         the cells with a boolean and to the aperture of the given ``radius``.
-    plot : bool
-        Whether to plot the resulting Voronoi diagram with :meth:`scipy.spatial.voronoi_plot_2d()`.
+    plot : int OR bool
+        Whether to plot the resulting Voronoi diagram with
+        :meth:`scipy.spatial.voronoi_plot_2d()`, at ``1`` and above.
 
     Returns
     -------
@@ -640,8 +747,8 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
 
     if (
         isinstance(grid, (list, tuple))
-        and isinstance(grid[0], (int))
-        and isinstance(grid[1], (int))
+        and isinstance(grid[0], INTEGER_TYPES)
+        and isinstance(grid[1], INTEGER_TYPES)
     ):
         shape = grid
     else:
@@ -674,12 +781,12 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
 
     vor = Voronoi(vectors_voronoi, furthest_site=False)
 
-    if plot:
+    if plot >= 1:
         sx = shape[1]
         sy = shape[0]
 
         # Use the built-in scipy function to plot a visualization of the windows.
-        # fig = voronoi_plot_2d(vor)
+        voronoi_plot_2d(vor)
 
         # Plot a bounding box corresponding to the grid.
         plt.plot(np.array([0, sx, sx, 0, 0]), np.array([0, 0, sy, sy, 0]), "r")
@@ -689,7 +796,7 @@ def voronoi_windows(grid, vectors, radius=None, plot=False):
         plt.ylim(1.05 * sy, -0.05 * sy)
         plt.gca().set_aspect("equal")
         plt.title("Voronoi Cells")
-        plt.show()
+        _slmsuite_plt_show(name="voronoi_windows")
 
     # Gather data from scipy Voronoi and return as a list of boolean windows.
     N = np.shape(vectors)[1]
@@ -735,7 +842,7 @@ def imprint(
     **kwargs,
 ):
     r"""
-    Imprints a region (defined by ``window``) of a ``matrix`` with a ``function``.
+    Imprints a region (defined by ``window``) of a ``matrix`` with a ``function`` in-place.
     This ``function`` must be in the style of :mod:`~slmsuite.holography.toolbox.phase`
     phase helper functions, which expect a ``grid`` parameter to define the coordinate basis
     (see :meth:`~slmsuite.holography.toolbox.phase.blaze()` or
@@ -759,6 +866,7 @@ def imprint(
     ----------
     matrix : numpy.ndarray
         The data to imprint a ``function`` onto.
+        This operation occurs in-place (original array is modified).
     window
         Passed to :meth:`~slmsuite.holography.toolbox.window_slice()`.
         See :meth:`~slmsuite.holography.toolbox.window_slice()` for various options.
@@ -796,7 +904,7 @@ def imprint(
     clip : bool
         Whether to clip the imprint region if it exceeds the size of ``matrix``.
         If ``False``, then an error is raised when the size is exceeded.
-        If ``True``, then the out-of-range pixels are instead filled with ``numpy.nan``.
+        If ``True``, then the out-of-range pixels are cropped from the window.
     transform : float or ((float, float), (float, float))
        Passed to :meth:`transform_grid`, operating on the cropped imprint grid.
        This is left as an option such that the user does not have to transform the
@@ -806,7 +914,7 @@ def imprint(
        Passed to :meth:`transform_grid`, operating on the cropped imprint grid.
        This is left as an option such that the user does not have to transform the
        entire ``grid`` to satisfy a tiny imprinted patch.
-       If ``True``, the grid is centered on the region.
+       If ``True``, the shift is minus the mean of the cropped grid.
        See :meth:`transform_grid` for more details.
     **kwargs :
         For passing additional arguments accepted by ``function``.
@@ -830,27 +938,44 @@ def imprint(
     shape = matrix.shape if clip else None
     slice_ = window_slice(window, shape=shape, centered=centered, circular=circular)
 
+    if not clip and window is not None and isinstance(slice_, tuple):
+        for index, limit in zip(slice_, matrix.shape):
+            if isinstance(index, slice):
+                out_of_range = index.start < 0 or index.stop > limit
+            else:
+                out_of_range = np.any(index < 0) or np.any(index >= limit)
+            if out_of_range:
+                raise ValueError(
+                    f"Imprint window extends past the matrix of shape {matrix.shape}. "
+                    "Pass clip=True to crop the window."
+                )
+
     # Decide whether to treat function as a float.
     is_float = isinstance(function, REAL_TYPES)
 
     if not is_float and grid is None:
         raise ValueError("grid cannot be None if a function is given; None is a float-only option.")
 
+    # Evaluate the function on the windowed grid. The grid and the canvas need not
+    # share a backend (a GPU slm.grid is often imprinted onto a host matrix), so land
+    # the result on the canvas' backend before writing it in.
+    if not is_float:
+        grid_slice = as_backend(slice_, get_array_module(x_grid)) if _is_mask(slice_) else slice_
+        function = as_backend(
+            function(
+                transform_grid((x_grid[grid_slice], y_grid[grid_slice]), transform, shift), **kwargs
+            ),
+            get_array_module(matrix),
+        )
+
+    if _is_mask(slice_):
+        slice_ = as_backend(slice_, get_array_module(matrix))
+
     # Modify the matrix.
     if imprint_operation == "replace":
-        if is_float:
-            matrix[slice_] = function
-        else:
-            matrix[slice_] = function(
-                transform_grid((x_grid[slice_], y_grid[slice_]), transform, shift), **kwargs
-            )
+        matrix[slice_] = function
     elif imprint_operation == "add":
-        if is_float:
-            matrix[slice_] += function
-        else:
-            matrix[slice_] += function(
-                transform_grid((x_grid[slice_], y_grid[slice_]), transform, shift), **kwargs
-            )
+        matrix[slice_] += function
     else:
         raise ValueError(f"Unrecognized imprint operation {imprint_operation}.")
 
@@ -945,7 +1070,7 @@ def format_2vectors(vectors):
     """
     Validates that an array of 2-dimensional vectors is a ``numpy.ndarray`` of shape ``(2, N)``.
     Handles shaping and transposing if, for instance, tuples or row vectors are passed.
-    This a wrapper of :meth:`format_vectors` for backwards compatibility.
+    This is a wrapper of :meth:`format_vectors` for backwards compatibility.
 
     Parameters
     ----------
@@ -964,6 +1089,104 @@ def format_2vectors(vectors):
         If the vector input was inappropriate.
     """
     return format_vectors(vectors, expected_dimension=2, handle_dimension="crop")
+
+
+def build_affine(
+    f_eff,
+    units="ij",
+    theta=0,
+    shear_angle=0,
+    offset=(0, 0),
+    cam_pitch_um=None,
+    wav_um=None,
+):
+    r"""
+    Builds an affine transformation :math:`\vec{y} = M \cdot \vec{x} + \vec{b}` mapping
+    SLM Fourier space (``"kxy"``) to camera pixels from a known effective focal length.
+
+    This is the analytic counterpart to a measured Fourier calibration; see
+    :meth:`~slmsuite.hardware.cameraslms.FourierSLM.fourier_calibration_build` and
+    :meth:`~slmsuite.hardware.cameras.simulated.SimulatedCamera.build_affine`, which
+    both delegate here.
+
+    Parameters
+    ----------
+    f_eff : float OR (float, float)
+        Effective focal length of the optical train separating the Fourier-domain SLM
+        from the camera. If a ``float`` is provided, ``f_eff`` is isotropic; otherwise it
+        is defined along the SLM's :math:`x` and :math:`y` axes.
+    units : str {"norm", "ij", "m", "cm", "mm", "um", "nm"}
+        Units for the focal length ``f_eff``.
+
+        -  ``"ij"``
+            Focal length in units of camera pixels. The default.
+        -  ``"norm"``
+            Normalized focal length in wavelengths according to ``wav_um``.
+            Requires ``wav_um`` and ``cam_pitch_um``.
+        -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
+            Focal length in metric units. Requires ``cam_pitch_um``.
+
+    theta : float
+        Rotation angle (in radians, ccw) of the camera relative to the SLM orientation.
+    shear_angle : float OR (float, float)
+        Shearing angles (in radians) along the SLM's :math:`x` and :math:`y` axes.
+        If a ``float`` is provided, shear is applied isotropically.
+    offset : (float, float) OR None
+        Lateral displacement (in pixel units) of the SLM's optical axis from the camera's
+        origin. ``None`` is treated as ``(0, 0)``.
+    cam_pitch_um : float OR (float, float) OR None
+        Camera pixel pitch in microns. Required for all units except ``"ij"``.
+    wav_um : float OR None
+        Wavelength in microns. Required for ``"norm"`` units.
+
+    Returns
+    -------
+    M : numpy.ndarray
+        Affine matrix :math:`M`. Shape ``(2, 2)``.
+    b : numpy.ndarray
+        Affine vector :math:`b`. Shape ``(2, 1)``.
+    """
+    # Parse scalars.
+    if isinstance(f_eff, REAL_TYPES):
+        f_eff = [f_eff, f_eff]
+    if isinstance(cam_pitch_um, REAL_TYPES):
+        cam_pitch_um = [cam_pitch_um, cam_pitch_um]
+    else:
+        cam_pitch_um = np.ravel(cam_pitch_um)
+    if isinstance(shear_angle, REAL_TYPES):
+        shear_angle = [shear_angle, shear_angle]
+    if offset is None:
+        offset = (0, 0)
+
+    f_eff = np.squeeze(f_eff).astype(float)
+    shear_angle = np.squeeze(shear_angle)
+
+    # Convert.
+    if units == "ij":
+        pass
+    elif units == "norm":
+        if wav_um is None:
+            raise ValueError(f"wav_um is required for unit '{units}'")
+        if cam_pitch_um is None or cam_pitch_um[0] is None:
+            raise ValueError(f"cam_pitch_um is required for unit '{units}'")
+
+        f_eff *= wav_um / np.squeeze(cam_pitch_um)
+    elif units in LENGTH_FACTORS:
+        if cam_pitch_um is None or cam_pitch_um[0] is None:
+            raise ValueError(f"cam_pitch_um is required for unit '{units}'")
+
+        f_eff *= LENGTH_FACTORS[units] / np.squeeze(cam_pitch_um)
+    else:
+        raise ValueError(f"Unit '{units}' not recognized as a length.")
+
+    mag = np.array([[f_eff[0], 0], [0, f_eff[1]]])
+    shear = np.array([[1, np.tan(shear_angle[0])], [np.tan(shear_angle[1]), 1]])
+    rot = np.array([[np.cos(-theta), np.sin(-theta)], [-np.sin(-theta), np.cos(-theta)]])
+
+    M = mag @ shear @ rot
+    b = format_2vectors(offset)
+
+    return M, b
 
 
 def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_check=False):
@@ -988,10 +1211,10 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
         # In this case, the requested 5x5 indices results in an array with shape (2,25)
         vector_array = fit_3pt(y0, y1, y2, N=(5, 5))
 
-    However, ``fit_3pt`` is more powerful that this, and can fit an affine
+    However, ``fit_3pt`` is more powerful than this, and can fit an affine
     transformation to semi-arbitrary sets of points with known indices
-    in the coordinate  system of the dependent variable :math:`\vec{x}`,
-    as long as the passed indices ``x0``, ``x1``, ``x2`` are not colinear.
+    in the coordinate system of the dependent variable :math:`\vec{x}`,
+    as long as the passed indices ``x0``, ``x1``, ``x2`` are not collinear.
 
     .. highlight:: python
     .. code-block:: python
@@ -1037,7 +1260,7 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
     x0, x1 : array_like OR None
         See ``x2``.
     x2 : array_like OR None
-        Should not be colinear.
+        Should not be collinear.
         If ``x0`` is ``None``, defaults to the origin ``(0,0)``.
         If ``x1`` or ``x2`` are ``None``, ``y1`` or ``y2`` are interpreted as
         **differences** between ``(0,0)`` and ``(1,0)`` or ``(0,0)`` and ``(0,1)``,
@@ -1080,8 +1303,8 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
     dx2 = x2 - x0
 
     # Invert the index matrix.
-    colinear = np.abs(np.sum(dx1 * dx2)) == np.sqrt(np.sum(dx1 * dx1) * np.sum(dx2 * dx2))
-    if colinear:
+    cross = float(dx1[0, 0] * dx2[1, 0] - dx1[1, 0] * dx2[0, 0])
+    if abs(cross) <= 1e-9 * float(np.linalg.norm(dx1) * np.linalg.norm(dx2)):
         raise ValueError("Indices must not be colinear.")
 
     J = np.linalg.inv(np.squeeze(np.array([[dx1[0], dx2[0]], [dx1[1], dx2[1]]])))
@@ -1154,8 +1377,10 @@ def smallest_distance(vectors, metric="chebyshev"):
         Defaults to ``"chebyshev"`` which corresponds to
         :meth:`scipy.spatial.distance.chebyshev()`.
         The :math:`\mathcal{O}(N\log(N))` divide and conquer algorithm is only
-        compatible with string inputs allowed by :meth:`scipy.spatial.distance.pdist`.
-        Function arguments will fallback to the brute force approach.
+        compatible with the Minkowski metrics (``"chebyshev"``, ``"cityblock"``,
+        ``"euclidean"``, ``"minkowski"``), whose distance bounds the separation along
+        one axis. Other strings allowed by :meth:`scipy.spatial.distance.pdist` and
+        function arguments fall back to the brute force approach.
 
     Returns
     -------
@@ -1179,11 +1404,11 @@ def smallest_distance(vectors, metric="chebyshev"):
             d = min(d1, d2)
 
             # Leave if we don't need to merge.
-            if (v[M, axis] - v[M + 1, axis]) > d:
+            if d == 0 or (v[M - 1, axis] - v[M, axis]) > d:
                 return d
 
-            # Merge around average x0 between two sections.
-            x0 = (v[M, axis] + v[M + 1, axis]) / 2
+            # Merge around average x0 across the partition boundary.
+            x0 = (v[M - 1, axis] + v[M, axis]) / 2
             mask = np.abs(v[:, axis] - x0) < d
             subset = v[mask, :]
 
@@ -1200,7 +1425,7 @@ def smallest_distance(vectors, metric="chebyshev"):
 
     if isinstance(metric, str):  # Divide and conquer.
         if metric not in distance._METRIC_ALIAS:
-            raise RuntimeError("Distance metric '{metric}' not recognized by scipy.")
+            raise RuntimeError(f"Distance metric '{metric}' not recognized by scipy.")
 
         axis = 0
         min_div = 200
@@ -1208,7 +1433,12 @@ def smallest_distance(vectors, metric="chebyshev"):
         # pdist needs transpose.
         vectors = vectors.T
 
-        if 2 * min_div > N:
+        if 2 * min_div > N or distance._METRIC_ALIAS[metric].canonical_name not in (
+            "chebyshev",
+            "cityblock",
+            "euclidean",
+            "minkowski",
+        ):
             return distance.pdist(vectors, metric=metric).min()
         else:
             centroid = np.max(vectors, axis=axis, keepdims=True)
@@ -1248,8 +1478,8 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
         See :meth:`~slmsuite.holography.toolbox.voronoi_windows()`.
     iterations : int
         Number of iterations to apply Lloyd's Algorithm.
-    plot : bool
-        Whether to plot each iteration of the algorithm.
+    plot : int OR bool
+        Whether to plot each iteration of the algorithm, at ``1`` and above.
 
     Returns
     -------
@@ -1259,7 +1489,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
     result = np.copy(format_2vectors(vectors)).astype(float)
 
     # Parse grid
-    if isinstance(grid, (tuple, list)) and all(isinstance(x, int) for x in grid):
+    if isinstance(grid, (tuple, list)) and all(isinstance(x, INTEGER_TYPES) for x in grid):
         shape = grid
     else:
         x_grid, _y_grid = _process_grid(grid)
@@ -1276,7 +1506,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
         area = 0.5 * np.sum(cross)
 
         if np.isclose(area, 0):
-            return 0, np.mean(polygon, axis=0)
+            return np.mean(polygon, axis=0)
 
         cx = np.sum((x + x_shift) * cross) / (6 * area)
         cy = np.sum((y + y_shift) * cross) / (6 * area)
@@ -1341,12 +1571,12 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
         # Recomputing this each time isn't too inefficient.
         vor = Voronoi(vectors_ext)
 
-        if plot:
+        if plot >= 1:
             sx = shape[1]
             sy = shape[0]
 
             # Use the built-in scipy function to plot a visualization of the windows.
-            # fig = voronoi_plot_2d(vor)
+            voronoi_plot_2d(vor)
 
             # Plot a bounding box corresponding to the grid.
             plt.plot(np.array([0, sx, sx, 0, 0]), np.array([0, 0, sy, sy, 0]), "r")
@@ -1356,7 +1586,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
             plt.ylim(1.05 * sy, -0.05 * sy)
             plt.gca().set_aspect("equal")
             plt.title("Voronoi Cells")
-            plt.show()
+            _slmsuite_plt_show(name="lloyds_algorithm")
 
         for i in range(result.shape[1]):
             # Don't move points that don't make sense.
@@ -1394,10 +1624,8 @@ def lloyds_points(grid, n_points, iterations=10, plot=False, seed=None):
         Number of points to generate inside a space.
     iterations : int
         Number of iterations to apply Lloyd's Algorithm.
-    plot : bool
-        Whether to plot each iteration of the algorithm.
-    seed : int OR None
-        Optional seed to make the random generation deterministic.
+    plot : int OR bool
+        Whether to plot each iteration of the algorithm, at ``1`` and above.
 
     Returns
     -------
@@ -1439,7 +1667,9 @@ def lloyds_points(grid, n_points, iterations=10, plot=False, seed=None):
         return result
     else:
         result = np.rint(result).astype(int)
-        return np.vstack((x_grid[result[0], result[1]], y_grid[result[0], result[1]]))
+        result[0] = np.clip(result[0], 0, shape[1] - 1)
+        result[1] = np.clip(result[1], 0, shape[0] - 1)
+        return np.vstack((x_grid[result[1], result[0]], y_grid[result[1], result[0]]))
 
 
 def assign_vectors(vectors, assignment_options):
@@ -1463,7 +1693,7 @@ def assign_vectors(vectors, assignment_options):
     -------
     numpy.ndarray
         For each vector, the index of the closest ``assignment_options``.
-        Of shape ``(option_count,)``.
+        Of shape ``(vector_count,)``.
     """
     vectors = format_vectors(vectors)[:, np.newaxis, :]
     assignment_options = format_vectors(assignment_options)[:, :, np.newaxis]
@@ -1529,14 +1759,15 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
         These are precalculated and stored in any :class:`~slmsuite.hardware.slms.slm.SLM`, so
         such a class can be passed instead of the grids directly.
     transform : float OR ((float, float), (float, float)) OR None
-        If a scalar is passed, this is the angle to rotate the basis of the lens by.
+        If a scalar is passed, this is the angle to rotate the basis of the grid by.
         Defaults to zero if ``None``.
         If a 2x2 matrix is passed, transforms the :math:`x` and :math:`y` grids
-        according to :math:`x' = M_{00}x + M_{01}y`,  :math:`y' = M_{10}y + M_{11}y`.
+        according to :math:`x' = M_{00}x + M_{01}y`,  :math:`y' = M_{10}x + M_{11}y`.
     shift : (float, float) OR None OR True
         Translational shift of the grid in normalized :math:`\frac{x}{\lambda}` coordinates
         ("fwd" direction). Defaults to no shift if ``None``.
-        If ``True``, shifts the grid to be centered upon itself.
+        If ``True``, the shift is minus the mean of the untransformed grid, which
+        centers the result only for ``direction="fwd"`` without a ``transform``.
     direction : str in ``{"fwd", "rev"}``
         Defines the direction of the transform: forward (``"fwd"``) transforms then shifts;
         reverse (``"rev"``) undoes the shift then applies the inverse transform.
@@ -1552,6 +1783,9 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
     # Parse grid.
     (x_grid, y_grid) = _process_grid(grid)
 
+    if direction not in ("fwd", "rev"):
+        raise ValueError(f"Expected direction to be 'fwd' or 'rev'. Received '{direction}'.")
+
     # Parse transform.
     if transform is None:
         transform = 0
@@ -1564,7 +1798,7 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
     if shift is None:
         shift = (0, 0)
     if shift is True:
-        shift = (-np.mean(x_grid), -np.mean(y_grid))
+        shift = (-float(x_grid.mean()), -float(y_grid.mean()))
     shift = np.squeeze(shift)
 
     # Return the transformed grids.
@@ -1589,8 +1823,8 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
         # Use the matrix to transform the grid.
         if direction == "fwd":
             return (
-                transform[0, 0] * x_grid + shift[0] + transform[0, 1] * y_grid + shift[1],
-                transform[1, 0] * x_grid + shift[0] + transform[1, 1] * y_grid + shift[1],
+                transform[0, 0] * x_grid + transform[0, 1] * y_grid + shift[0],
+                transform[1, 0] * x_grid + transform[1, 1] * y_grid + shift[1],
             )
         elif direction == "rev":
             transform = np.linalg.inv(transform)
@@ -1694,7 +1928,7 @@ def unpad(matrix, shape):
     -------
     numpy.ndarray OR (int, int, int, int)
         Either the unpadded ``matrix`` or the four slicing integers used to unpad such a matrix,
-        depending what is passed as ``matrix``.
+        depending on what is passed as ``matrix``.
     """
     mshape = np.shape(matrix)
     return_args = False
@@ -1730,3 +1964,20 @@ def unpad(matrix, shape):
         raise RuntimeError("Unpadded result should have desired shape.")
 
     return unpadded
+
+
+# Public API: names defined here or in private submodules (e.g. ``Aperture``), plus public
+# submodules (``phase``), so that the documentation (autosummary with
+# ``autosummary_ignore_module_all = False``) lists them.
+__all__ = [
+    *sorted(
+        name
+        for name, obj in list(globals().items())
+        if not name.startswith("_")
+        and (
+            getattr(obj, "__module__", None) == __name__
+            or getattr(obj, "__module__", "").startswith(__name__ + "._")
+        )
+    ),
+    "phase",
+]

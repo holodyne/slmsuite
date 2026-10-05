@@ -3,7 +3,11 @@ Template for writing a subclass for SLM hardware control in :mod:`slmsuite`.
 Outlines which SLM superclass functions must be implemented.
 """
 
-from .slm import SLM
+from slmsuite._logging import make_logger
+from slmsuite.hardware.slms.slm import SLM
+from slmsuite.misc.xp import as_numpy
+
+logger = make_logger(__name__)
 
 
 class Template(SLM):
@@ -28,7 +32,7 @@ class Template(SLM):
         Parameters
         ----------
         bitdepth : int
-            Depth of SLM pixel well in bits. Defaults to 10.
+            Depth of SLM pixel well in bits. Defaults to 8.
         wav_um : float
             Wavelength of operation in microns. Defaults to 1 μm.
         pitch_um : (float, float)
@@ -111,11 +115,8 @@ class Template(SLM):
         ----------
         display
             Integer data to display on the SLM. See :meth:`.SLM._set_phase_hw`.
-        execute : bool
-            Whether to actually send the image to the SLM.
-        block : bool
-            Whether to block the thread until the image is fully written.
         """
+        display = as_numpy(display)  # The driver needs host memory.
         # TODO: Insert code here to write raw phase data to the SLM.
         raise NotImplementedError()
 
