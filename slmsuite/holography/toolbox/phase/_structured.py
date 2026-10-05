@@ -417,8 +417,9 @@ def mathieu_gaussian(grid, r, q, w=None):
         # Elliptic coordinates from x + iy = h * cosh(mu + i*nu)
         complex_grid = x_grid + 1j * y_grid
         elliptic = np.arccosh(complex_grid / h)
-        mu = np.abs(elliptic.real)     # radial coordinate (>= 0)
-        nu = elliptic.imag             # angular coordinate
+        # scipy's mathieu functions return NaN for single-precision input, so evaluate in double.
+        mu = np.abs(elliptic.real).astype(float)     # radial coordinate (>= 0)
+        nu = elliptic.imag.astype(float)             # angular coordinate
 
         # Convert angular coordinate to degrees for scipy's mathieu functions.
         nu_deg = np.degrees(nu)

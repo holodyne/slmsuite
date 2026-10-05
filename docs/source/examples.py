@@ -20,6 +20,10 @@ def get_sphinx_examples():
 
     return [example.strip() for example in examples]
 
+# Data file loaded by several of the example notebooks.
+SIMULATED_SETUP = "simulated_setup.h5"
+
+
 def download_example_notebooks(
         examples_path,
         images_path=None,
@@ -48,7 +52,10 @@ def download_example_notebooks(
         # If expected clone location exists, copy from there.
         if os.path.isdir(examples_repo_path):
             for file_name in os.listdir(examples_repo_path):
-                if file_name[-6:] == ".ipynb" or file_name[-4:] == ".gif":
+                if file_name == SIMULATED_SETUP:
+                    print("Copying", file_name, "from local examples repo")
+                    shutil.copy(os.path.join(examples_repo_path, file_name), examples_path)
+                elif file_name[-6:] == ".ipynb" or file_name[-4:] == ".gif":
                     print("Copying", file_name, "from local examples repo")
 
                     file_path = os.path.join(examples_repo_path, file_name)
@@ -69,7 +76,9 @@ def download_example_notebooks(
             tree_response = requests.get(tree_url).json()
             for path_object in tree_response["tree"]:
                 path_str = path_object["path"]
-                if path_str[0:9] == "examples/" and ((path_str[-6:] == ".ipynb") or (path_str[-4:] == ".gif")):
+                if path_str[0:9] == "examples/" and (
+                    path_str[-6:] == ".ipynb" or path_str[-4:] == ".gif" or path_str[9:] == SIMULATED_SETUP
+                ):
                     print("Downloading", path_str)
                     file_name = path_str[9:]
                     file_url = (
@@ -87,6 +96,10 @@ def download_example_notebooks(
                         file_str = base64.b64decode(file_content.encode("utf8")).decode("utf8")
                         with open(file_path, "w", encoding='utf8') as file_:
                             file_.write(file_str)
+                    elif path_str[9:] == SIMULATED_SETUP:
+                        file_path = os.path.join(examples_path, SIMULATED_SETUP)
+                        with open(file_path, "wb") as file_:
+                            file_.write(requests.get(file_url2).content)
                     elif path_str[-4:] == ".gif" and images_path is not None:
                         file_path = os.path.join(examples_path, file_name)
                         with open(file_path, "wb") as file_:

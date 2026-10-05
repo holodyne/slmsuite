@@ -1047,7 +1047,8 @@ def test_ince_gaussian(simple_grid, subtests):
 
     with subtests.test("a float32 grid gives the float64 phase in float32"):
         for parity in (1, -1, 0):
-            _assert_float32(phase.ince_gaussian, simple_grid, p=4, m=2, parity=parity)
+            # Float32 rounding flips the phase on a few pixels beside amplitude nodes.
+            _assert_float32(phase.ince_gaussian, simple_grid, fraction=.99, p=4, m=2, parity=parity)
 
 
 def test_mathieu_gaussian(simple_grid, fine_grid, subtests):
@@ -1377,7 +1378,9 @@ def test_ince_gaussian_gpu(simple_grid, has_cupy):
     result = phase.ince_gaussian(tuple(cp.asarray(g) for g in grid32), p=4, m=2, parity=0)
     assert isinstance(result, cp.ndarray) and result.dtype == np.float32
     reference = phase.ince_gaussian(tuple(g.astype(float) for g in grid32), p=4, m=2, parity=0)
-    assert _phase_close(cp.asnumpy(result), reference)
+    # Float32 rounding flips the phase on a few pixels beside amplitude nodes.
+    error = np.abs(np.angle(np.exp(1j * (cp.asnumpy(result).astype(float) - reference))))
+    assert np.mean(error < 1e-4) >= .99
 
 
 @pytest.mark.gpu
