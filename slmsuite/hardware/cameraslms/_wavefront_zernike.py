@@ -1,26 +1,28 @@
 import copy
+import warnings
+
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import optimize
 from scipy.interpolate import RBFInterpolator
 from scipy.spatial import Delaunay
-from slmsuite import tqdm
-import warnings
 
-from slmsuite.holography import analysis
-from slmsuite.holography import toolbox
+from slmsuite import tqdm
+from slmsuite._plotting import _slmsuite_plt_show
+from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.algorithms import CompressedSpotHologram
-from slmsuite.holography.toolbox import format_vectors, smallest_distance, convert_vector
+from slmsuite.holography.toolbox import convert_vector, format_vectors, smallest_distance
 from slmsuite.holography.toolbox.phase import _zernike_indices_parse, zernike, zernike_sum
 from slmsuite.misc.xp import as_backend, get_array_module
 
-class _WavefrontCalibrationZernike(object):
+
+class _WavefrontCalibrationZernike:
     """
     Hidden superclass with Zernike wavefront calibration methods
     (project and analyze Zernike modes).
     """
+
     ### Zernike Wavefront Calibration ###
 
     def wavefront_calibrate_zernike(
@@ -151,6 +153,7 @@ class _WavefrontCalibrationZernike(object):
         ValueError
             If various points are out of range.
         """
+
         # Helper function to sweep the amplitude of a Zernike over a pattern.
         def sweep_term(sweep, term, pattern, callback, desc=None):
             result = None
@@ -171,11 +174,11 @@ class _WavefrontCalibrationZernike(object):
                 this_result = np.array(callback())
 
                 if result is None:
-                    M = len(this_result)    # Number of points to measure at.
+                    M = len(this_result)  # Number of points to measure at.
                     result = np.full((N, M), np.nan, dtype=this_result.dtype)
 
                 if len(this_result) != M:
-                    raise RuntimeError()
+                    raise RuntimeError
                 else:
                     result[i, :] = this_result
 
@@ -185,7 +188,7 @@ class _WavefrontCalibrationZernike(object):
         def fit_term(sweep, result, term, status):
             ddy = np.diff(result, n=2, axis=0)
             with np.errstate(invalid="ignore"):
-                a0 = .5 * np.mean(ddy, axis=0) / np.square(np.mean(np.diff(sweep)))
+                a0 = 0.5 * np.mean(ddy, axis=0) / np.square(np.mean(np.diff(sweep)))
             c0 = np.min(result, axis=0)
             x0 = sweep[np.argmin(result, axis=0)]
 
@@ -213,12 +216,11 @@ class _WavefrontCalibrationZernike(object):
                         result[:, i],
                         ftol=1e-5,
                         p0=guess,
-                        bounds=(
-                            [-np.inf, 0, -np.inf],
-                            [np.inf, np.inf, np.inf]
-                        )
+                        bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, np.inf]),
                     )
-                    perr = np.sqrt(np.diag(pcov))   # Single sigma error, which can be multiplied later.
+                    perr = np.sqrt(
+                        np.diag(pcov)
+                    )  # Single sigma error, which can be multiplied later.
                 except Exception as e:
                     # Falling back to the sweep's extremum with zero uncertainty is a
                     # guess, not a fit, and a whole term failing must not be silent.
@@ -234,7 +236,10 @@ class _WavefrontCalibrationZernike(object):
                 self.logger.warning(
                     "%d of %d parabola fits failed for term %s and fell back to the "
                     "sweep extremum with zero uncertainty (e.g. %s).",
-                    len(failures), result.shape[1], term, failures[0],
+                    len(failures),
+                    result.shape[1],
+                    term,
+                    failures[0],
                 )
 
             x = np.clip(x, np.min(sweep), np.max(sweep))
@@ -246,31 +251,26 @@ class _WavefrontCalibrationZernike(object):
                 plt.imshow(
                     result_plot,
                     interpolation="none",
-                    extent=[-.5, result_plot.shape[1]-.5, np.max(sweep), np.min(sweep)]
+                    extent=[-0.5, result_plot.shape[1] - 0.5, np.max(sweep), np.min(sweep)],
                 )
                 cbar = plt.colorbar()
                 plt.scatter(
                     np.arange(result.shape[1]),
                     g,
                     c="r",
-                    marker='x',
-                    alpha=.25,
+                    marker="x",
+                    alpha=0.25,
                 )
                 plt.errorbar(
-                    np.arange(result.shape[1]),
-                    x,
-                    yerr=dx,
-                    c="r",
-                    marker='.',
-                    linestyle='none'
+                    np.arange(result.shape[1]), x, yerr=dx, c="r", marker=".", linestyle="none"
                 )
                 plt.gca().set_aspect("auto")
                 plt.title("Zernike $Z_{" + str(term) + "}$")
                 plt.xlabel("Calibration Point [#]")
                 plt.ylabel("Perturbation [rad]")
-                plt.xlim(-.5, result.shape[1]-.5)
+                plt.xlim(-0.5, result.shape[1] - 0.5)
                 plt.ylim(np.max(sweep), np.min(sweep))
-                cbar.ax.set_ylabel("Figure of Merit [norm]") #, rotation=270)
+                cbar.ax.set_ylabel("Figure of Merit [norm]")  # , rotation=270)
                 _slmsuite_plt_show(name=f"wavefront_calibrate_zernike_{term}")
 
             return x, dx, railed
@@ -298,22 +298,21 @@ class _WavefrontCalibrationZernike(object):
                         # need not be the default), extended with any further terms requested.
                         stored_zi = np.copy(dat["zernike_indices"])
                         extra = [
-                            i for i in _zernike_indices_parse(int(zernike_indices), None)
+                            i
+                            for i in _zernike_indices_parse(int(zernike_indices), None)
                             if i not in stored_zi
-                        ][:int(np.maximum(int(zernike_indices) - len(stored_zi), 0))]
+                        ][: int(np.maximum(int(zernike_indices) - len(stored_zi), 0))]
                         zernike_indices = np.concatenate((stored_zi, extra)).astype(int)
 
                     zernike_indices = _zernike_indices_parse(
-                        zernike_indices,
-                        calibration_points.shape[0],
-                        smaller_okay=True
+                        zernike_indices, calibration_points.shape[0], smaller_okay=True
                     )
 
                     stored_zi = np.copy(dat["zernike_indices"])
 
                     if len(zernike_indices) >= len(stored_zi):
-                        if np.all(zernike_indices[:len(stored_zi)] == stored_zi):
-                            pass # Extend zernike indices.
+                        if np.all(zernike_indices[: len(stored_zi)] == stored_zi):
+                            pass  # Extend zernike indices.
                         else:
                             raise ValueError(
                                 f"Requested indices {zernike_indices} "
@@ -356,10 +355,12 @@ class _WavefrontCalibrationZernike(object):
             )
 
         calibration_points = format_vectors(np.copy(calibration_points), handle_dimension="pass")
-        zernike_indices = _zernike_indices_parse(zernike_indices, calibration_points.shape[0], smaller_okay=True)
+        zernike_indices = _zernike_indices_parse(
+            zernike_indices, calibration_points.shape[0], smaller_okay=True
+        )
         dp = len(zernike_indices) - calibration_points.shape[0]
         if dp:  # Pad with zeros if the points don't have certain terms.
-            calibration_points = np.pad(calibration_points, ((0,dp), (0,0)))
+            calibration_points = np.pad(calibration_points, ((0, dp), (0, 0)))
 
         initial_points = calibration_points.copy()
 
@@ -371,7 +372,7 @@ class _WavefrontCalibrationZernike(object):
                 cameraslm=self,
             )
 
-            if not (weights is None):
+            if weights is not None:
                 hologram.set_weights(weights)
 
             if calibration_points_ij is None:
@@ -384,21 +385,30 @@ class _WavefrontCalibrationZernike(object):
                 f"got {calibration_points.shape[1]}. Increase 'calibration_points'."
             )
 
-        max_window_size = smallest_distance(calibration_points_ij)  # Size were windows graze each other.
-        max_spot_integration_width_ij = int(2 * np.ceil(np.min((.5*max_window_size, 51)) / 2) + 1)
+        max_window_size = smallest_distance(
+            calibration_points_ij
+        )  # Size were windows graze each other.
+        max_spot_integration_width_ij = int(
+            2 * np.ceil(np.min((0.5 * max_window_size, 51)) / 2) + 1
+        )
         if spot_integration_width_ij is None:
             spot_integration_width_ij = max_spot_integration_width_ij
         else:
-            spot_integration_width_ij = min(int(spot_integration_width_ij), max_spot_integration_width_ij)
+            spot_integration_width_ij = min(
+                int(spot_integration_width_ij), max_spot_integration_width_ij
+            )
         hologram.spot_integration_width_ij = spot_integration_width_ij
 
         # Parse callback.
         if callback is None:
+
             def default_callback():
                 # self.cam.flush()
                 img = self.cam.get_image()
 
-                images = analysis.take(img, calibration_points_ij, spot_integration_width_ij, clip=True).astype(float)
+                images = analysis.take(
+                    img, calibration_points_ij, spot_integration_width_ij, clip=True
+                ).astype(float)
                 images = analysis.image_remove_field(images)
                 images[np.isnan(images)] = 0
                 # Normalize out the per-measurement laser power; guard a dark frame so we
@@ -417,12 +427,7 @@ class _WavefrontCalibrationZernike(object):
         # Tick function.
         def tick():
             if hologram is None:
-                pattern = zernike_sum(
-                    self.slm,
-                    zernike_indices,
-                    calibration_points,
-                    use_mask=False
-                )
+                pattern = zernike_sum(self.slm, zernike_indices, calibration_points, use_mask=False)
             else:
                 # Reoptimize the hologram at each step.
                 hologram.spot_zernike = calibration_points
@@ -442,9 +447,13 @@ class _WavefrontCalibrationZernike(object):
             perturbation = 1
 
         hologram.optimize(
-            "GS", maxiter=3, verbose=0,
+            "GS",
+            maxiter=3,
+            verbose=0,
             # raw_stats=True,
-            stat_groups=["computational_spot",],
+            stat_groups=[
+                "computational_spot",
+            ],
         )
 
         if optimize_weights:
@@ -461,15 +470,18 @@ class _WavefrontCalibrationZernike(object):
                 maxiter=maxiter,
                 verbose=True,
                 name="optimize_weights",
-                stat_groups=["computational_spot", "experimental_spot",],
+                stat_groups=[
+                    "computational_spot",
+                    "experimental_spot",
+                ],
             )
             if "wavefront_zernike" in self.calibrations:
                 self.calibrations["wavefront_zernike"]["weights"] = hologram.get_weights()
 
         no_perturbation = (
-            perturbation is None or
-            (np.isscalar(perturbation) and perturbation <= 0) or
-            (not np.isscalar(perturbation) and len(perturbation) == 0)
+            perturbation is None
+            or (np.isscalar(perturbation) and perturbation <= 0)
+            or (not np.isscalar(perturbation) and len(perturbation) == 0)
         )
 
         # If no perturbation, just project the initial spots and return.
@@ -489,14 +501,15 @@ class _WavefrontCalibrationZernike(object):
                     integrate=False,
                     clip=True,
                 )
-                max = np.nanmax(take)   # Clipped pixels are nan; ignore them.
+                max = np.nanmax(take)  # Clipped pixels are nan; ignore them.
 
-                if max >= self.cam.bitresolution-1:
+                if max >= self.cam.bitresolution - 1:
                     self.logger.warning("Image is overexposed.")
-                elif max > .5*self.cam.bitresolution:
+                elif max > 0.5 * self.cam.bitresolution:
                     self.logger.warning(
                         "Image might become overexposed during optimization (%s/%s).",
-                        max, self.cam.bitresolution-1,
+                        max,
+                        self.cam.bitresolution - 1,
                     )
 
                 self.cam.plot(img, title="Zernike Calibration Status")
@@ -540,12 +553,16 @@ class _WavefrontCalibrationZernike(object):
             result = sweep_term(perturbation, term, pattern, callback, f"Z_{i}")
 
             # Analyze the results by fitting each to a parabola.
-            correction, correction_error, railed = fit_term(perturbation, result, i, calibration_points[j, :])
+            correction, _correction_error, railed = fit_term(
+                perturbation, result, i, calibration_points[j, :]
+            )
 
             if railed > 0:
                 self.logger.warning(
                     "Zernike Z_%d: %.0f%% of fitted optima hit the perturbation edge; "
-                    "consider widening `perturbation`.", i, 100 * railed
+                    "consider widening `perturbation`.",
+                    i,
+                    100 * railed,
                 )
 
             # Apply the correction to the spots (globally if desired).
@@ -563,10 +580,10 @@ class _WavefrontCalibrationZernike(object):
             "zernike_indices": zernike_indices,
             "corrected_spots": calibration_points,
             "last_result": result,
-            "calibration_points_ij" : calibration_points_ij,
-            "spot_integration_width_ij" : spot_integration_width_ij,
-            "metric_stats" : metric_stats,
-            "weights" : hologram.get_weights(),
+            "calibration_points_ij": calibration_points_ij,
+            "spot_integration_width_ij": spot_integration_width_ij,
+            "metric_stats": metric_stats,
+            "weights": hologram.get_weights(),
         }
         self.calibrations["wavefront_zernike"].update(self._get_calibration_metadata())
 
@@ -587,14 +604,11 @@ class _WavefrontCalibrationZernike(object):
         lim = np.max(np.abs(aberration))
 
         plt.scatter(
-            calibration_points_ij[0, :],
-            calibration_points_ij[1, :],
-            c=aberration,
-            cmap="seismic"
+            calibration_points_ij[0, :], calibration_points_ij[1, :], c=aberration, cmap="seismic"
         )
         plt.gca().invert_yaxis()
         cbar = plt.colorbar()
-        cbar.ax.set_ylabel("Aberration Correction [rad]") #, rotation=270)
+        cbar.ax.set_ylabel("Aberration Correction [rad]")  # , rotation=270)
         plt.clim(-lim, lim)
         plt.title(f"Zernike $Z_{zernike_indices[index]}$")
         _slmsuite_plt_show(name="wavefront_calibrate_zernike_plot_raw")
@@ -678,17 +692,24 @@ class _WavefrontCalibrationZernike(object):
         points = points_ij[:2, :].T
         tri = Delaunay(points)
 
-        edges = np.array([(i, j) for t in tri.simplices for i, j in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]])
+        edges = np.array(
+            [(i, j) for t in tri.simplices for i, j in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]]
+        )
         edges = np.sort(edges, axis=1)
         edges = np.unique(edges, axis=0)
         lens = np.linalg.norm(points[edges[:, 0]] - points[edges[:, 1]], axis=1)
         max_len = 1.5 * np.median(lens)
 
-        simplices = np.array([
-            t for t in tri.simplices
-            if all(np.linalg.norm(points[[t[i]]]-points[[t[j]]]) <= max_len
-                for i, j in [(0,1),(1,2),(2,0)])
-        ])
+        simplices = np.array(
+            [
+                t
+                for t in tri.simplices
+                if all(
+                    np.linalg.norm(points[[t[i]]] - points[[t[j]]]) <= max_len
+                    for i, j in [(0, 1), (1, 2), (2, 0)]
+                )
+            ]
+        )
 
         # Average spot coordinates.
         if plot >= 1:
@@ -717,15 +738,23 @@ class _WavefrontCalibrationZernike(object):
                 continue
 
             # Handle XY terms.
-            final[x_smooth, i] = (1-smoothing_xy) * (vectors[x_smooth, i] - base_xy[0, i]) + base_xy[0, i]
-            final[y_smooth, i] = (1-smoothing_xy) * (vectors[y_smooth, i] - base_xy[1, i]) + base_xy[1, i]
+            final[x_smooth, i] = (1 - smoothing_xy) * (
+                vectors[x_smooth, i] - base_xy[0, i]
+            ) + base_xy[0, i]
+            final[y_smooth, i] = (1 - smoothing_xy) * (
+                vectors[y_smooth, i] - base_xy[1, i]
+            ) + base_xy[1, i]
 
             for n in neighbors:
-                final[x_smooth, i] += smoothing_xy * (vectors[x_smooth, n] - base_xy[0, n]) / len(neighbors)
-                final[y_smooth, i] += smoothing_xy * (vectors[y_smooth, n] - base_xy[1, n]) / len(neighbors)
+                final[x_smooth, i] += (
+                    smoothing_xy * (vectors[x_smooth, n] - base_xy[0, n]) / len(neighbors)
+                )
+                final[y_smooth, i] += (
+                    smoothing_xy * (vectors[y_smooth, n] - base_xy[1, n]) / len(neighbors)
+                )
 
             # Handle higher order terms.
-            final[to_smooth, i] = (1-smoothing) * vectors[to_smooth, i]
+            final[to_smooth, i] = (1 - smoothing) * vectors[to_smooth, i]
 
             for n in neighbors:
                 final[to_smooth, i] += smoothing * vectors[to_smooth, n] / len(neighbors)
@@ -772,7 +801,7 @@ class _WavefrontCalibrationZernike(object):
             self.slm,
             self.calibrations["wavefront_zernike"]["zernike_indices"],
             interpolator(vector_kxy),
-            **kwargs
+            **kwargs,
         )
 
     def _wavefront_calibrate_zernike_get_interpolator_2d(self):
@@ -794,7 +823,11 @@ class _WavefrontCalibrationZernike(object):
 
         # The base coordinates also depend upon the Fourier calibration, so both are keyed.
         cache = getattr(self, "_wavefront_calibration_zernike_interpolator_2d", None)
-        if cache is not None and np.array_equal(cache[0], base) and np.array_equal(cache[1], values):
+        if (
+            cache is not None
+            and np.array_equal(cache[0], base)
+            and np.array_equal(cache[1], values)
+        ):
             return cache[2]
 
         # The degree-1 tail reproduces the affine tilt map, including outside the calibration.
@@ -856,9 +889,7 @@ class _WavefrontCalibrationZernike(object):
             )
 
             if vectors_kxy.shape[0] > 2:
-                raise ValueError(
-                    "3D Zernike interpolation is not currently supported."
-                )
+                raise ValueError("3D Zernike interpolation is not currently supported.")
 
             result = interpolator(vectors_kxy)
         else:
@@ -880,14 +911,12 @@ class _WavefrontCalibrationZernike(object):
             x = np.linspace(0, self.cam.shape[1], N)
             y = np.linspace(0, self.cam.shape[0], N)
             grid = np.vstack([g.ravel() for g in np.meshgrid(x, y)])
-            field = self.wavefront_calibrate_zernike_get(
-                grid, from_units="ij"
-            )
+            field = self.wavefront_calibrate_zernike_get(grid, from_units="ij")
 
             D = len(zernike_indices)
             W = int(np.ceil(np.sqrt(D)))
             H = int(np.ceil(D / W))
-            fig, axs = plt.subplots(H, W, figsize=(3*W, 2.5*H), squeeze=False)
+            fig, axs = plt.subplots(H, W, figsize=(3 * W, 2.5 * H), squeeze=False)
 
             for j, ax in enumerate(axs.ravel()):
                 if j >= D:
@@ -901,12 +930,17 @@ class _WavefrontCalibrationZernike(object):
                 im = ax.imshow(
                     field[j, :].reshape(N, N),
                     extent=(0, self.cam.shape[1], self.cam.shape[0], 0),
-                    **kwargs
+                    **kwargs,
                 )
                 # Control points.
                 ax.scatter(
-                    points_ij[0, :], points_ij[1, :], c=corrected_spots[j, :],
-                    s=20, edgecolor="k", linewidths=.5, **kwargs
+                    points_ij[0, :],
+                    points_ij[1, :],
+                    c=corrected_spots[j, :],
+                    s=20,
+                    edgecolor="k",
+                    linewidths=0.5,
+                    **kwargs,
                 )
 
                 # Evaluation points.

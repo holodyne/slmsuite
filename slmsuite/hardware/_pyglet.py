@@ -12,25 +12,26 @@ window's message queue is bound to the thread that created it). This prevents
 windows from freezing between :meth:`~slmsuite.hardware.slms.slm.SLM.set_phase`
 calls.
 """
-import contextlib
-import os
-import sys
-import time
-import ctypes
-import threading
-import queue
+
 import atexit
+import contextlib
+import ctypes
+import os
+import queue
+import sys
+import threading
+import time
+
 import numpy as np
 from packaging.version import Version
 
 try:
     import pyglet
     import pyglet.gl as gl
-    from pyglet.window import key, mouse
-    from pyglet.window import Window as __Window
+    from pyglet.window import Window as __Window, key, mouse
 
     # Helper to get display/canvas depending on pyglet version
-    PYGLET_VERSION = Version(getattr(pyglet, '__version__', '0'))
+    PYGLET_VERSION = Version(getattr(pyglet, "__version__", "0"))
 
     def get_pyglet_display():
         """
@@ -41,7 +42,7 @@ try:
         pyglet.display.Display or pyglet.canvas.Display
             The platform display object.
         """
-        if PYGLET_VERSION >= Version('2.1.0'):
+        if Version("2.1.0") <= PYGLET_VERSION:
             return pyglet.display.get_display()
         else:
             return pyglet.canvas.get_display()
@@ -51,8 +52,10 @@ except Exception:
     key = mouse = None
     __Window = object
     PYGLET_VERSION = None
+
     def get_pyglet_display():
         raise ImportError("pyglet not installed.")
+
 
 # Optional cupy, for GPU frames and page-locked host memory.
 try:
@@ -62,8 +65,8 @@ except ImportError:
     cp = None
     zeros_pinned = None
 
-from slmsuite._logging import make_logger
 from slmsuite import __version__ as SLMSUITE_VERSION
+from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
 
@@ -76,14 +79,20 @@ _creation_lock = threading.RLock()
 try:
     _cuda = ctypes.WinDLL("nvcuda.dll") if os.name == "nt" else ctypes.CDLL("libcuda.so.1")
     _cuda.cuGraphicsGLRegisterBuffer.argtypes = [
-        ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint, ctypes.c_uint
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_uint,
+        ctypes.c_uint,
     ]
     _cuda.cuGraphicsResourceGetMappedPointer_v2.argtypes = [
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
     ]
     for _name in ("cuGraphicsMapResources", "cuGraphicsUnmapResources"):
         getattr(_cuda, _name).argtypes = [
-            ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_void_p,
         ]
     _cuda.cuDevicePrimaryCtxRetain.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
     _cuda.cuDevicePrimaryCtxRelease.argtypes = [ctypes.c_int]
@@ -101,7 +110,7 @@ def _cu(name, *args):
     if result:
         message = ctypes.c_char_p()
         _cuda.cuGetErrorName(result, ctypes.byref(message))
-        raise RuntimeError("{} failed: {}".format(name, message.value))
+        raise RuntimeError(f"{name} failed: {message.value}")
 
 
 def _stream():
@@ -109,7 +118,7 @@ def _stream():
     return ctypes.c_void_p(cp.cuda.get_current_stream().ptr)
 
 
-class _PixelBuffer(object):
+class _PixelBuffer:
     """
     An ``OpenGL`` pixel buffer registered with ``CUDA``, writable as a :mod:`cupy` array.
 
@@ -149,9 +158,7 @@ class _PixelBuffer(object):
 
             gl.glGenBuffers(1, ctypes.byref(self.buffer))
             gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.buffer.value)
-            gl.glBufferData(
-                gl.GL_PIXEL_UNPACK_BUFFER, int(np.prod(shape)), None, gl.GL_STREAM_DRAW
-            )
+            gl.glBufferData(gl.GL_PIXEL_UNPACK_BUFFER, int(np.prod(shape)), None, gl.GL_STREAM_DRAW)
             gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
 
             resource = ctypes.c_void_p()
@@ -172,8 +179,9 @@ class _PixelBuffer(object):
         """Map the buffer into ``CUDA`` and return a :mod:`cupy` view of it."""
         device = cp.cuda.runtime.getDevice()
         if device != self.device:
-            raise RuntimeError("Frame is registered to device {}, but cupy is on device {}."
-                .format(self.device, device))
+            raise RuntimeError(
+                f"Frame is registered to device {self.device}, but cupy is on device {device}."
+            )
 
         # Registering happened on the window thread, so this one may hold no context yet.
         current = ctypes.c_void_p()
@@ -190,7 +198,9 @@ class _PixelBuffer(object):
             size = ctypes.c_size_t()
             _cu(
                 "cuGraphicsResourceGetMappedPointer_v2",
-                ctypes.byref(pointer), ctypes.byref(size), self.resource
+                ctypes.byref(pointer),
+                ctypes.byref(size),
+                self.resource,
             )
         except BaseException:
             # Else the buffer stays mapped and every later frame fails.
@@ -239,17 +249,20 @@ class _PixelBuffer(object):
 # Win32 ``EnumDisplayDevicesW`` flag requesting the device interface path.
 _EDD_GET_DEVICE_INTERFACE_NAME = 0x00000001
 
+
 # Class for Windows-only display information.
 class _DISPLAY_DEVICEW(ctypes.Structure):
     """Win32 ``DISPLAY_DEVICEW``, used by :func:`_screen_id`."""
+
     _fields_ = [
-        ("cb",              ctypes.c_ulong),
-        ("DeviceName",      ctypes.c_wchar * 32),
-        ("DeviceString",    ctypes.c_wchar * 128),
-        ("StateFlags",      ctypes.c_ulong),
-        ("DeviceID",        ctypes.c_wchar * 128),
-        ("DeviceKey",       ctypes.c_wchar * 128),
+        ("cb", ctypes.c_ulong),
+        ("DeviceName", ctypes.c_wchar * 32),
+        ("DeviceString", ctypes.c_wchar * 128),
+        ("StateFlags", ctypes.c_ulong),
+        ("DeviceID", ctypes.c_wchar * 128),
+        ("DeviceKey", ctypes.c_wchar * 128),
     ]
+
 
 def _screen_id(screen):
     """
@@ -281,24 +294,19 @@ def _screen_id(screen):
             device = _DISPLAY_DEVICEW()
             device.cb = ctypes.sizeof(device)
             if ctypes.windll.user32.EnumDisplayDevicesW(
-                device_name,
-                0,
-                ctypes.byref(device),
-                _EDD_GET_DEVICE_INTERFACE_NAME
+                device_name, 0, ctypes.byref(device), _EDD_GET_DEVICE_INTERFACE_NAME
             ):
                 # e.g. '\\?\DISPLAY#DLP03C9#5&4c0ed3&1&UID4353#{e6f07b5f-ee97-...}'
                 # Drop interface GUID.
-                device_id = device.DeviceID.split("#{")[0]      
-                if device_id.startswith("\\\\?\\"):
-                    # Drop interface prefix.
-                    device_id = device_id[4:]                   
+                device_id = device.DeviceID.split("#{")[0]
+                device_id = device_id.removeprefix("\\\\?\\")  # Drop interface prefix.
                 if device_id:
                     return device_id
         except Exception as e:
             logger.debug("Could not resolve monitor identifier: %s", e)
 
-    return "{}x{}+{}+{}".format(screen.width, screen.height,
-                                screen.x, screen.y)
+    return f"{screen.width}x{screen.height}+{screen.x}+{screen.y}"
+
 
 def _screen_ids():
     """
@@ -310,6 +318,7 @@ def _screen_ids():
         See :func:`_screen_id`.
     """
     return {_screen_id(screen) for screen in get_pyglet_display().get_screens()}
+
 
 def _screen_index(screen_id):
     """
@@ -329,6 +338,7 @@ def _screen_index(screen_id):
         if _screen_id(screen) == screen_id:
             return index
     return None
+
 
 def _wait_for_new_screen(known_ids, timeout_s=60, interval_s=1):
     """
@@ -362,8 +372,7 @@ def _wait_for_new_screen(known_ids, timeout_s=60, interval_s=1):
 
         if len(new_ids) > 1:
             raise RuntimeError(
-                "Several displays appeared at once ({}); cannot tell them apart."
-                .format(sorted(new_ids))
+                f"Several displays appeared at once ({sorted(new_ids)}); cannot tell them apart."
             )
         elif len(new_ids) == 1:
             # A monitor's identifier changes while the OS finishes enumerating
@@ -484,13 +493,8 @@ class _Window(__Window):
             display = get_pyglet_display()
             screen = display.get_default_screen()
 
-        if shape is None:   # Fullscreen
-            super().__init__(
-                screen=screen,
-                fullscreen=True,
-                vsync=True,
-                caption=caption
-            )
+        if shape is None:  # Fullscreen
+            super().__init__(screen=screen, fullscreen=True, vsync=True, caption=caption)
             self.set_mouse_visible(False)
             self.flip()
         else:
@@ -502,7 +506,7 @@ class _Window(__Window):
                 fullscreen=False,
                 vsync=True,
                 caption=caption,
-                style=pyglet.window.Window.WINDOW_STYLE_DEFAULT
+                style=pyglet.window.Window.WINDOW_STYLE_DEFAULT,
             )
             self.set_visible(False)
             self.flip()
@@ -512,12 +516,10 @@ class _Window(__Window):
         try:
             # Icons. Currently hardcoded. Feel free to implement custom icons.
             path, _ = os.path.split(os.path.realpath(__file__))
-            path = os.path.join(
-                path, '..', '..', 'docs', 'source', 'static', 'slmsuite-notext-'
-            )
-            img16x16 =      pyglet.image.load(path + '16x16.png')
-            img32x32 =      pyglet.image.load(path + '32x32.png')
-            img512x512 =    pyglet.image.load(path + '512x512.png')
+            path = os.path.join(path, "..", "..", "docs", "source", "static", "slmsuite-notext-")
+            img16x16 = pyglet.image.load(path + "16x16.png")
+            img32x32 = pyglet.image.load(path + "32x32.png")
+            img512x512 = pyglet.image.load(path + "512x512.png")
             self.set_icon(img16x16, img32x32, img512x512)
         except Exception as e:
             logger.warning("Failed to set window icon: %s", e)
@@ -620,17 +622,14 @@ class _Window(__Window):
         background threads, so we delegate to it directly.
         """
         if sys.platform == "win32":
-            from pyglet.libs.win32 import _user32
-            from pyglet.libs.win32 import constants
+            from pyglet.libs.win32 import _user32, constants
             from pyglet.libs.win32.types import MSG
 
             self._allow_dispatch_event = True
             self.dispatch_pending_events()
 
             msg = MSG()
-            while _user32.PeekMessageW(
-                ctypes.byref(msg), 0, 0, 0, constants.PM_REMOVE
-            ):
+            while _user32.PeekMessageW(ctypes.byref(msg), 0, 0, 0, constants.PM_REMOVE):
                 _user32.TranslateMessage(ctypes.byref(msg))
                 _user32.DispatchMessageW(ctypes.byref(msg))
             self._allow_dispatch_event = False
@@ -653,11 +652,18 @@ class _Window(__Window):
         if sys.platform == "win32":
             try:
                 from pyglet.libs.win32 import _user32, constants
+
+                # fmt: off
                 _user32.SetWindowPos(
-                    self._hwnd, constants.HWND_TOPMOST,
-                    0, 0, 0, 0,
-                    constants.SWP_NOMOVE | constants.SWP_NOSIZE | constants.SWP_NOACTIVATE
+                    self._hwnd,
+                    constants.HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    constants.SWP_NOMOVE | constants.SWP_NOSIZE | constants.SWP_NOACTIVATE,
                 )
+                # fmt: on
             except (ImportError, AttributeError):
                 pass
         elif sys.platform == "linux":
@@ -695,24 +701,22 @@ class _Window(__Window):
 
         if self.interop is not False:
             try:
-                self.pixel_buffer = _PixelBuffer(shape + (B,), self.device)
+                self.pixel_buffer = _PixelBuffer((*shape, B), self.device)
                 self.mode = "interop"
             except Exception as e:
                 if self.interop:
-                    raise RuntimeError(
-                        "interop=True requested, but unavailable: {}".format(e)
-                    )
+                    raise RuntimeError(f"interop=True requested, but unavailable: {e}") from e
                 logger.debug("Interop frame unavailable: %s", e)
 
         if self.pixel_buffer is None:
             try:
                 if zeros_pinned is None:
                     raise RuntimeError("cupy unavailable.")
-                self.frame = zeros_pinned(shape + (B,), dtype=np.uint8)
+                self.frame = zeros_pinned((*shape, B), dtype=np.uint8)
                 self.mode = "pinned"
             except Exception as e:
                 logger.debug("Pinned frame unavailable: %s", e)
-                self.frame = np.zeros(shape + (B,), dtype=np.uint8)
+                self.frame = np.zeros((*shape, B), dtype=np.uint8)
                 self.mode = "pageable"
 
             self.frame[:, :, 3] = 255  # Opaque alpha
@@ -776,11 +780,17 @@ class _Window(__Window):
 
             # Malloc the OpenGL memory, blanked so nothing is displayed before the first frame
             gl.glTexImage2D(
-                gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8,
-                shape[1], shape[0],
-                0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
-                (gl.GLubyte * int(shape[0] * shape[1] * B))()
+                gl.GL_TEXTURE_2D,
+                0,
+                gl.GL_RGBA8,
+                shape[1],
+                shape[0],
+                0,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                (gl.GLubyte * int(shape[0] * shape[1] * B))(),
             )
+            # fmt: on
 
             # Use the default pyglet shader; this is required in 2.0+.
             self.shader = pyglet.graphics.get_default_blit_shader()
@@ -788,6 +798,7 @@ class _Window(__Window):
 
             # Also allocate the quadrangle using pyglet 2.0+ formalism.
             self.batch = pyglet.graphics.Batch()
+            # fmt: off
             self.vertex_list = self.shader.vertex_list(
                 4,
                 gl.GL_TRIANGLE_STRIP,
@@ -812,6 +823,7 @@ class _Window(__Window):
                     ]
                 )
             )
+            # fmt: on
 
             # Cleanup.
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
@@ -877,10 +889,15 @@ class _Window(__Window):
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
         if source is not None:
             gl.glTexSubImage2D(
-                gl.GL_TEXTURE_2D, 0, 0, 0,
-                shape[1], shape[0],
-                gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
-                source
+                gl.GL_TEXTURE_2D,
+                0,
+                0,
+                0,
+                shape[1],
+                shape[0],
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                source,
             )
             self._uploaded()
 
@@ -913,28 +930,22 @@ class _Window(__Window):
         windows = display.get_windows()
 
         def parse_screen(screen):
-            return (
-                "x={}, y={}, width={}, height={}"
-                .format(screen.x, screen.y, screen.width, screen.height)
-            )
+            return f"x={screen.x}, y={screen.y}, width={screen.width}, height={screen.height}"
+
         def parse_screen_int(screen):
             return (screen.x, screen.y, screen.width, screen.height)
+
         def parse_window(window):
             x, y = window.get_location()
-            return (
-                "x={}, y={}, width={}, height={}"
-                .format(x, y, window.width, window.height)
-            )
+            return f"x={x}, y={y}, width={window.width}, height={window.height}"
 
         default_str = parse_screen(default)
 
-        window_strs = []
-        for window in windows:
-            window_strs.append(parse_window(window))
+        window_strs = [parse_window(window) for window in windows]
 
         if verbose:
-            print('Display Positions:')
-            print('#,  Position,  Identifier')
+            print("Display Positions:")
+            print("#,  Position,  Identifier")
 
         screen_list = []
 
@@ -949,20 +960,14 @@ class _Window(__Window):
 
             if screen_str == default_str:
                 main_bool = True
-                screen_str += ' (main)'
+                screen_str += " (main)"
             if window_bool:
-                screen_str += ' (has ScreenMirrored)'
+                screen_str += " (has ScreenMirrored)"
 
             if verbose:
-                print('{},  {},  {}'.format(x, screen_str, screen_id))
+                print(f"{x},  {screen_str},  {screen_id}")
 
-            screen_list.append((
-                x,
-                parse_screen_int(screen),
-                main_bool,
-                window_bool,
-                screen_id
-            ))
+            screen_list.append((x, parse_screen_int(screen), main_bool, window_bool, screen_id))
 
         return screen_list
 
@@ -993,7 +998,7 @@ class _ViewerWindow(_Window):
 
     # Input is only as smooth as the rate the thread pumps it at. Windows rounds a
     # wait up to its 15.6 ms timer tick, which this asks for and so lands on.
-    event_period = 1 / 120.
+    event_period = 1 / 120.0
 
     def __init__(self, shape, screen=None, caption="", *, viewer, image_shape, **kwargs):
         """
@@ -1012,11 +1017,11 @@ class _ViewerWindow(_Window):
         """
         self.viewer = viewer
         self.vertex_list = None
-        self._quad = (0., 0., 1., 1.)
+        self._quad = (0.0, 0.0, 1.0, 1.0)
         self._dirty = False
         self._sized = (1, 1)
 
-        kwargs["interop"] = False       # Frames are colorized on the host.
+        kwargs["interop"] = False  # Frames are colorized on the host.
         super().__init__(shape, screen, caption, **kwargs)
 
         self.shape = (int(image_shape[0]), int(image_shape[1]))
@@ -1031,14 +1036,12 @@ class _ViewerWindow(_Window):
         # A two-tap filter drops isolated spots when a sensor-sized image is minified
         # into a small window, so the whole mip chain is averaged instead.
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture.value)
-        gl.glTexParameteri(
-            gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR
-        )
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR)
         gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
         # Else the letterbox margins alternate stale swap-chain contents at 60 Hz.
-        gl.glClearColor(0., 0., 0., 1.)
+        gl.glClearColor(0.0, 0.0, 0.0, 1.0)
 
         # The window is meant to be watched while another has focus, and a compositor
         # throttles an unfocused window's vertical blank, stalling flip() for far longer
@@ -1053,16 +1056,23 @@ class _ViewerWindow(_Window):
             # pyglet's own set_visible() ends in SetForegroundWindow, which would pull
             # focus out of the editor that opened the viewer.
             from pyglet.libs.win32 import _user32, constants
+
             _user32.SetWindowPos(
-                self._hwnd, constants.HWND_TOPMOST,
-                0, 0, 0, 0,
-                constants.SWP_NOMOVE | constants.SWP_NOSIZE
-                | constants.SWP_SHOWWINDOW | constants.SWP_NOACTIVATE
+                self._hwnd,
+                constants.HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                constants.SWP_NOMOVE
+                | constants.SWP_NOSIZE
+                | constants.SWP_SHOWWINDOW
+                | constants.SWP_NOACTIVATE,
             )
             self._visible = True
             self.dispatch_event("on_show")
         else:
-            self.set_visible(True)      # _Window hides windowed displays.
+            self.set_visible(True)  # _Window hides windowed displays.
             super()._bring_to_front()
 
     def _refresh(self):
@@ -1080,14 +1090,34 @@ class _ViewerWindow(_Window):
         self._quad = (qx, qy, qw, qh)
 
         self.vertex_list.position[:] = (
-            qx, qy + qh, 0.,    qx, qy, 0.,
-            qx + qw, qy + qh, 0.,   qx + qw, qy, 0.,
+            qx,
+            qy + qh,
+            0.0,
+            qx,
+            qy,
+            0.0,
+            qx + qw,
+            qy + qh,
+            0.0,
+            qx + qw,
+            qy,
+            0.0,
         )
         # v runs top-down, matching the top-left origin of the image.
         u0, u1, v0, v1 = x0 / iw, x1 / iw, y0 / ih, y1 / ih
         self.vertex_list.tex_coords[:] = (
-            u0, v0, 0.,     u0, v1, 0.,
-            u1, v0, 0.,     u1, v1, 0.,
+            u0,
+            v0,
+            0.0,
+            u0,
+            v1,
+            0.0,
+            u1,
+            v0,
+            0.0,
+            u1,
+            v1,
+            0.0,
         )
 
         self.viewer.state["geometry"] = self._geometry()
@@ -1109,7 +1139,7 @@ class _ViewerWindow(_Window):
 
     def render(self):
         """Upload the current frame to the texture and display it. See :meth:`_redraw`."""
-        self._refresh()     # The viewer moves the region from its own thread, not this one.
+        self._refresh()  # The viewer moves the region from its own thread, not this one.
         self._redraw(self.cframe)
 
     def _uploaded(self):
@@ -1119,7 +1149,7 @@ class _ViewerWindow(_Window):
     def _fraction(self, x, y):
         """Map window pixels to a ``(fx, fy)`` fraction of the displayed quad."""
         qx, qy, qw, qh = self._quad
-        return (x - qx) / qw, 1. - (y - qy) / qh    # pyglet's y is bottom-origin.
+        return (x - qx) / qw, 1.0 - (y - qy) / qh  # pyglet's y is bottom-origin.
 
     @staticmethod
     def _inside(fraction):
@@ -1134,6 +1164,7 @@ class _ViewerWindow(_Window):
         """Whether the OS is holding the window at a size that is not ours to choose."""
         if sys.platform == "win32":
             from pyglet.libs.win32 import _user32
+
             return bool(_user32.IsZoomed(self._hwnd))
         return self.width >= self.screen.width and self.height >= self.screen.height
 
@@ -1170,7 +1201,7 @@ class _ViewerWindow(_Window):
             self._sized = snap
             # A pixel of rounding is left to the letterbox, else this never settles.
             if abs(snap[0] - width) > 1 or abs(snap[1] - height) > 1:
-                self.set_size(*snap)    # Re-enters here with the corrected size.
+                self.set_size(*snap)  # Re-enters here with the corrected size.
                 return True
 
         self._refresh()
@@ -1234,7 +1265,7 @@ class _ViewerWindow(_Window):
         return True
 
 
-class _WindowThread(object):
+class _WindowThread:
     """
     Manages a dedicated :class:`~threading.Thread` for a single :class:`_Window`.
 
@@ -1327,18 +1358,14 @@ class _WindowThread(object):
         """Start the background thread and wait for window creation."""
         self._running = True
         self._thread = threading.Thread(
-            target=self._loop,
-            daemon=True,
-            name="slmsuite-pyglet-{}".format(self._init_args[2])
+            target=self._loop, daemon=True, name=f"slmsuite-pyglet-{self._init_args[2]}"
         )
         self._thread.start()
 
         if not self._ready.wait(timeout=10.0):
             # Else the half-built thread runs on, unregistered and so beyond atexit.
             self.close()
-            raise RuntimeError(
-                "Window thread failed to start within 10s: {}".format(self._error)
-            )
+            raise RuntimeError(f"Window thread failed to start within 10s: {self._error}")
         if self._error is not None:
             raise self._error
 
@@ -1379,6 +1406,7 @@ class _WindowThread(object):
                 _saved_have_context = None
                 try:
                     from pyglet.gl import gl_info as _gli
+
                     _saved_have_context = _gli._gl_info._have_context
                     _gli._gl_info._have_context = False
                 except AttributeError:
@@ -1387,9 +1415,7 @@ class _WindowThread(object):
                 gl.current_context = None
 
                 try:
-                    self._window = self._window_class(
-                        shape, screen, caption, **self._init_kwargs
-                    )
+                    self._window = self._window_class(shape, screen, caption, **self._init_kwargs)
                 finally:
                     # Else every later window in the process takes the non-ARB path.
                     # gl.current_context stays as the new window left it: _setup_context
@@ -1420,13 +1446,13 @@ class _WindowThread(object):
                     func, args, kwargs, future = cmd
                     try:
                         result = func(*args, **kwargs)
-                        future['result'] = result
-                        future['error'] = None
+                        future["result"] = result
+                        future["error"] = None
                     except Exception as e:
-                        future['result'] = None
-                        future['error'] = e
+                        future["result"] = None
+                        future["error"] = e
                     finally:
-                        future['event'].set()
+                        future["event"].set()
                 except queue.Empty:
                     break
 
@@ -1454,8 +1480,8 @@ class _WindowThread(object):
                     _, _, _, future = self._command_queue.get_nowait()
                 except queue.Empty:
                     break
-                future['error'] = RuntimeError("Window thread exited before the command ran.")
-                future['event'].set()
+                future["error"] = RuntimeError("Window thread exited before the command ran.")
+                future["event"].set()
 
         self._teardown()
         if self._manager is not None:
@@ -1508,7 +1534,7 @@ class _WindowThread(object):
         RuntimeError
             If the window thread is not running.
         """
-        future = {'event': threading.Event(), 'result': None, 'error': None}
+        future = {"event": threading.Event(), "result": None, "error": None}
 
         # Guard + enqueue atomically against the loop's stop/drain (see run() cleanup).
         # Also reject if the window has exited (e.g. user closed it).
@@ -1545,11 +1571,11 @@ class _WindowThread(object):
             Re-raises any exception that occurred during execution on
             the window thread.
         """
-        if not future['event'].wait(timeout):
-            raise TimeoutError("Window thread did not finish within {} s.".format(timeout))
-        if future['error'] is not None:
-            raise future['error']
-        return future['result']
+        if not future["event"].wait(timeout):
+            raise TimeoutError(f"Window thread did not finish within {timeout} s.")
+        if future["error"] is not None:
+            raise future["error"]
+        return future["result"]
 
     @property
     def window(self):
@@ -1575,7 +1601,7 @@ class _WindowThread(object):
             self._thread.join(timeout=3.0)
 
 
-class _WindowManager(object):
+class _WindowManager:
     """
     Singleton that manages the lifecycle of all :class:`_WindowThread` instances.
 
@@ -1592,6 +1618,7 @@ class _WindowManager(object):
     _threads : list of _WindowThread
         All active window threads managed by this instance.
     """
+
     _instance = None
     _lock = threading.Lock()
 
@@ -1616,9 +1643,9 @@ class _WindowManager(object):
         self._threads_lock = threading.Lock()
 
         try:
-            myappid = 'holodyne.slmsuite.viewer.' + SLMSUITE_VERSION
+            myappid = "holodyne.slmsuite.viewer." + SLMSUITE_VERSION
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-        except:
+        except Exception:
             pass
 
         atexit.register(self.shutdown)

@@ -41,15 +41,15 @@ class FeedbackHologram(Hologram):
     _feedback_supported = ("computational", "experimental")
 
     def __init__(
-            self,
-            shape,
-            target_ij=None,
-            cameraslm=None,
-            null_region=None,
-            null_region_radius_frac=None,
-            target_ij_roi=None,
-            **kwargs
-        ):
+        self,
+        shape,
+        target_ij=None,
+        cameraslm=None,
+        null_region=None,
+        null_region_radius_frac=None,
+        target_ij_roi=None,
+        **kwargs,
+    ):
         """
         Initializes a hologram with camera feedback.
 
@@ -106,12 +106,14 @@ class FeedbackHologram(Hologram):
                     # confuse the rest of the init/etc.
                     self.cameraslm = None
                 except Exception:
-                    raise ValueError("Expected a CameraSLM or SLM to be passed to cameraslm.")
+                    raise ValueError(
+                        "Expected a CameraSLM or SLM to be passed to cameraslm."
+                    ) from None
 
             if amp is None:
                 amp = source_amp()
 
-        if not "slm_shape" in kwargs:
+        if "slm_shape" not in kwargs:
             kwargs["slm_shape"] = slm_shape
 
         super().__init__(target=shape, amp=amp, **kwargs)
@@ -121,7 +123,7 @@ class FeedbackHologram(Hologram):
         self._resampler_memo = None
         self.img_ij = None
         self.img_knm = None
-        self.target_ij_roi = None       
+        self.target_ij_roi = None
         if target_ij is None:
             self.target_ij = None
         else:
@@ -143,7 +145,7 @@ class FeedbackHologram(Hologram):
                 from_units="kxy",
                 to_units="knm",
                 hardware=self.cameraslm.slm,
-                shape=self.shape
+                shape=self.shape,
             )
 
             # Transform the target, if it is provided.
@@ -182,8 +184,7 @@ class FeedbackHologram(Hologram):
 
         (y0, x0) = (int(roi[0]), int(roi[1]))
         (h, w) = (int(src_shape[0]), int(src_shape[1]))
-        (ch, cw) = (int(self.cameraslm.cam.shape[0]),
-                    int(self.cameraslm.cam.shape[1]))
+        (ch, cw) = (int(self.cameraslm.cam.shape[0]), int(self.cameraslm.cam.shape[1]))
 
         if y0 < 0 or x0 < 0 or y0 + h > ch or x0 + w > cw:
             raise ValueError(
@@ -207,7 +208,7 @@ class FeedbackHologram(Hologram):
 
         (y0, x0) = self.target_ij_roi
         (h, w) = np.shape(self.target_ij)
-        return img_ij[y0:y0 + h, x0:x0 + w]
+        return img_ij[y0 : y0 + h, x0 : x0 + w]
 
     def _ijcam_to_knmslm_resampler(self, src_shape, roi):
         """
@@ -252,16 +253,11 @@ class FeedbackHologram(Hologram):
 
         # First transformation. FUTURE: make convert_basis to output a matrix
         # like here?
-        conversion = (
-            toolbox.convert_vector((1, 1), "knm", "kxy", hardware=slm,
-                                   shape=self.shape) -
-            toolbox.convert_vector((0, 0), "knm", "kxy", hardware=slm,
-                                   shape=self.shape)
-        )
+        conversion = toolbox.convert_vector(
+            (1, 1), "knm", "kxy", hardware=slm, shape=self.shape
+        ) - toolbox.convert_vector((0, 0), "knm", "kxy", hardware=slm, shape=self.shape)
         M1 = np.diag(np.squeeze(conversion))
-        b1 = np.matmul(M1,
-                       -toolbox.format_2vectors(np.flip(np.squeeze(self.shape))
-                                                / 2))
+        b1 = np.matmul(M1, -toolbox.format_2vectors(np.flip(np.squeeze(self.shape)) / 2))
 
         # Composite transformation (along with xy -> yx).
         M_np = np.flip(np.flip(np.matmul(affine.M, M1), axis=0), axis=1)
@@ -328,8 +324,10 @@ class FeedbackHologram(Hologram):
             Image transformed into ``"knm"`` space.
         """
         if self.cameraslm is None:
-            raise RuntimeError("Cannot use ijcam_to_knmslm without the calibrations in a cameraslm.")
-        if not "fourier" in self.cameraslm.calibrations:
+            raise RuntimeError(
+                "Cannot use ijcam_to_knmslm without the calibrations in a cameraslm."
+            )
+        if "fourier" not in self.cameraslm.calibrations:
             raise RuntimeError("ijcam_to_knmslm requires a Fourier calibration.")
 
         # See if the user wants to blur.
@@ -388,7 +386,7 @@ class FeedbackHologram(Hologram):
         Method to update the SLM with the current phase pattern.
         This is separate from :meth:`measure()`
         """
-        if not self._updated_slm or force:   # If we have not already updated the SLM.
+        if not self._updated_slm or force:  # If we have not already updated the SLM.
             # Parse the current feedback and stats to see if an update is needed.
             should_update = False
             feedback = self.flags.get("feedback", "")
@@ -455,9 +453,7 @@ class FeedbackHologram(Hologram):
             )
 
         if basis != "ij" and basis != "knm":
-            raise ValueError(
-                f"Unrecognized measurement basis '{basis}'. Options are 'ij' or 'knm'"
-            )
+            raise ValueError(f"Unrecognized measurement basis '{basis}'. Options are 'ij' or 'knm'")
 
         # Make sure the SLM is updated before measurement, when the feedback calls for it.
         self._update_slm()
@@ -471,7 +467,7 @@ class FeedbackHologram(Hologram):
                 self.img_ij = cp.asarray(raw_img, dtype=self.dtype)
             else:
                 self.img_ij = np.array(
-                    raw_img, copy=(False if np.__version__[0] == '1' else None), dtype=self.dtype
+                    raw_img, copy=(False if np.__version__[0] == "1" else None), dtype=self.dtype
                 )
 
             try:
@@ -548,9 +544,7 @@ class FeedbackHologram(Hologram):
         # Normalize roi once here; ijcam_to_knmslm validates it again.
         self.target_ij_roi = self._validate_roi(roi, np.shape(new_target_ij))
         # Transformation order of zero to prevent nan-blurring in MRAF cases.
-        self.ijcam_to_knmslm(
-            new_target_ij, out=self.target, order=0, roi=self.target_ij_roi
-        )
+        self.ijcam_to_knmslm(new_target_ij, out=self.target, order=0, roi=self.target_ij_roi)
 
         # Set the null region.
         undefined = cp.isnan(self.target)
@@ -575,7 +569,7 @@ class FeedbackHologram(Hologram):
             mask = cp.square(xg) + cp.square(yg) > null_region_radius_frac**2
             null_region[mask] = True
 
-        if not (null_region is None):
+        if null_region is not None:
             self.target[cp.logical_and(undefined, null_region)] = 0
 
         if reset_weights:
@@ -608,7 +602,7 @@ class FeedbackHologram(Hologram):
         """
         # Probably local autocorrelation algorithm.
 
-        raise NotImplementedError()
+        raise NotImplementedError
 
     # Weighting and stats.
     def _update_weights(self):
@@ -628,7 +622,8 @@ class FeedbackHologram(Hologram):
         """
         Wrapped by :meth:`FeedbackHologram._update_stats()`.
         """
-        if stat_groups is None: stat_groups = []
+        if stat_groups is None:
+            stat_groups = []
         if "experimental_knm" in stat_groups:
             self.measure("knm")  # Make sure data is there.
 
@@ -668,6 +663,8 @@ class FeedbackHologram(Hologram):
         stat_groups : list of str
             Which groups or types of statistics to analyze.
         """
+        if stat_groups is None:
+            stat_groups = []
         stats = {}
 
         self._calculate_stats_computational(stats, stat_groups)

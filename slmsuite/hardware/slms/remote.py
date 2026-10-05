@@ -1,15 +1,20 @@
 """
 Connects to an SLM on a remote :class:`~slmsuite.hardware.remote.Server`.
 """
+
+from typing import ClassVar
+
+from slmsuite.hardware.remote import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, _Client
 from slmsuite.hardware.slms.slm import SLM
-from slmsuite.hardware.remote import _Client, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT
+
 
 class RemoteSLM(_Client, SLM):
     """
     Connects to an SLM on a remote :class:`~slmsuite.hardware.remote.Server`.
     """
 
-    _pickle = SLM._pickle + [
+    _pickle: ClassVar[list[str]] = [
+        *SLM._pickle,
         "server_attributes",
         "host",
         "port",
@@ -23,8 +28,8 @@ class RemoteSLM(_Client, SLM):
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         timeout: float = DEFAULT_TIMEOUT,
-        wav_um: float = None,
-        settle_time_s: float = None,
+        wav_um: float | None = None,
+        settle_time_s: float | None = None,
     ):
         r"""
         Connects to an SLM on a remote :class:`~slmsuite.hardware.remote.Server`.

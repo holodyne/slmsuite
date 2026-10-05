@@ -1,15 +1,14 @@
 """
 Structured light.
 """
-import os
+
 import numpy as np
 from scipy import special
 
 from slmsuite.holography.toolbox import _process_grid
 from slmsuite.holography.toolbox.phase._lenses import _parse_focal_length
 from slmsuite.holography.toolbox.phase._misc import _determine_source_radius
-from slmsuite.misc.xp import get_array_module, as_numpy
-
+from slmsuite.misc.xp import as_numpy, get_array_module
 
 # Structured light.
 
@@ -106,7 +105,8 @@ def hermite_gaussian(grid, n, m, w=None):
 
     # Generate the amplitude of a Hermite-Gaussian mode.
     phase = xp.asarray(
-        special.hermite(n)(as_numpy(factor * x_grid)) * special.hermite(m)(as_numpy(factor * y_grid)),
+        special.hermite(n)(as_numpy(factor * x_grid))
+        * special.hermite(m)(as_numpy(factor * y_grid)),
         dtype=np.result_type(x_grid.dtype, np.float32),
     )
 
@@ -149,7 +149,7 @@ def _ince_polynomial(p, m, parity, ellipticity, z):
     eps = ellipticity
     xp = get_array_module(z)
     z = xp.asarray(z)
-    p_even = (p % 2 == 0)
+    p_even = p % 2 == 0
 
     if parity == 1:  # Even: C_p^m
         if p_even:
@@ -239,7 +239,7 @@ def _ince_polynomial(p, m, parity, ellipticity, z):
     if parity == 1 and p_even:
         norm_sq = 2 * coeffs[0] ** 2 + np.sum(coeffs[1:] ** 2)
     else:
-        norm_sq = np.sum(coeffs ** 2)
+        norm_sq = np.sum(coeffs**2)
     norm = np.sqrt(norm_sq)
     if norm > 0:
         coeffs /= norm
@@ -319,15 +319,13 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
 
     if parity == 1:
         if not 0 <= m <= p:
-            raise ValueError("{} is an invalid Ince polynomial.".format((p,m)))
+            raise ValueError(f"{(p, m)} is an invalid Ince polynomial.")
     else:
         if not 1 <= m <= p:
-            raise ValueError("{} is an invalid Ince polynomial.".format((p,m)))
+            raise ValueError(f"{(p, m)} is an invalid Ince polynomial.")
 
     if p % 2 != m % 2:
-        raise ValueError(
-            "p and m must have the same parity, got p={}, m={}".format(p, m)
-        )
+        raise ValueError(f"p and m must have the same parity, got p={p}, m={m}")
 
     # Elliptic coordinates: x + iy = f0 * cosh(xi + i*eta)
     # where f0 = w * sqrt(eps/2) is the semifocal distance.
@@ -335,8 +333,8 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
     factor = 1 / (w * np.sqrt(ellipticity / 2))
 
     elliptic_grid = xp.arccosh(complex_grid * factor)
-    xi = elliptic_grid.real    # radial coordinate (>= 0)
-    eta = elliptic_grid.imag   # angular coordinate [0, 2*pi)
+    xi = elliptic_grid.real  # radial coordinate (>= 0)
+    eta = elliptic_grid.imag  # angular coordinate [0, 2*pi)
 
     # IG beam at the waist:
     # IG^e_{p,m} ~ C_p^m(i*xi, eps) * C_p^m(eta, eps) * exp(-r^2/w^2)
@@ -418,8 +416,8 @@ def mathieu_gaussian(grid, r, q, w=None):
         complex_grid = x_grid + 1j * y_grid
         elliptic = np.arccosh(complex_grid / h)
         # scipy's mathieu functions return NaN for single-precision input, so evaluate in double.
-        mu = np.abs(elliptic.real).astype(float)     # radial coordinate (>= 0)
-        nu = elliptic.imag.astype(float)             # angular coordinate
+        mu = np.abs(elliptic.real).astype(float)  # radial coordinate (>= 0)
+        nu = elliptic.imag.astype(float)  # angular coordinate
 
         # Convert angular coordinate to degrees for scipy's mathieu functions.
         nu_deg = np.degrees(nu)

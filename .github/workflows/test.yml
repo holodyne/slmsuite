@@ -7,6 +7,20 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Ruff lint
+        run: uvx ruff check --output-format=github .
+
+      - name: Ruff format
+        run: uvx ruff format --check .
+
   test:
     runs-on: ubuntu-latest
     strategy:

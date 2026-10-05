@@ -8,8 +8,10 @@ This was tested at commit 7846b9e and Python 3.9 with DMK 27BUP031 camera.
 The tisgrabber .dll and tisgrabber.py are needed.
 Please either install tisgrabber.py or have it in your current working directory.
 """
-import warnings
+
 import ctypes
+import warnings
+
 import numpy as np
 
 from slmsuite.hardware.cameras.camera import Camera
@@ -28,6 +30,7 @@ logger = make_logger(__name__)
 # Change this DLL path if necessary
 DLL_PATH = "./tisgrabber_x64.dll"
 
+
 class ImagingSource(Camera):
     """
     The Imaging Source camera.
@@ -41,6 +44,7 @@ class ImagingSource(Camera):
     vid_format : str
         Caches the video format currently set by the user if known.
     """
+
     sdk = None
 
     @classmethod
@@ -58,7 +62,9 @@ class ImagingSource(Camera):
 
         err = sdk.IC_InitLibrary(0)
         if err != 1:
-            raise Exception("DLL library failed to initiate. Perhaps check the DLL_PATH in tis_camera.py")
+            raise Exception(
+                "DLL library failed to initiate. Perhaps check the DLL_PATH in tis_camera.py"
+            )
 
         cls.sdk = sdk
 
@@ -90,13 +96,7 @@ class ImagingSource(Camera):
                 logger.error(err_str)
         return err
 
-    def __init__(
-        self,
-        serial="",
-        vid_format=None,
-        pitch_um=None,
-        **kwargs
-    ):
+    def __init__(self, serial="", vid_format=None, pitch_um=None, **kwargs):
         """
         Initialize camera and attributes.
 
@@ -135,7 +135,7 @@ class ImagingSource(Camera):
             connected_devs = ImagingSource.info()
             if len(connected_devs) == 0:
                 raise Exception("No cameras found")
-            serial = connected_devs[0] # By default use the first camera that is found
+            serial = connected_devs[0]  # By default use the first camera that is found
         err = ImagingSource.sdk.IC_OpenDevByUniqueName(self.cam, tis.T(serial))
         if err != 1:
             raise Exception("Error when opening Camera: " + str(err))
@@ -145,7 +145,9 @@ class ImagingSource(Camera):
         # Get in prepared mode and then set the video format
         ImagingSource.safe_call(ImagingSource.sdk.IC_PrepareLive, 1, self.cam)
         if vid_format is not None:
-            ImagingSource.safe_call(ImagingSource.sdk.IC_SetVideoFormat, 1, self.cam, tis.T(vid_format))
+            ImagingSource.safe_call(
+                ImagingSource.sdk.IC_SetVideoFormat, 1, self.cam, tis.T(vid_format)
+            )
 
         # Acquire the description of the image.
         width = ctypes.c_long()
@@ -153,7 +155,9 @@ class ImagingSource(Camera):
         bpp = ctypes.c_int()
         COLORFORMAT = ctypes.c_int()
 
-        ImagingSource.safe_call(ImagingSource.sdk.IC_GetImageDescription, 1, self.cam, width, height, bpp, COLORFORMAT)
+        ImagingSource.safe_call(
+            ImagingSource.sdk.IC_GetImageDescription, 1, self.cam, width, height, bpp, COLORFORMAT
+        )
 
         # Dividing by 3 since it seems like even with format Y800 which is monochrome, it still uses 24 bits per pixel.
         # TODO: fix this to improve read efficiency
@@ -161,11 +165,7 @@ class ImagingSource(Camera):
 
         # Finally, use the superclass constructor to initialize other required variables.
         super().__init__(
-            (width.value, height.value),
-            bitdepth=bitdepth,
-            name=serial,
-            pitch_um=pitch_um,
-            **kwargs
+            (width.value, height.value), bitdepth=bitdepth, name=serial, pitch_um=pitch_um, **kwargs
         )
         self.logger.debug("ImagingSource camera initialized.")
 
@@ -200,11 +200,11 @@ class ImagingSource(Camera):
 
         # Get device count and then iterate through each device
         devicecount = ImagingSource.sdk.IC_GetDeviceCount()
-        serial_list = []
-        for i in range(0, devicecount):
-            serial_list.append(tis.D(ImagingSource.sdk.IC_GetUniqueNamefromList(i)))
+        serial_list = [
+            tis.D(ImagingSource.sdk.IC_GetUniqueNamefromList(i)) for i in range(devicecount)
+        ]
 
-        if verbose: 
+        if verbose:
             print(serial_list)
 
         return serial_list
@@ -214,14 +214,30 @@ class ImagingSource(Camera):
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
         exposure = ctypes.c_float()
-        ImagingSource.safe_call(ImagingSource.sdk.IC_GetPropertyAbsoluteValue, 1, self.cam, tis.T("Exposure"), tis.T("Value"), exposure)
+        ImagingSource.safe_call(
+            ImagingSource.sdk.IC_GetPropertyAbsoluteValue,
+            1,
+            self.cam,
+            tis.T("Exposure"),
+            tis.T("Value"),
+            exposure,
+        )
         return float(exposure.value)
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
         # Turn off auto exposure and use the value given.
-        ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertySwitch, 1, self.cam, tis.T("Exposure"), tis.T("Auto"), 0)
-        ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyAbsoluteValue, 1, self.cam, tis.T("Exposure"), tis.T("Value"), ctypes.c_float(exposure_s))
+        ImagingSource.safe_call(
+            ImagingSource.sdk.IC_SetPropertySwitch, 1, self.cam, tis.T("Exposure"), tis.T("Auto"), 0
+        )
+        ImagingSource.safe_call(
+            ImagingSource.sdk.IC_SetPropertyAbsoluteValue,
+            1,
+            self.cam,
+            tis.T("Exposure"),
+            tis.T("Value"),
+            ctypes.c_float(exposure_s),
+        )
 
     def _set_woi_hw(self, woi):
         """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
@@ -235,9 +251,30 @@ class ImagingSource(Camera):
         this_vid_format = self.vid_format[:idx]
         tot_format = this_vid_format + "(" + str(w) + "x" + str(h) + ")"
         ImagingSource.safe_call(ImagingSource.sdk.IC_SetVideoFormat, 1, self.cam, tis.T(tot_format))
-        ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertySwitch, 1, self.cam, tis.T("Partial scan"), tis.T("Auto-center"), 0)
-        ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyValue, 1, self.cam, tis.T("Partial scan"), tis.T("X Offset"), x_phys)
-        ImagingSource.safe_call(ImagingSource.sdk.IC_SetPropertyValue, 1, self.cam, tis.T("Partial scan"), tis.T("Y Offset"), y_phys)
+        ImagingSource.safe_call(
+            ImagingSource.sdk.IC_SetPropertySwitch,
+            1,
+            self.cam,
+            tis.T("Partial scan"),
+            tis.T("Auto-center"),
+            0,
+        )
+        ImagingSource.safe_call(
+            ImagingSource.sdk.IC_SetPropertyValue,
+            1,
+            self.cam,
+            tis.T("Partial scan"),
+            tis.T("X Offset"),
+            x_phys,
+        )
+        ImagingSource.safe_call(
+            ImagingSource.sdk.IC_SetPropertyValue,
+            1,
+            self.cam,
+            tis.T("Partial scan"),
+            tis.T("Y Offset"),
+            y_phys,
+        )
 
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
@@ -248,12 +285,23 @@ class ImagingSource(Camera):
         height = ctypes.c_long()
         bpp = ctypes.c_int()
         COLORFORMAT = ctypes.c_int()
-        ImagingSource.safe_call(ImagingSource.sdk.IC_GetImageDescription, 1, self.cam, width, height, bpp, COLORFORMAT)
+        ImagingSource.safe_call(
+            ImagingSource.sdk.IC_GetImageDescription, 1, self.cam, width, height, bpp, COLORFORMAT
+        )
         x_offset = ctypes.c_long()
         y_offset = ctypes.c_long()
-        ImagingSource.sdk.IC_GetPropertyValue(self.cam, tis.T("Partial scan"), tis.T("X Offset"), x_offset)
-        ImagingSource.sdk.IC_GetPropertyValue(self.cam, tis.T("Partial scan"), tis.T("Y Offset"), y_offset)
-        return (int(x_offset.value) // binx, int(width.value), int(y_offset.value) // biny, int(height.value))
+        ImagingSource.sdk.IC_GetPropertyValue(
+            self.cam, tis.T("Partial scan"), tis.T("X Offset"), x_offset
+        )
+        ImagingSource.sdk.IC_GetPropertyValue(
+            self.cam, tis.T("Partial scan"), tis.T("Y Offset"), y_offset
+        )
+        return (
+            int(x_offset.value) // binx,
+            int(width.value),
+            int(y_offset.value) // biny,
+            int(height.value),
+        )
 
     def _set_binning_hw(self, binning):
         """See :meth:`.Camera._set_binning_hw`. **(Untested)**"""
@@ -302,7 +350,7 @@ class ImagingSource(Camera):
         img_ptr = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_ubyte * buffer_size))
         # Reshape the image according to the width and height.
         # TODO: there are more efficient ways to reshape the array only considering the R component.
-        img = np.ndarray(buffer=img_ptr.contents, dtype=np.uint8, shape=(H, W, 3)) # 3 for RGB
+        img = np.ndarray(buffer=img_ptr.contents, dtype=np.uint8, shape=(H, W, 3))  # 3 for RGB
         ImagingSource.safe_call(ImagingSource.sdk.IC_StopLive, 0, self.cam)
         # We take only the 1st component, assuming that the image is monochromatic.
         # Return the raw untransformed frame; the base class applies self.transform.

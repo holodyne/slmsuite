@@ -1,20 +1,22 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+import warnings
 
 import matplotlib.pyplot as plt
-import numpy as np
-import warnings
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import numpy as np
 
-from slmsuite.hardware._viewer import _Viewable
 from slmsuite._logging import _Loggable
+from slmsuite.hardware._viewer import _Viewable
 from slmsuite.holography.toolbox import format_shape
 from slmsuite.misc.math import REAL_TYPES
+
 
 class _Common(_Viewable, _Loggable, ABC):
     """
     Handles common properties and methods for both cameras and SLMs.
     """
+
     def __init__(
         self,
         resolution,
@@ -34,10 +36,9 @@ class _Common(_Viewable, _Loggable, ABC):
         # Parse shape.
         width, height = format_shape(resolution)
         self.shape = (height, width)
-        
+
         if not np.all((np.array(self.shape) > 100) & (np.array(self.shape) < 1e4)):
             self.logger.warning("Resolution of %s is unusual. Was this a typo?", resolution)
-
 
         # Parse datatype variables.
         self.bitdepth = int(bitdepth)
@@ -56,12 +57,11 @@ class _Common(_Viewable, _Loggable, ABC):
                 raise ValueError("Expected positive (float, float) for pitch_um")
             self.pitch_um = np.array([float(pitch_um[0]), float(pitch_um[1])])
 
-        if self.pitch_um is not None and not np.all(
-            (self.pitch_um > 1) & (self.pitch_um < 50)
-        ):
+        if self.pitch_um is not None and not np.all((self.pitch_um > 1) & (self.pitch_um < 50)):
             self.logger.warning(
                 "Pixel pitch of %.2f x %.2f um is unusual. Was this a typo?",
-                self.pitch_um[0], self.pitch_um[1],
+                self.pitch_um[0],
+                self.pitch_um[1],
             )
 
         # Whether this is an SLM or not, used for some viewer settings.
@@ -76,7 +76,7 @@ class _Common(_Viewable, _Loggable, ABC):
     @abstractmethod
     def close(self):
         """Abstract method to close the hardware."""
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def __del__(self):
         try:
@@ -96,7 +96,7 @@ class _Common(_Viewable, _Loggable, ABC):
     @property
     def bitresolution(self):
         """Number of levels, ``2**bitdepth``."""
-        return 2**self.bitdepth     # Overwritten in Camera to account for averaging.
+        return 2**self.bitdepth  # Overwritten in Camera to account for averaging.
 
     @property
     def width(self):
@@ -121,7 +121,9 @@ class _Common(_Viewable, _Loggable, ABC):
         """
         # One quiet attempt: hardware that cannot yet capture falls back on bitdepth below.
         if test_data is None and hasattr(self, "_get_image_hw"):
-            test_data = lambda: self._get_image_hw(timeout_s=1)
+
+            def test_data():
+                return self._get_image_hw(timeout_s=1)
 
         dtype = None
 
@@ -131,7 +133,7 @@ class _Common(_Viewable, _Loggable, ABC):
                     test_data = test_data()
 
                 probed = np.dtype(np.array(test_data).dtype)
-                if probed.kind in "iuf":   # else a non-numeric probe would mistype the hardware.
+                if probed.kind in "iuf":  # else a non-numeric probe would mistype the hardware.
                     dtype = probed
             except Exception as error:
                 self.logger.debug("Could not probe '%s' for a dtype: %s", self.name, error)
@@ -184,7 +186,7 @@ class _Common(_Viewable, _Loggable, ABC):
             if len(plt.get_fignums()) > 0:
                 fig = plt.gcf()
             else:
-                fig = plt.figure(figsize=(20,8))
+                fig = plt.figure(figsize=(20, 8))
                 should_show = True
         else:
             fig = None
@@ -209,10 +211,12 @@ class _Common(_Viewable, _Loggable, ABC):
                 deltas = np.squeeze(np.diff(axlim, axis=1)) * limits / 2
 
                 limits = np.vstack((centers - deltas, centers + deltas)).T
-            elif np.shape(limits) == (2,2):
+            elif np.shape(limits) == (2, 2):
                 pass
             else:
-                raise ValueError(f"limits format {limits} not recognized; provide a scalar or limits.")
+                raise ValueError(
+                    f"limits format {limits} not recognized; provide a scalar or limits."
+                )
 
             ax.set_xlim(limits[0])
             ax.set_ylim(limits[1])

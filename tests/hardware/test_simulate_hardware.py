@@ -29,8 +29,10 @@ Run with::
 
     SLMSUITE_TEST_HARDWARE=1 pytest tests/hardware/test_simulate_hardware.py -v -s
 """
+
 import os
 
+from conftest import plot_image_dim
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -41,9 +43,7 @@ from slmsuite.hardware.cameraslms import FourierSLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography.toolbox import convert_vector
 from slmsuite.holography.toolbox.phase import blaze
-
-from conftest import plot_image_dim
-
+from slmsuite.misc.xp import as_numpy as _host
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SLMSUITE_TEST_HARDWARE") != "1",
@@ -52,7 +52,9 @@ pytestmark = pytest.mark.skipif(
 
 DEFAULT_CAL_DIR = os.path.join(
     os.path.expanduser("~"),
-    "Documents", "Experiments", "20260810 - First Closed Loop Tests",
+    "Documents",
+    "Experiments",
+    "20260810 - First Closed Loop Tests",
 )
 
 #: Blaze magnitudes probed along each axis, in normalized ``kxy``, applied in both
@@ -135,7 +137,7 @@ def autoexpose(cam, target=0.5, tries=10, bounds=(2e-5, 0.05), half=48):
         (position, _) = find_spot(image)
 
         (x, y) = (int(position[0]), int(position[1]))
-        box = image[max(0, y - half):y + half, max(0, x - half):x + half]
+        box = image[max(0, y - half) : y + half, max(0, x - half) : x + half]
         peak = float(np.max(box)) if box.size else 0.0
 
         if peak <= 0:
@@ -236,7 +238,7 @@ def order_position(fs, kxy, flat):
 
     if not np.any(kxy):
         # The flat position is where a blaze takes light *away* from.
-        (position, departed) = find_spot(flat - _blazed_frame(fs, [max(PROBE_AMPLITUDES), 0]))
+        (position, _departed) = find_spot(flat - _blazed_frame(fs, [max(PROBE_AMPLITUDES), 0]))
         return position
 
     (position, arrived) = find_spot(_blazed_frame(fs, kxy) - flat)
@@ -331,10 +333,14 @@ def fs(hardware):
     # Crop to the order. The Fourier calibration is stored in raw sensor pixels, so it
     # survives this; the clone has to replay the WOI to land in the same frame.
     spot = order_position(fs, [0, 0], flat_frame(fs))
-    fs.cam.set_woi((
-        int(spot[0]) - WOI_PX // 2, WOI_PX,
-        int(spot[1]) - WOI_PX // 2, WOI_PX,
-    ))
+    fs.cam.set_woi(
+        (
+            int(spot[0]) - WOI_PX // 2,
+            WOI_PX,
+            int(spot[1]) - WOI_PX // 2,
+            WOI_PX,
+        )
+    )
     autoexpose(cam)
 
     return fs
@@ -469,9 +475,7 @@ class TestSimulatedHardware:
             assert np.allclose(
                 fs_sim.slm.source["amplitude_sim"], _host(fs.slm._get_source_amplitude())
             )
-            assert np.allclose(
-                fs_sim.slm.source["phase_sim"], -_host(fs.slm._get_source_phase())
-            )
+            assert np.allclose(fs_sim.slm.source["phase_sim"], -_host(fs.slm._get_source_phase()))
 
         with subtests.test("aperture"):
             (spec, spec_sim) = (fs.slm.aperture.spec, fs_sim.slm.aperture.spec)
@@ -514,12 +518,16 @@ class TestSimulatedHardware:
                     results.append((kxy, hw, sim, np.linalg.norm(hw - sim)))
 
         test_logger.info(
-            "Fourier calibration residual: %.2f px", fs.steering_residual_px,
+            "Fourier calibration residual: %.2f px",
+            fs.steering_residual_px,
         )
-        for (kxy, hw, sim, error) in results:
+        for kxy, hw, sim, error in results:
             test_logger.info(
                 "kxy %s: hardware %s, simulation %s, %.2f px apart",
-                np.round(kxy, 4), np.round(hw, 1), np.round(sim, 1), error,
+                np.round(kxy, 4),
+                np.round(hw, 1),
+                np.round(sim, 1),
+                error,
             )
 
         # The clone can only be as faithful as the affine it was built from, so the
@@ -561,7 +569,9 @@ class TestSimulatedHardware:
 
         test_logger.info(
             "collected signal -- reference %.4g, simulation %.4g (ratio %.4f)",
-            signal, rendered, rendered / signal,
+            signal,
+            rendered,
+            rendered / signal,
         )
 
         with subtests.test("gain matches the collected signal"):
@@ -574,19 +584,22 @@ class TestSimulatedHardware:
         test_logger.info(
             "delivered counts -- hardware: signal %.3g, peak %.0f of %d | "
             "simulation: signal %.3g, peak %.0f of %d",
-            (hw - np.median(hw)).sum(), hw.max(), saturation,
-            (sim - np.median(sim)).sum(), sim.max(), saturation,
+            (hw - np.median(hw)).sum(),
+            hw.max(),
+            saturation,
+            (sim - np.median(sim)).sum(),
+            sim.max(),
+            saturation,
         )
 
         with subtests.test("the simulation is usable at the hardware's exposure"):
-            for (name, img) in (("hardware", hw), ("simulation", sim)):
+            for name, img in (("hardware", hw), ("simulation", sim)):
                 assert img.max() > 0.1 * saturation, (
                     f"The {name} frame peaks at {img.max():g} of {saturation}, so this "
                     "exposure does not expose it."
                 )
                 assert np.mean(img >= saturation) < 0.01, (
-                    f"{np.mean(img >= saturation):.1%} of the {name} frame is "
-                    "saturated."
+                    f"{np.mean(img >= saturation):.1%} of the {name} frame is saturated."
                 )
 
     def test_plot_comparison(self, fs, fs_sim, test_logger):
@@ -600,7 +613,7 @@ class TestSimulatedHardware:
         sim = fs_sim.cam.get_image()
 
         (fig, axs) = plt.subplots(1, 2, figsize=(14, 6))
-        for (ax, img, title) in ((axs[0], hw, "Hardware"), (axs[1], sim, "Simulation")):
+        for ax, img, title in ((axs[0], hw, "Hardware"), (axs[1], sim, "Simulation")):
             plot_image_dim(ax, img)
             (spot, _) = find_spot(img)
             ax.scatter(spot[0], spot[1], fc="none", ec="lime", s=80, lw=1)
@@ -613,6 +626,3 @@ class TestSimulatedHardware:
         _slmsuite_plt_show(name="simulate_hardware_comparison")
 
         test_logger.info("Saved the hardware-vs-simulation comparison.")
-
-
-from slmsuite.misc.xp import as_numpy as _host

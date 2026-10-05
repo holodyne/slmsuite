@@ -15,21 +15,24 @@ Color camera functionality is not currently implemented, and will lead to undefi
 """
 
 import time
+
 import numpy as np
 
-from slmsuite.hardware.cameras.camera import Camera
 from slmsuite._logging import make_logger
+from slmsuite.hardware.cameras.camera import Camera
 
 logger = make_logger(__name__)
 
 try:
     import vmbpy
+
     vimba_system = vmbpy.VmbSystem
     vimba_name = "vmbpy"
 
 except ImportError:
     try:
         import vimba
+
         vimba_system = vimba.Vimba
         vimba_name = "vimba"
 
@@ -92,7 +95,9 @@ class AlliedVision(Camera):
             See :meth:`.Camera.__init__` for permissible options.
         """
         if vimba_system is None:
-            raise ImportError("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
+            raise ImportError(
+                "vimba or vmbpy are not installed. Install to use AlliedVision cameras."
+            )
 
         if AlliedVision.sdk is None:
             logger.debug("%s initializing...", vimba_name)
@@ -139,7 +144,6 @@ class AlliedVision(Camera):
             self.cam.ExposureMode.set("Timed")
         except Exception:
             logger.warning("Failed to set exposure mode to timed.")
-
 
         try:
             self.cam.AcquisitionMode.set("SingleFrame")
@@ -206,7 +210,9 @@ class AlliedVision(Camera):
             List of AlliedVision serial numbers.
         """
         if vimba_system is None:
-            raise ImportError("vimba or vmbpy are not installed. Install to use AlliedVision cameras.")
+            raise ImportError(
+                "vimba or vmbpy are not installed. Install to use AlliedVision cameras."
+            )
 
         if AlliedVision.sdk is None:
             AlliedVision.sdk = vimba_system.get_instance()
@@ -272,7 +278,7 @@ class AlliedVision(Camera):
             try:
                 print(prop.get_description(), end="\n")
             except Exception:
-                print("")
+                print()
 
     def set_adc_bitdepth(self, bitdepth):
         """

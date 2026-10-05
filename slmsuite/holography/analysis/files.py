@@ -13,18 +13,18 @@ import os
 import re
 import warnings
 
-import h5py
-import numpy as np
 import cv2
-import scipy.ndimage as ndimage
+import h5py
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import numpy as np
+import scipy.ndimage as ndimage
 
 from slmsuite._logging import make_logger
-
-logger = make_logger(__name__)
 from slmsuite.holography.toolbox import pad
 from slmsuite.misc.xp import as_numpy, is_gpu_array
+
+logger = make_logger(__name__)
 
 
 def _max_numeric_id(path, name, extension=None, kind="file", digit_count=5):
@@ -55,14 +55,14 @@ def _max_numeric_id(path, name, extension=None, kind="file", digit_count=5):
     conflict_regex = "^{}_{}{}{}".format(re.escape(name), r"\d{", digit_count, r"}")
     if extension is not None and kind == "file":
         conflict_regex = "{}{}".format(conflict_regex, re.escape("." + extension))
-    conflict_regex = "{}$".format(conflict_regex)
+    conflict_regex = f"{conflict_regex}$"
     max_numeric_id = -1
     for name_ in os.listdir(path):
         # Check current object for conflict.
         conflict = re.search(conflict_regex, name_) is not None
         # Get numeric identifier from conflicting object.
         if conflict:
-            suffix = name_.split("{}_".format(name))[1]
+            suffix = name_.split(f"{name}_")[1]
             numeric_id = int(suffix[:digit_count])
             max_numeric_id = max(numeric_id, max_numeric_id)
 
@@ -111,10 +111,10 @@ def generate_path(path, name, extension=None, kind="file", digit_count=5, path_c
     max_numeric_id = _max_numeric_id(
         path, name, extension=extension, kind=kind, digit_count=digit_count
     )
-    name_format = "{{}}_{{:0{}d}}".format(digit_count)
+    name_format = f"{{}}_{{:0{digit_count}d}}"
     name_augmented = name_format.format(name, max_numeric_id + 1)
     if extension is not None and kind == "file":
-        name_augmented = "{}.{}".format(name_augmented, extension)
+        name_augmented = f"{name_augmented}.{extension}"
     name_augmented = os.path.join(path, name_augmented)
 
     # If it's a directory, create it.
@@ -125,11 +125,11 @@ def generate_path(path, name, extension=None, kind="file", digit_count=5, path_c
     if path_count == 1:
         ret = name_augmented
     else:
-        ret = list()
+        ret = []
         for path_idx in range(path_count):
             name_augmented = name_format.format(name, max_numeric_id + 1 + path_idx)
             if extension is not None and kind == "file":
-                name_augmented = "{}.{}".format(name_augmented, extension)
+                name_augmented = f"{name_augmented}.{extension}"
             name_augmented = os.path.join(path, name_augmented)
             ret.append(name_augmented)
         # ENDFOR
@@ -166,10 +166,10 @@ def latest_path(path, name, extension=None, kind="file", digit_count=5):
         path, name, extension=extension, kind=kind, digit_count=digit_count
     )
     if max_numeric_id != -1:
-        name_format = "{{}}_{{:0{}d}}".format(digit_count)
+        name_format = f"{{}}_{{:0{digit_count}d}}"
         name_augmented = name_format.format(name, max_numeric_id)
         if extension is not None and kind == "file":
-            name_augmented = "{}.{}".format(name_augmented, extension)
+            name_augmented = f"{name_augmented}.{extension}"
         ret = os.path.join(path, name_augmented)
 
     return ret
@@ -199,10 +199,11 @@ def load_h5(file_path, decode_bytes=True):
     data : dict
         Dictionary of the data stored in the file.
     """
+
     def recurse(group):
         data = {}
 
-        for key in group.keys():
+        for key in group:
             if isinstance(group[key], h5py.Group):
                 data[key] = recurse(group[key])
             elif group[key].attrs.get("__none__", False):
@@ -263,13 +264,14 @@ def save_h5(file_path, data, mode="w"):
     mode : str
         The mode to open the file with.
     """
+
     def recurse(group, data):
-        for key in data.keys():
+        for key in data:
             if isinstance(data[key], dict):
                 new_group = group.create_group(key)
                 recurse(new_group, data[key])
             elif isinstance(data[key], str):
-                group[key] = bytes(data[key], 'utf-8')
+                group[key] = bytes(data[key], "utf-8")
             elif data[key] is None:
                 # h5 has no native None; store a placeholder dataset tagged with an
                 # attribute so load_h5 restores None faithfully (round-trips anywhere in
@@ -285,15 +287,13 @@ def save_h5(file_path, data, mode="w"):
                     array = np.array(value)
                 except ValueError as e:
                     raise ValueError(
-                        "save_h5() does not support saving staggered arrays such as {}. "
-                        "Arrays must be uniform. {}".format(str(value), str(e))
-                    )
+                        f"save_h5() does not support saving staggered arrays such as {value!s}. "
+                        f"Arrays must be uniform. {e!s}"
+                    ) from e
                 except Exception as e:
                     raise e
 
-                if array.dtype == object and array.size and all(
-                    v is None for v in array.ravel()
-                ):
+                if array.dtype == object and array.size and all(v is None for v in array.ravel()):
                     # An all-None sequence stores the scalar None placeholder, with shape.
                     group[key] = np.zeros(array.shape, dtype=bool)
                     group[key].attrs["__none__"] = True
@@ -314,7 +314,7 @@ def _load_image(path, shape, target_shape=None, angle=0, shift=(-225, -170)):
     img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
 
     if img is None:
-        raise ValueError("Image not found at path '{}'".format(path))
+        raise ValueError(f"Image not found at path '{path}'")
 
     # Invert if necessary such that the majority of the image is dark.
     if np.mean(img) > np.mean(cv2.bitwise_not(img)):
@@ -332,7 +332,7 @@ def _load_image(path, shape, target_shape=None, angle=0, shift=(-225, -170)):
     target_ij = pad(np.sqrt(img), shape)
 
     # Shift to the desired center.
-    target_ij = np.roll(target_ij, shift, axis=(0,1))
+    target_ij = np.roll(target_ij, shift, axis=(0, 1))
 
     return target_ij
 
@@ -367,7 +367,7 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
 
     if not isinstance(cmap, str) and not hasattr(cmap, "N"):
         if cmap is True:
-            cmap = mpl.rcParams['image.cmap']
+            cmap = mpl.rcParams["image.cmap"]
         else:
             # Grayscale is forced to have an lut smaller than 256.
             if lut is None or lut > 256:
@@ -376,7 +376,7 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
     # Parse lut.
     if lut is None:
         if isfloat:
-            lut = mpl.rcParams['image.lut']-1
+            lut = mpl.rcParams["image.lut"] - 1
         else:
             lut = np.nanmax(images)
     # lut = np.clip(lut, 0, np.max(images))
@@ -391,9 +391,9 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
 
     # Convert images to integers scaled to the lut size.
     if normalize:
-        images = np.rint(images * ((float(lut)-1) / np.max(images))).astype(int)
+        images = np.rint(images * ((float(lut) - 1) / np.max(images))).astype(int)
     elif isfloat:
-        images = np.rint(images * (float(lut)-1)).astype(int)
+        images = np.rint(images * (float(lut) - 1)).astype(int)
 
     # An out-of-range value would wrap in the final cast rather than saturate. The
     # colormap is built with lut+1 entries; grayscale is bounded by its uint8 cast.
@@ -403,7 +403,7 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
     # Convert images to RGB.
     if isinstance(cmap, str) or hasattr(cmap, "N"):
         if isinstance(cmap, str):
-            cm = plt.get_cmap(cmap, int(lut)+1)
+            cm = plt.get_cmap(cmap, int(lut) + 1)
         else:
             cm = cmap
 
@@ -424,15 +424,15 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
         # If border is a single numeric value, convert it to a list
         if np.isscalar(border):
             border = [border]
-        if images.ndim == 3:        # Grayscale never grew a channel axis to color.
+        if images.ndim == 3:  # Grayscale never grew a channel axis to color.
             border = border[0]
-            images[:,  0, :] = images[:, -1, :] = border
-            images[:, :,  0] = images[:, :, -1] = border
+            images[:, 0, :] = images[:, -1, :] = border
+            images[:, :, 0] = images[:, :, -1] = border
         else:
-            images[:,  0, :, :len(border)] = border
-            images[:, -1, :, :len(border)] = border
-            images[:, :,  0, :len(border)] = border
-            images[:, :, -1, :len(border)] = border
+            images[:, 0, :, : len(border)] = border
+            images[:, -1, :, : len(border)] = border
+            images[:, :, 0, : len(border)] = border
+            images[:, :, -1, : len(border)] = border
 
     return images
 
@@ -480,9 +480,9 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
 
     # Check that imageio is there and write the data
     try:
-        from imageio import mimsave, imsave
+        from imageio import imsave, mimsave
     except Exception:
-        raise ValueError("imageio is required for save_image().")
+        raise ValueError("imageio is required for save_image().") from None
 
     if images.shape[0] == 1:
         imsave(file_path, images[0], **kwargs)
@@ -493,6 +493,7 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
     if extension == "gif":
         try:
             from pygifsicle import optimize
+
             optimize(file_path)
         except ImportError:
             warnings.warn("pip install pygifsicle to optimize .gif file size.")

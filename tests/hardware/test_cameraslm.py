@@ -1,23 +1,9 @@
 """
 Unit tests for FourierSLM and the calibrations mixed into it.
 """
+
 import logging
 import os
-
-import cv2
-import matplotlib.pyplot as plt
-import numpy as np
-import pytest
-from scipy import ndimage
-
-from slmsuite.hardware.cameraslms import FourierSLM, _wavefront_superpixel
-from slmsuite.hardware.cameras.simulated import SimulatedCamera
-from slmsuite.hardware.slms.simulated import SimulatedSLM
-from slmsuite.holography import analysis
-from slmsuite.holography.algorithms import SpotHologram
-from slmsuite.holography.toolbox import convert_vector
-from slmsuite.holography.toolbox.phase import blaze, zernike_sum
-from slmsuite.misc.xp import as_numpy
 
 from conftest import (
     SIMULATED_SYSTEM_CASES,
@@ -36,7 +22,20 @@ from conftest import (
     spot_size_ij,
     view_kxy_grid,
 )
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+from scipy import ndimage
 
+from slmsuite.hardware.cameras.simulated import SimulatedCamera
+from slmsuite.hardware.cameraslms import FourierSLM, _wavefront_superpixel
+from slmsuite.hardware.slms.simulated import SimulatedSLM
+from slmsuite.holography import analysis
+from slmsuite.holography.algorithms import SpotHologram
+from slmsuite.holography.toolbox import convert_vector
+from slmsuite.holography.toolbox.phase import blaze, zernike_sum
+from slmsuite.misc.xp import as_numpy
 
 # Enough geometry to exercise the simulator: a contained farfield with aperture edges in
 # view, a cropped one, rotation, and a 0th order steered off the sensor.
@@ -48,12 +47,17 @@ BATTERY_ARRAY_PITCH = 10
 # Cases where fourier_calibrate with a fixed array recovers the correct affine. The
 # remaining cases silently produce a *wrong* calibration (or raise).
 DEFAULT_CALIBRATION_OK = {
-    "identity", "matched", "fov_much_larger", "fov_larger",
-    "mirrored", "pitch_anisotropic", "defocus",
+    "identity",
+    "matched",
+    "fov_much_larger",
+    "fov_larger",
+    "mirrored",
+    "pitch_anisotropic",
+    "defocus",
 }
 
 
-def _binary_grating(period, a, b, duty_cycle=.5):
+def _binary_grating(period, a, b, duty_cycle=0.5):
     """One period of a binary grating, as per-pixel phase in radians."""
     return np.where(np.arange(period) < round(period * duty_cycle), a, b)
 
@@ -90,9 +94,9 @@ def _ground_truth_error(fs):
     error orthogonal to itself.
     """
     grid = view_kxy_grid(fs)
-    error = float(np.max(np.linalg.norm(
-        fs.kxyslm_to_ijcam(grid) - ground_truth_kxy_to_ij(fs, grid), axis=0
-    )))
+    error = float(
+        np.max(np.linalg.norm(fs.kxyslm_to_ijcam(grid) - ground_truth_kxy_to_ij(fs, grid), axis=0))
+    )
     return (error, max(2.0, np.max(spot_size_ij(fs))))
 
 
@@ -125,7 +129,7 @@ def _write_summary(results, test_output_dir, request):
     (fig, axs) = plt.subplots(rows, columns, figsize=(4 * columns, 4 * rows))
     axs = np.atleast_1d(axs).ravel()
 
-    for (ax, (name, result)) in zip(axs, results.items()):
+    for ax, (name, result) in zip(axs, results.items()):
         plot_image_dim(ax, result["img"])
         gt = result["truth"]
         ax.scatter(gt[0], gt[1], fc="none", ec="lime", s=25, lw=0.5)
@@ -137,7 +141,8 @@ def _write_summary(results, test_output_dir, request):
         error = result["error"]
         ax.set_title(
             f"{name}\n" + ("FAILED" if not np.isfinite(error) else f"{error:.1f} px error"),
-            color=color, fontsize="medium",
+            color=color,
+            fontsize="medium",
         )
         for spine in ax.spines.values():
             spine.set_color(color)
@@ -145,7 +150,7 @@ def _write_summary(results, test_output_dir, request):
         ax.set_xticks([])
         ax.set_yticks([])
 
-    for ax in axs[len(results):]:
+    for ax in axs[len(results) :]:
         ax.axis("off")
 
     fig.suptitle(
@@ -167,14 +172,16 @@ def _run_calibration(fs, case, source, results, plot):
     are the ones whose plots are worth having. Returns the error in camera pixels
     (infinite if nothing was produced), the tolerance, a description, and any exception.
     """
-    seed_for(case)      # The hologram starts from a random phase.
+    seed_for(case)  # The hologram starts from a random phase.
     name = f"{case}-{source or 'uniform'}"
 
     failure = None
     try:
         fs.fourier_calibrate(
-            array_shape=BATTERY_ARRAY_SHAPE, array_pitch=BATTERY_ARRAY_PITCH,
-            plot=plot, verbose=False,
+            array_shape=BATTERY_ARRAY_SHAPE,
+            array_pitch=BATTERY_ARRAY_PITCH,
+            plot=plot,
+            verbose=False,
         )
     except Exception as e:
         failure = e
@@ -192,20 +199,23 @@ def _run_calibration(fs, case, source, results, plot):
         array.get("array_center"),
     )
     note = (
-        f"{type(failure).__name__} raised" if failure is not None
+        f"{type(failure).__name__} raised"
+        if failure is not None
         else f"max error {error:.2f} px (tolerance {tolerance:.2f} px)"
     )
     img = fs.cam.last_image if fs.cam.last_image is not None else fs.cam.get_image()
     plot_calibration_diagnostic(
-        fs, img=img, spots_kxy=spots_kxy, name=name, note=note,
+        fs,
+        img=img,
+        spots_kxy=spots_kxy,
+        name=name,
+        note=note,
     )
 
     results[name] = {
         "img": img,
         "truth": ground_truth_kxy_to_ij(fs, spots_kxy),
-        "calibrated": (
-            fs.kxyslm_to_ijcam(spots_kxy) if "fourier" in fs.calibrations else None
-        ),
+        "calibrated": (fs.kxyslm_to_ijcam(spots_kxy) if "fourier" in fs.calibrations else None),
         "error": error,
         "ok": error < tolerance,
     }
@@ -256,7 +266,7 @@ class TestFourierSLM:
             assert "__meta__" in cal
 
         with subtests.test("non-positive pitch raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="array_pitch must be positive"):
                 fourierslm.fourier_calibrate(array_pitch=-1, array_shape=5, plot=False)
 
     @pytest.mark.slow
@@ -266,7 +276,7 @@ class TestFourierSLM:
             "dark": lambda img: np.random.normal(0.005 * img, 0.002 * img),
             "read": lambda img: np.random.poisson(0.03 * img),
         }
-        for (theta, nz) in [(0.0, None), (0.0, noise), (0.2, noise), (-0.3, noise)]:
+        for theta, nz in [(0.0, None), (0.0, noise), (0.2, noise), (-0.3, noise)]:
             with subtests.test(theta=theta, noisy=nz is not None):
                 seed_for("fourier_calibrate_noise")
                 cam = SimulatedCamera(slm, resolution=(512, 512), pitch_um=(5.5, 5.5), noise=nz)
@@ -290,7 +300,7 @@ class TestFourierSLM:
             assert np.allclose(np.squeeze(fourierslm.cam.b), np.squeeze(b))
 
         with subtests.test("wrong-shape M raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Expected a 2x2 matrix"):
                 fourierslm.fourier_calibrate_analytic(np.eye(3), b)
 
     def test_fourier_calibration_build(self, fourierslm, subtests):
@@ -385,7 +395,7 @@ class TestFourierSLM:
             # non-trivial orientation is what distinguishes this from the raw affine.
             (Wx, Wy) = (1.0, 2.0)
             try:
-                for (rot, binning, woi) in [
+                for rot, binning, woi in [
                     ("0", 1, None),
                     ("90", 1, None),
                     ("180", 2, None),
@@ -396,9 +406,7 @@ class TestFourierSLM:
                     fs.cam.set_woi(woi)
 
                     size = fs.get_farfield_spot_size((Wx, Wy), basis="ij")
-                    expected = np.sqrt(np.abs(fs.fourier_affine.det())) * np.array(
-                        [1 / Wx, 1 / Wy]
-                    )
+                    expected = np.sqrt(np.abs(fs.fourier_affine.det())) * np.array([1 / Wx, 1 / Wy])
                     assert np.allclose(size, expected), (
                         f"rot={rot} binning={binning} woi={woi}: {size} != {expected}"
                     )
@@ -408,7 +416,7 @@ class TestFourierSLM:
                 fs.cam.set_woi(None)
 
         with subtests.test("bad basis raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Unrecognized basis"):
                 fs.get_farfield_spot_size(slm_size=1.0, basis="badvalue")
 
     def test_get_effective_focal_length(self, simulated_system_factory, subtests):
@@ -475,7 +483,7 @@ class TestFourierSLM:
             assert mask.any()
 
         with subtests.test("a mask in a string basis raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="return_mask must be False"):
                 fourierslm_calibrated.get_camera_extent(units="kxy", return_mask=True)
 
     def test_simulate(self, fourierslm_calibrated, simulated_system_factory, subtests):
@@ -489,7 +497,8 @@ class TestFourierSLM:
                 phase = np.random.default_rng(0).uniform(0, 2 * np.pi, fs.slm.shape)
                 fs.slm.set_phase(phase, phase_correct=False)
                 np.testing.assert_array_equal(
-                    as_numpy(fs.simulate().slm.display), as_numpy(fs.slm.display),
+                    as_numpy(fs.simulate().slm.display),
+                    as_numpy(fs.slm.display),
                     err_msg=f"{phase_scaling=}",
                 )
 
@@ -542,7 +551,7 @@ class TestFourierSLM:
                 fs_new.load_calibration(path)
 
         with subtests.test("saving a calibration that was never taken raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Could not find calibration"):
                 fourierslm_calibrated.save_calibration("nonexistent", path=temp_dir)
 
     def test_load(
@@ -562,9 +571,7 @@ class TestFourierSLM:
         with subtests.test("the rebuilt system, and its simulation, map like the original"):
             fs.load_calibration("fourier", file_path=path)
             kxy = np.array([10.0, 15.0])
-            assert np.allclose(
-                fs.kxyslm_to_ijcam(kxy), fourierslm_calibrated.kxyslm_to_ijcam(kxy)
-            )
+            assert np.allclose(fs.kxyslm_to_ijcam(kxy), fourierslm_calibrated.kxyslm_to_ijcam(kxy))
             assert np.allclose(fs.simulate().kxyslm_to_ijcam(kxy), fs.kxyslm_to_ijcam(kxy))
 
         with subtests.test("a saved binning is reported, not reapplied"):
@@ -595,20 +602,23 @@ class TestFourierSLM:
         # An aberrated source, so that there is something to measure.
         fs.slm.set_source_analytic(
             phase_offset=zernike_sum(
-                fs.slm, indices=(3, 4, 5, 7, 8), weights=(1, -2, 3, 1, 1),
-                aperture=None, use_mask=False,
+                fs.slm,
+                indices=(3, 4, 5, 7, 8),
+                weights=(1, -2, 3, 1, 1),
+                aperture=None,
+                use_mask=False,
             ),
             sim=True,
         )
-        fs.cam.set_exposure(.1)
+        fs.cam.set_exposure(0.1)
 
         with subtests.test("interference happens where the blaze lands"):
             fs.slm.set_phase(blaze(fs.slm, vector=fs.ijcam_to_kxyslm(cal_point)))
             img = fs.cam.get_image()
             assert img[140:160, 140:160].mean() > img.mean()
 
-        for (phase_steps, name) in [(None, "amplitude only"), (1, "one shot"), (5, "many shot")]:
-            fs.slm.source["phase"] = None    # Clear any previous calibration.
+        for phase_steps, name in [(None, "amplitude only"), (1, "one shot"), (5, "many shot")]:
+            fs.slm.source["phase"] = None  # Clear any previous calibration.
 
             with subtests.test(f"{name}: measures the power at every superpixel"):
                 result = fs.wavefront_calibrate_superpixel(
@@ -631,7 +641,7 @@ class TestFourierSLM:
                 logging.getLogger("conftest").info(
                     "Normalized amplitude difference (%s): %.2f", name, error
                 )
-                assert error < .5, f"amplitude is {error:.2f} off the simulated source."
+                assert error < 0.5, f"amplitude is {error:.2f} off the simulated source."
 
         # Circular standard deviation, blind to the piston a correction leaves free.
         def spread(phase):
@@ -641,7 +651,9 @@ class TestFourierSLM:
             residual = {}
             for multiplier in (4, 6):
                 fs_case = simulated_system_factory(
-                    case, slm_resolution=(256, 256), cam_resolution=(512, 512),
+                    case,
+                    slm_resolution=(256, 256),
+                    cam_resolution=(512, 512),
                     aberration=((3, 4, 5), (1.5, -2.0, 1.0)),
                 )
                 install_ground_truth_calibration(fs_case)
@@ -649,11 +661,19 @@ class TestFourierSLM:
                 fs_case._wavefront_calibration_window_multiplier = multiplier
                 aberration = as_numpy(fs_case.slm.source["phase_sim"])
                 fs_case.wavefront_calibrate_superpixel(
-                    calibration_points=[[368], [138]], superpixel_size=32, phase_steps=1, plot=-1,
+                    calibration_points=[[368], [138]],
+                    superpixel_size=32,
+                    phase_steps=1,
+                    plot=-1,
                 )
-                correction = as_numpy(fs_case.wavefront_calibration_superpixel_process(
-                    smooth=False, remove_blaze=False, apply=False, r2_threshold=0.5,
-                )["phase"])
+                correction = as_numpy(
+                    fs_case.wavefront_calibration_superpixel_process(
+                        smooth=False,
+                        remove_blaze=False,
+                        apply=False,
+                        r2_threshold=0.5,
+                    )["phase"]
+                )
                 residual[multiplier] = spread(correction + aberration)
 
             with subtests.test(f"one shot on the {case} camera corrects the planted aberration"):
@@ -673,8 +693,11 @@ class TestFourierSLM:
             for fresh_calibration in (True, False):
                 fs_case.slm.source["phase"] = phase
                 fs_case.wavefront_calibrate_superpixel(
-                    calibration_points=[[190], [170]], superpixel_size=32, phase_steps=1,
-                    fresh_calibration=fresh_calibration, plot=-1,
+                    calibration_points=[[190], [170]],
+                    superpixel_size=32,
+                    phase_steps=1,
+                    fresh_calibration=fresh_calibration,
+                    plot=-1,
                 )
                 stored.append(
                     fs_case.calibrations["wavefront_superpixel"]["previous_phase_correction"]
@@ -704,7 +727,9 @@ class TestFourierSLM:
         with subtests.test("requires a Fourier calibration"):
             with pytest.raises((RuntimeError, KeyError)):
                 FourierSLM(fs.cam, fs.slm).wavefront_calibrate_superpixel(
-                    calibration_points=cal_point, superpixel_size=sp_size, plot=-1,
+                    calibration_points=cal_point,
+                    superpixel_size=sp_size,
+                    plot=-1,
                 )
 
     def test_wavefront_calibrate_superpixel_abort(
@@ -717,16 +742,22 @@ class TestFourierSLM:
 
         fs.slm.set_source_analytic(
             phase_offset=zernike_sum(
-                fs.slm, indices=(3, 4, 5, 7, 8), weights=(1, -2, 3, 1, 1),
-                aperture=None, use_mask=False,
+                fs.slm,
+                indices=(3, 4, 5, 7, 8),
+                weights=(1, -2, 3, 1, 1),
+                aperture=None,
+                use_mask=False,
             ),
             sim=True,
         )
-        fs.cam.set_exposure(.1)
+        fs.cam.set_exposure(0.1)
 
         # A measured source for the aborted run to strip.
         fs.wavefront_calibrate_superpixel(
-            calibration_points=cal_point, superpixel_size=sp_size, phase_steps=5, plot=-1,
+            calibration_points=cal_point,
+            superpixel_size=sp_size,
+            phase_steps=5,
+            plot=-1,
         )
         fs.wavefront_calibration_superpixel_process(smooth=False)
         before_amplitude = as_numpy(fs.slm.source["amplitude"]).copy()
@@ -746,8 +777,10 @@ class TestFourierSLM:
         with subtests.test("the interrupt is not swallowed by the fit guard"):
             with pytest.raises(KeyboardInterrupt):
                 fs.wavefront_calibrate_superpixel(
-                    calibration_points=cal_point, superpixel_size=sp_size,
-                    phase_steps=5, plot=-1,
+                    calibration_points=cal_point,
+                    superpixel_size=sp_size,
+                    phase_steps=5,
+                    plot=-1,
                 )
 
         with subtests.test("the stripped source is reinstated"):
@@ -774,7 +807,9 @@ class TestFourierSLM:
             state["fits"] = 0
             with pytest.raises(KeyboardInterrupt):
                 fs.wavefront_calibrate_superpixel(
-                    calibration_points=[[190], [170]], superpixel_size=16, phase_steps=5,
+                    calibration_points=[[190], [170]],
+                    superpixel_size=16,
+                    phase_steps=5,
                     plot=-1,
                 )
             assert {k for (k, v) in fs.slm.source.items() if v is not None} == keys
@@ -826,10 +861,13 @@ class TestFourierSLM:
         def ramp_data(vector):
             """The processor's input for a pure ramp, with ``holes`` below threshold."""
             r2 = np.ones((NY, NX))
-            for (hx, hy) in holes:
+            for hx, hy in holes:
                 r2[hy, hx] = 0
             return {
-                "NX": NX, "NY": NY, "nxref": NX // 2, "nyref": NY // 2,
+                "NX": NX,
+                "NY": NY,
+                "nxref": NX // 2,
+                "nyref": NY // 2,
                 "superpixel_size": superpixel_size,
                 "r2_fit": r2,
                 "power": np.ones((NY, NX)),
@@ -843,13 +881,11 @@ class TestFourierSLM:
         (x_grid, y_grid) = fs.slm.grid
         for vector in ((0.013, 0.021), (0.005, 0.009), (0.041, 0.033)):
             with subtests.test(f"kxy={vector}"):
-                truth = 2 * np.pi * (
-                    vector[0] * as_numpy(x_grid) + vector[1] * as_numpy(y_grid)
-                )
+                truth = 2 * np.pi * (vector[0] * as_numpy(x_grid) + vector[1] * as_numpy(y_grid))
                 fs.calibrations["wavefront_superpixel"] = ramp_data(vector)
                 phase = fs.wavefront_calibration_superpixel_process(
                     smooth=False,
-                    r2_threshold=.5,
+                    r2_threshold=0.5,
                     remove_blaze=False,
                     remove_background=False,
                     apply=False,
@@ -867,7 +903,7 @@ class TestFourierSLM:
             data["r2_fit"][holes[0][1], holes[0][0]] = np.nan
             fs.calibrations["wavefront_superpixel"] = data
             r2 = fs.wavefront_calibration_superpixel_process(
-                smooth=False, r2_threshold=.5, apply=False, plot=0
+                smooth=False, r2_threshold=0.5, apply=False, plot=0
             )["r2"]
             assert not np.any(np.isnan(as_numpy(r2)))
 
@@ -877,15 +913,15 @@ class TestFourierSLM:
             data["power"][hy, hx] = np.inf
             fs.calibrations["wavefront_superpixel"] = data
             amplitude = fs.wavefront_calibration_superpixel_process(
-                smooth=False, r2_threshold=.5, remove_background=False, apply=False, plot=0
+                smooth=False, r2_threshold=0.5, remove_background=False, apply=False, plot=0
             )["amplitude"]
-            center = (np.array([hy, hx]) + .5) * superpixel_size
+            center = (np.array([hy, hx]) + 0.5) * superpixel_size
             assert as_numpy(amplitude)[int(center[0]), int(center[1])] == pytest.approx(1)
 
         with subtests.test("a previous correction is added to the new one"):
             previous = as_numpy(zernike_sum(fs.slm, indices=(3, 4), weights=(1.0, -0.5)))
             data = ramp_data((0.013, 0.021))
-            kwargs = dict(smooth=False, remove_background=False, apply=False, plot=0)
+            kwargs = {"smooth": False, "remove_background": False, "apply": False, "plot": 0}
             fs.calibrations["wavefront_superpixel"] = dict(data)
             fresh = fs.wavefront_calibration_superpixel_process(**kwargs)
             fs.calibrations["wavefront_superpixel"] = dict(data, previous_phase_correction=previous)
@@ -899,8 +935,12 @@ class TestFourierSLM:
             truth = 2 * np.pi * (vector[0] * as_numpy(x_grid) + vector[1] * as_numpy(y_grid))
             fs.calibrations["wavefront_superpixel"] = ramp_data(vector)
             phase = fs.wavefront_calibration_superpixel_process(
-                smooth=True, r2_threshold=.5, remove_blaze=False, remove_background=False,
-                apply=False, plot=0,
+                smooth=True,
+                r2_threshold=0.5,
+                remove_blaze=False,
+                remove_background=False,
+                apply=False,
+                plot=0,
             )["phase"]
 
             # The blur reflects at the border, so only the interior keeps the ramp.
@@ -934,7 +974,7 @@ class TestFourierSLM:
             assert "wavefront_zernike" not in fourierslm_calibrated.calibrations
 
         with subtests.test("a sweep stores the corrected spots in their basis"):
-            result = fourierslm_calibrated.wavefront_calibrate_zernike(
+            fourierslm_calibrated.wavefront_calibrate_zernike(
                 calibration_points=calibration_points,
                 zernike_indices=4,
                 perturbation=0.5,
@@ -957,9 +997,7 @@ class TestFourierSLM:
             cal = fourierslm_calibrated.calibrations["wavefront_zernike"]
             assert cal["corrected_spots"].shape[1] == calibration_points.shape[1]
 
-    def test_wavefront_calibrate_zernike_smooth(
-        self, simulated_system_factory, caplog, subtests
-    ):
+    def test_wavefront_calibrate_zernike_smooth(self, simulated_system_factory, caplog, subtests):
         """Test FourierSLM.wavefront_calibrate_zernike_smooth."""
         (fs, _) = _zernike_calibrated(simulated_system_factory)
         spots = fs.calibrations["wavefront_zernike"]["corrected_spots"]
@@ -979,14 +1017,14 @@ class TestFourierSLM:
 
             assert high[2, 4] == pytest.approx(low[2, 4])
             assert abs(high[2, 4]) < 1.0
-            assert np.allclose(high[:2], spots[:2])     # Tilt is left to smoothing_xy.
+            assert np.allclose(high[:2], spots[:2])  # Tilt is left to smoothing_xy.
 
         with subtests.test("a spot with no neighbors is left alone"):
             points_ij = fs.calibrations["wavefront_zernike"]["calibration_points_ij"]
             original = np.copy(points_ij)
             points_ij[:2, 0] += 10 * np.min(fs.cam.shape)
             try:
-                smoothed = fs.wavefront_calibrate_zernike_smooth(smoothing=.5, smoothing_xy=.5)
+                smoothed = fs.wavefront_calibrate_zernike_smooth(smoothing=0.5, smoothing_xy=0.5)
             finally:
                 points_ij[:] = original
             assert np.allclose(smoothed[:, 0], spots[:, 0])
@@ -1008,7 +1046,7 @@ class TestFourierSLM:
 
         with subtests.test("a factor outside [0, 1] raises"):
             for kwargs in ({"smoothing": 1.5}, {"smoothing_xy": -0.1}):
-                with pytest.raises(ValueError):
+                with pytest.raises(ValueError, match="Smoothing factor must be between 0 and 1"):
                     fs.wavefront_calibrate_zernike_smooth(**kwargs)
 
         with subtests.test("focus smoothing is not implemented"):
@@ -1056,9 +1094,12 @@ class TestFourierSLM:
             assert fs.wavefront_calibration_points(pitch=120).shape[1] < points.shape[1]
 
         with subtests.test("turning the avoidance rules off keeps the points they removed"):
-            assert fs.wavefront_calibration_points(
-                pitch=60, field_exclusion=0, avoid_mirrors=False, avoid_nyquist=False, plot=1
-            ).shape[1] > points.shape[1]
+            assert (
+                fs.wavefront_calibration_points(
+                    pitch=60, field_exclusion=0, avoid_mirrors=False, avoid_nyquist=False, plot=1
+                ).shape[1]
+                > points.shape[1]
+            )
 
     def test_wavefront_calibration_points_parse(self, fourierslm_calibrated, subtests):
         """How the calibration routines turn a count, a list, or nothing into camera points."""
@@ -1074,9 +1115,10 @@ class TestFourierSLM:
             np.testing.assert_array_equal(
                 fs._wavefront_calibration_points_parse(2, pitch=60), generated[:, :2]
             )
-            assert fs._wavefront_calibration_points_parse(
-                2 * generated.shape[1], pitch=60
-            ).shape[1] == generated.shape[1], "a count beyond the grid asks for no more"
+            assert (
+                fs._wavefront_calibration_points_parse(2 * generated.shape[1], pitch=60).shape[1]
+                == generated.shape[1]
+            ), "a count beyond the grid asks for no more"
 
         with subtests.test("a count must be positive"):
             for count in (0, -3):
@@ -1099,7 +1141,8 @@ class TestFourierSLM:
 
         for method in ("superpixel", "zernike"):
             monkeypatch.setattr(
-                type(fs), f"wavefront_calibrate_{method}",
+                type(fs),
+                f"wavefront_calibrate_{method}",
                 lambda self, method=method, **kwargs: forwarded.setdefault(method, kwargs),
             )
 
@@ -1146,8 +1189,12 @@ class TestFourierSLM:
             caplog.clear()
             with caplog.at_level(logging.WARNING, logger="slmsuite"):
                 fs.pixel_calibrate(
-                    levels=levels, periods=1, orders=1, directions="x",
-                    test_index=0, plot=False,
+                    levels=levels,
+                    periods=1,
+                    orders=1,
+                    directions="x",
+                    test_index=0,
+                    plot=False,
                 )
             return [r.getMessage() for r in caplog.records if "cycles" in r.getMessage()]
 
@@ -1180,7 +1227,7 @@ class TestFourierSLM:
 
         with subtests.test("test_index booleans"):
             # True tests the first len(levels) points of the sweep; False is not a test at all.
-            for true in (True, np.True_):        # numpy booleans are not bool instances.
+            for true in (True, np.True_):  # numpy booleans are not bool instances.
                 result = fs.pixel_calibrate(
                     levels=4, periods=1, orders=1, directions="x", test_index=true, plot=False
                 )
@@ -1209,7 +1256,7 @@ class TestFourierSLM:
         with subtests.test("plots"):
             fs.pixel_calibrate(levels=2, periods=1, orders=2, directions="x", plot=2)
             fs.pixel_calibration_plot(summed=True)
-            fs.pixel_calibration_plot(orders=[1])   # A single order must not squeeze away.
+            fs.pixel_calibration_plot(orders=[1])  # A single order must not squeeze away.
             with pytest.raises(ValueError, match="were measured"):
                 fs.pixel_calibration_plot(orders=[99])
 
@@ -1222,17 +1269,17 @@ class TestFourierSLM:
         with subtests.test("gamma recovers the linear phase response"):
             gamma = fs.pixel_calibration_process(plot=False)
             expected = cal["levels"] / fs.slm.bitresolution
-            assert np.allclose(gamma, expected - np.min(expected), atol=.02)
+            assert np.allclose(gamma, expected - np.min(expected), atol=0.02)
             # The fit is seeded with the linear response, so agreement alone proves
             # nothing; the fit must also actually describe the data.
-            assert fs.calibrations["pixel"]["gamma_r2"] > .9
+            assert fs.calibrations["pixel"]["gamma_r2"] > 0.9
 
         with subtests.test("the sampled fit is applied across every level"):
             B = fs.slm.bitresolution
             # The sweep measures a handful of levels; the SLM carries all of them.
             assert len(gamma) < B
             assert fs.slm.gamma.shape == (B,)
-            np.testing.assert_allclose(as_numpy(fs.slm.gamma), np.arange(B) / B, atol=.02)
+            np.testing.assert_allclose(as_numpy(fs.slm.gamma), np.arange(B) / B, atol=0.02)
 
         with subtests.test("apply=False leaves the SLM alone"):
             fs.slm.set_gamma(None)
@@ -1284,8 +1331,8 @@ class TestFourierSLM:
         with subtests.test("the sweep measures the simulated response"):
             levels = fs.calibrations["pixel"]["levels"].astype(int)
             expected = truth[levels] - np.min(truth[levels])
-            assert np.allclose(gamma, expected, atol=.02)
-            assert not np.allclose(gamma, levels / B, atol=.02)   # Not the ideal ramp.
+            assert np.allclose(gamma, expected, atol=0.02)
+            assert not np.allclose(gamma, levels / B, atol=0.02)  # Not the ideal ramp.
 
         with subtests.test("the table corrects the response"):
             target = np.arange(B) * (2 * np.pi / B)
@@ -1309,8 +1356,8 @@ class TestFourierSLM:
             gamma = fs.pixel_calibration_process(plot=False)
 
             levels = fs.calibrations["pixel"]["levels"].astype(int)
-            assert np.max(gamma) > 1                      # More than one cycle recovered.
-            assert np.allclose(gamma, truth[levels] - np.min(truth[levels]), atol=.02)
+            assert np.max(gamma) > 1  # More than one cycle recovered.
+            assert np.allclose(gamma, truth[levels] - np.min(truth[levels]), atol=0.02)
 
         with subtests.test("a mirrored fit is returned on the increasing branch"):
             assert np.all(np.diff(gamma) > 0)
@@ -1318,56 +1365,60 @@ class TestFourierSLM:
         with subtests.test("levels are canonically ordered"):
             # Unwrapping the fit follows the order of the levels it was measured at.
             fs.pixel_calibrate(
-                levels=np.array([96, 0, 192, 32]), periods=2, orders=1,
-                directions="x", plot=False,
+                levels=np.array([96, 0, 192, 32]),
+                periods=2,
+                orders=1,
+                directions="x",
+                plot=False,
             )
             stored = fs.calibrations["pixel"]["levels"]
             np.testing.assert_array_equal(stored, np.sort(stored))
 
     def test_pixel_kernel(self, subtests):
         """The pixel kernel is normalized, peaked, and shaped by its two sides."""
-        x = (np.arange(401) - 200) / 50    # +-4 pixels at 50 samples per pixel.
+        x = (np.arange(401) - 200) / 50  # +-4 pixels at 50 samples per pixel.
 
         with subtests.test("normalized"):
-            assert np.isclose(np.sum(FourierSLM.pixel_kernel(x, a_pix=.5)), 1)
+            assert np.isclose(np.sum(FourierSLM.pixel_kernel(x, a_pix=0.5)), 1)
 
         with subtests.test("symmetric by default"):
-            kernel = FourierSLM.pixel_kernel(x, a_pix=.5, n=2)
+            kernel = FourierSLM.pixel_kernel(x, a_pix=0.5, n=2)
             assert np.allclose(kernel, np.flip(kernel))
 
         with subtests.test("asymmetric widths and exponents"):
-            for kwargs in ({"a_minus_pix": .05}, {"n_minus": 4}):
-                kernel = FourierSLM.pixel_kernel(x, a_pix=.5, n=1, **kwargs)
+            for kwargs in ({"a_minus_pix": 0.05}, {"n_minus": 4}):
+                kernel = FourierSLM.pixel_kernel(x, a_pix=0.5, n=1, **kwargs)
                 assert not np.allclose(kernel, np.flip(kernel))
 
         with subtests.test("swapping the two sides mirrors the kernel"):
-            kernel = FourierSLM.pixel_kernel(x, a_pix=.5, n=1, a_minus_pix=.05, n_minus=4)
-            mirror = FourierSLM.pixel_kernel(x, a_pix=.05, n=4, a_minus_pix=.5, n_minus=1)
+            kernel = FourierSLM.pixel_kernel(x, a_pix=0.5, n=1, a_minus_pix=0.05, n_minus=4)
+            mirror = FourierSLM.pixel_kernel(x, a_pix=0.05, n=4, a_minus_pix=0.5, n_minus=1)
             assert np.allclose(kernel, np.flip(mirror))
 
         with subtests.test("peaked at the origin and decaying"):
-            kernel = FourierSLM.pixel_kernel(x, a_pix=.5, n=1, a_minus_pix=.05)
+            kernel = FourierSLM.pixel_kernel(x, a_pix=0.5, n=1, a_minus_pix=0.05)
             assert np.argmax(kernel) == np.argmin(np.abs(x))
             assert np.all(np.diff(kernel[x >= 0]) <= 0)
             assert np.all(np.diff(kernel[x <= 0]) >= 0)
 
         with subtests.test("x0_pix displaces the peak"):
-            kernel = FourierSLM.pixel_kernel(x, a_pix=.5, n=2, x0_pix=.4)
-            assert np.isclose(x[np.argmax(kernel)], .4)
-            assert np.allclose(kernel, FourierSLM.pixel_kernel(x - .4, a_pix=.5, n=2))
+            kernel = FourierSLM.pixel_kernel(x, a_pix=0.5, n=2, x0_pix=0.4)
+            assert np.isclose(x[np.argmax(kernel)], 0.4)
+            assert np.allclose(kernel, FourierSLM.pixel_kernel(x - 0.4, a_pix=0.5, n=2))
 
     def test_pixel_crosstalk_simulate(self, subtests):
         """Test FourierSLM._pixel_crosstalk_simulate, the forward model of the
         crosstalk kernel's effect on the diffraction orders of a grating."""
         simulate = FourierSLM._pixel_crosstalk_simulate
         (grating_50, grating_25) = (
-            _binary_grating(16, np.pi, 0), _binary_grating(16, np.pi, 0, duty_cycle=.25)
+            _binary_grating(16, np.pi, 0),
+            _binary_grating(16, np.pi, 0, duty_cycle=0.25),
         )
 
         with subtests.test("crosstalk-free limit matches the analytic binary grating"):
             # A 50% duty grating of phase difference d diffracts (2/(pi m))^2 sin^2(d/2)
             # into odd order m, and nothing into even orders.
-            for delta in (np.pi, .6 * np.pi):
+            for delta in (np.pi, 0.6 * np.pi):
                 orders = simulate(_binary_grating(16, delta, 0), a_pix=1e-4)
                 for m in (1, 3):
                     assert np.isclose(
@@ -1381,25 +1432,28 @@ class TestFourierSLM:
                 for supersample in (1, 3, 16):
                     orders = simulate(
                         _binary_grating(period, np.pi, 0),
-                        supersample=supersample, a_pix=1e-6,
+                        supersample=supersample,
+                        a_pix=1e-6,
                     )
                     assert np.all(np.isfinite(orders)) and np.isclose(np.sum(orders), 1)
 
         with subtests.test("kernel is applied on the SLM pixel scale"):
             # Weakly-phased orders report the kernel's transfer function at m/p, which
             # pins a_pix absolutely.
-            (delta, period) = (.01, 16)
-            for a_pix in (.25, .5):
+            (delta, period) = (0.01, 16)
+            for a_pix in (0.25, 0.5):
                 for supersample in (32, 64):
                     orders = simulate(
                         _binary_grating(period, delta, 0),
-                        supersample=supersample, a_pix=a_pix, n=1,
+                        supersample=supersample,
+                        a_pix=a_pix,
+                        n=1,
                     )
                     for m in (1, 3):
                         transfer = 1 / (1 + (2 * np.pi * m * a_pix / period) ** 2)
                         assert np.isclose(
                             orders[m],
-                            (delta / (np.pi * m)) ** 2 * transfer ** 2,
+                            (delta / (np.pi * m)) ** 2 * transfer**2,
                             rtol=1e-2,
                         )
 
@@ -1409,23 +1463,21 @@ class TestFourierSLM:
             (supersample, tiles) = (32, 5)
             commanded = np.repeat(np.tile(grating_50, tiles), supersample)
             size = commanded.size - 1
-            for kwargs in ({"a_minus_pix": .05}, {"n_minus": 4}, {"a_pix": 2.}):
-                kwargs = {"a_pix": .5, **kwargs}
+            for kwargs in ({"a_minus_pix": 0.05}, {"n_minus": 4}, {"a_pix": 2.0}):
+                kwargs = {"a_pix": 0.5, **kwargs}
                 kernel = FourierSLM.pixel_kernel(
                     (np.arange(size) - (size - 1) / 2) / supersample, **kwargs
                 )
                 blurred = ndimage.convolve1d(commanded, kernel, mode="grid-wrap")
-                expected = np.square(np.abs(
-                    np.fft.fft(np.exp(1j * blurred)) / commanded.size
-                ))
+                expected = np.square(np.abs(np.fft.fft(np.exp(1j * blurred)) / commanded.size))
                 orders = simulate(grating_50, supersample=supersample, **kwargs)
                 assert np.allclose(orders[:9], expected[::tiles][:9], atol=1e-12)
 
         with subtests.test("independent of how many periods are supplied"):
             # The kernel's support must be set by the kernel, not by the pattern.
-            for kwargs in ({"a_pix": .5, "a_minus_pix": .05}, {"a_pix": 2.}):
+            for kwargs in ({"a_pix": 0.5, "a_minus_pix": 0.05}, {"a_pix": 2.0}):
                 for period in (4, 16):
-                    grating = _binary_grating(period, np.pi, 0, duty_cycle=.25)
+                    grating = _binary_grating(period, np.pi, 0, duty_cycle=0.25)
                     one = simulate(grating, supersample=64, **kwargs)
                     four = simulate(np.tile(grating, 4), supersample=64, **kwargs)
                     assert np.allclose(one[:5], four[::4][:5], atol=1e-12)
@@ -1433,43 +1485,43 @@ class TestFourierSLM:
         with subtests.test("50% duty gratings cannot show a constant kernel's asymmetry"):
             # phi(x + p/2) = a + b - phi(x) survives any constant kernel and forces
             # |E_m| = |E_-m|.  This is the blind spot of pixel_calibrate().
-            for kwargs in ({"a_minus_pix": .05}, {"n_minus": 4}):
-                for delta in (np.pi, .6 * np.pi):
-                    orders = simulate(_binary_grating(16, delta, 0), a_pix=.5, **kwargs)
+            for kwargs in ({"a_minus_pix": 0.05}, {"n_minus": 4}):
+                for delta in (np.pi, 0.6 * np.pi):
+                    orders = simulate(_binary_grating(16, delta, 0), a_pix=0.5, **kwargs)
                     assert np.isclose(orders[1], orders[-1], rtol=1e-12)
 
         with subtests.test("level-dependent width breaks the 50% duty symmetry"):
             # Moser's mechanism: LC pre-tilt steepens the transition for one sign of the
             # level step and flattens it for the other, which no convolution can do.
             # Signed, so that swapping the (phi0, phi1) convention fails.
-            orders = simulate(grating_50, a_pix=lambda phi0, phi1: .25 if phi1 > phi0 else .75)
-            assert (orders[1] - orders[-1]) / (orders[1] + orders[-1]) < -.1
+            orders = simulate(grating_50, a_pix=lambda phi0, phi1: 0.25 if phi1 > phi0 else 0.75)
+            assert (orders[1] - orders[-1]) / (orders[1] + orders[-1]) < -0.1
 
             # Removing the level dependence removes the asymmetry.
-            for a_pix in (.25, .75):
+            for a_pix in (0.25, 0.75):
                 orders = simulate(grating_50, a_pix=a_pix)
                 assert np.isclose(orders[1], orders[-1], rtol=1e-12)
 
         with subtests.test("a duty cycle other than 50% does expose it"):
-            assert np.isclose(*simulate(grating_25, a_pix=.5)[[1, -1]], rtol=1e-12)
-            for kwargs in ({"a_minus_pix": .05}, {"n_minus": 4}):
-                orders = simulate(grating_25, a_pix=.5, **kwargs)
-                assert np.abs((orders[1] - orders[-1]) / (orders[1] + orders[-1])) > .01
+            assert np.isclose(*simulate(grating_25, a_pix=0.5)[[1, -1]], rtol=1e-12)
+            for kwargs in ({"a_minus_pix": 0.05}, {"n_minus": 4}):
+                orders = simulate(grating_25, a_pix=0.5, **kwargs)
+                assert np.abs((orders[1] - orders[-1]) / (orders[1] + orders[-1])) > 0.01
 
         with subtests.test("mirroring the kernel mirrors the first orders"):
-            orders = simulate(grating_25, a_pix=.5, n=1, a_minus_pix=.05, n_minus=4)
-            mirror = simulate(grating_25, a_pix=.05, n=4, a_minus_pix=.5, n_minus=1)
+            orders = simulate(grating_25, a_pix=0.5, n=1, a_minus_pix=0.05, n_minus=4)
+            mirror = simulate(grating_25, a_pix=0.05, n=4, a_minus_pix=0.5, n_minus=1)
             assert np.isclose(orders[1], mirror[-1], rtol=1e-12)
             assert np.isclose(orders[-1], mirror[1], rtol=1e-12)
 
         with subtests.test("plots"):
-            simulate(grating_25, a_pix=.5, a_minus_pix=.05, plot=True)
+            simulate(grating_25, a_pix=0.5, a_minus_pix=0.05, plot=True)
 
     def test_settle_calibration_process(self, fourierslm, caplog, subtests):
         """The settle fit returns positive, in-range times matching a planted response."""
-        times = np.linspace(0, .2, 201)
+        times = np.linspace(0, 0.2, 201)
 
-        for (communication, relaxation) in ((.03, .02), (.01, .005), (.05, .01)):
+        for communication, relaxation in ((0.03, 0.02), (0.01, 0.005), (0.05, 0.01)):
             with subtests.test(f"communication={communication} relaxation={relaxation}"):
                 fourierslm.calibrations["settle"] = {
                     "times": times,
@@ -1485,9 +1537,9 @@ class TestFourierSLM:
                 assert result["communication_time"] == pytest.approx(
                     communication, abs=2 * np.diff(times)[0]
                 )
-                assert result["relax_time"] == pytest.approx(relaxation, rel=.02)
+                assert result["relax_time"] == pytest.approx(relaxation, rel=0.02)
                 assert result["settle_time"] == pytest.approx(
-                    communication + 4 * relaxation, rel=.02
+                    communication + 4 * relaxation, rel=0.02
                 )
 
         with subtests.test("a flat frame has no step to fit"):
@@ -1497,7 +1549,8 @@ class TestFourierSLM:
 
         with subtests.test("a response slower than the sweep is reported as unresolved"):
             fourierslm.calibrations["settle"] = {
-                "times": times, "data": 1 - np.exp(-times / (10 * np.ptp(times))),
+                "times": times,
+                "data": 1 - np.exp(-times / (10 * np.ptp(times))),
             }
             with caplog.at_level(logging.WARNING):
                 result = fourierslm.settle_calibration_process(plot=1)
@@ -1512,9 +1565,11 @@ class TestFourierSLM:
         times = [0, 0.01, 0.02]
         settles = []
         set_phase = fs.slm.set_phase
+
         def spy(phase, *args, settle=None, **kwargs):
             settles.append(settle)
             return set_phase(phase, *args, settle=settle, **kwargs)
+
         monkeypatch.setattr(fs.slm, "set_phase", spy)
 
         calibration = fs.settle_calibrate(times=times, plot=-1)
@@ -1533,31 +1588,41 @@ class TestFourierSLM:
             assert fs.cam.get_exposure() == pytest.approx(0.1)
 
     def test_fourier_calibrate_geometries(
-        self, simulated_system, simulated_system_name, simulated_system_source,
-        calibration_results, calibration_plot_level, request, caplog,
+        self,
+        simulated_system,
+        simulated_system_name,
+        simulated_system_source,
+        calibration_results,
+        calibration_plot_level,
+        request,
+        caplog,
     ):
         """fourier_calibrate with a fixed array, across every simulated geometry."""
         (error, tolerance, note, failure) = _run_calibration(
-            simulated_system, simulated_system_name, simulated_system_source,
-            calibration_results, calibration_plot_level,
+            simulated_system,
+            simulated_system_name,
+            simulated_system_source,
+            calibration_results,
+            calibration_plot_level,
         )
 
         if simulated_system_name not in DEFAULT_CALIBRATION_OK:
             # Strict, so a geometry that starts calibrating is reported rather than
             # staying quietly green in the expected-failure column.
-            request.node.add_marker(pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    f"Fixed array_shape/array_pitch produce a wrong or failed "
-                    f"calibration for this geometry ({note})."
-                ),
-            ))
+            request.node.add_marker(
+                pytest.mark.xfail(
+                    strict=True,
+                    reason=(
+                        f"Fixed array_shape/array_pitch produce a wrong or failed "
+                        f"calibration for this geometry ({note})."
+                    ),
+                )
+            )
 
         if failure is not None:
             raise failure
         assert error < tolerance, (
-            f"Calibrated mapping is {error:.2f} px off ground truth "
-            f"(tolerance {tolerance:.2f})."
+            f"Calibrated mapping is {error:.2f} px off ground truth (tolerance {tolerance:.2f})."
         )
 
         # An array with unequal sides may be mis-oriented only with a warning.
@@ -1584,7 +1649,7 @@ def test_simulated_blaze_lands_at_prediction(simulated_system_factory, name):
     for kxy in (np.zeros((2, 1)), in_view_kxy(fs, frac=0.5)):
         predicted = np.squeeze(ground_truth_kxy_to_ij(fs, kxy))
         if np.any(predicted < 0) or np.any(predicted >= np.flip(fs.cam.shape)):
-            continue    # Steered off the sensor, so there is nothing to find.
+            continue  # Steered off the sensor, so there is nothing to find.
 
         fs.slm.set_phase(blaze(fs.slm, vector=kxy))
         fs.cam.autoexpose(verbose=False)

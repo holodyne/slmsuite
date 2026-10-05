@@ -1,17 +1,18 @@
 """
 Abstract camera functionality.
 """
-import time
-import warnings
+
 from abc import ABC, abstractmethod
+import logging
+import time
+from typing import ClassVar
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
-import logging
-
-from slmsuite._plotting import _slmsuite_plt_show
 from scipy.optimize import curve_fit
 
+from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
@@ -66,7 +67,8 @@ class Camera(_Common, ABC):
         used and the type of :attr:`averaging`.
         Is ``None`` if no image has ever been taken.
     """
-    _pickle = [
+
+    _pickle: ClassVar[list] = [
         "name",
         "shape",
         "bitdepth",
@@ -82,7 +84,7 @@ class Camera(_Common, ABC):
         "_software_woi",
         "_software_binning",
     ]
-    _pickle_data = [
+    _pickle_data: ClassVar[list] = [
         "last_image",
     ]
 
@@ -178,10 +180,10 @@ class Camera(_Common, ABC):
         # Set exposure information.
         self.exposure_bounds_s = (
             (np.min(exposure_bounds_s), np.max(exposure_bounds_s))
-            if exposure_bounds_s is not None else
-            None
+            if exposure_bounds_s is not None
+            else None
         )
-        self._exposure_s = 1     # Default to 1s for Simulated cameras.
+        self._exposure_s = 1  # Default to 1s for Simulated cameras.
 
         # Update other camera attributes from hardware.
         self.get_exposure()
@@ -296,7 +298,9 @@ class Camera(_Common, ABC):
             self._binning = binning
 
         if self._binning != binning:
-            self.logger.warning("Attempted to set binning to %s, but realized %s.", target_binning, self.binning)
+            self.logger.warning(
+                "Attempted to set binning to %s, but realized %s.", target_binning, self.binning
+            )
         else:
             self.logger.debug("Set binning to %s.", self.binning)
 
@@ -385,10 +389,10 @@ class Camera(_Common, ABC):
         Returns the WOI ``(x, w, y, h)`` in raw binned camera coordinates.
         """
         return (
-            self._woi[0] // self._binning[0],    # x / binx
-            self._woi[1] // self._binning[0],    # w / binx
-            self._woi[2] // self._binning[1],    # y / biny
-            self._woi[3] // self._binning[1],    # h / biny
+            self._woi[0] // self._binning[0],  # x / binx
+            self._woi[1] // self._binning[0],  # w / binx
+            self._woi[2] // self._binning[1],  # y / biny
+            self._woi[3] // self._binning[1],  # h / biny
         )
 
     @property
@@ -487,7 +491,7 @@ class Camera(_Common, ABC):
             else:
                 raise TypeError(f"Cannot interpret WOI of type {type(woi).__name__}.")
 
-            if w is not None:   # Center the (w, h) window on the sensor.
+            if w is not None:  # Center the (w, h) window on the sensor.
                 woi = (max(0, (W - w) // 2), w, max(0, (H - h) // 2), h)
 
             # Get the WOI in raw camera coordinates.
@@ -501,9 +505,7 @@ class Camera(_Common, ABC):
             clipped = (x0, x1 - x0, y0, y1 - y0)
 
             if clipped != tuple(int(v) for v in woi_unt):
-                warnings.warn(
-                    f"Requested WOI {woi} extends beyond the sensor and was clipped."
-                )
+                warnings.warn(f"Requested WOI {woi} extends beyond the sensor and was clipped.")
 
             woi_unt = clipped
 
@@ -623,7 +625,7 @@ class Camera(_Common, ABC):
         return self._exposure_s
 
     @exposure_s.setter
-    def exposure_s(self, value : float):
+    def exposure_s(self, value: float):
         if self._exposure_s != value:
             self.set_exposure(value)
 
@@ -661,7 +663,9 @@ class Camera(_Common, ABC):
             if exposure_s_ != exposure_s:
                 self.logger.warning(
                     "Requested exposure %s s is out of bounds %s s. Clipping to %s s.",
-                    exposure_s, self.exposure_bounds_s, exposure_s_,
+                    exposure_s,
+                    self.exposure_bounds_s,
+                    exposure_s_,
                 )
                 exposure_s = exposure_s_
 
@@ -672,12 +676,16 @@ class Camera(_Common, ABC):
         self._exposure_s = self.get_exposure()
 
         # Report to the logger.
-        if not np.isclose(self._exposure_s, exposure_s): 
+        if not np.isclose(self._exposure_s, exposure_s):
             if abs(self._exposure_s - exposure_s) / self._exposure_s > 0.01:
                 warn = self.logger.warning
             else:
                 warn = self.logger.debug
-            warn("Attempted to set exposure to %s seconds, but realized %s seconds.", exposure_s, self._exposure_s)
+            warn(
+                "Attempted to set exposure to %s seconds, but realized %s seconds.",
+                exposure_s,
+                self._exposure_s,
+            )
         else:
             self.logger.debug("Set exposure to %s s.", self._exposure_s)
 
@@ -686,7 +694,7 @@ class Camera(_Common, ABC):
     def _unpickle(self, data):
         """
         Restores pickled state data not restored by constructor. See
-        :meth:`~slmsuite._pickling._Picklable._unpickle`. 
+        :meth:`~slmsuite._pickling._Picklable._unpickle`.
         """
         super()._unpickle(data)
 
@@ -793,11 +801,11 @@ class Camera(_Common, ABC):
         bin_factor = eff_binning[0] * eff_binning[1]
 
         # Integer promotion: check whether averaging * binning fits in the native dtype.
-        dtype = np.dtype(self.dtype) if not hasattr(self.dtype, 'kind') else self.dtype
+        dtype = np.dtype(self.dtype) if not hasattr(self.dtype, "kind") else self.dtype
         if dtype.kind in ("i", "u"):
             dtype_bitdepth = 8 * dtype.type(0).nbytes
             if dtype.kind == "i":
-                dtype_bitdepth -= 1   # signed integers lose one bit
+                dtype_bitdepth -= 1  # signed integers lose one bit
             extra_bits = int(np.ceil(np.log2(max(1, averaging * bin_factor))))
             if self.bitdepth + extra_bits <= dtype_bitdepth:
                 return self.dtype
@@ -884,27 +892,33 @@ class Camera(_Common, ABC):
         if self._software_woi:
             x0, w, y0, h = self._woi
             if x0 != 0 or y0 != 0 or w != self._shape[1] or h != self._shape[0]:
-                img = img[..., y0:y0+h, x0:x0+w]
+                img = img[..., y0 : y0 + h, x0 : x0 + w]
 
         # Step 2: Software binning (block-sum of adjacent pixels).
         if self._software_binning:
             binx, biny = self._binning
             if biny != 1 or binx != 1:
                 # Promote so the block-sum cannot overflow the raw dtype, never narrowing.
-                img = img.astype(np.promote_types(img.dtype, self.get_dtype(averaging=1, hdr=False)))
+                img = img.astype(
+                    np.promote_types(img.dtype, self.get_dtype(averaging=1, hdr=False))
+                )
                 # Sum into the promoted type; sum() otherwise re-promotes to uint64.
                 if img.ndim == 2:
                     H, W = img.shape
                     Ht, Wt = (H // biny) * biny, (W // binx) * binx
-                    img = img[:Ht, :Wt].reshape(
-                        Ht // biny, biny, Wt // binx, binx
-                    ).sum(axis=(1, 3), dtype=img.dtype)
-                else:   # (N, H, W) stack
+                    img = (
+                        img[:Ht, :Wt]
+                        .reshape(Ht // biny, biny, Wt // binx, binx)
+                        .sum(axis=(1, 3), dtype=img.dtype)
+                    )
+                else:  # (N, H, W) stack
                     N, H, W = img.shape
                     Ht, Wt = (H // biny) * biny, (W // binx) * binx
-                    img = img[:, :Ht, :Wt].reshape(
-                        N, Ht // biny, biny, Wt // binx, binx
-                    ).sum(axis=(2, 4), dtype=img.dtype)
+                    img = (
+                        img[:, :Ht, :Wt]
+                        .reshape(N, Ht // biny, biny, Wt // binx, binx)
+                        .sum(axis=(2, 4), dtype=img.dtype)
+                    )
 
         return img
 
@@ -952,7 +966,7 @@ class Camera(_Common, ABC):
             :meth:`.get_images()`.
         """
         # Preallocate memory if necessary
-        out = self._get_out((image_count,) + tuple(self._hw_image_shape), out)
+        out = self._get_out((image_count, *self._hw_image_shape), out)
 
         for i in range(image_count):
             out[i, :, :] = self._get_image_hw_tolerant(timeout_s)
@@ -988,7 +1002,9 @@ class Camera(_Common, ABC):
         elif isinstance(color_channel, (list, np.ndarray)):
             raise NotImplementedError("Weighted color handling is not implemented yet.")
         else:
-            raise ValueError(f"Expected color_channel to be None or int. Found {self.color_channel}.")
+            raise ValueError(
+                f"Expected color_channel to be None or int. Found {self.color_channel}."
+            )
 
     def _get_image_hw_tolerant(self, *args, **kwargs):
         """
@@ -1024,15 +1040,17 @@ class Camera(_Common, ABC):
                     # Copy, rather than view: a driver may reuse its frame buffer.
                     img = np.array(raw)
 
-                if len(img.shape) == 2:     # All good!
+                if len(img.shape) == 2:  # All good!
                     pass
-                elif len(img.shape) == 3:     # Need to convert to grayscale.
+                elif len(img.shape) == 3:  # Need to convert to grayscale.
                     img = self._parse_color_image(img)
                 else:
                     raise ValueError(f"Expected a 2D or 3D (color) image. Found {img.shape}.")
 
                 if failures > 0:
-                    self.logger.warning("_get_image_hw() failed %s times before succeeding.", failures)
+                    self.logger.warning(
+                        "_get_image_hw() failed %s times before succeeding.", failures
+                    )
 
                 return img
             except Exception as e:
@@ -1071,11 +1089,13 @@ class Camera(_Common, ABC):
                 raw = self._get_images_hw(*args, **kwargs)
                 imgs = as_numpy(raw) if get else raw
 
-                if imgs.ndim == 4:      # Stack of color images; reduce to grayscale.
+                if imgs.ndim == 4:  # Stack of color images; reduce to grayscale.
                     imgs = self._parse_color_image(imgs)
 
                 if failures > 0:
-                    self.logger.warning("_get_images_hw() failed %s times before succeeding.", failures)
+                    self.logger.warning(
+                        "_get_images_hw() failed %s times before succeeding.", failures
+                    )
 
                 return imgs
             except Exception as e:
@@ -1120,7 +1140,8 @@ class Camera(_Common, ABC):
             If ``None``, the value of :attr:`hdr` is used.
             If ``False``, HDR is not used no matter the state of :attr:`hdr`.
 
-            See Also
+        See Also
+        --------
             ~~~~~~~~
             :meth:`.get_image_hdr()` for more information.
 
@@ -1173,14 +1194,14 @@ class Camera(_Common, ABC):
         (exposures, exposure_power) = self._parse_hdr(hdr)
 
         # Switch based on what imaging case we're in.
-        if exposures > 1:       # Average many images with increasing exposure.
+        if exposures > 1:  # Average many images with increasing exposure.
             return self.get_image_hdr(
                 (exposures, exposure_power),
                 timeout_s=timeout_s,
                 transform=transform,
                 averaging=averaging,
             )
-        elif averaging > 1:     # Average many images.
+        elif averaging > 1:  # Average many images.
             averaging_dtype = self.get_dtype(averaging=averaging)
 
             try:
@@ -1209,10 +1230,8 @@ class Camera(_Common, ABC):
                         img = frame
                     else:
                         img += frame
-        else:                   # Normal image
-            img = self._get_image_hw_tolerant(
-                timeout_s=timeout_s + self.exposure_s, get=get
-            )
+        else:  # Normal image
+            img = self._get_image_hw_tolerant(timeout_s=timeout_s + self.exposure_s, get=get)
 
         # Software WOI crop and/or binning (no-op when handled by hardware).
         img = self._crop_to_woi(img)
@@ -1277,7 +1296,7 @@ class Camera(_Common, ABC):
         shape = tuple(self.shape) if transform else raw_shape
         if out is not None:
             out = self._get_out(
-                (image_count,) + shape, out, dtype=self.get_dtype(averaging=1, hdr=False)
+                (image_count, *shape), out, dtype=self.get_dtype(averaging=1, hdr=False)
             )
 
         # Hand the hardware a view of the caller's buffer, unless the frames change shape.
@@ -1402,19 +1421,19 @@ class Camera(_Common, ABC):
         try:
             for i in range(exposures):
                 # FUTURE: record the get_exposures and use these to do better analysis.
-                exposure_times[i] = self.set_exposure(int(exposure_power ** i) * original_exposure)
-                self.flush()    # Sometimes, cameras return bad frames after exposure change.
+                exposure_times[i] = self.set_exposure(int(exposure_power**i) * original_exposure)
+                self.flush()  # Sometimes, cameras return bad frames after exposure change.
                 frame = self.get_image(hdr=False, **kwargs)
                 if imgs is None:
                     xp = get_array_module(frame)
-                    imgs = xp.zeros((exposures,) + tuple(frame.shape), float)
+                    imgs = xp.zeros((exposures, *frame.shape), float)
                 imgs[i, :, :] = frame
 
                 # Terminate the loop if our image is entirely overexposed.
                 if xp.all(imgs[i, :, :] > overexposure_threshold):
                     # Drop the unexposed tail so the stack only holds measured frames.
-                    imgs = imgs[:i+1, :, :]
-                    exposure_times = exposure_times[:i+1]
+                    imgs = imgs[: i + 1, :, :]
+                    exposure_times = exposure_times[: i + 1]
                     break
         finally:
             # Else a failed capture strands the camera at the elevated exposure.
@@ -1524,7 +1543,7 @@ class Camera(_Common, ABC):
                 self.get_image(averaging=2, timeout_s=5)
 
             with self._test_step("stack frames, into a given buffer"):
-                out = np.empty((3,) + self.shape, dtype=self.get_dtype())
+                out = np.empty((3, *self.shape), dtype=self.get_dtype())
                 self.get_images(3, timeout_s=2)
                 self.get_images(3, timeout_s=2, out=out)
 
@@ -1716,14 +1735,14 @@ class Camera(_Common, ABC):
             exp_prev = exp
 
             # Clip exposure steps to 0.1x -> 10x, also avoiding division by 0.
-            exp_unclipped = exp * np.clip(set_val / max(status, 1), .1, 10)
+            exp_unclipped = exp * np.clip(set_val / max(status, 1), 0.1, 10)
             exp = np.clip(exp_unclipped, exposure_bounds_s[0], exposure_bounds_s[1])
             if exp_unclipped != exp:
                 # If already railed, handle failure cases (TODO).
                 if is_railed:
-                    if (exp == exposure_bounds_s[0] and set_fraction < 0.5):
+                    if exp == exposure_bounds_s[0] and set_fraction < 0.5:
                         break
-                    if (exp == exposure_bounds_s[1] and set_fraction > 0.5):
+                    if exp == exposure_bounds_s[1] and set_fraction > 0.5:
                         break
 
                 # Otherwise, prepare to do so next loop.
@@ -1745,14 +1764,15 @@ class Camera(_Common, ABC):
             status = metric(img[sliced])
             err = np.abs(status - set_val) / self.bitresolution
 
-            self.logger.debug(
-                "Autoexpose: %.2e s - %s/%s", exp, status, maxcount
-            )
+            self.logger.debug("Autoexpose: %.2e s - %s/%s", exp, status, maxcount)
 
         # Summarize the converged result.
         self.logger.log(
             logging.INFO if verbose else logging.DEBUG,
-            "Autoexpose: %.2e s - %s/%s", exp, status, maxcount,
+            "Autoexpose: %.2e s - %s/%s",
+            exp,
+            status,
+            maxcount,
         )
 
         # The loop targets 50% of resolution.
@@ -1829,23 +1849,19 @@ class Camera(_Common, ABC):
             Optimal ``z`` value found.
         """
         # Parse set_z
-        if hasattr(set_z, 'set_phase'):
+        if hasattr(set_z, "set_phase"):
             # SLM passed; create lens phase setter.
             slm = set_z
             base_phase = slm.phase - slm._get_source_phase()
-            base_correction = slm.source.get('phase', None)
+            base_correction = slm.source.get("phase", None)
             if base_correction is None:
                 base_correction = slm.xp.zeros_like(base_phase)
 
             def slm_set_z(z_val):
-                slm.source['phase'] = (
-                    base_correction +
-                    as_backend(zernike(slm, index=4, weight=z_val, use_mask=False), slm.xp)
+                slm.source["phase"] = base_correction + as_backend(
+                    zernike(slm, index=4, weight=z_val, use_mask=False), slm.xp
                 )
-                slm.set_phase(
-                    base_phase,
-                    settle=True
-                )
+                slm.set_phase(base_phase, settle=True)
 
             set_z = slm_set_z
 
@@ -1900,12 +1916,22 @@ class Camera(_Common, ABC):
 
         dz = np.mean(np.diff(z_list))
         popt0 = np.array(
-            [z_list[I_max_count], np.nanmax(counts) - np.nanmin(counts), np.nanmin(counts), (z_list[-1]-z_list[0])]
+            [
+                z_list[I_max_count],
+                np.nanmax(counts) - np.nanmin(counts),
+                np.nanmin(counts),
+                (z_list[-1] - z_list[0]),
+            ]
         )
         bounds = np.array(
             [
                 [z_list[0], 0, 0, dz],
-                [z_list[-1], (np.nanmax(counts) - np.nanmin(counts))*2, np.nanmax(counts), np.inf]
+                [
+                    z_list[-1],
+                    (np.nanmax(counts) - np.nanmin(counts)) * 2,
+                    np.nanmax(counts),
+                    np.inf,
+                ],
             ]
         )
 
@@ -1926,7 +1952,9 @@ class Camera(_Common, ABC):
             c_opt = counts[I_max_count]
 
         # Goto the optimal position
-        self.logger.log(logging.INFO if verbose else logging.DEBUG, "Moving to optimized value, z = %s", z_opt)
+        self.logger.log(
+            logging.INFO if verbose else logging.DEBUG, "Moving to optimized value, z = %s", z_opt
+        )
         set_z(z_opt)
 
         # Show result if desired
@@ -1950,4 +1978,3 @@ class Camera(_Common, ABC):
             _slmsuite_plt_show(name="autofocus")
 
         return z_opt
-

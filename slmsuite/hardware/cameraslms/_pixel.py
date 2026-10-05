@@ -1,18 +1,18 @@
 import matplotlib.pyplot as plt
-from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
-from slmsuite import tqdm
 
-from slmsuite.holography import analysis
-from slmsuite.holography import toolbox
+from slmsuite import tqdm
+from slmsuite._plotting import _slmsuite_plt_show
+from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.toolbox.phase import binary
 
 
-class _PixelCalibration(object):
+class _PixelCalibration:
     """
     Hidden superclass with pixel calibration methods
     (gamma and crosstalk correction).
     """
+
     ### Pixel Crosstalk and Gamma Calibration ###
 
     # Phase range, in cycles, that a gamma sweep ought to resolve.
@@ -143,7 +143,8 @@ class _PixelCalibration(object):
             if levels > self.slm.bitresolution:
                 self.logger.warning(
                     "Requested %s levels are more than the bitresolution. Truncating to %s.",
-                    levels, self.slm.bitresolution,
+                    levels,
+                    self.slm.bitresolution,
                 )
                 levels = self.slm.bitresolution
 
@@ -153,7 +154,8 @@ class _PixelCalibration(object):
         if not np.all(valid):
             self.logger.warning(
                 "Omitting requested levels %s, outside the valid range [0, %s).",
-                levels[~valid], self.slm.bitresolution,
+                levels[~valid],
+                self.slm.bitresolution,
             )
             levels = levels[valid]
         levels = levels.astype(self.slm.display.dtype)
@@ -168,7 +170,9 @@ class _PixelCalibration(object):
         if cycles < self._PIXEL_CAL_EXPECTED_CYCLES / self.slm.phase_scaling:
             self.logger.warning(
                 "%s levels resolve a phase range of only %.1f cycles; an SLM with a "
-                "mis-set phase table can span more. Sample more levels.", N, cycles,
+                "mis-set phase table can span more. Sample more levels.",
+                N,
+                cycles,
             )
 
         # Parse directions.
@@ -194,16 +198,18 @@ class _PixelCalibration(object):
         # How far the camera reaches either side of the 0th order along the swept axes,
         # in units where the edge of k-space is unity.
         camera_extent_kspace = 2 * self.get_camera_extent(units="freq")[directions, :]
-        reach = np.array([
-            np.min(np.max(camera_extent_kspace, axis=1)),
-            np.min(-np.min(camera_extent_kspace, axis=1)),
-        ])
+        reach = np.array(
+            [
+                np.min(np.max(camera_extent_kspace, axis=1)),
+                np.min(-np.min(camera_extent_kspace, axis=1)),
+            ]
+        )
 
         # Parse orders by forcing integer.
         orders_given = not np.isscalar(orders)
         if not orders_given:
             orders = int(orders)
-            orders = np.arange(-orders, orders+1)
+            orders = np.arange(-orders, orders + 1)
         orders = np.rint(orders).astype(int)
 
         if len(np.unique(orders)) != len(orders):
@@ -237,7 +243,8 @@ class _PixelCalibration(object):
         period_min = np.max([2 * abs(o) / reach[0 if o > 0 else 1] for o in orders if o != 0])
         period_max = (
             2 * np.min(np.abs(orders[orders != 0])) / -np.min(reach)
-            if np.any(reach < 0) else np.inf
+            if np.any(reach < 0)
+            else np.inf
         )
 
         if period_min > period_max:
@@ -281,7 +288,9 @@ class _PixelCalibration(object):
         if window is not None:
             (_, w, _, h) = toolbox.window_extent(window)
             if np.any(periods > w // 2) or np.any(periods > h // 2):
-                raise ValueError(f"Periods {periods} must be at most half of the window size ({w}, {h}).")
+                raise ValueError(
+                    f"Periods {periods} must be at most half of the window size ({w}, {h})."
+                )
 
         # Figure out the shape of the stored data. We store for two directions even if only one is measured.
         shape = (2, P, N, N, M)
@@ -289,50 +298,47 @@ class _PixelCalibration(object):
         data = np.zeros(shape)
 
         # Make all of the x-pointing vectors, then all of the y-pointing vectors.
-        vectors_freq = np.zeros((2, 2*P))
+        vectors_freq = np.zeros((2, 2 * P))
         vectors_freq[0, :P] = vectors_freq[1, P:] = np.reciprocal(periods.astype(float))
         vectors_kxy = toolbox.convert_vector(
-            vectors_freq,
-            from_units="freq",
-            to_units="norm",
-            hardware=self
+            vectors_freq, from_units="freq", to_units="norm", hardware=self
         )
 
         # Make the y-pointing field vector, then the x-pointing field vector.
         field_freq = np.zeros((2, 2))
         field_freq[1, 0] = field_freq[0, 1] = 1 / float(field_period)
         field_kxy = toolbox.convert_vector(
-            field_freq,
-            from_units="freq",
-            to_units="norm",
-            hardware=self
+            field_freq, from_units="freq", to_units="norm", hardware=self
         )
-        (field_hi, field_lo) = np.array(
-            [self.slm.bitresolution / 2, 0]
-        ).astype(self.slm.display.dtype)
+        (field_hi, field_lo) = np.array([self.slm.bitresolution / 2, 0]).astype(
+            self.slm.display.dtype
+        )
 
         field_ij = toolbox.convert_vector(
-            field_freq,
-            from_units="freq",
-            to_units="ij",
-            hardware=self
+            field_freq, from_units="freq", to_units="ij", hardware=self
         )
 
         # Figure out where the orders will appear on the camera.
         vectors_ij = self.kxyslm_to_ijcam(vectors_kxy)
-        center = self.kxyslm_to_ijcam((0,0))
+        center = self.kxyslm_to_ijcam((0, 0))
 
         dorder = vectors_ij - center
         dfield = field_ij - center
-        order_ij = []
+        order_ij = [center + orders * dorder[:, [i]] for i in range(2 * P)]
 
-        for i in range(2*P):
-            order_ij.append(center + orders * dorder[:, [i]])
-
-        integration_size = max(1, int(np.floor(np.min([
-            np.min(np.max(np.abs(dorder), axis=0)),
-            np.min(np.max(np.abs(dfield), axis=0))
-        ]))))
+        integration_size = max(
+            1,
+            int(
+                np.floor(
+                    np.min(
+                        [
+                            np.min(np.max(np.abs(dorder), axis=0)),
+                            np.min(np.max(np.abs(dfield), axis=0)),
+                        ]
+                    )
+                )
+            ),
+        )
 
         if integration_size < 3:
             self.logger.warning(
@@ -345,13 +351,12 @@ class _PixelCalibration(object):
         half = integration_size // 2
         for i in directions:
             for j in range(P):
-                if (
-                    np.any(order_ij[j + P*i] - half < 0) or
-                    np.any(order_ij[j + P*i] + half >= np.flip(self.cam.shape)[:, np.newaxis])
+                if np.any(order_ij[j + P * i] - half < 0) or np.any(
+                    order_ij[j + P * i] + half >= np.flip(self.cam.shape)[:, np.newaxis]
                 ):
                     raise ValueError(
-                        f"Some orders miss the camera. "
-                        f"Try adjusting the periods or reducing the orders."
+                        "Some orders miss the camera. "
+                        "Try adjusting the periods or reducing the orders."
                     )
 
         if plot >= 2:
@@ -360,7 +365,7 @@ class _PixelCalibration(object):
                 for j in range(P):
                     canvas += analysis.take(
                         images=canvas,
-                        vectors=order_ij[j + P*i],
+                        vectors=order_ij[j + P * i],
                         size=integration_size,
                         return_mask=True,
                     )
@@ -382,22 +387,23 @@ class _PixelCalibration(object):
                 raise ValueError("test_index selected no points of the sweep.")
 
             # Otherwise a full-sweep test would plot thousands of figures.
-            if len(test_index) > 8: plot = 0
+            if len(test_index) > 8:
+                plot = 0
 
             results = []
             autoexposure_results = []
 
-        if show_tqdm: iterations = tqdm(range(length))
+        if show_tqdm:
+            iterations = tqdm(range(length))
 
         self.cam.flush()
 
         # Big sweep.
         index = 0
-        for i in directions:                                    # Direction (x,y)
-            prange = np.arange(P) + i*P
-            for j in range(P):                                  # Period
-
-                for k in range(N):                              # Gray level selection.
+        for i in directions:  # Direction (x,y)
+            prange = np.arange(P) + i * P
+            for j in range(P):  # Period
+                for k in range(N):  # Gray level selection.
                     for l in range(N):
                         # If we're testing, then only execute the test indices.
                         # (Ignore everything else.)
@@ -410,19 +416,13 @@ class _PixelCalibration(object):
                         # (1a) Make the pattern that we are going to project.
                         if window is None:
                             phase = binary(
-                                self.slm,
-                                vector=vectors_kxy[:, prange[j]],
-                                a=levels[k],
-                                b=levels[l]
+                                self.slm, vector=vectors_kxy[:, prange[j]], a=levels[k], b=levels[l]
                             )
                         else:
                             # In windowed mode, blaze the field away from the 0th order,
                             # in the direction perpendicular to the target.
                             phase = binary(
-                                grid=self.slm,
-                                vector=field_kxy[:, i],
-                                a=field_hi,
-                                b=field_lo
+                                grid=self.slm, vector=field_kxy[:, i], a=field_hi, b=field_lo
                             )
                             toolbox.imprint(
                                 phase,
@@ -431,7 +431,7 @@ class _PixelCalibration(object):
                                 grid=self.slm,
                                 vector=vectors_kxy[:, prange[j]],
                                 a=levels[k],
-                                b=levels[l]
+                                b=levels[l],
                             )
 
                         # (1b) We're writing integers, so this goes directly to the SLM,
@@ -466,11 +466,11 @@ class _PixelCalibration(object):
                             integrate=False,
                         ).astype(float)
 
-                        data[i,j,k,l,:] = np.sum(regions, axis=(1,2))
+                        data[i, j, k, l, :] = np.sum(regions, axis=(1, 2))
 
                         # (3a) Maybe plot the results for this point.
                         if plot >= 1:
-                            fig, axs = plt.subplots(1, 2, figsize=(12,6))
+                            fig, axs = plt.subplots(1, 2, figsize=(12, 6))
                             self.slm.plot(
                                 ax=axs[0],
                             )
@@ -487,7 +487,7 @@ class _PixelCalibration(object):
                             canvas = np.zeros(self.cam.shape)
                             canvas = analysis.take(
                                 images=canvas,
-                                vectors=order_ij[j + P*i],
+                                vectors=order_ij[j + P * i],
                                 size=integration_size,
                                 return_mask=True,
                             )
@@ -499,12 +499,13 @@ class _PixelCalibration(object):
                                 plot = 0
 
                         # (3b) Update the current index of the sweep, and maybe update the progress bar.
-                        if show_tqdm: iterations.update()
+                        if show_tqdm:
+                            iterations.update()
                         index += 1
 
                         # (3c) Handle test index results collection and maybe autoexpose adjustment.
                         if test_index is not None:
-                            results.append(data[i,j,k,l,:].copy())
+                            results.append(data[i, j, k, l, :].copy())
 
                             if current_index == test_index[-1]:
                                 if autoexpose:
@@ -512,26 +513,27 @@ class _PixelCalibration(object):
                                     self.cam.set_exposure(exposure)
 
                                     return {
-                                        "indices" : test_index,
-                                        "results" : autoexposure_results,
+                                        "indices": test_index,
+                                        "results": autoexposure_results,
                                     }
                                 else:
                                     return {
-                                        "indices" : test_index,
-                                        "results" : results,
+                                        "indices": test_index,
+                                        "results": results,
                                     }
 
-        if show_tqdm: iterations.close()
+        if show_tqdm:
+            iterations.close()
 
         # Assemble the return dictionary.
         self.calibrations["pixel"] = {
-            "levels" : levels,
-            "periods" : periods,
-            "orders" : orders,
-            "directions" : directions,
-            "vectors_kxy" : vectors_kxy,
-            "order_ij" : order_ij,
-            "data": data
+            "levels": levels,
+            "periods": periods,
+            "orders": orders,
+            "directions": directions,
+            "vectors_kxy": vectors_kxy,
+            "order_ij": order_ij,
+            "data": data,
         }
         self.calibrations["pixel"].update(self._get_calibration_metadata())
 
@@ -563,7 +565,7 @@ class _PixelCalibration(object):
         mask = [(o in orders) for o in orders_]
 
         # Actually do the sum.
-        data_summed = np.sum(data[:,:,:,:,mask], axis=(0,1,4))
+        data_summed = np.sum(data[:, :, :, :, mask], axis=(0, 1, 4))
 
         # Average across diagonals to reduce noise.
         if transpose:
@@ -604,7 +606,7 @@ class _PixelCalibration(object):
         if np.isscalar(orders):
             orders = int(orders)
             orders = [-orders, orders]
-        orders =  [o for o in orders_ if o in orders]
+        orders = [o for o in orders_ if o in orders]
 
         if len(orders) == 0:
             raise ValueError(f"None of the requested orders were measured; have {list(orders_)}.")
@@ -618,9 +620,9 @@ class _PixelCalibration(object):
 
             for i in cal["directions"]:
                 for j, period in enumerate(periods):
-                    fig, axs = plt.subplots(1, M, figsize=(5*M, 5), squeeze=False)
+                    fig, axs = plt.subplots(1, M, figsize=(5 * M, 5), squeeze=False)
                     for o, order in enumerate(orders):
-                        im = axs[0, o].imshow(data[i,j,:,:,index[o]])
+                        im = axs[0, o].imshow(data[i, j, :, :, index[o]])
                         im.set_clim(cmin, cmax)
 
                         axs[0, o].set_xlabel("Level b")
@@ -646,7 +648,7 @@ class _PixelCalibration(object):
             ax.set_xticks(leveli)
             ax.set_yticks(leveli)
 
-            ax.set_title(f"Summed Orders")
+            ax.set_title("Summed Orders")
 
             _slmsuite_plt_show(name="pixel_calibration_plot")
 
@@ -700,7 +702,8 @@ class _PixelCalibration(object):
 
         # Now run the fit.
         from scipy.optimize import curve_fit
-        popt, pcov = curve_fit(model, None, data_ravel, p0=guess)
+
+        popt, _pcov = curve_fit(model, None, data_ravel, p0=guess)
 
         # The model resolves each level only modulo a cycle, and mirrors freely.
         gamma = np.unwrap(popt[2:], period=1)
@@ -711,11 +714,13 @@ class _PixelCalibration(object):
         # Get rsquared of the fit.
         residuals = data_ravel - model(None, *popt)
         ss_res = np.sum(residuals**2)
-        ss_tot = np.sum((data_ravel - np.mean(data_ravel))**2)
+        ss_tot = np.sum((data_ravel - np.mean(data_ravel)) ** 2)
         r_squared = 1 - (ss_res / ss_tot)
 
         if not r_squared >= 0.9:
-            self.logger.warning("Low R^2 value of %.3f for gamma fit. Fit may be inaccurate.", r_squared)
+            self.logger.warning(
+                "Low R^2 value of %.3f for gamma fit. Fit may be inaccurate.", r_squared
+            )
 
         if plot >= 2:
             fig, axs = plt.subplots(1, 3, figsize=(12, 4))
@@ -742,8 +747,13 @@ class _PixelCalibration(object):
 
             if self.slm.gamma is not None:
                 self.slm.plot_gamma(
-                    s=100, marker="o", facecolors='none', edgecolors="k",
-                    ax=ax, zorder=10, label="Previous gamma"
+                    s=100,
+                    marker="o",
+                    facecolors="none",
+                    edgecolors="k",
+                    ax=ax,
+                    zorder=10,
+                    label="Previous gamma",
                 )
             self.slm.plot_gamma(
                 self.slm._interpolate_gamma(gamma, levels), ax=ax, zorder=20, label="New gamma"
@@ -752,7 +762,6 @@ class _PixelCalibration(object):
             ax.legend()
 
             _slmsuite_plt_show(name="pixel_calibration_process_fit")
-
 
         self.calibrations["pixel"]["gamma"] = gamma
         self.calibrations["pixel"]["gamma_r2"] = r_squared
@@ -778,14 +787,15 @@ class _PixelCalibration(object):
             self.logger.warning(
                 "The calibration was taken on a %s level SLM, but this one has %s. "
                 "Not applying its gamma.",
-                measured, bitresolution,
+                measured,
+                bitresolution,
             )
             return
 
         self.slm.set_gamma(cal["gamma"], levels=cal["levels"])
 
     @staticmethod
-    def pixel_kernel(x, a_pix=.1, n=1, a_minus_pix=None, n_minus=None, x0_pix=0):
+    def pixel_kernel(x, a_pix=0.1, n=1, a_minus_pix=None, n_minus=None, x0_pix=0):
         r"""
         Normalized crosstalk kernel, evaluated at positions ``x`` in units of SLM pixels.
         This is Eq. (9) of `Moser et al. <https://doi.org/10.1364/OE.27.025046>`_,
@@ -888,10 +898,12 @@ class _PixelCalibration(object):
         blurred = np.zeros(N)
         for j in np.flatnonzero(np.roll(phase, -1) != phase):
             (phi0, phi1) = (phase[j], phase[(j + 1) % P])
-            transition = np.cumsum(cls.pixel_kernel(
-                offset,
-                **{k: v(phi0, phi1) if callable(v) else v for (k, v) in kwargs.items()},
-            ))
+            transition = np.cumsum(
+                cls.pixel_kernel(
+                    offset,
+                    **{k: v(phi0, phi1) if callable(v) else v for (k, v) in kwargs.items()},
+                )
+            )
             for replica in replicas:
                 blurred += (phi1 - phi0) * np.interp(
                     x - (j + 1 + replica), offset, transition, left=0, right=1

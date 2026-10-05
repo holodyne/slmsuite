@@ -5,7 +5,9 @@ The logging layer uses a single "slmsuite" logger with per-class descendant logg
 shared, bounded capture buffer. Handlers live only on the root; per-instance isolation is by
 a uid tag on each record (filtered out of the shared buffer on read).
 """
+
 import logging
+from typing import ClassVar
 
 import pytest
 
@@ -25,8 +27,9 @@ def _console_handlers():
 
 class _Device(_Loggable):
     """Minimal _Loggable subclass for testing."""
-    _pickle = ["value"]
-    _pickle_data = []
+
+    _pickle: ClassVar[list] = ["value"]
+    _pickle_data: ClassVar[list] = []
 
     def __init__(self, name="dev"):
         self.name = name
@@ -84,7 +87,6 @@ def test_get_log(subtests):
 
 
 class TestLoggable:
-
     @pytest.fixture(autouse=True)
     def _dev(self):
         self.dev = _Device(name="test_dev")

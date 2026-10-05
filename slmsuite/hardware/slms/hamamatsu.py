@@ -24,36 +24,57 @@ Note
 ~~~~
 Reading/writing data to a microSD card is currently unsupported.
 """
+
+import ctypes
+from ctypes import (
+    POINTER,
+    byref,
+    c_char,
+    c_char_p,
+    c_double,
+    c_int,
+    c_int32,
+    c_short,
+    c_ubyte,
+    c_uint,
+    c_uint8,
+    c_uint32,
+    c_ulonglong,
+    c_ushort,
+    c_void_p,
+    c_wchar,
+)
 import os
 import warnings
-from ctypes import *
 
 import numpy as np
+
+from slmsuite._logging import make_logger
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.misc.xp import as_numpy
-from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
 
 try:
     _libname = "hpkSLMdaLV.dll"
 
-    if hasattr(os, "add_dll_directory"):    # python >= 3.8
+    if hasattr(os, "add_dll_directory"):  # python >= 3.8
         os.add_dll_directory(os.getcwd())
         os.add_dll_directory(os.path.dirname(os.path.abspath(__file__)))
-        Lcoslib = WinDLL(_libname)
-    else:                                   # python < 3.8
+        Lcoslib = ctypes.WinDLL(_libname)
+    else:  # python < 3.8
         _libpath = os.path.dirname(os.path.abspath(__file__))
-        os.environ['PATH'] = _libpath + os.pathsep + os.environ['PATH']
-        Lcoslib = windll.LoadLibrary(_libname)
+        os.environ["PATH"] = _libpath + os.pathsep + os.environ["PATH"]
+        Lcoslib = ctypes.windll.LoadLibrary(_libname)
 except Exception as e:
     warnings.warn(
         "Hamamatsu DLLs not installed; must be present in the runtime directory:\n"
         "  - hpkSLMdaLV.dll\n  - hpkSLMda.dll\n"
         "Install to use Hamamatsu SLMs.\n"
-        "Original error: {}".format(e)
+        f"Original error: {e}"
     )
     Lcoslib = None
+
 
 class Hamamatsu(SLM):
     r"""
@@ -64,6 +85,7 @@ class Hamamatsu(SLM):
     serial_number : str
         Serial number of the connected device.
     """
+
     def __init__(
         self,
         serial_number=None,
@@ -71,7 +93,7 @@ class Hamamatsu(SLM):
         resolution=(1272, 1024),
         pitch_um=(12.5, 12.5),
         verbose=None,
-        **kwargs
+        **kwargs,
     ):
         r"""
         Initializes an instance of a Hamamatsu SLM.
@@ -110,7 +132,7 @@ class Hamamatsu(SLM):
             )
         logger.debug("Initializing Hamamatsu SDK...")
         n_dev, board_ids = self._Open_Device(bID_size=1)
-        self.board_id = list(board_ids)[0]
+        self.board_id = next(iter(board_ids))
 
         if n_dev == 0:
             raise RuntimeError("No Hamamatsu devices found!")
@@ -126,7 +148,9 @@ class Hamamatsu(SLM):
                 pass
             else:
                 self._Close_Device(board_ids, bID_size=1)
-                raise RuntimeError(f"Could not find '{serial_number}'. Found '{self.serial_number}'.")
+                raise RuntimeError(
+                    f"Could not find '{serial_number}'. Found '{self.serial_number}'."
+                )
 
         # Force the SLM to USB/Trigger mode.
         try:
@@ -149,10 +173,10 @@ class Hamamatsu(SLM):
         # Use the superclass to construct the other variables.
         super().__init__(
             resolution=resolution,
-            bitdepth=8,             # SDK only supports 8-bit, so we're hardcoding.
+            bitdepth=8,  # SDK only supports 8-bit, so we're hardcoding.
             wav_um=wav_um,
             pitch_um=pitch_um,
-            **kwargs
+            **kwargs,
         )
 
         # Zero the display using the superclass `set_phase()` function.
@@ -175,20 +199,27 @@ class Hamamatsu(SLM):
             this variable may be renamed in a future slmsuite release to
             conform with eventual implementation of this feature in other SLMs.
         """
-        display = as_numpy(display)   # The driver needs host memory.
+        display = as_numpy(display)  # The driver needs host memory.
 
         array_size = int(self.shape[0] * self.shape[1])
         write_fmemarray = Lcoslib.Write_FMemArray
-        write_fmemarray.argtypes = [c_uint8, c_uint8*array_size, c_int32, c_uint32, c_uint32, c_uint32]
+        write_fmemarray.argtypes = [
+            c_uint8,
+            c_uint8 * array_size,
+            c_int32,
+            c_uint32,
+            c_uint32,
+            c_uint32,
+        ]
 
         # TODO: do python ints need to be converted explicitly to c_uint32?
         v = write_fmemarray(
             self.board_id,
-            display.ctypes.data_as(POINTER(c_uint8* array_size)).contents,
+            display.ctypes.data_as(POINTER(c_uint8 * array_size)).contents,
             array_size,
             self.shape[1],
             self.shape[0],
-            slot_number
+            slot_number,
         )
 
         if v != 1:
@@ -217,13 +248,13 @@ class Hamamatsu(SLM):
         array_size = int(self.shape[0] * self.shape[1])
 
         get_display = Lcoslib.Check_Disp_IMG
-        get_display.argtypes = [c_uint8, c_int32, c_uint32, c_uint32, c_uint8*array_size]
+        get_display.argtypes = [c_uint8, c_int32, c_uint32, c_uint32, c_uint8 * array_size]
         v = get_display(
             self.board_id,
             array_size,
             self.shape[1],
             self.shape[0],
-            display.ctypes.data_as(POINTER(c_uint8* array_size)).contents,
+            display.ctypes.data_as(POINTER(c_uint8 * array_size)).contents,
         )
 
         if v != 1:
@@ -306,9 +337,9 @@ class Hamamatsu(SLM):
             ID of the connected devices.
         """
         open_dev = Lcoslib.Open_Dev
-        open_dev.argtypes = [c_uint8*bID_size, c_int32]
+        open_dev.argtypes = [c_uint8 * bID_size, c_int32]
         open_dev.restype = c_int
-        array =c_uint8*bID_size
+        array = c_uint8 * bID_size
         ID_list = array(0)
         conn_dev = open_dev(ID_list, bID_size)
 
@@ -320,7 +351,7 @@ class Hamamatsu(SLM):
         Interrupts the communication with the target devices.
         """
         close_dev = Lcoslib.Close_Dev
-        close_dev.argtypes = [c_uint8*bID_size, c_int32]
+        close_dev.argtypes = [c_uint8 * bID_size, c_int32]
         close_dev.restype = c_int
 
         v = close_dev(bID_list, bID_size)
@@ -341,8 +372,8 @@ class Hamamatsu(SLM):
         Reads the LCOS-SLM head serial number with the desired ID.
         """
         check_serial = Lcoslib.Check_HeadSerial
-        check_serial.argtypes = [c_uint8, c_char*11, c_int32]
-        hs = c_char*11
+        check_serial.argtypes = [c_uint8, c_char * 11, c_int32]
+        hs = c_char * 11
         head_serial = hs(0)
         v = check_serial(board_id, head_serial, 11)
 
@@ -395,7 +426,7 @@ class Hamamatsu(SLM):
         check_led = Lcoslib.Check_LED
         ls = c_uint32 * 10
         led_status = ls(0)
-        check_led.argtypes = [c_uint8, c_uint32*10]
+        check_led.argtypes = [c_uint8, c_uint32 * 10]
         v = check_led(self.board_id, led_status)
 
         if v != 1:

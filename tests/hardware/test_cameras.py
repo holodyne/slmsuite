@@ -1,10 +1,12 @@
 """
 Unit tests for the Camera base class, exercised through SimulatedCamera.
 """
+
 import logging
 
-import pytest
+from conftest import driver_classes
 import numpy as np
+import pytest
 
 from slmsuite.hardware.cameras import camera as camera_module
 from slmsuite.hardware.cameras.camera import Camera
@@ -12,29 +14,27 @@ from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.hardware.cameraslms import FourierSLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography.toolbox.phase import zernike
-
 from slmsuite.misc.xp import as_numpy
-
-from conftest import driver_classes
 
 # Non-square sensor, so an axis swapped by the orientation transform cannot hide.
 WIDE = (200, 100)
 
 # (label, constructor kwargs, whether the transform swaps the image axes).
 ORIENTATIONS = (
-    ("identity", dict(rot="0"), False),
-    ("rot90", dict(rot="90"), True),
-    ("rot180", dict(rot="180"), False),
-    ("rot270", dict(rot="270"), True),
-    ("flip", dict(fliplr=True), False),
-    ("rot90_flip", dict(rot="90", fliplr=True), True),
-    ("rot180_flip", dict(rot="180", fliplr=True), False),
-    ("rot270_flip", dict(rot="270", fliplr=True), True),
+    ("identity", {"rot": "0"}, False),
+    ("rot90", {"rot": "90"}, True),
+    ("rot180", {"rot": "180"}, False),
+    ("rot270", {"rot": "270"}, True),
+    ("flip", {"fliplr": True}, False),
+    ("rot90_flip", {"rot": "90", "fliplr": True}, True),
+    ("rot180_flip", {"rot": "180", "fliplr": True}, False),
+    ("rot270_flip", {"rot": "270", "fliplr": True}, True),
 )
 
 
 class _FlakyCamera(SimulatedCamera):
     """A SimulatedCamera whose next ``failures`` captures raise, returning ``frame`` if set."""
+
     failures = 0
     frame = None
 
@@ -90,11 +90,11 @@ class TestCamera:
     def test_bitresolution(self, camera, subtests):
         """bitresolution is 2**bitdepth, times the number of frames summed into a capture."""
         with subtests.test("bitresolution is exactly 2**bitdepth"):
-            assert camera.bitresolution == 2 ** camera.bitdepth
+            assert camera.bitresolution == 2**camera.bitdepth
 
         with subtests.test("summing N frames multiplies the range by N"):
             camera.averaging = 4
-            assert camera.bitresolution == 4 * 2 ** camera.bitdepth
+            assert camera.bitresolution == 4 * 2**camera.bitdepth
 
     def test_set_binning(self, slm, caplog, subtests):
         """set_binning() divides the shape, leaves the WOI unbinned, and honors the transform."""
@@ -137,7 +137,7 @@ class TestCamera:
 
         with subtests.test("a 90 degree rotation swaps the binning axes"):
             rotated = SimulatedCamera(slm, resolution=WIDE, rot="90")
-            rotated._binning = (2, 4)   # raw sensor axes, bypassing the transform in set_binning()
+            rotated._binning = (2, 4)  # raw sensor axes, bypassing the transform in set_binning()
             assert rotated.get_binning() == (4, 2) == rotated.binning
 
     def test_set_woi(self, camera, slm, subtests):
@@ -156,13 +156,15 @@ class TestCamera:
         (sw, sh) = (w_max // 8, h_max // 8)
 
         try:
-            for (label, request) in (
+            for label, request in (
                 ("full sensor", (0, w_max, 0, h_max)),
                 ("centered half", (w_max // 4, w_max // 2, h_max // 4, h_max // 2)),
                 ("patch against the far corner", (w_max - sw, sw, h_max - sh, sh)),
                 ("wide thin strip", (0, w_max, h_max * 2 // 5, h_max // 5)),
-                ("odd offsets, which stress the snapping",
-                 (w_max // 10, w_max * 4 // 5, h_max // 10, h_max * 4 // 5)),
+                (
+                    "odd offsets, which stress the snapping",
+                    (w_max // 10, w_max * 4 // 5, h_max // 10, h_max * 4 // 5),
+                ),
             ):
                 with subtests.test(label):
                     camera.set_woi(request)
@@ -222,7 +224,7 @@ class TestCamera:
             assert cam.get_woi() == (0, 120, 0, 80) == cam.woi
             assert cam.shape == (40, 60)
 
-        for (label, kwargs, swapped) in ORIENTATIONS:
+        for label, kwargs, swapped in ORIENTATIONS:
             rotated = SimulatedCamera(slm, resolution=WIDE, **kwargs)
             (full_w, full_h) = (WIDE[1], WIDE[0]) if swapped else WIDE
 
@@ -252,23 +254,23 @@ class TestCamera:
 
     def test_get_ijraw_to_ijcam(self, slm, subtests):
         """The raw-sensor to camera-image affine places the WOI corners and inverts exactly."""
-        woi = (20, 80, 10, 60)      # (x0, w, y0, h) in raw sensor pixels
+        woi = (20, 80, 10, 60)  # (x0, w, y0, h) in raw sensor pixels
         (binx, biny) = (2, 4)
         (w_bin, h_bin) = (woi[1] // binx, woi[3] // biny)
 
         # Camera-image pixel that the WOI origin lands on, per orientation.
         origins = {
-            "identity":    (0,         0),
-            "rot90":       (0,         w_bin - 1),
-            "rot180":      (w_bin - 1, h_bin - 1),
-            "rot270":      (h_bin - 1, 0),
-            "flip":        (w_bin - 1, 0),
-            "rot90_flip":  (h_bin - 1, w_bin - 1),
-            "rot180_flip": (0,         h_bin - 1),
-            "rot270_flip": (0,         0),
+            "identity": (0, 0),
+            "rot90": (0, w_bin - 1),
+            "rot180": (w_bin - 1, h_bin - 1),
+            "rot270": (h_bin - 1, 0),
+            "flip": (w_bin - 1, 0),
+            "rot90_flip": (h_bin - 1, w_bin - 1),
+            "rot180_flip": (0, h_bin - 1),
+            "rot270_flip": (0, 0),
         }
 
-        for (label, kwargs, swapped) in ORIENTATIONS:
+        for label, kwargs, swapped in ORIENTATIONS:
             cam = SimulatedCamera(slm, resolution=WIDE, **kwargs)
             # Set the raw window and binning directly, to test the affine apart from capture.
             cam._woi = woi
@@ -280,9 +282,7 @@ class TestCamera:
             (out_h, out_w) = (w_bin, h_bin) if swapped else (h_bin, w_bin)
 
             with subtests.test(f"{label} maps the WOI origin onto its image corner"):
-                np.testing.assert_allclose(
-                    (affine @ origin).flatten(), origins[label], atol=1e-9
-                )
+                np.testing.assert_allclose((affine @ origin).flatten(), origins[label], atol=1e-9)
 
             with subtests.test(f"{label} maps the far WOI corner onto the opposite image corner"):
                 np.testing.assert_allclose(
@@ -331,14 +331,14 @@ class TestCamera:
             camera.averaging = None
 
         with subtests.test("the dtype holds the largest sum the settings can produce"):
-            for (averaging, binning) in ((1000, (1, 1)), (1, (2, 2)), (4, (2, 2))):
+            for averaging, binning in ((1000, (1, 1)), (1, (2, 2)), (4, (2, 2))):
                 dtype = camera.get_dtype(averaging=averaging, binning=binning)
-                largest = (2 ** camera.bitdepth - 1) * averaging * binning[0] * binning[1]
-                assert dtype == float or np.iinfo(dtype).max >= largest
+                largest = (2**camera.bitdepth - 1) * averaging * binning[0] * binning[1]
+                assert dtype is float or np.iinfo(dtype).max >= largest
 
         with subtests.test("hdr returns float whatever else is set"):
-            assert camera.get_dtype(hdr=2) == float
-            assert camera.get_dtype(averaging=1, binning=(1, 1), hdr=2) == float
+            assert camera.get_dtype(hdr=2) is float
+            assert camera.get_dtype(averaging=1, binning=(1, 1), hdr=2) is float
 
         with subtests.test("a negative count raises"):
             with pytest.raises(ValueError, match="averaging must be positive"):
@@ -350,9 +350,10 @@ class TestCamera:
 
         try:
             with subtests.test("supplied test data types the camera without a probe"):
-                assert camera._get_dtype(
-                    lambda: camera._get_image_hw_tolerant(timeout_s=1)
-                ) == orig_dtype
+                assert (
+                    camera._get_dtype(lambda: camera._get_image_hw_tolerant(timeout_s=1))
+                    == orig_dtype
+                )
 
             with subtests.test("a probe result types the camera and is given a timeout"):
                 seen = []
@@ -369,17 +370,22 @@ class TestCamera:
                 with pytest.warns(UserWarning, match="does not conform"):
                     camera._get_dtype()
 
-            for (bitdepth, inferred) in ((8, np.uint8), (12, np.uint16)):
+            for bitdepth, inferred in ((8, np.uint8), (12, np.uint16)):
                 camera.bitdepth = bitdepth
 
-                with subtests.test(f"a probe that raises leaves {bitdepth} bits in {inferred.__name__}"):
+                with subtests.test(
+                    f"a probe that raises leaves {bitdepth} bits in {inferred.__name__}"
+                ):
+
                     def raising(timeout_s):
                         raise RuntimeError("no hardware")
 
                     camera._get_image_hw = raising
                     assert camera._get_dtype() == np.dtype(inferred)
 
-                with subtests.test(f"an unusable probe leaves {bitdepth} bits in {inferred.__name__}"):
+                with subtests.test(
+                    f"an unusable probe leaves {bitdepth} bits in {inferred.__name__}"
+                ):
                     camera._get_image_hw = lambda timeout_s: None
                     assert camera._get_dtype() == np.dtype(inferred)
         finally:
@@ -437,8 +443,10 @@ class TestCamera:
         """set_exposure() never asks the hardware for an exposure outside its bounds."""
         cam = SimulatedCamera(slm, resolution=(64, 48), exposure_bounds_s=(1e-3, 1.0))
 
-        with subtests.test("a request outside exposure_bounds_s is clipped to the bound and warned"):
-            for (request, bound) in ((10.0, 1.0), (1e-6, 1e-3)):
+        with subtests.test(
+            "a request outside exposure_bounds_s is clipped to the bound and warned"
+        ):
+            for request, bound in ((10.0, 1.0), (1e-6, 1e-3)):
                 caplog.clear()
                 with caplog.at_level(logging.WARNING, logger="slmsuite"):
                     assert cam.set_exposure(request) == bound
@@ -537,7 +545,7 @@ class TestCamera:
     def test_get_image_hdr_analysis(self, subtests):
         """get_image_hdr_analysis() recovers the base exposure from a stack of doublings."""
         base = np.linspace(0, 200, 100).reshape(10, 10)
-        imgs = np.array([np.minimum(base * 2 ** i, 255) for i in range(3)], dtype=np.uint8)
+        imgs = np.array([np.minimum(base * 2**i, 255) for i in range(3)], dtype=np.uint8)
 
         with subtests.test("the stitch is the base exposure, to within quantization"):
             stitched = Camera.get_image_hdr_analysis(imgs, overexposure_threshold=200)
@@ -608,10 +616,10 @@ class TestCamera:
 
             assert (camera.averaging, camera.hdr) == (7, 3)
 
-        for (label, kwargs, binning) in (
+        for label, kwargs, binning in (
             ("software binning", {}, 2),
-            ("a rotated non-square sensor", dict(rot="90"), None),
-            ("both at once", dict(rot="270", fliplr=True), (2, 4)),
+            ("a rotated non-square sensor", {"rot": "90"}, None),
+            ("both at once", {"rot": "270", "fliplr": True}, (2, 4)),
         ):
             with subtests.test(f"test() holds under {label}"):
                 cam = SimulatedCamera(slm, resolution=WIDE, **kwargs)
@@ -661,11 +669,9 @@ class TestCamera:
 
             for factor in (1, 0.5):
                 ax = camera.plot(image=img, limits=factor)
-                for (lim, scaled) in zip((xlim, ylim), (ax.get_xlim(), ax.get_ylim())):
+                for lim, scaled in zip((xlim, ylim), (ax.get_xlim(), ax.get_ylim())):
                     center = np.mean(lim)
-                    np.testing.assert_allclose(
-                        scaled, center + np.subtract(lim, center) * factor
-                    )
+                    np.testing.assert_allclose(scaled, center + np.subtract(lim, center) * factor)
                 plt.close("all")
 
         with subtests.test("2x2 limits are applied directly"):
@@ -712,13 +718,18 @@ class TestCamera:
         with subtests.test("wider caller bounds never exceed the camera's own"):
             written = []
             write = camera._set_exposure_hw
-            record = lambda e: (written.append(e), write(e))[1]
+
+            def record(e):
+                return (written.append(e), write(e))[1]
+
             monkeypatch.setattr(camera, "_set_exposure_hw", record)
             monkeypatch.setattr(camera, "exposure_bounds_s", (1e-3, 1e-2))
-            for (bounds, metric) in (((1e-6, 10), 0.0), ((1e-6, 1e-4), 1e9)):
+            for bounds, metric in (((1e-6, 10), 0.0), ((1e-6, 1e-4), 1e9)):
                 camera.set_exposure(5e-3)
                 written.clear()
-                camera.autoexpose(exposure_bounds_s=bounds, metric=lambda _: metric, verbose=False)
+                camera.autoexpose(
+                    exposure_bounds_s=bounds, metric=lambda _, metric=metric: metric, verbose=False
+                )
                 assert 1e-3 <= min(written) and max(written) <= 1e-2, bounds
 
     def test_autofocus(self, camera, slm, monkeypatch, subtests):
@@ -746,7 +757,7 @@ class TestCamera:
 
         with subtests.test("a custom metric is followed to its own peak"):
             stage = {"z": 0.0}
-            peak = 0.37     # Off the 0.2-spaced sweep, so only the fit can land on it.
+            peak = 0.37  # Off the 0.2-spaced sweep, so only the fit can land on it.
 
             def set_z(z):
                 stage["z"] = z
@@ -760,6 +771,7 @@ class TestCamera:
             assert stage["z"] == pytest.approx(found), "the stage is left at the optimum"
 
         with subtests.test("a stage that never moves leaves nothing to fit"):
+
             def jammed(_z):
                 raise RuntimeError("stage jammed")
 
@@ -777,6 +789,7 @@ class TestCamera:
             cropped.close()
 
         with subtests.test("an interrupt during the fit is not swallowed"):
+
             def interrupt(*args, **kwargs):
                 raise KeyboardInterrupt
 

@@ -7,18 +7,8 @@ than deriving it, so (absent camera noise) it must reproduce the original frame 
 frame. That makes a simulated system a usable stand-in for hardware here, and lets
 the geometry assertions be exact rather than approximate.
 """
+
 import warnings
-
-import numpy as np
-import pytest
-
-from slmsuite.hardware.cameraslms import FourierSLM
-from slmsuite.hardware.cameras.simulated import GaussianDetectorNoise, SimulatedCamera
-from slmsuite.hardware.slms.simulated import SimulatedSLM
-from slmsuite.holography import toolbox
-from slmsuite.holography.analysis.files import load_h5, save_h5
-from slmsuite.misc.xp import as_numpy, cp
-from slmsuite.holography.toolbox.phase import blaze, zernike_sum
 
 from conftest import (
     build_simulated_system,
@@ -27,7 +17,16 @@ from conftest import (
     seed_for,
     view_kxy_grid,
 )
+import numpy as np
+import pytest
 
+from slmsuite.hardware.cameras.simulated import GaussianDetectorNoise, SimulatedCamera
+from slmsuite.hardware.cameraslms import FourierSLM
+from slmsuite.hardware.slms.simulated import SimulatedSLM
+from slmsuite.holography import toolbox
+from slmsuite.holography.analysis.files import load_h5, save_h5
+from slmsuite.holography.toolbox.phase import blaze, zernike_sum
+from slmsuite.misc.xp import as_numpy, cp
 
 # Geometries spanning the ways the camera can sit in the SLM's k-space. "identity"
 # is excluded: its camera samples the knm grid directly with no affine, so the clone
@@ -88,9 +87,7 @@ class TestSimulateFidelity:
 
         with subtests.test("coordinate frames agree"):
             probe = view_kxy_grid(fs, count=4)
-            assert np.allclose(
-                fs.kxyslm_to_ijcam(probe), fs_sim.kxyslm_to_ijcam(probe), atol=1e-9
-            )
+            assert np.allclose(fs.kxyslm_to_ijcam(probe), fs_sim.kxyslm_to_ijcam(probe), atol=1e-9)
             ij = fs.kxyslm_to_ijcam(kxy)
             assert np.allclose(fs.ijcam_to_kxyslm(ij), fs_sim.ijcam_to_kxyslm(ij), atol=1e-12)
 
@@ -98,9 +95,7 @@ class TestSimulateFidelity:
             phase = blaze(fs.slm, np.squeeze(in_view_kxy(fs, frac=0.7)))
             fs.slm.set_phase(phase)
             fs_sim.slm.set_phase(phase)
-            assert np.array_equal(
-                as_numpy(fs.slm.display), as_numpy(fs_sim.slm.display)
-            )
+            assert np.array_equal(as_numpy(fs.slm.display), as_numpy(fs_sim.slm.display))
             assert np.array_equal(fs.cam.get_image(), fs_sim.cam.get_image())
 
     def test_identity_case_is_approximate(self):
@@ -155,9 +150,7 @@ class TestSimulateCameraFraming:
 
         with subtests.test("affine is not offset by the woi origin"):
             probe = view_kxy_grid(fs, count=4)
-            assert np.allclose(
-                fs.kxyslm_to_ijcam(probe), fs_sim.kxyslm_to_ijcam(probe), atol=1e-9
-            )
+            assert np.allclose(fs.kxyslm_to_ijcam(probe), fs_sim.kxyslm_to_ijcam(probe), atol=1e-9)
 
         with subtests.test("image is identical"):
             assert np.array_equal(fs.cam.get_image(), fs_sim.cam.get_image())
@@ -178,9 +171,7 @@ class TestSimulateCameraFraming:
 
         with subtests.test("affine agrees"):
             probe = view_kxy_grid(fs, count=4)
-            assert np.allclose(
-                fs.kxyslm_to_ijcam(probe), fs_sim.kxyslm_to_ijcam(probe), atol=1e-9
-            )
+            assert np.allclose(fs.kxyslm_to_ijcam(probe), fs_sim.kxyslm_to_ijcam(probe), atol=1e-9)
 
         with subtests.test("image agrees"):
             # Not identical: the hardware quantizes each pixel and then sums four of
@@ -193,7 +184,7 @@ class TestSimulateCameraFraming:
 
     @pytest.mark.parametrize(
         "orientation",
-        ({"rot": "90"}, {"rot": "180"}, {"fliplr": True}, {"rot": "270", "flipud": True}),
+        [{"rot": "90"}, {"rot": "180"}, {"fliplr": True}, {"rot": "270", "flipud": True}],
         ids=("rot90", "rot180", "fliplr", "rot270_flipud"),
     )
     def test_orientation_transform(self, orientation, subtests):
@@ -225,9 +216,7 @@ class TestSimulateCameraFraming:
 
         with subtests.test("coordinate frames agree"):
             probe = view_kxy_grid(fs, count=4)
-            assert np.allclose(
-                fs.kxyslm_to_ijcam(probe), fs_sim.kxyslm_to_ijcam(probe), atol=1e-9
-            )
+            assert np.allclose(fs.kxyslm_to_ijcam(probe), fs_sim.kxyslm_to_ijcam(probe), atol=1e-9)
 
 
 class TestSimulateSLMCharacteristics:
@@ -240,8 +229,8 @@ class TestSimulateSLMCharacteristics:
         """
         fs = _calibrated("matched")
         gamma = np.sort(np.random.rand(fs.slm.bitresolution))
-        fs.slm.gamma_sim = gamma           # What the stand-in hardware realizes.
-        fs.slm.set_gamma(gamma)            # What it quantizes through.
+        fs.slm.gamma_sim = gamma  # What the stand-in hardware realizes.
+        fs.slm.set_gamma(gamma)  # What it quantizes through.
         _display(fs)
 
         fs_sim = fs.simulate()
@@ -350,6 +339,7 @@ class TestSimulateIdentity:
         A FourierSLM subclass (e.g. one adding a calibration routine) must clone into
         its own class, or the clone cannot run the algorithm being compared.
         """
+
         class _Subclass(FourierSLM):
             def only_here(self):
                 return True
@@ -374,9 +364,7 @@ class TestSimulateIdentity:
 
         with subtests.test("calibrations are deep-copied"):
             assert set(fs_sim.calibrations) == set(fs.calibrations)
-            assert np.allclose(
-                fs_sim.calibrations["fourier"]["M"], fs.calibrations["fourier"]["M"]
-            )
+            assert np.allclose(fs_sim.calibrations["fourier"]["M"], fs.calibrations["fourier"]["M"])
             fs_sim.calibrations["settle"]["data"] *= 0
             assert np.all(fs.calibrations["settle"]["data"] == 1)
 
@@ -404,7 +392,7 @@ class TestLoad:
         img = fs.cam.get_image()
         return np.flip(np.unravel_index(np.argmax(img), img.shape)).astype(float)
 
-    @pytest.mark.parametrize("woi", (None, (20, 64, 30, 48)), ids=("full", "woi"))
+    @pytest.mark.parametrize("woi", [None, (20, 64, 30, 48)], ids=("full", "woi"))
     def test_camera_is_placed_by_the_calibration(self, woi, temp_dir, subtests):
         # The WOI goes on before the calibration, since a calibration's metadata is a
         # snapshot of the hardware as it was when the calibration was taken.
@@ -428,9 +416,7 @@ class TestLoad:
             assert fs_loaded.cam.shape == fs.cam.shape
 
         with subtests.test("coordinate frame survives the round trip"):
-            assert np.allclose(
-                fs_loaded.kxyslm_to_ijcam(kxy), fs.kxyslm_to_ijcam(kxy), atol=1e-9
-            )
+            assert np.allclose(fs_loaded.kxyslm_to_ijcam(kxy), fs.kxyslm_to_ijcam(kxy), atol=1e-9)
 
         with subtests.test("images agree with the frame they are described in"):
             # The regression: a camera left unplaced samples the SLM's knm grid
@@ -475,14 +461,13 @@ class TestLoad:
 
         with subtests.test("measured source"):
             assert np.allclose(
-                as_numpy(fs_loaded.slm.source["amplitude_sim"]), as_numpy(fs.slm.source["amplitude_sim"])
+                as_numpy(fs_loaded.slm.source["amplitude_sim"]),
+                as_numpy(fs.slm.source["amplitude_sim"]),
             )
 
         with subtests.test("camera is still placed"):
             kxy = in_view_kxy(fs, frac=0.4)
-            assert np.allclose(
-                fs_loaded.kxyslm_to_ijcam(kxy), fs.kxyslm_to_ijcam(kxy), atol=1e-9
-            )
+            assert np.allclose(fs_loaded.kxyslm_to_ijcam(kxy), fs.kxyslm_to_ijcam(kxy), atol=1e-9)
 
 
 class TestSaveLoadRoundTrip:
@@ -497,7 +482,7 @@ class TestSaveLoadRoundTrip:
         """A simulated system carrying every piece of state a round trip must keep."""
         fs = _calibrated(name)
 
-        levels = 2 ** fs.slm.bitdepth
+        levels = 2**fs.slm.bitdepth
         # A non-ideal, non-linear response, so that a lost gamma_sim changes the image.
         fs.slm.gamma_sim = np.linspace(0, 1.8, levels) ** 1.3
 
@@ -514,9 +499,7 @@ class TestSaveLoadRoundTrip:
         (height, width) = fs.slm.shape
         fs.slm.set_aperture(radius=1 / 0.7, center=(0.45 * width, 0.55 * height))
 
-        fs_sim = fs.simulate(
-            background=np.full(fs.cam.shape, 3.0) if background else None
-        )
+        fs_sim = fs.simulate(background=np.full(fs.cam.shape, 3.0) if background else None)
         fs_sim.cam.gain = 2.5
         fs_sim.cam._aperture = np.linspace(0.5, 1.0, fs_sim.cam._shape[1])[None, :] * (
             np.ones((fs_sim.cam._shape[0], 1))
@@ -624,6 +607,7 @@ class TestSaveLoadRoundTrip:
         routines the system was saved for, which is what makes the reloaded object
         useless for the algorithm it was meant to run.
         """
+
         class _SavedSubclass(FourierSLM):
             def only_here(self):
                 return True
@@ -764,7 +748,7 @@ class TestSimulateRadiometry:
         fs.cam._set_noise(dark=0.01, read=0.005)
 
         img = fs.cam.get_image()
-        max_val = 2 ** fs.cam.bitdepth - 1
+        max_val = 2**fs.cam.bitdepth - 1
 
         with subtests.test("no underflow wraparound to uint container max"):
             assert img.min() >= 0
@@ -807,13 +791,14 @@ class TestSimulateGPUAcceleration:
         ``get=False``, so plotting the stored frame must not assume host memory.
         """
         import matplotlib
+
         matplotlib.use("Agg")
 
         fs_sim = _calibrated("matched").simulate(gpu=True)
         fs_sim.cam.get_image(get=False)
 
         assert isinstance(fs_sim.cam.last_image, cp.ndarray)
-        fs_sim.cam.plot(image=False)     # Raised TypeError while this assumed numpy.
+        fs_sim.cam.plot(image=False)  # Raised TypeError while this assumed numpy.
 
     @requires_cupy
     def test_camera_aperture_is_stored_on_the_render_backend(self, subtests):
@@ -891,7 +876,13 @@ class TestSimulateGPUAcceleration:
     @requires_cupy
     def test_slm_grid_gpu_phase_generation(self, subtests):
         from slmsuite.hardware.slms.simulated import SimulatedSLM
-        from slmsuite.holography.toolbox.phase import blaze, lens, axicon, laguerre_gaussian, hermite_gaussian
+        from slmsuite.holography.toolbox.phase import (
+            axicon,
+            blaze,
+            hermite_gaussian,
+            laguerre_gaussian,
+            lens,
+        )
 
         slm_gpu = SimulatedSLM((128, 128), gpu=True)
 
@@ -958,9 +949,7 @@ class TestSimulateGPUAcceleration:
 
         with subtests.test("a host source no longer strands the device phase functions"):
             # This raised TypeError while source was left on whichever backend wrote it.
-            assert isinstance(
-                slm.source["phase"] + zernike_sum(slm, (4,), (1.0,)), cp.ndarray
-            )
+            assert isinstance(slm.source["phase"] + zernike_sum(slm, (4,), (1.0,)), cp.ndarray)
 
         with subtests.test("as_numpy is the host escape hatch"):
             assert isinstance(as_numpy(slm.grid[0]), np.ndarray)
@@ -986,6 +975,7 @@ class TestSimulateGPUAcceleration:
     @requires_cupy
     def test_slm_plot_source_gpu(self):
         from slmsuite.hardware.slms.simulated import SimulatedSLM
+
         slm_gpu = SimulatedSLM((128, 128), gpu=True)
         # Should not throw TypeError about implicit conversion to numpy array
         axs = slm_gpu.plot_source(sim=True)
@@ -995,6 +985,7 @@ class TestSimulateGPUAcceleration:
     def test_set_source_analytic_gpu(self, subtests):
         """The fit functions are host-only, but the source they set is not."""
         from slmsuite.hardware.slms.simulated import SimulatedSLM
+
         slm_gpu = SimulatedSLM((128, 128), gpu=True)
 
         source = slm_gpu.set_source_analytic("gaussian2d", units="frac", sim=True)
@@ -1012,12 +1003,11 @@ class TestSimulateGPUAcceleration:
     def test_imprint_onto_host_canvas_from_device_grid(self):
         """The documented imprint() recipe holds when slm.grid lives on the GPU."""
         from slmsuite.hardware.slms.simulated import SimulatedSLM
+
         slm_gpu = SimulatedSLM((128, 128), gpu=True)
 
         canvas = np.zeros(slm_gpu.shape)
-        toolbox.imprint(
-            canvas, (0, 64, 0, 64), toolbox.phase.blaze, slm_gpu, vector=(0.01, 0.01)
-        )
+        toolbox.imprint(canvas, (0, 64, 0, 64), toolbox.phase.blaze, slm_gpu, vector=(0.01, 0.01))
 
         assert isinstance(canvas, np.ndarray)
         assert np.any(canvas[:64, :64] != 0)
@@ -1036,4 +1026,3 @@ class TestSimulateGPUAcceleration:
                 as_numpy(fs_sim.cam.get_image(get=False, averaging=4)),
                 fs_sim.cam.get_image(averaging=4),
             )
-

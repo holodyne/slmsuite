@@ -1,16 +1,15 @@
-import matplotlib.pyplot as plt
-from slmsuite._plotting import _slmsuite_plt_show
-import numpy as np
 import warnings
 
-from slmsuite.holography import analysis
-from slmsuite.holography import toolbox
-from slmsuite.holography.toolbox import format_2vectors, fit_3pt, convert_vector
+import matplotlib.pyplot as plt
+import numpy as np
 
+from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware.cameraslms._wavefront_superpixel import _WavefrontCalibrationSuperpixel
 from slmsuite.hardware.cameraslms._wavefront_zernike import _WavefrontCalibrationZernike
-
+from slmsuite.holography import analysis, toolbox
+from slmsuite.holography.toolbox import convert_vector, fit_3pt, format_2vectors
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+
 
 class _WavefrontCalibration(
     _WavefrontCalibrationSuperpixel,
@@ -20,6 +19,7 @@ class _WavefrontCalibration(
     Hidden superclass with wavefront calibration methods
     (measure SLM wavefront phase [and amplitude]).
     """
+
     ### Wavefront Calibration Entrypoint ###
 
     def wavefront_calibrate(
@@ -69,9 +69,8 @@ class _WavefrontCalibration(
     def _wavefront_calibration_points_parse(self, calibration_points, **kwargs):
         # Parse calibration_points.
         if calibration_points is None or isinstance(calibration_points, INTEGER_TYPES):
-            if isinstance(calibration_points, INTEGER_TYPES):
-                if calibration_points <= 0:
-                    raise ValueError("If an integer, 'calibration_points' must be positive.")
+            if isinstance(calibration_points, INTEGER_TYPES) and calibration_points <= 0:
+                raise ValueError("If an integer, 'calibration_points' must be positive.")
             # If None, then use the built-in generator.
             calibration_points_ = self.wavefront_calibration_points(**kwargs)
             if calibration_points is None:
@@ -98,15 +97,13 @@ class _WavefrontCalibration(
         # If pitch is passed to kwargs, then camera should accommodate points within pitch/2 of the edge.
         pitch = kwargs.get("pitch", 0)
         # Unpack per axis; a raw (2, 1) pitch would broadcast into a (2, N) truth table.
-        (pitch_x, pitch_y) = (
-            (pitch, pitch) if np.isscalar(pitch) else np.ravel(pitch)[:2]
-        )
+        (pitch_x, pitch_y) = (pitch, pitch) if np.isscalar(pitch) else np.ravel(pitch)[:2]
 
         outside_fov_mask = (
-            (calibration_points[0,:] < pitch_x/2) +
-            (calibration_points[1,:] < pitch_y/2) +
-            (calibration_points[0,:] > self.cam.shape[1] - pitch_x/2) +
-            (calibration_points[1,:] > self.cam.shape[0] - pitch_y/2)
+            (calibration_points[0, :] < pitch_x / 2)
+            + (calibration_points[1, :] < pitch_y / 2)
+            + (calibration_points[0, :] > self.cam.shape[1] - pitch_x / 2)
+            + (calibration_points[1, :] > self.cam.shape[0] - pitch_y / 2)
         ) > 0
 
         if np.any(outside_fov_mask):
@@ -122,7 +119,7 @@ class _WavefrontCalibration(
         self,
         pitch,
         field_exclusion=None,
-        field_point=(0,0),
+        field_point=(0, 0),
         field_point_units="kxy",
         avoid_points=None,
         avoid_mirrors=True,
@@ -185,10 +182,7 @@ class _WavefrontCalibration(
         """
         # Parse field_point.
         field_point = toolbox.convert_vector(
-            format_2vectors(field_point),
-            from_units=field_point_units,
-            to_units="ij",
-            hardware=self
+            format_2vectors(field_point), from_units=field_point_units, to_units="ij", hardware=self
         )
         field_point = np.rint(format_2vectors(field_point)).astype(int)
 
@@ -206,7 +200,7 @@ class _WavefrontCalibration(
         if not np.isscalar(pitch):
             pitch = format_2vectors(pitch)
         # A point owns a ``pitch``-wide patch, so centers live in ``[margin, plane - margin]``.
-        margin = pitch / 2.
+        margin = pitch / 2.0
 
         # Bounds for the point *centers*, in both domains that can clip a patch: the sensor
         # and the first Nyquist zone. Intersecting first keeps the points evenly spread.
@@ -226,11 +220,9 @@ class _WavefrontCalibration(
 
         # The count rounds *down*, else the realized spacing falls below the documented
         # ``pitch``; ``avoid_mirrors`` holds back half a spacing to slide off the mirrors.
-        reserve = .5 if avoid_mirrors else 1.
+        reserve = 0.5 if avoid_mirrors else 1.0
         grid = np.maximum(np.floor(usable / step + reserve), 1)
-        spacing = np.maximum(
-            np.floor(usable / np.maximum(grid - reserve, .5)), step
-        ).astype(int)
+        spacing = np.maximum(np.floor(usable / np.maximum(grid - reserve, 0.5)), step).astype(int)
 
         # Room left over to slide the whole lattice within the usable span.
         slack = np.maximum(usable - (grid - 1) * spacing, 0)
@@ -240,11 +232,11 @@ class _WavefrontCalibration(
             # when ``base_point == zeroth_order`` modulo *half* a spacing; offset a quarter,
             # clamped to ``slack`` for a single-point axis, where no neighbor pins ``spacing``.
             base_point = low + np.minimum(
-                np.remainder(zeroth_order + spacing / 4. - low, spacing / 2.), slack
+                np.remainder(zeroth_order + spacing / 4.0 - low, spacing / 2.0), slack
             )
         else:
             # Center the lattice so the points sit symmetrically in the addressable region.
-            base_point = low + slack / 2.
+            base_point = low + slack / 2.0
 
         # Round the origin up: a half-integer origin rounds to a spacing short of ``pitch``.
         base_point = np.ceil(base_point)
@@ -252,11 +244,11 @@ class _WavefrontCalibration(
         # In ij coordinates.
         calibration_points = fit_3pt(
             base_point,
-            (spacing[0,0], 0),
-            (0, spacing[1,0]),
+            (spacing[0, 0], 0),
+            (0, spacing[1, 0]),
             np.squeeze(grid).astype(int),
             x1=None,
-            x2=None
+            x2=None,
         )
 
         # Prune against the same ``[low, high]`` the lattice was laid out in: the ``ceil``
@@ -284,30 +276,29 @@ class _WavefrontCalibration(
             point = avoid_points[:, [i]]
             distance = np.sum(np.square(calibration_points - point), axis=0)
             calibration_points = np.delete(
-                calibration_points,
-                distance < field_exclusion*field_exclusion,
-                axis=1
+                calibration_points, distance < field_exclusion * field_exclusion, axis=1
             )
 
             # Plot bad points.
-            if plot >= 1: plt.scatter(point[0], point[1], c="r")
+            if plot >= 1:
+                plt.scatter(point[0], point[1], c="r")
 
         if plot >= 1:
             # Points
             plt.scatter(
-                calibration_points[0,:],
-                calibration_points[1,:],
+                calibration_points[0, :],
+                calibration_points[1, :],
                 c=np.arange(calibration_points.shape[1]),
-                cmap="Blues"
+                cmap="Blues",
             )
 
             # Mirrors
             plt.scatter(
-                2*zeroth_order[0,0] - calibration_points[0,:],
-                2*zeroth_order[1,0] - calibration_points[1,:],
+                2 * zeroth_order[0, 0] - calibration_points[0, :],
+                2 * zeroth_order[1, 0] - calibration_points[1, :],
                 c=np.arange(calibration_points.shape[1]),
                 marker=".",
-                cmap="Reds"
+                cmap="Reds",
             )
 
             # Future: Plot SLM FoV?

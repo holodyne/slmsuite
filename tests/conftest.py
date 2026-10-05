@@ -17,22 +17,30 @@ Automatic Features:
 - slmsuite package logging: INFO level
 - External packages logging: WARNING level and above only
 """
+
+from datetime import datetime
 import importlib
 import json
 import logging
 import os
+from pathlib import Path
 import sys
 import tempfile
 import zlib
-from datetime import datetime
-from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from slmsuite._plotting import _slmsuite_plt_show
+from slmsuite.hardware.cameras.simulated import SimulatedCamera
+from slmsuite.hardware.cameraslms import FourierSLM
+from slmsuite.hardware.slms.simulated import SimulatedSLM
+from slmsuite.holography.algorithms import SpotHologram
+from slmsuite.holography.toolbox import format_2vectors, phase
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 # Test modules import the simulated-system builders below from this file.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -54,6 +62,7 @@ def test_output_dir():
 
 try:
     import cupy as cp
+
     HAS_CUPY = True
 except ImportError:
     cp = np
@@ -80,6 +89,7 @@ def random_seed():
         Random seed value for this test session
     """
     import random
+
     seed = random.randint(0, 2**32 - 1)
 
     # Set numpy's random seed
@@ -91,7 +101,7 @@ def random_seed():
 
     # Log the seed for reproducibility
     logger = logging.getLogger("conftest")
-    logger.info(f"Random seed for this session: {seed}")
+    logger.info("Random seed for this session: %s", seed)
     print(f"\nRandom seed for this session: {seed}")
 
     return seed
@@ -99,12 +109,6 @@ def random_seed():
 
 # Fixtures for SLM and Camera instances, with dynamic configuration via environment variables.
 
-from slmsuite._plotting import _slmsuite_plt_show
-from slmsuite.hardware.cameras.simulated import SimulatedCamera
-from slmsuite.hardware.cameraslms import FourierSLM
-from slmsuite.hardware.slms.simulated import SimulatedSLM
-from slmsuite.holography.algorithms import SpotHologram
-from slmsuite.holography.toolbox import format_2vectors, phase
 
 _TEST_SMALL_RESOLUTION = (128, 128)
 
@@ -123,7 +127,7 @@ def _get_class_from_string(class_path):
     class
         The imported class
     """
-    module_path, class_name = class_path.rsplit('.', 1)
+    module_path, class_name = class_path.rsplit(".", 1)
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
 
@@ -161,7 +165,7 @@ def slm_class():
     class
         SLM subclass to instantiate
     """
-    class_path = os.environ.get('SLMSUITE_TEST_SLM_CLASS', None)
+    class_path = os.environ.get("SLMSUITE_TEST_SLM_CLASS", None)
     if class_path:
         return _get_class_from_string(class_path)
     return SimulatedSLM
@@ -180,17 +184,12 @@ def slm_kwargs():
     dict
         Keyword arguments for SLM constructor
     """
-    args_json = os.environ.get('SLMSUITE_TEST_SLM_ARGS', None)
+    args_json = os.environ.get("SLMSUITE_TEST_SLM_ARGS", None)
     if args_json:
         return json.loads(args_json)
 
     # Default args for SimulatedSLM
-    return {
-        'resolution': (1920, 1080),
-        'pitch_um': (8.0, 8.0),
-        'bitdepth': 8,
-        'wav_um': 0.78
-    }
+    return {"resolution": (1920, 1080), "pitch_um": (8.0, 8.0), "bitdepth": 8, "wav_um": 0.78}
 
 
 @pytest.fixture
@@ -214,7 +213,7 @@ def slm_small(slm_kwargs):
     Fixture providing an SLM instance for testing.
     """
     kwargs = slm_kwargs.copy()
-    kwargs['resolution'] = _TEST_SMALL_RESOLUTION
+    kwargs["resolution"] = _TEST_SMALL_RESOLUTION
     slm_instance = SimulatedSLM(**kwargs)
     yield slm_instance
 
@@ -238,7 +237,7 @@ def camera_class():
     class
         Camera subclass to instantiate
     """
-    class_path = os.environ.get('SLMSUITE_TEST_CAMERA_CLASS', None)
+    class_path = os.environ.get("SLMSUITE_TEST_CAMERA_CLASS", None)
     if class_path:
         return _get_class_from_string(class_path)
     return SimulatedCamera
@@ -262,17 +261,12 @@ def camera_kwargs(slm):
     dict
         Keyword arguments for Camera constructor
     """
-    args_json = os.environ.get('SLMSUITE_TEST_CAMERA_ARGS', None)
+    args_json = os.environ.get("SLMSUITE_TEST_CAMERA_ARGS", None)
     if args_json:
         return json.loads(args_json)
 
     # Default args for SimulatedCamera
-    return {
-        'slm': slm,
-        'resolution': (512, 512),
-        'pitch_um': (5.5, 5.5),
-        'bitdepth': 8
-    }
+    return {"slm": slm, "resolution": (512, 512), "pitch_um": (5.5, 5.5), "bitdepth": 8}
 
 
 @pytest.fixture
@@ -310,6 +304,7 @@ def camera_small(slm_small, camera_kwargs):
     except Exception:
         pass
 
+
 @pytest.fixture
 def fourierslm(camera, slm):
     """
@@ -324,6 +319,7 @@ def fourierslm(camera, slm):
         fs.close()
     except Exception:
         pass
+
 
 @pytest.fixture
 def fourierslm_calibrated(fourierslm):
@@ -346,6 +342,7 @@ def fourierslm_calibrated(fourierslm):
 # field of view. Below one the camera sees the whole farfield cropped by its
 # aperture; above one it sees only an interior patch.
 
+
 def seed_for(name):
     """
     Seed every generator a case can draw from, so that it behaves the same however
@@ -357,40 +354,40 @@ def seed_for(name):
     np.random.seed(seed)
     try:
         import cupy
+
         cupy.random.seed(seed)
     except ImportError:
         pass
 
 
-SIMULATED_SYSTEM_DEFAULTS = dict(
-    slm_resolution=(128, 128),      # (width, height)
-    slm_pitch_um=(8.0, 8.0),
-    cam_resolution=(128, 128),      # (width, height)
-    cam_pitch_um=(5.5, 5.5),
-    wav_um=0.78,
-    slm_bitdepth=8,
-    cam_bitdepth=8,
-    ratio=None,         # farfield width / camera width. None -> identity (no affine).
-    theta=0.0,          # camera rotation (radians, ccw)
-    shear_angle=0.0,    # camera shear (radians); float or (x, y)
-    offset_frac=None,   # fractional (x, y) position of the 0th order on the camera.
-                        # None -> camera center. May lie outside [0, 1].
-    noise=None,         # SimulatedCamera noise dict
-    source_function=None,   # set_source_analytic() profile. None -> uniform illumination.
-    aberration=None,    # (ANSI indices, weights) for zernike_sum(), in radians.
-)
+SIMULATED_SYSTEM_DEFAULTS = {
+    "slm_resolution": (128, 128),  # (width, height)
+    "slm_pitch_um": (8.0, 8.0),
+    "cam_resolution": (128, 128),  # (width, height)
+    "cam_pitch_um": (5.5, 5.5),
+    "wav_um": 0.78,
+    "slm_bitdepth": 8,
+    "cam_bitdepth": 8,
+    "ratio": None,  # farfield width / camera width. None -> identity (no affine).
+    "theta": 0.0,  # camera rotation (radians, ccw)
+    "shear_angle": 0.0,  # camera shear (radians); float or (x, y)
+    "offset_frac": None,  # fractional (x, y) position of the 0th order on the camera.
+    # None -> camera center. May lie outside [0, 1].
+    "noise": None,  # SimulatedCamera noise dict
+    "source_function": None,  # set_source_analytic() profile. None -> uniform illumination.
+    "aberration": None,  # (ANSI indices, weights) for zernike_sum(), in radians.
+}
 
 # A real source underfills its SLM, so every case is run both ways.
 SIMULATED_SYSTEM_SOURCES = (None, "gaussian2d")
+
 
 # Camera noise model shared by noisy cases: exposure-dependent dark background plus
 # exposure-independent Poisson readout noise (fractions of the dynamic range),
 # scaled by ``severity``.
 def _default_noise(severity=1):
     return {
-        "dark": lambda img: np.random.normal(
-            0.005 * severity * img, 0.002 * severity * img
-        ),
+        "dark": lambda img: np.random.normal(0.005 * severity * img, 0.002 * severity * img),
         "read": lambda img: np.random.poisson(0.03 * severity * img),
     }
 
@@ -399,57 +396,57 @@ SIMULATED_SYSTEM_CASES = {
     # Direct knm sampling (no affine interpolation): the camera crops the central
     # (cam_resolution) window of the SLM-shaped k-space grid, one pixel per knm cell.
     # Effectively a "camera FOV much smaller than farfield" case (ratio ~ N*pitch/wav).
-    "identity": dict(),
+    "identity": {},
     # Farfield exactly fills the camera.
-    "matched": dict(ratio=1.0),
+    "matched": {"ratio": 1.0},
     # Camera FOV much larger than the farfield: the whole farfield occupies the
     # central ~1/25 of the camera area.
-    "fov_much_larger": dict(ratio=0.2),
+    "fov_much_larger": {"ratio": 0.2},
     # Camera FOV moderately larger than the farfield.
-    "fov_larger": dict(ratio=0.5),
+    "fov_larger": {"ratio": 0.5},
     # Camera FOV moderately smaller than the farfield.
-    "fov_smaller": dict(ratio=2.0),
+    "fov_smaller": {"ratio": 2.0},
     # Camera FOV much smaller than the farfield: sees a small interior patch,
     # no aperture edges visible. Diffraction-limited spots are several pixels wide.
-    "fov_much_smaller": dict(ratio=6.0),
+    "fov_much_smaller": {"ratio": 6.0},
     # Rotated camera.
-    "rotated": dict(ratio=1.5, theta=np.radians(20)),
+    "rotated": {"ratio": 1.5, "theta": np.radians(20)},
     # Sheared (non-orthogonal) axes.
-    "sheared": dict(ratio=1.2, shear_angle=(np.radians(8), np.radians(-5))),
+    "sheared": {"ratio": 1.2, "shear_angle": (np.radians(8), np.radians(-5))},
     # 0th order far off-center (near a camera corner).
-    "offset": dict(ratio=1.0, offset_frac=(0.28, 0.35)),
+    "offset": {"ratio": 1.0, "offset_frac": (0.28, 0.35)},
     # 0th order entirely outside the camera FOV (common when the 0th order is
     # deliberately steered off-camera). The camera sees an off-axis k-space stripe.
-    "zeroth_outside": dict(ratio=1.5, offset_frac=(-0.3, 0.5)),
+    "zeroth_outside": {"ratio": 1.5, "offset_frac": (-0.3, 0.5)},
     # Camera noise on top of a moderately-smaller FOV.
-    "noisy": dict(ratio=1.5, noise="default"),
+    "noisy": {"ratio": 1.5, "noise": "default"},
     # Anisotropic everything: rectangular SLM and camera, anisotropic pixel pitches,
     # and different farfield/camera ratio per axis.
-    "anisotropic": dict(
-        ratio=(1.5, 0.7),
-        slm_resolution=(160, 96),
-        cam_resolution=(192, 128),
-        cam_pitch_um=(5.5, 4.5),
-    ),
+    "anisotropic": {
+        "ratio": (1.5, 0.7),
+        "slm_resolution": (160, 96),
+        "cam_resolution": (192, 128),
+        "cam_pitch_um": (5.5, 4.5),
+    },
     # An odd number of mirrors in the train inverts the image's parity, so the
     # affine has a negative determinant and no rotation can reproduce it.
-    "mirrored": dict(ratio=(-1.0, 1.0)),
+    "mirrored": {"ratio": (-1.0, 1.0)},
     # Noise, more of it, and noise on a farfield that does not fill the camera.
-    "noisy_severe": dict(ratio=1.5, noise=3),
+    "noisy_severe": {"ratio": 1.5, "noise": 3},
     # 0th order in the very corner of the sensor.
-    "zeroth_corner": dict(ratio=1.2, offset_frac=(0.02, 0.02)),
+    "zeroth_corner": {"ratio": 1.2, "offset_frac": (0.02, 0.02)},
     # A camera far from square, so that x and y cannot be confused for each other.
-    "camera_wide": dict(ratio=1.0, cam_resolution=(256, 96)),
+    "camera_wide": {"ratio": 1.0, "cam_resolution": (256, 96)},
     # Non-square SLM pixels, which make the farfield itself non-square: the one
     # thing that stops the two k-space axes from sharing a scale.
-    "pitch_anisotropic": dict(ratio=1.0, slm_pitch_um=(8.0, 12.0)),
+    "pitch_anisotropic": {"ratio": 1.0, "slm_pitch_um": (8.0, 12.0)},
     # One axis of the farfield far larger than the camera, the other far smaller.
-    "fov_extreme": dict(ratio=(0.3, 3.0)),
+    "fov_extreme": {"ratio": (0.3, 3.0)},
     # Aberrated wavefronts, well beyond the Marechal limit: the source phase is not
     # flat, so spots are broadened and distorted rather than diffraction-limited.
     # Weights are radians against ANSI Zernike polynomials of unit peak-to-valley.
-    "defocus": dict(ratio=1.0, aberration=((4,), (3.0,))),
-    "coma": dict(ratio=1.5, theta=np.radians(15), aberration=((7, 8), (3.0, -2.4))),
+    "defocus": {"ratio": 1.0, "aberration": ((4,), (3.0,))},
+    "coma": {"ratio": 1.5, "theta": np.radians(15), "aberration": ((7, 8), (3.0, -2.4))},
 }
 
 
@@ -490,9 +487,9 @@ def build_simulated_system(name, **overrides):
         slm.set_source_analytic(config["source_function"], units="frac", sim=True)
     if config["aberration"] is not None:
         (indices, weights) = config["aberration"]
-        slm.source["phase_sim"] = slm.source["phase_sim"] + slm.xp.asarray(phase.zernike_sum(
-            slm, indices, weights
-        ))
+        slm.source["phase_sim"] = slm.source["phase_sim"] + slm.xp.asarray(
+            phase.zernike_sum(slm, indices, weights)
+        )
     cam = SimulatedCamera(
         slm,
         resolution=config["cam_resolution"],
@@ -529,6 +526,7 @@ def build_simulated_system(name, **overrides):
 
 # --- Ground-truth geometry helpers ---
 # These operate on the FourierSLM's hardware directly; nothing below stores state.
+
 
 def ground_truth_affine(fs):
     """
@@ -625,11 +623,12 @@ def view_kxy_grid(fs, count=3, frac=0.8):
     orthogonal to that ray, which is most of the ways an affine can be wrong.
     """
     (lo, hi) = view_bounds_kxy(fs)
-    (x, y) = np.meshgrid(*[
-        (lo[axis] + hi[axis]) / 2
-        + frac * (hi[axis] - lo[axis]) / 2 * np.linspace(-1, 1, count)
-        for axis in range(2)
-    ])
+    (x, y) = np.meshgrid(
+        *[
+            (lo[axis] + hi[axis]) / 2 + frac * (hi[axis] - lo[axis]) / 2 * np.linspace(-1, 1, count)
+            for axis in range(2)
+        ]
+    )
     return np.vstack((x.ravel(), y.ravel()))
 
 
@@ -718,7 +717,13 @@ def plot_calibration_diagnostic(fs, img=None, spots_kxy=None, name="", note=""):
     if spots_kxy is not None:
         gt = ground_truth_kxy_to_ij(fs, spots_kxy)
         axs[0].scatter(
-            gt[0], gt[1], fc="none", ec="lime", s=60, lw=0.75, label="truth",
+            gt[0],
+            gt[1],
+            fc="none",
+            ec="lime",
+            s=60,
+            lw=0.75,
+            label="truth",
         )
         if calibrated:
             cal = fs.kxyslm_to_ijcam(spots_kxy)
@@ -739,8 +744,14 @@ def plot_calibration_diagnostic(fs, img=None, spots_kxy=None, name="", note=""):
         cal = fs.kxyslm_to_ijcam(probe)
         error = np.linalg.norm(cal - gt, axis=0)
         axs[1].quiver(
-            gt[0], gt[1], cal[0] - gt[0], cal[1] - gt[1],
-            angles="xy", scale_units="xy", scale=1, width=0.004,
+            gt[0],
+            gt[1],
+            cal[0] - gt[0],
+            cal[1] - gt[1],
+            angles="xy",
+            scale_units="xy",
+            scale=1,
+            width=0.004,
         )
         axs[1].scatter(gt[0], gt[1], s=4, c="lime")
         axs[1].set_title(
@@ -759,15 +770,18 @@ def plot_calibration_diagnostic(fs, img=None, spots_kxy=None, name="", note=""):
     axs[2].imshow(farfield_support_mask(fs), cmap="Greys_r", vmin=0, vmax=1)
     (h, w) = fs.cam.shape
     _plot_polygon(
-        axs[2], np.array([[0, w, w, 0], [0, 0, h, h]], dtype=float),
-        c="c", lw=1.5, label="camera",
+        axs[2],
+        np.array([[0, w, w, 0], [0, 0, h, h]], dtype=float),
+        c="c",
+        lw=1.5,
+        label="camera",
     )
     _plot_polygon(axs[2], farfield_corners_ij(fs), c="orange", ls="--", lw=1, label="farfield")
     if spots_kxy is not None:
         gt = ground_truth_kxy_to_ij(fs, spots_kxy)
         axs[2].scatter(gt[0], gt[1], fc="none", ec="lime", s=15, lw=0.5, label="array")
     axs[2].set_title("Geometry (white = support, black = cropped)")
-    axs[2].set_facecolor("0.6")     # Distinguish "off camera" from "support".
+    axs[2].set_facecolor("0.6")  # Distinguish "off camera" from "support".
     axs[2].legend(loc="upper right", fontsize="x-small")
     axs[2].set_aspect("equal")
     # Show everything, including geometry outside the camera.
@@ -785,15 +799,11 @@ def plot_calibration_diagnostic(fs, img=None, spots_kxy=None, name="", note=""):
     _slmsuite_plt_show(name=f"diagnostic_{name}")
 
 
-
-
 def _close_quietly(fs):
     try:
         fs.close()
     except Exception:
         pass
-
-
 
 
 @pytest.fixture(params=list(SIMULATED_SYSTEM_CASES.keys()))
@@ -846,6 +856,7 @@ def simulated_system_factory():
 
 # Matplotlib configuration (saving of plots)
 
+
 @pytest.fixture(scope="session", autouse=True)
 def configure_matplotlib_for_testing(request):
     """
@@ -883,11 +894,11 @@ def configure_matplotlib_for_testing(request):
             output_dir = get_test_run_output_dir()
             if output_dir is None:
                 print("Warning: Test run output directory not initialized")
-                plt.close('all')
+                plt.close("all")
                 return
 
             # Get current test info from pytest environment variable
-            test_name = os.environ.get('PYTEST_CURRENT_TEST', '')
+            test_name = os.environ.get("PYTEST_CURRENT_TEST", "")
 
             if not test_name:
                 # Fallback if called outside test context
@@ -895,53 +906,56 @@ def configure_matplotlib_for_testing(request):
                 filename = output_dir / f"{key}_fig{len(test_fig_counts)}.png"
                 figs = [plt.figure(n) for n in plt.get_fignums()]
                 for fig in figs:
-                    fig.savefig(filename, dpi=150, bbox_inches='tight')
+                    fig.savefig(filename, dpi=150, bbox_inches="tight")
             else:
                 # Parse test path: "tests/holography/test_algorithms.py::TestHologram::test_gs_converges (call)"
-                test_path = test_name.split(' ')[0]  # Remove "(call)" part
+                test_path = test_name.split(" ")[0]  # Remove "(call)" part
 
                 # Extract components
                 parts = []
-                if '::' in test_path:
-                    file_and_rest = test_path.split('::')
+                if "::" in test_path:
+                    file_and_rest = test_path.split("::")
                     # Get module name from file path
-                    module = file_and_rest[0].split('/')[-1].replace('.py', '')
+                    module = file_and_rest[0].split("/")[-1].replace(".py", "")
                     parts.append(module)
                     # Add class and function if present
                     parts.extend(file_and_rest[1:])
                 else:
-                    parts.append('unknown')
+                    parts.append("unknown")
 
                 # Append plot-site name from _slmsuite_plt_show if provided
                 if name:
                     parts.append(name)
 
                 # Build filename key; each unique key has its own counter
-                key = '_'.join(parts)
+                key = "_".join(parts)
 
                 # Save all open figures
                 figs = [plt.figure(n) for n in plt.get_fignums()]
                 for fig in figs:
                     test_fig_counts[key] = test_fig_counts.get(key, 0) + 1
                     filename = output_dir / f"{key}_fig{test_fig_counts[key]}.png"
-                    fig.savefig(filename, dpi=150, bbox_inches='tight')
+                    fig.savefig(filename, dpi=150, bbox_inches="tight")
                     # Print relative path
                     rel_path = filename.relative_to(get_test_run_output_dir().parent)
                     print(f"Saved plot: tests/output/{rel_path}")
 
             # Close figures to free memory
-            plt.close('all')
+            plt.close("all")
 
         # Replace plt.show and configure slmsuite's internal handler
         plt.show = custom_show
         import slmsuite
+
         slmsuite.configure_plotting(custom_show)
     else:
         # If plots disabled, just close figures silently
         def no_show(_name=None, *_args, **_kwargs):
-            plt.close('all')
+            plt.close("all")
+
         plt.show = no_show
         import slmsuite
+
         slmsuite.configure_plotting(no_show)
 
     yield
@@ -959,12 +973,12 @@ def mpl_test(request):
     Provides automatic figure cleanup and easy access to plt.
     """
     # Clear any existing figures before test
-    plt.close('all')
+    plt.close("all")
 
     yield plt
 
     # Cleanup after test
-    plt.close('all')
+    plt.close("all")
 
 
 def pytest_addoption(parser):
@@ -973,10 +987,12 @@ def pytest_addoption(parser):
         "--save-plots",
         action="store_true",
         default=False,
-        help="Save matplotlib plots to tests/output/{timestamp}/"
+        help="Save matplotlib plots to tests/output/{timestamp}/",
     )
 
+
 # Logging and final configuration
+
 
 @pytest.fixture
 def temp_dir():
@@ -999,7 +1015,7 @@ def test_logger(request):
     # Build logger name from test node
     parts = []
     if request.module:
-        module_name = request.module.__name__.split('.')[-1]
+        module_name = request.module.__name__.split(".")[-1]
         parts.append(module_name)
     if request.cls:
         parts.append(request.cls.__name__)
@@ -1018,9 +1034,9 @@ def test_logger(request):
     yield logger
 
     # Log test result
-    if hasattr(request.node, 'rep_call'):
+    if hasattr(request.node, "rep_call"):
         outcome = request.node.rep_call.outcome
-        logger.info(f"=== {outcome.upper()} ===")
+        logger.info("=== %s ===", outcome.upper())
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -1078,12 +1094,12 @@ def pytest_configure(config):
     logging.getLogger().setLevel(logging.WARNING)
 
     # Explicitly set common external packages to WARNING
-    for package in ['matplotlib', 'PIL', 'numpy', 'cupy', 'h5py']:
+    for package in ["matplotlib", "PIL", "numpy", "cupy", "h5py"]:
         logging.getLogger(package).setLevel(logging.WARNING)
 
     # Capture everything, let handler set level
-    logging.getLogger('slmsuite').setLevel(logging.DEBUG)
-    logging.getLogger('slmsuite').propagate = True
+    logging.getLogger("slmsuite").setLevel(logging.DEBUG)
+    logging.getLogger("slmsuite").propagate = True
 
     print(f"\nTest output directory: {output_dir}")
 

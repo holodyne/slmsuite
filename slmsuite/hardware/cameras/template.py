@@ -3,10 +3,11 @@ Template for writing a subclass for camera hardware control in :mod:`slmsuite`.
 Outlines which camera superclass functions must be implemented.
 """
 
-from slmsuite.hardware.cameras.camera import Camera
 from slmsuite._logging import make_logger
+from slmsuite.hardware.cameras.camera import Camera
 
 logger = make_logger(__name__)
+
 
 class Template(Camera):
     """
@@ -26,12 +27,7 @@ class Template(Camera):
     # Class variable (same for all instances of Template) pointing to a singleton SDK.
     sdk = None
 
-    def __init__(
-        self,
-        serial="",
-        pitch_um=None,
-        **kwargs
-    ):
+    def __init__(self, serial="", pitch_um=None, **kwargs):
         """
         Initialize camera and attributes.
 
@@ -57,13 +53,13 @@ class Template(Camera):
 
         # Most cameras have an SDK that needs to be loaded before the camera
         logger.debug("Template SDK initializing...")
-        raise NotImplementedError()
-        Template.sdk = something()                      # TODO: Fill in proper function.
+        raise NotImplementedError
+        Template.sdk = something()  # TODO: Fill in proper function.
 
         # Then we load the camera from the SDK
         logger.debug("'%s' initializing...", serial)
-        raise NotImplementedError()
-        self.cam = sdk.something(serial)                # TODO: Fill in proper function.
+        raise NotImplementedError
+        self.cam = sdk.something(serial)  # TODO: Fill in proper function.
 
         # ... Other setup.
 
@@ -73,14 +69,14 @@ class Template(Camera):
             bitdepth=self.cam.get_depth(),
             pitch_um=pitch_um,
             name=serial,
-            **kwargs
+            **kwargs,
         )
         self.logger.debug("Template camera initialized.")
 
     def close(self):
         """See :meth:`.Camera.close`."""
-        raise NotImplementedError()
-        self.cam.close()                                # TODO: Fill in proper function.
+        raise NotImplementedError
+        self.cam.close()  # TODO: Fill in proper function.
         del self.cam
 
     @staticmethod
@@ -99,8 +95,8 @@ class Template(Camera):
         list of str
             List of serial numbers or identifiers.
         """
-        raise NotImplementedError()
-        serial_list = Template.sdk.get_serial_list()    # TODO: Fill in proper function.
+        raise NotImplementedError
+        serial_list = Template.sdk.get_serial_list()  # TODO: Fill in proper function.
         return serial_list
 
     ### Required Methods ###
@@ -110,25 +106,25 @@ class Template(Camera):
 
     def _get_exposure_hw(self):
         """See :meth:`.Camera._get_exposure_hw`."""
-        raise NotImplementedError()
-        return float(self.cam.get_exposure()) / 1e3     # TODO: Fill in proper function.
+        raise NotImplementedError
+        return float(self.cam.get_exposure()) / 1e3  # TODO: Fill in proper function.
 
     def _set_exposure_hw(self, exposure_s):
         """See :meth:`.Camera._set_exposure_hw`."""
-        raise NotImplementedError()
-        self.cam.set_exposure(1e3 * exposure_s)         # TODO: Fill in proper function.
+        raise NotImplementedError
+        self.cam.set_exposure(1e3 * exposure_s)  # TODO: Fill in proper function.
 
     ## Core imaging
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera._get_image_hw`."""
-        raise NotImplementedError()
+        raise NotImplementedError
         # The core method: grabs an image from the camera.
         # Note: the camera superclass' get_image function performs follow-on processing
         # (similar to how the SLM superclass' set_phase method pairs with _set_phase_hw methods
         # for each subclass) -- frame averaging, transformations, and so on -- so this
         # method should be limited to camera-interface specific functions.
-        return self.cam.get_image_function()     # TODO: Fill in proper function.
+        return self.cam.get_image_function()  # TODO: Fill in proper function.
 
     ### Optional Methods ###
 

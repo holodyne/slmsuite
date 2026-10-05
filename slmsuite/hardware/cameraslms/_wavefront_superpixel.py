@@ -1,31 +1,38 @@
 import cv2
 import matplotlib.pyplot as plt
-from slmsuite._plotting import _slmsuite_plt_show
 import numpy as np
 from scipy import optimize
-from slmsuite import tqdm
 
-from slmsuite import __version__
-from slmsuite.holography import analysis
-from slmsuite.holography import toolbox
-from slmsuite.holography.toolbox import imprint, format_2vectors, smallest_distance
+from slmsuite import __version__, tqdm
+from slmsuite._plotting import _slmsuite_plt_show
+from slmsuite.holography import analysis, toolbox
+from slmsuite.holography.analysis import (
+    image_reduce_wraps,
+    image_remove_blaze,
+    image_remove_vortices,
+)
+from slmsuite.holography.analysis.fitfunctions import (
+    _sinc2d_centered as sinc2d_centered,
+    _sinc2d_centered_jacobian as sinc2d_centered_jacobian,
+    _sinc2d_nomod,
+    cos,
+)
+from slmsuite.holography.toolbox import format_2vectors, imprint, smallest_distance
 from slmsuite.holography.toolbox.phase import blaze
-from slmsuite.holography.analysis import image_remove_blaze, image_remove_vortices, image_reduce_wraps
-from slmsuite.holography.analysis.fitfunctions import cos, _sinc2d_nomod
-from slmsuite.holography.analysis.fitfunctions import _sinc2d_centered as sinc2d_centered
-from slmsuite.holography.analysis.fitfunctions import _sinc2d_centered_jacobian as sinc2d_centered_jacobian
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
 from slmsuite.misc.xp import as_numpy
+
 
 def _blaze_offset(grid, vector, offset=0):
     return blaze(grid=grid, vector=vector) + offset
 
 
-class _WavefrontCalibrationSuperpixel(object):
+class _WavefrontCalibrationSuperpixel:
     """
     Hidden superclass with superpixel wavefront calibration methods
     (interfere superpixel modes for relative phase measurement).
     """
+
     ### Superpixel Wavefront Calibration ###
 
     def wavefront_calibrate_superpixel(
@@ -35,7 +42,7 @@ class _WavefrontCalibrationSuperpixel(object):
         reference_superpixels=None,
         exclude_superpixels=(0, 0),
         test_index=None,
-        field_point=(0,0),
+        field_point=(0, 0),
         field_point_units="kxy",
         phase_steps=1,
         fresh_calibration=True,
@@ -177,9 +184,7 @@ class _WavefrontCalibrationSuperpixel(object):
         # Parse the superpixel size and derived quantities.
         superpixel_size = int(superpixel_size)
 
-        slm_supershape = tuple(
-            np.ceil(np.array(self.slm.shape) / superpixel_size).astype(int)
-        )
+        slm_supershape = tuple(np.ceil(np.array(self.slm.shape) / superpixel_size).astype(int))
         num_superpixels = slm_supershape[0] * slm_supershape[1]
 
         # Next, we get the size of the window necessary to measure a spot
@@ -197,9 +202,10 @@ class _WavefrontCalibrationSuperpixel(object):
             return format_2vectors(
                 np.stack((index % slm_supershape[1], index // slm_supershape[1]), axis=0)
             )
+
         def coord2index(coord):
             coord = np.array(coord)
-            return coord[1,:] * slm_supershape[1] + coord[0,:]
+            return coord[1, :] * slm_supershape[1] + coord[0, :]
 
         # It's also useful to make an image showing the given indices.
         def index2image(index):
@@ -219,10 +225,10 @@ class _WavefrontCalibrationSuperpixel(object):
 
             # Make the image based on margin values
             exclude_superpixels = np.zeros(slm_supershape)
-            exclude_superpixels[:, :exclude_margin[0]] = True
-            exclude_superpixels[:, slm_supershape[1]-exclude_margin[0]:] = True
-            exclude_superpixels[:exclude_margin[1], :] = True
-            exclude_superpixels[slm_supershape[0]-exclude_margin[1]:, :] = True
+            exclude_superpixels[:, : exclude_margin[0]] = True
+            exclude_superpixels[:, slm_supershape[1] - exclude_margin[0] :] = True
+            exclude_superpixels[: exclude_margin[1], :] = True
+            exclude_superpixels[slm_supershape[0] - exclude_margin[1] :, :] = True
         else:
             raise ValueError("Did not recognize type for exclude_superpixels")
 
@@ -231,11 +237,11 @@ class _WavefrontCalibrationSuperpixel(object):
         # Parse calibration_points.
         calibration_points = self._wavefront_calibration_points_parse(
             calibration_points,
-            pitch=1.5*np.max(interference_window),
+            pitch=1.5 * np.max(interference_window),
             field_exclusion=np.max(interference_window),
             field_point=field_point,
             field_point_units=field_point_units,
-            plot=plot
+            plot=plot,
         )
         num_points = calibration_points.shape[1]
 
@@ -256,22 +262,19 @@ class _WavefrontCalibrationSuperpixel(object):
                 format_2vectors(field_point),
                 from_units=field_point_units,
                 to_units="kxy",
-                hardware=self.slm
+                hardware=self.slm,
             )
 
             field_point = self.kxyslm_to_ijcam(field_blaze)
         else:
             field_blaze = toolbox.convert_vector(
-                field_point,
-                from_units="ij",
-                to_units="kxy",
-                hardware=self
+                field_point, from_units="ij", to_units="kxy", hardware=self
             )
 
         field_point = np.rint(format_2vectors(field_point)).astype(int)
 
         # Use the Fourier calibration to help find points/sizes in the imaging plane.
-        if not "fourier" in self.calibrations:
+        if "fourier" not in self.calibrations:
             raise RuntimeError("Fourier calibration must be done before wavefront calibration.")
         calibration_blazes = self.ijcam_to_kxyslm(calibration_points)
         reference_blazes = calibration_blazes.copy()
@@ -281,7 +284,10 @@ class _WavefrontCalibrationSuperpixel(object):
             all_superpixels = np.arange(num_superpixels)
             all_superpixels_coords = index2coord(all_superpixels)
 
-            distance = np.sum(np.square(all_superpixels_coords - format_2vectors(slm_supershape[::-1])/2), axis=0)
+            distance = np.sum(
+                np.square(all_superpixels_coords - format_2vectors(slm_supershape[::-1]) / 2),
+                axis=0,
+            )
             I = np.argsort(distance)
 
             reference_superpixels = I[:num_points]
@@ -292,11 +298,13 @@ class _WavefrontCalibrationSuperpixel(object):
         # Error check the reference superpixels.
         reference_superpixels_coords = index2coord(reference_superpixels)
         reference_superpixels_image = index2image(reference_superpixels)
-        if (np.any(np.logical_and(reference_superpixels_image, exclude_superpixels))):
+        if np.any(np.logical_and(reference_superpixels_image, exclude_superpixels)):
             raise ValueError("reference_superpixels out of range of calibration.")
 
         # Now we have to solve the challenge of when to measure each target-reference pair.
-        num_measurements = num_active_superpixels + ((2*num_points - 2) if phase_steps is not None else 0)
+        num_measurements = num_active_superpixels + (
+            (2 * num_points - 2) if phase_steps is not None else 0
+        )
 
         index_image = np.reshape(np.arange(num_superpixels, dtype=int), slm_supershape)
         active_superpixels = index_image[np.logical_not(exclude_superpixels)].ravel()
@@ -307,21 +315,25 @@ class _WavefrontCalibrationSuperpixel(object):
         # The base schedule cycles through all indices apart from the base reference index.
         scheduling = np.zeros((num_points, num_measurements), dtype=int)
 
-        scheduling[:, :(num_active_superpixels-1)] = np.mod(
-            np.repeat(np.arange(num_active_superpixels-1, dtype=int)[np.newaxis, :] + 1, num_points, axis=0) +
-            np.repeat(reference_rank[:, np.newaxis], num_active_superpixels-1, axis=1),
-            num_active_superpixels
+        scheduling[:, : (num_active_superpixels - 1)] = np.mod(
+            np.repeat(
+                np.arange(num_active_superpixels - 1, dtype=int)[np.newaxis, :] + 1,
+                num_points,
+                axis=0,
+            )
+            + np.repeat(reference_rank[:, np.newaxis], num_active_superpixels - 1, axis=1),
+            num_active_superpixels,
         )
 
         # Account for some superpixels being excluded.
         scheduling = active_superpixels[scheduling]
-        scheduling[:, (num_active_superpixels-1):] = -1
+        scheduling[:, (num_active_superpixels - 1) :] = -1
 
         # Remove conflicts where other calibration pairs are targeting another
         # reference superpixel. Only do this when we are measuring relative phase
         # (if phase_steps is None, then we never write reference superpixels).
         if phase_steps is not None:
-            for i in range(num_points):     # Future: Make more efficient.
+            for i in range(num_points):  # Future: Make more efficient.
                 # For each calibration point, determine where the reference index is being overwritten.
                 reference_index = reference_superpixels[i]
 
@@ -340,7 +352,7 @@ class _WavefrontCalibrationSuperpixel(object):
                     # Find a point in empty space to resettle the index, if it is not already unused.
                     # This algorithm is currently quite slow. Consider speeding?
                     if displaced_index != -1:
-                        for k in range(num_active_superpixels-1, num_measurements+1):
+                        for k in range(num_active_superpixels - 1, num_measurements + 1):
                             if k == num_measurements:
                                 raise RuntimeError(
                                     "Some unexpected error happened in calibration scheduling."
@@ -349,9 +361,12 @@ class _WavefrontCalibrationSuperpixel(object):
                                 scheduling[i, k] == -1
                                 and not np.any(scheduling[:, k] == reference_index)
                                 and not np.any(scheduling[:, k] == displaced_index)
-                                and not np.any(np.logical_and(
-                                    reference_superpixels == displaced_index, scheduling[:, k] != -1
-                                ))
+                                and not np.any(
+                                    np.logical_and(
+                                        reference_superpixels == displaced_index,
+                                        scheduling[:, k] != -1,
+                                    )
+                                )
                             ):
                                 scheduling[i, k] = displaced_index
                                 break
@@ -382,24 +397,27 @@ class _WavefrontCalibrationSuperpixel(object):
             if np.max(interference_window) > calibration_distance:
                 message = (
                     "Requested calibration points are too close together. "
-                    "The minimum distance {} pix is smaller than the window size {} pix."
-                    .format(calibration_distance, interference_window)
+                    f"The minimum distance {calibration_distance} pix is smaller than the window size {interference_window} pix."
                 )
                 if test_index is None:
                     raise ValueError(message)
                 else:
-                    self.logger.warning("%s This message will error if running the full calibration.", message)
+                    self.logger.warning(
+                        "%s This message will error if running the full calibration.", message
+                    )
 
         # Error check interference point proximity to the 0th order.
         dorder = field_point - base_point
         order_distance = np.inf
         for order in range(-5, 5):
             order_distance_this = smallest_distance(
-                np.hstack((
-                    calibration_points,     # +1st calibration order
-                    base_point + order * dorder,
-                )),
-                "euclidean"
+                np.hstack(
+                    (
+                        calibration_points,  # +1st calibration order
+                        base_point + order * dorder,
+                    )
+                ),
+                "euclidean",
             )
             if order_distance_this < order_distance:
                 order_distance = order_distance_this
@@ -413,14 +431,16 @@ class _WavefrontCalibrationSuperpixel(object):
         # Check proximity to -1th orders.
         calibration_reflections = 2 * base_point - calibration_points
         reflection_distance = smallest_distance(
-            np.hstack((
-                calibration_points,         # +1st calibration order
-                calibration_reflections,    # -1st calibration order
-            )),
-            "euclidean"
+            np.hstack(
+                (
+                    calibration_points,  # +1st calibration order
+                    calibration_reflections,  # -1st calibration order
+                )
+            ),
+            "euclidean",
         )
 
-        if np.mean(interference_window)/2 > reflection_distance:
+        if np.mean(interference_window) / 2 > reflection_distance:
             self.logger.warning(
                 "The requested calibration points are close to the expected positions of "
                 "the -1th orders of calibration points. Consider shifting the calibration regions "
@@ -462,27 +482,26 @@ class _WavefrontCalibrationSuperpixel(object):
             if return_movie:
                 plot = 1
                 if phase_steps is None or phase_steps == 1:
-                    raise ValueError(
-                        "cameraslms.py: Must have phase_steps > 1 to produce a movie."
-                    )
+                    raise ValueError("cameraslms.py: Must have phase_steps > 1 to produce a movie.")
             verbose = plot >= 0
             plot_fits = plot >= 1
             plot_everything = plot >= 2
 
             # Build the calibration dict.
             calibration_dict = {
-                "calibration_points" : calibration_points,
-                "superpixel_size" : superpixel_size,
-                "slm_supershape" : slm_supershape,
-                "reference_superpixels" : reference_superpixels,
-                "phase_steps" : phase_steps,
-                "interference_size" : interference_size,
-                "interference_window" : interference_window,
+                "calibration_points": calibration_points,
+                "superpixel_size": superpixel_size,
+                "slm_supershape": slm_supershape,
+                "reference_superpixels": reference_superpixels,
+                "phase_steps": phase_steps,
+                "interference_size": interference_size,
+                "interference_window": interference_window,
                 "previous_phase_correction": (
-                    False if fresh_calibration or saved_source.get("phase") is None
+                    False
+                    if fresh_calibration or saved_source.get("phase") is None
                     else np.copy(as_numpy(saved_source["phase"]))
                 ),
-                "scheduling" : scheduling,
+                "scheduling": scheduling,
             }
 
             keys = [
@@ -499,7 +518,7 @@ class _WavefrontCalibrationSuperpixel(object):
 
             for key in keys:
                 calibration_dict.update(
-                    {key: np.full((num_points,) + slm_supershape, np.nan, dtype=np.float32)}
+                    {key: np.full((num_points, *slm_supershape), np.nan, dtype=np.float32)}
                 )
 
             def superpixels(
@@ -509,7 +528,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 reference_blaze=reference_blazes,
                 target_blaze=calibration_blazes,
                 phase_baselines=None,
-                plot=False
+                plot=False,
             ):
                 """
                 Helper function for making superpixel phase masks.
@@ -530,15 +549,20 @@ class _WavefrontCalibrationSuperpixel(object):
                         if schedule is None or schedule[i] != -1:
                             imprint(
                                 matrix,
-                                np.array([
-                                    reference_superpixels_coords[0, i], 1,
-                                    reference_superpixels_coords[1, i], 1
-                                ]) * superpixel_size,
+                                np.array(
+                                    [
+                                        reference_superpixels_coords[0, i],
+                                        1,
+                                        reference_superpixels_coords[1, i],
+                                        1,
+                                    ]
+                                )
+                                * superpixel_size,
                                 _blaze_offset,
                                 self.slm,
                                 # shift=True,
                                 vector=reference_blaze[:, [i]],
-                                offset=reference_phase  # This is usually zero when not None.
+                                offset=reference_phase,  # This is usually zero when not None.
                             )
 
                 if target_phase is not None and schedule is not None:
@@ -548,15 +572,14 @@ class _WavefrontCalibrationSuperpixel(object):
                             phase_baseline = 0 if phase_baselines is None else phase_baselines[i]
                             imprint(
                                 matrix,
-                                np.array([
-                                    target_coords[0, i], 1,
-                                    target_coords[1, i], 1
-                                ]) * superpixel_size,
+                                np.array([target_coords[0, i], 1, target_coords[1, i], 1])
+                                * superpixel_size,
                                 _blaze_offset,
                                 self.slm,
                                 # shift=True,
                                 vector=target_blaze[:, [i]],
-                                offset=phase_baseline + (target_phase if np.isscalar(target_phase) else target_phase[i])
+                                offset=phase_baseline
+                                + (target_phase if np.isscalar(target_phase) else target_phase[i]),
                             )
 
                 self.slm.set_phase(matrix, settle=True)
@@ -601,7 +624,9 @@ class _WavefrontCalibrationSuperpixel(object):
                 try:
                     popt, _ = optimize.curve_fit(cos, phases, intensities, p0=guess)
                 except Exception:
-                    self.logger.warning("Curve fitting failed; nulling response from this superpixel.")
+                    self.logger.warning(
+                        "Curve fitting failed; nulling response from this superpixel."
+                    )
                     return 0, 0, 0, 0
 
                 # Extract phase and amplitude from fit.
@@ -624,7 +649,7 @@ class _WavefrontCalibrationSuperpixel(object):
                     plt.plot(best_phase / np.pi, popt[1] + popt[2], "xr", label="Phase")
 
                     plt.legend(loc="best")
-                    plt.title("Interference ($R^2$={:.3f})".format(r2))
+                    plt.title(f"Interference ($R^2$={r2:.3f})")
                     plt.grid()
                     plt.xlim([0, 2])
                     plt.xlabel(r"$\phi$ $[\pi]$")
@@ -667,9 +692,8 @@ class _WavefrontCalibrationSuperpixel(object):
                 )
 
                 # Map pixels into the superpixel's farfield, where the sinc zeros are integers.
-                transform = (
-                    format_2vectors(superpixel_size * self.slm.pitch)
-                    * np.linalg.inv(self.fourier_affine.M)
+                transform = format_2vectors(superpixel_size * self.slm.pitch) * np.linalg.inv(
+                    self.fourier_affine.M
                 )
                 xy = np.tensordot(transform, np.stack(xy), axes=1)
                 xyr = xy.reshape(2, -1)
@@ -680,22 +704,10 @@ class _WavefrontCalibrationSuperpixel(object):
                 a = float(np.amax(img)) - c
                 R = 1
 
-                guess = [
-                    R, a, 0, c, d,
-                    2 * np.pi * dsuperpixel[0],
-                    2 * np.pi * dsuperpixel[1]
-                ]
+                guess = [R, a, 0, c, d, 2 * np.pi * dsuperpixel[0], 2 * np.pi * dsuperpixel[1]]
                 dk = 2 * np.pi * np.max(slm_supershape)
-                lb = [
-                    .9*R, 0, -4*np.pi, 0, 0,
-                    guess[5]-dk,
-                    guess[6]-dk
-                ]
-                ub = [
-                    1.1*R, 2*a, 4*np.pi, a, a,
-                    guess[5]+dk,
-                    guess[6]+dk
-                ]
+                lb = [0.9 * R, 0, -4 * np.pi, 0, 0, guess[5] - dk, guess[6] - dk]
+                ub = [1.1 * R, 2 * a, 4 * np.pi, a, a, guess[5] + dk, guess[6] + dk]
 
                 # The guess phase is the argument of the image's component at the fringe.
                 fringe = np.exp(1j * (guess[5] * xy[0] + guess[6] * xy[1]))
@@ -708,7 +720,7 @@ class _WavefrontCalibrationSuperpixel(object):
                         xyr,
                         img.ravel().astype(float),
                         p0=guess,
-                        bounds=(lb, ub), #, maxfev=20
+                        bounds=(lb, ub),  # , maxfev=20
                         # method="dogbox",
                         jac=sinc2d_centered_jacobian,
                     )
@@ -732,11 +744,11 @@ class _WavefrontCalibrationSuperpixel(object):
                 ss_tot = np.sum((img0 - np.mean(img0)) ** 2)
                 r2 = 1 - (ss_res / ss_tot)
 
-                final = (np.mod(-best_phase, 2*np.pi), amp, r2, contrast)
+                final = (np.mod(-best_phase, 2 * np.pi), amp, r2, contrast)
 
                 # Plot the image, guess, and fit, if desired.
                 if plot_fits:
-                    _, axs = plt.subplots(1, 3, figsize=(20,10))
+                    _, axs = plt.subplots(1, 3, figsize=(20, 10))
 
                     axs[0].imshow(img)
                     axs[1].imshow(sinc2d_centered(xy, *guess))
@@ -749,31 +761,40 @@ class _WavefrontCalibrationSuperpixel(object):
 
                 return final
 
-            def plot_labeled(schedule, img, phase=None, plot=False, title="", plot_zoom=False, focus=None):
+            def plot_labeled(
+                schedule, img, phase=None, plot=False, title="", plot_zoom=False, focus=None
+            ):
                 if plot_everything or plot:
+
                     def plot_labeled_rects(ax, points, labels, colors, wh, hh):
                         for point, label, color in zip(points, labels, colors):
                             rect = plt.Rectangle(
-                                (float(point[0] - wh/2), float(point[1] - hh/2)),
-                                float(wh), float(hh),
-                                ec=color, fc="none"
+                                (float(point[0] - wh / 2), float(point[1] - hh / 2)),
+                                float(wh),
+                                float(hh),
+                                ec=color,
+                                fc="none",
                             )
                             ax.add_patch(rect)
                             ax.annotate(
-                                label, (point[0], point[1]),
-                                c=color, size="x-small", ha="center", va="center"
+                                label,
+                                (point[0], point[1]),
+                                c=color,
+                                size="x-small",
+                                ha="center",
+                                va="center",
                             )
 
                     if return_movie:
                         fig, axs = plt.subplots(1, 3, figsize=(16, 4), facecolor="white")
                     else:
-                        fig, axs = plt.subplots(1, 3, figsize=(16,4))
+                        fig, axs = plt.subplots(1, 3, figsize=(16, 4))
 
                     # Plot phase on the first axis.
                     if phase is None:
                         phase = self.slm.phase if self.slm.xp is np else self.slm.phase.get()
                     axs[0].imshow(
-                        np.mod(phase, 2*np.pi),
+                        np.mod(phase, 2 * np.pi),
                         cmap=plt.get_cmap("twilight"),
                         interpolation="none",
                     )
@@ -781,26 +802,37 @@ class _WavefrontCalibrationSuperpixel(object):
                     points = []
                     labels = []
                     colors = []
-                    center_offset = np.array([superpixel_size/2, superpixel_size/2])
+                    center_offset = np.array([superpixel_size / 2, superpixel_size / 2])
 
                     for i in range(num_points):
                         if schedule is None or schedule[i] != -1:
                             if focus is None:
                                 focus = i
-                            points.append(reference_superpixels_coords[:, i] * superpixel_size + center_offset)
-                            if schedule is not None: points.append(index2coord(schedule[i]).ravel() * superpixel_size + center_offset)
+                            points.append(
+                                reference_superpixels_coords[:, i] * superpixel_size + center_offset
+                            )
+                            if schedule is not None:
+                                points.append(
+                                    index2coord(schedule[i]).ravel() * superpixel_size
+                                    + center_offset
+                                )
                             if num_points > 1:
-                                labels.append("{}".format(i))
-                                if schedule is not None: labels.append("{}".format(i))
+                                labels.append(f"{i}")
+                                if schedule is not None:
+                                    labels.append(f"{i}")
                             else:
                                 labels.append("Reference\nSuperpixel")
-                                if schedule is not None: labels.append("Test\nSuperpixel")
-                            c1 = (1 if i == focus else .5, .2, 0)
+                                if schedule is not None:
+                                    labels.append("Test\nSuperpixel")
+                            c1 = (1 if i == focus else 0.5, 0.2, 0)
                             colors.append(c1)
-                            c2 = (1 if i == focus else .5, 0, .2)
-                            if schedule is not None: colors.append(c2)
+                            c2 = (1 if i == focus else 0.5, 0, 0.2)
+                            if schedule is not None:
+                                colors.append(c2)
 
-                    plot_labeled_rects(axs[0], points, labels, colors, superpixel_size, superpixel_size)
+                    plot_labeled_rects(
+                        axs[0], points, labels, colors, superpixel_size, superpixel_size
+                    )
 
                     # FUTURE: fix for multiple
                     # if plot_zoom:
@@ -816,7 +848,7 @@ class _WavefrontCalibrationSuperpixel(object):
                     #             axs[0].set_xlim(lim)
 
                     if img is not None:
-                        im = axs[1].imshow(np.log10(img + .1))
+                        im = axs[1].imshow(np.log10(img + 0.1))
                         im.set_clim(0, np.log10(self.cam.bitresolution))
 
                     dpoint = field_point - base_point
@@ -832,10 +864,10 @@ class _WavefrontCalibrationSuperpixel(object):
                         if schedule is None or schedule[i] != -1:
                             points.append(calibration_points[:, i])
                             if num_points > 1:
-                                labels.append("{}".format(i))
+                                labels.append(f"{i}")
                             else:
                                 labels.append("Calibration\nPoint")
-                            c = (1 if i == focus else .5, 0, 0)
+                            c = (1 if i == focus else 0.5, 0, 0)
                             colors.append(c)
                             if i == focus:
                                 focus_point = calibration_points[:, i]
@@ -847,7 +879,7 @@ class _WavefrontCalibrationSuperpixel(object):
                     plot_labeled_rects(axs[1], points, labels, colors, wh, hh)
 
                     if img is not None:
-                        im = axs[2].imshow(np.log10(img + .1))
+                        im = axs[2].imshow(np.log10(img + 0.1))
                         im.set_clim(0, np.log10(self.cam.bitresolution))
 
                         if self.cam.bitdepth > 10:
@@ -855,7 +887,9 @@ class _WavefrontCalibrationSuperpixel(object):
                         else:
                             step = 1
 
-                        bitres_list = np.power(2, np.arange(0, self.cam.bitdepth+1, step), dtype=int)
+                        bitres_list = np.power(
+                            2, np.arange(0, self.cam.bitdepth + 1, step), dtype=int
+                        )
 
                         cbar = fig.colorbar(im, ax=axs[2])
                         cbar.ax.set_yticks(np.log10(bitres_list))
@@ -864,8 +898,8 @@ class _WavefrontCalibrationSuperpixel(object):
                     point = focus_point
 
                     axs[2].scatter([point[0]], [point[1]], s=5, c="r", marker="*")
-                    axs[2].set_xlim(point[0] - wh/2, point[0] + wh/2)
-                    axs[2].set_ylim(point[1] + hh/2, point[1] - hh/2)
+                    axs[2].set_xlim(point[0] - wh / 2, point[0] + wh / 2)
+                    axs[2].set_ylim(point[1] + hh / 2, point[1] - hh / 2)
 
                     # Axes coloring and colorbar.
                     for spine in ["top", "bottom", "right", "left"]:
@@ -882,23 +916,26 @@ class _WavefrontCalibrationSuperpixel(object):
 
                         try:
                             try:
-                                image_from_plot = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+                                image_from_plot = np.frombuffer(
+                                    fig.canvas.tostring_rgb(), dtype=np.uint8
+                                )
                                 image_from_plot = image_from_plot.reshape(
-                                    fig.canvas.get_width_height()[::-1] + (3,)
+                                    (*fig.canvas.get_width_height()[::-1], 3)
                                 )
                             except Exception:
-                                image_from_plot = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+                                image_from_plot = np.frombuffer(
+                                    fig.canvas.buffer_rgba(), dtype=np.uint8
+                                )
                                 image_from_plot = image_from_plot.reshape(
-                                    fig.canvas.get_width_height()[::-1] + (4,)
-                                )[:,:,:3]
+                                    (*fig.canvas.get_width_height()[::-1], 4)
+                                )[:, :, :3]
                         except Exception:
                             self.logger.warning(
                                 "Failed to convert figure to image for wavefront_calibrate movie. "
                                 "Returning a blank image instead."
                             )
                             image_from_plot = np.zeros(
-                                fig.canvas.get_width_height()[::-1] + (3,),
-                                dtype=np.uint8
+                                (*fig.canvas.get_width_height()[::-1], 3), dtype=np.uint8
                             )
 
                         plt.close()
@@ -913,29 +950,33 @@ class _WavefrontCalibrationSuperpixel(object):
                 return analysis.take(
                     img,
                     calibration_points,
-                    interference_window, # / (2 if integrate else 1),
+                    interference_window,  # / (2 if integrate else 1),
                     clip=True,
-                    integrate=integrate
+                    integrate=integrate,
                 )
 
             def find_centers(img, fit=True):
                 """Helper function for finding the center of images around the calibration points."""
                 imgs = take_interference_regions(img, integrate=False)  # N x W x H
-                centers = analysis.image_positions(imgs)                # 2 x N
+                centers = analysis.image_positions(imgs)  # 2 x N
 
-                a = np.max(imgs, axis=(1,2))
+                a = np.max(imgs, axis=(1, 2))
                 R = np.mean(imgs.shape[1:]) / self._wavefront_calibration_window_multiplier
 
                 guess = np.transpose(
-                    np.vstack((
-                        centers,
-                        np.full_like(a, R),
-                        a,
-                        np.full_like(a, 0),
-                    ))
+                    np.vstack(
+                        (
+                            centers,
+                            np.full_like(a, R),
+                            a,
+                            np.full_like(a, 0),
+                        )
+                    )
                 )
 
-                result = analysis.image_fit(imgs, function=_sinc2d_nomod, guess=guess) #, plot=True)
+                result = analysis.image_fit(
+                    imgs, function=_sinc2d_nomod, guess=guess
+                )  # , plot=True)
 
                 centers = result[:, 1:3].T
 
@@ -943,7 +984,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 half = np.array([[imgs.shape[2]], [imgs.shape[1]]]) / 2
                 lost = np.logical_or(
                     np.any(np.logical_not(np.abs(centers) < half), axis=0),
-                    np.logical_not(result[:, 0] > .5),      # R^2 of the fit; nan if it failed.
+                    np.logical_not(result[:, 0] > 0.5),  # R^2 of the fit; nan if it failed.
                 )
                 centers[:, lost] = 0
 
@@ -991,11 +1032,13 @@ class _WavefrontCalibrationSuperpixel(object):
                 target_blaze_fixed = calibration_blazes - blaze_differences
 
                 # Step 1.5: Measure the power...
-                if corrected_amplitude:      # ...in the corrected target mode.
+                if corrected_amplitude:  # ...in the corrected target mode.
                     fixed_image = superpixels(schedule, None, 0, target_blaze=target_blaze_fixed)
-                    plot_labeled(schedule, fixed_image, plot=plot, title="Corrected Target Diffraction")
+                    plot_labeled(
+                        schedule, fixed_image, plot=plot, title="Corrected Target Diffraction"
+                    )
                     pwr = take_interference_regions(fixed_image)
-                else:                       # ...in the uncorrected target mode.
+                else:  # ...in the uncorrected target mode.
                     pwr = take_interference_regions(position_image)
 
                 # Step 1.75: Stop here if we don't need to measure the phase (only save powers).
@@ -1027,7 +1070,13 @@ class _WavefrontCalibrationSuperpixel(object):
                 # Step 2: Measure interference and find relative phase. Future: vectorize.
                 if phase_steps == 1:
                     # Step 2.1: Gather a single image.
-                    result_img = superpixels(schedule, 0, 0, target_blaze=target_blaze_fixed, phase_baselines=phase_baselines)
+                    result_img = superpixels(
+                        schedule,
+                        0,
+                        0,
+                        target_blaze=target_blaze_fixed,
+                        phase_baselines=phase_baselines,
+                    )
                     cropped_img = take_interference_regions(result_img, integrate=False)
 
                     # Step 2.2: Fit the data and return.
@@ -1037,11 +1086,11 @@ class _WavefrontCalibrationSuperpixel(object):
                         (
                             fit_phase_image(
                                 cropped_img[i],
-                                coord_difference[:,i],
-                                plot_fits=plot and i == first_index
+                                coord_difference[:, i],
+                                plot_fits=plot and i == first_index,
                             )
-                            if schedule[i] != -1 else
-                            [np.nan] * 4
+                            if schedule[i] != -1
+                            else [np.nan] * 4
                         )
                         for i in range(num_points)
                     ]
@@ -1062,10 +1111,18 @@ class _WavefrontCalibrationSuperpixel(object):
 
                     # Step 2.1: Measure phases
                     for phase in prange:
-                        interference_image = superpixels(schedule, 0, phase, target_blaze=target_blaze_fixed, phase_baselines=phase_baselines)
+                        interference_image = superpixels(
+                            schedule,
+                            0,
+                            phase,
+                            target_blaze=target_blaze_fixed,
+                            phase_baselines=phase_baselines,
+                        )
                         iresults.append(
                             [
-                                interference_image[calibration_points[1, i], calibration_points[0, i]]
+                                interference_image[
+                                    calibration_points[1, i], calibration_points[0, i]
+                                ]
                                 for i in range(num_points)
                             ]
                         )
@@ -1076,7 +1133,7 @@ class _WavefrontCalibrationSuperpixel(object):
                                     schedule,
                                     interference_image,
                                     plot=plot,
-                                    title=r"Phase = ${:1.2f}\pi$".format(phase / np.pi),
+                                    title=rf"Phase = ${phase / np.pi:1.2f}\pi$",
                                     plot_zoom=True,
                                 )
                             )
@@ -1089,14 +1146,20 @@ class _WavefrontCalibrationSuperpixel(object):
 
                 results = np.array(results)
 
-                phase_fit =     results[:, 0]
-                amp_fit =       results[:, 1]
-                r2_fit =        results[:, 2]
-                contrast_fit =  results[:, 3]
+                phase_fit = results[:, 0]
+                amp_fit = results[:, 1]
+                r2_fit = results[:, 2]
+                contrast_fit = results[:, 3]
 
                 # Step 2.5: maybe plot a picture of the correct phase.
                 if plot:
-                    interference_image = superpixels(schedule, 0, phase_fit, target_blaze=target_blaze_fixed, phase_baselines=phase_baselines)
+                    interference_image = superpixels(
+                        schedule,
+                        0,
+                        phase_fit,
+                        target_blaze=target_blaze_fixed,
+                        phase_baselines=phase_baselines,
+                    )
                     plot_labeled(schedule, interference_image, plot=plot, title="Best Interference")
 
                 # Step 3: Return the result.
@@ -1127,7 +1190,9 @@ class _WavefrontCalibrationSuperpixel(object):
 
             if plot_fits:
                 fixed_image = superpixels(None, 0, None)
-                plot_labeled(None, fixed_image, plot=plot_everything, title="Corrected Reference Diffraction")
+                plot_labeled(
+                    None, fixed_image, plot=plot_everything, title="Corrected Reference Diffraction"
+                )
 
             # If we just want to debug/test one region, then do so.
             if test_index is not None:
@@ -1152,7 +1217,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 coords = index2coord(schedule)
                 for i in range(num_points):
                     if schedule[i] != -1:
-                        for key in measurement.keys():
+                        for key in measurement:
                             result = measurement[key]
                             if np.size(result) > 1:
                                 result = result[i]
@@ -1186,12 +1251,9 @@ class _WavefrontCalibrationSuperpixel(object):
         superpixel_size : int
             The size of the superpixel on the SLM.
         """
-        interference_size = np.rint(np.array(
-            self.get_farfield_spot_size(
-                superpixel_size * self.slm.pitch,
-                basis="ij"
-            )
-        )).astype(int)
+        interference_size = np.rint(
+            np.array(self.get_farfield_spot_size(superpixel_size * self.slm.pitch, basis="ij"))
+        ).astype(int)
 
         return self._wavefront_calibration_window_multiplier * interference_size
 
@@ -1204,7 +1266,7 @@ class _WavefrontCalibrationSuperpixel(object):
         remove_blaze=True,
         remove_background=True,
         apply=True,
-        plot=0
+        plot=0,
     ):
         """
         Processes :attr:`calibrations["wavefront_superpixel"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`
@@ -1262,7 +1324,7 @@ class _WavefrontCalibrationSuperpixel(object):
         if len(data) == 0:
             raise RuntimeError("No raw wavefront data to process. Either load data or calibrate.")
 
-        if not "__version__" in data:
+        if "__version__" not in data:
             data["__version__"] = "0.0.1"
 
         if data["__version__"] == "0.0.1":
@@ -1274,7 +1336,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 remove_blaze=remove_blaze,
                 remove_background=remove_background,
                 apply=apply,
-                plot=plot
+                plot=plot,
             )
         else:
             # For now, make a 0.0.1 calibration dict based on a single index.
@@ -1325,16 +1387,16 @@ class _WavefrontCalibrationSuperpixel(object):
             )
 
     def _wavefront_calibration_superpixel_process_r001(
-            self,
-            data,
-            smooth=True,
-            r2_threshold=0.9,
-            remove_vortices=False,
-            remove_blaze=True,
-            remove_background=True,
-            apply=True,
-            plot=False,
-        ):
+        self,
+        data,
+        smooth=True,
+        r2_threshold=0.9,
+        remove_vortices=False,
+        remove_blaze=True,
+        remove_background=True,
+        apply=True,
+        plot=False,
+    ):
         """
         Wavefront calibration processing, in the release 0.0.1 data format.
         Both branches of the version dispatch route here.
@@ -1368,8 +1430,8 @@ class _WavefrontCalibrationSuperpixel(object):
             n = 0
             result = 0
             for xy in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
-                x =  nxref + xy[0]
-                y =  nyref + xy[1]
+                x = nxref + xy[0]
+                y = nyref + xy[1]
 
                 if x >= 0 and x < NX and y >= 0 and y < NY:
                     result += matrix[y, x]
@@ -1424,11 +1486,13 @@ class _WavefrontCalibrationSuperpixel(object):
                 pwr_min = np.min(pwr_below_r2)
                 norm_ave = np.nanmean(norm)
                 norm_min = np.nanmin(norm)
-                if (np.median(pwr_below_r2) - pwr_min) / np.nanstd(pwr) < .5 and pwr_min < norm_min:
+                if (np.median(pwr_below_r2) - pwr_min) / np.nanstd(
+                    pwr
+                ) < 0.5 and pwr_min < norm_min:
                     self.logger.warning(
                         "remove_background is enabled and a noise floor was detected; "
                         "removing this background (%.1f%% of the average normalization).",
-                        100 * pwr_min/norm_ave
+                        100 * pwr_min / norm_ave,
                     )
                     back[:] = pwr_min
 
@@ -1511,8 +1575,8 @@ class _WavefrontCalibrationSuperpixel(object):
                     source = []
 
                     (dx0, dy0) = (
-                        2 * np.pi * (nx-nxref) * superpixel_size * self.slm.pitch[0],
-                        2 * np.pi * (ny-nyref) * superpixel_size * self.slm.pitch[1],
+                        2 * np.pi * (nx - nxref) * superpixel_size * self.slm.pitch[0],
+                        2 * np.pi * (ny - nyref) * superpixel_size * self.slm.pitch[1],
                     )
 
                     # Loop through the adjacent superpixels (including diagonals).
@@ -1566,7 +1630,7 @@ class _WavefrontCalibrationSuperpixel(object):
                                 minstd = np.std(offset3)
                                 offset[ny, nx] = np.mod(np.mean(offset3) - shift, 2 * np.pi)
 
-                        offset[ny, nx] -=  dx0 * kx[ny, nx] + dy0 * ky[ny, nx]
+                        offset[ny, nx] -= dx0 * kx[ny, nx] + dy0 * ky[ny, nx]
                         pathing[ny, nx] = ny
 
         # Step 3.2: Make the SLM-sized correction using the compressed data from each superpixel.
@@ -1598,7 +1662,7 @@ class _WavefrontCalibrationSuperpixel(object):
                 phase = np.arctan2(imag, real) + np.pi
 
                 # If selected, remove vortices halfway through the smoothing.
-                if remove_vortices and i == smooth//2:
+                if remove_vortices and i == smooth // 2:
                     phase = image_remove_vortices(phase)
         else:
             real = np.cos(phase)
@@ -1614,10 +1678,7 @@ class _WavefrontCalibrationSuperpixel(object):
         phase = image_reduce_wraps(phase, mask=pwr_large)
 
         # Add the old phase correction if it's there.
-        if (
-            "previous_phase_correction" in data and
-            data["previous_phase_correction"] is not None
-        ):
+        if "previous_phase_correction" in data and data["previous_phase_correction"] is not None:
             phase += data["previous_phase_correction"]
 
         # Step 4: Data export.
@@ -1639,7 +1700,9 @@ class _WavefrontCalibrationSuperpixel(object):
 
         return wavefront_calibration
 
-    def _wavefront_calibration_superpixel_plot_raw(self, index=0, r2_threshold=0, phase_detail=True):
+    def _wavefront_calibration_superpixel_plot_raw(
+        self, index=0, r2_threshold=0, phase_detail=True
+    ):
         """
         Plots raw data from the superpixel-style wavefront calibration. Specifically,
         plots:
@@ -1667,7 +1730,7 @@ class _WavefrontCalibrationSuperpixel(object):
             coords = data["calibration_points"]
 
             plt.subplot(1, 4, 1)
-            plt.scatter(coords[0,:], coords[1,:], c="r")
+            plt.scatter(coords[0, :], coords[1, :], c="r")
             for i in range(coords.shape[1]):
                 plt.annotate(str(i), (coords[0, i], coords[1, i]))
             plt.title("Calibration Points")
@@ -1700,7 +1763,7 @@ class _WavefrontCalibrationSuperpixel(object):
         plt.subplot(1, 4, 1)
         plt.scatter(coord[0], coord[1], c="r")
         plt.annotate(str(index), (coord[0], coord[1]))
-        plt.title("Calibration Point {}".format(index))
+        plt.title(f"Calibration Point {index}")
         plt.xlabel("Camera $x$ [pix]")
         plt.ylabel("Camera $y$ [pix]")
         plt.xlim([0, self.cam.shape[1]])
@@ -1710,7 +1773,7 @@ class _WavefrontCalibrationSuperpixel(object):
         plt.subplot(1, 4, 2)
         plt.imshow(
             phase,
-            clim=(0,2*np.pi),
+            clim=(0, 2 * np.pi),
             cmap=plt.get_cmap("twilight"),
             interpolation="none",
         )
@@ -1743,11 +1806,10 @@ class _WavefrontCalibrationSuperpixel(object):
             )
             plt.title(r"$k_y \propto \partial\phi/\partial y$")
         else:
-            plt.imshow(r2, clim=(0,1))
-        # plt.contour(r2, [r2_threshold], c="r")
+            plt.imshow(r2, clim=(0, 1))
+            # plt.contour(r2, [r2_threshold], c="r")
             plt.title("$R^2$")
         plt.xticks([])
         plt.yticks([])
 
         _slmsuite_plt_show(name="wavefront_calibration_superpixel_plot_raw")
-

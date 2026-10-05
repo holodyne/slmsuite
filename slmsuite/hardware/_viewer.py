@@ -1,4 +1,3 @@
-
 import asyncio
 import html
 import io
@@ -14,8 +13,8 @@ import numpy as np
 import PIL
 
 from slmsuite.holography.analysis import _center, image_centroids, image_remove_field
-from slmsuite.misc.xp import as_numpy
 from slmsuite.misc.files import generate_path, save_h5
+from slmsuite.misc.xp import as_numpy
 
 _DISPLAY_BACKENDS = ("ipython", "pyglet")
 _WIDGET_BACKENDS = ("ipython",)
@@ -45,21 +44,21 @@ _REMEMBERED = ("cmap", "scale", "zoom", "crosshair", "log", "range", "geometry")
 
 # Mouse events are throttled to this period, roughly the rate at which frames can be
 # drawn: a megapixel frame takes tens of milliseconds to encode.
-_RENDER_PERIOD_S = .033
+_RENDER_PERIOD_S = 0.033
 _LIVE_PERIOD_S = 0.01
 
 # Frames are encoded as 8-bit palette PNGs: the colormap is sent once as a palette
 # and each pixel is a single index, which is what keeps mouse zoom and pan tracking
 # the cursor.
-_LEVELS = 253       # Indices 0..252 hold image data.
+_LEVELS = 253  # Indices 0..252 hold image data.
 _TRANSPARENT = 253  # Reserved for nan.
-_DARK, _LIGHT = 254, 255    # Reserved for crosshairs.
+_DARK, _LIGHT = 254, 255  # Reserved for crosshairs.
 
 
 def _is_dark(palette):
     """Which ``palette`` entries a crosshair must contrast against by drawing light."""
-    dark = palette[:, :3].astype(np.float32) @ np.float32([.299, .587, .114]) < 128
-    dark[_TRANSPARENT] = False      # Nan shows the page behind it, which is light.
+    dark = palette[:, :3].astype(np.float32) @ np.float32([0.299, 0.587, 0.114]) < 128
+    dark[_TRANSPARENT] = False  # Nan shows the page behind it, which is light.
     return dark
 
 
@@ -76,7 +75,7 @@ def _ipython():
     """The running IPython kernel able to host widgets, or ``None``."""
     try:
         from IPython import get_ipython
-        import ipywidgets     # noqa: F401
+        import ipywidgets
     except ImportError:
         return None
     return get_ipython()
@@ -87,7 +86,7 @@ def _save_dialog(file_path):
     if sys.platform != "win32":
         raise NotImplementedError(f"No save dialog is implemented for '{sys.platform}'.")
 
-    import win32con     # pywin32
+    import win32con  # pywin32
     import win32gui
 
     try:
@@ -100,7 +99,7 @@ def _save_dialog(file_path):
             Flags=win32con.OFN_OVERWRITEPROMPT,
         )[0]
     except Exception:
-        return ""       # The dialog raises rather than returns when canceled.
+        return ""  # The dialog raises rather than returns when canceled.
 
 
 def _clipboard_image(png, name):
@@ -108,7 +107,7 @@ def _clipboard_image(png, name):
     if sys.platform != "win32":
         raise NotImplementedError(f"No clipboard copy is implemented for '{sys.platform}'.")
 
-    import win32clipboard      # pywin32
+    import win32clipboard  # pywin32
 
     # The clipboard's device-independent bitmap is a BMP without its 14-byte header.
     bmp = io.BytesIO()
@@ -121,7 +120,7 @@ def _clipboard_image(png, name):
     with open(file_path, "wb") as f:
         f.write(png)
     drop = (
-        struct.pack("<IiiII", 20, 0, 0, 0, 1)   # DROPFILES: wide paths at offset 20.
+        struct.pack("<IiiII", 20, 0, 0, 0, 1)  # DROPFILES: wide paths at offset 20.
         + (file_path + "\0\0").encode("utf-16-le")
     )
 
@@ -137,7 +136,6 @@ def _clipboard_image(png, name):
 
 
 class _Viewable:
-
     def live(self, activate=None, widgets=True, backend="ipython", **kwargs):
         """
         Creates and displays a live viewer.
@@ -243,10 +241,10 @@ class _Viewable:
                 f"'{widgets}' not recognized; "
                 f"the .live() widget backend must be one of {_WIDGET_BACKENDS}."
             )
-        
+
         if backend == "pyglet":
             try:
-                import pyglet     # noqa: F401
+                import pyglet
             except ImportError:
                 self.logger.warning("pyglet is not installed; falling back to ipython backend.")
                 backend = "ipython"
@@ -257,19 +255,14 @@ class _Viewable:
                     "The 'ipython' backend needs jupyter, ipywidgets, and a running kernel; "
                     "pass backend='pyglet' to view from a script."
                 )
-            widgets = None      # A window stands alone; its shortcuts replace the widgets.
+            widgets = None  # A window stands alone; its shortcuts replace the widgets.
 
         if self.viewer is not None:
             self.viewer.close()
 
         # Else a viewer that fails to build is left attached and closed.
         self.viewer = None
-        self.viewer = _ViewerObject(
-            self,
-            widgets,
-            backend,
-            **kwargs
-        )
+        self.viewer = _ViewerObject(self, widgets, backend, **kwargs)
 
 
 class _ViewerObject:
@@ -281,6 +274,7 @@ class _ViewerObject:
     user. This class owns *what* is shown: the color scaling, the region of interest,
     the widgets, and the polling loop.
     """
+
     def __init__(
         self,
         parent,
@@ -313,7 +307,7 @@ class _ViewerObject:
             if min is None:
                 min = 0
             if max is None:
-                max = self.parent.bitresolution-1
+                max = self.parent.bitresolution - 1
             range_ = [np.min([min, max]), np.max([min, max])]
 
         # Parse scale
@@ -325,25 +319,34 @@ class _ViewerObject:
                 cmap_options = ["twilight", "twilight_shifted", "gray", "hsv"]
             else:
                 cmap_options = [
-                    "default", "gray", "Blues", "turbo",
-                    'viridis', 'plasma', 'inferno', 'magma', 'cividis'
+                    "default",
+                    "gray",
+                    "Blues",
+                    "turbo",
+                    "viridis",
+                    "plasma",
+                    "inferno",
+                    "magma",
+                    "cividis",
                 ]
 
-        if cmap is True: cmap = recall("cmap", None, cmap_options[0])
-        if cmap is False: cmap = "gray"
+        if cmap is True:
+            cmap = recall("cmap", None, cmap_options[0])
+        if cmap is False:
+            cmap = "gray"
         if cmap not in cmap_options and isinstance(cmap, str) and "cmap" in memory:
-            cmap = cmap_options[0]      # A remembered colormap the new options lack.
+            cmap = cmap_options[0]  # A remembered colormap the new options lack.
 
         self.state = {
-            "live" : live,
-            "range" : range_,
-            "log" : bool(recall("log", log, False)),
-            "cmap" : cmap,
-            "scale" : scale,
-            "cmap_options" : cmap_options,
-            "crosshair" : recall("crosshair", crosshair, "none"),
-            "zoom" : bool(recall("zoom", zoom, backend == "pyglet")),
-            "geometry" : memory.get("geometry"),
+            "live": live,
+            "range": range_,
+            "log": bool(recall("log", log, False)),
+            "cmap": cmap,
+            "scale": scale,
+            "cmap_options": cmap_options,
+            "crosshair": recall("crosshair", crosshair, "none"),
+            "zoom": bool(recall("zoom", zoom, backend == "pyglet")),
+            "geometry": memory.get("geometry"),
         }
 
         self.task = None
@@ -356,7 +359,7 @@ class _ViewerObject:
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._loop = None   # A script applies posted requests before the next frame.
+            self._loop = None  # A script applies posted requests before the next frame.
 
         # Region of interest (crop) in source-image pixels: [x0, y0, x1, y1].
         H, W = self.parent.shape[0], self.parent.shape[1]
@@ -375,7 +378,8 @@ class _ViewerObject:
         self._lut = self._lut_key = None
         self._rgba = self._rgba_key = None
 
-        if widgets: self.init_widgets()
+        if widgets:
+            self.init_widgets()
 
         if backend == "pyglet":
             self.display = _ViewerDisplayPyglet(self)
@@ -384,6 +388,7 @@ class _ViewerObject:
 
         if "output" in self.widgets:
             from IPython.display import display
+
             display(self.widgets["output"])
 
     def _quantize(self, img):
@@ -394,8 +399,8 @@ class _ViewerObject:
 
         # The scalars are plain floats so that they do not promote img back to double.
         r = [float(v) for v in self.state["range"]]
-        d = max(r[1] - r[0], 1.)
-        img = np.clip(img, r[0], r[1]) * (1. / d) - r[0] / d
+        d = max(r[1] - r[0], 1.0)
+        img = np.clip(img, r[0], r[1]) * (1.0 / d) - r[0] / d
 
         if not self.parent.is_slm and self.state["log"]:
             img = np.log10(1 + img * d) / np.log10(1 + d)
@@ -404,7 +409,7 @@ class _ViewerObject:
         # reserved entries above _LEVELS.
         nan = np.isnan(img)
         with np.errstate(invalid="ignore"):
-            index = np.clip(img * (_LEVELS - 1) + .5, 0, _LEVELS - 1).astype(np.uint8)
+            index = np.clip(img * (_LEVELS - 1) + 0.5, 0, _LEVELS - 1).astype(np.uint8)
 
         if nan.any():
             index[nan] = _TRANSPARENT
@@ -437,7 +442,7 @@ class _ViewerObject:
         key = (dtype.str, tuple(self.state["range"]), self.state["log"])
         if key != self._lut_key:
             # Tabulated in unsigned order, which is how the image view indexes it.
-            counts = np.arange(1 << (8 * dtype.itemsize), dtype="u%d" % dtype.itemsize)
+            counts = np.arange(1 << (8 * dtype.itemsize), dtype=f"u{dtype.itemsize}")
             self._lut_key = key
             self._lut = self._quantize(counts.view(dtype))
         return self._lut
@@ -486,8 +491,8 @@ class _ViewerObject:
             # show; otherwise show the exact, full-resolution source pixels. The raw
             # crop is a plain integer slice, so it stays stable under panning (no
             # interpolation), unlike a resampled version.
-            Bw = max(1, int(round(W * self.state["scale"])))
-            Bh = max(1, int(round(H * self.state["scale"])))
+            Bw = max(1, round(W * self.state["scale"]))
+            Bh = max(1, round(H * self.state["scale"]))
             ch, cw = src.shape[0], src.shape[1]
             f = min(1.0, Bw / cw, Bh / ch)
             if f < 1.0:
@@ -510,7 +515,7 @@ class _ViewerObject:
 
         # An integer image spans few enough counts to tabulate the whole scaling.
         if img.dtype.kind in "ui" and img.dtype.itemsize <= 2:
-            index = self._index_lut(img.dtype)[img.view("u%d" % img.dtype.itemsize)]
+            index = self._index_lut(img.dtype)[img.view(f"u{img.dtype.itemsize}")]
         else:
             index = self._quantize(img)
 
@@ -521,8 +526,8 @@ class _ViewerObject:
             self._crosshair(
                 index,
                 is_dark,
-                (_center(W) - x0 + .5) * index.shape[1] / (x1 - x0) - .5,
-                (_center(H) - y0 + .5) * index.shape[0] / (y1 - y0) - .5,
+                (_center(W) - x0 + 0.5) * index.shape[1] / (x1 - x0) - 0.5,
+                (_center(H) - y0 + 0.5) * index.shape[0] / (y1 - y0) - 0.5,
             )
         if "centroid" in crosshairs:
             self._crosshair(
@@ -550,8 +555,8 @@ class _ViewerObject:
 
         # Round half up. A nan position, which a centroid over nan data produces,
         # is pushed out of view so that it is simply not drawn.
-        cx = int(np.floor(x + .5)) if np.isfinite(x) else -1
-        cy = int(np.floor(y + .5)) if np.isfinite(y) else -1
+        cx = int(np.floor(x + 0.5)) if np.isfinite(x) else -1
+        cy = int(np.floor(y + 0.5)) if np.isfinite(y) else -1
 
         # Each line is drawn only if it falls within the view.
         if 0 <= cx < W:
@@ -578,12 +583,12 @@ class _ViewerObject:
                 # Stored before anything that might not draw, so that a skipped frame
                 # costs a draw and not the data itself.
                 previous = None if self.last_image is None else self.last_image.shape
-                self.last_image = as_numpy(img)     # The renderers are host-only.
+                self.last_image = as_numpy(img)  # The renderers are host-only.
                 if previous is not None and self.last_image.shape != previous:
-                    self._reset_roi()      # Else the crop points outside the new image.
+                    self._reset_roi()  # Else the crop points outside the new image.
 
             self._apply()
-            if not self.closed:     # A closed window tears the viewer down from _apply.
+            if not self.closed:  # A closed window tears the viewer down from _apply.
                 self.display.render()
         except Exception as e:
             self._print(f"{type(e).__name__}: {e}")
@@ -595,7 +600,7 @@ class _ViewerObject:
             try:
                 self._loop.call_soon_threadsafe(self.render)
             except RuntimeError:
-                pass    # The loop has closed; the next frame applies the request instead.
+                pass  # The loop has closed; the next frame applies the request instead.
 
     def _apply(self):
         """Apply posted requests. Every state request cycles one option."""
@@ -669,7 +674,7 @@ class _ViewerObject:
     async def live_loop(self):
         try:
             while self.state["live"]:
-                self.parent.get_image()     # SLMs are not allowed to have gotten here.
+                self.parent.get_image()  # SLMs are not allowed to have gotten here.
                 await asyncio.sleep(_LIVE_PERIOD_S)
         except asyncio.CancelledError:
             raise
@@ -716,7 +721,7 @@ class _ViewerObject:
         # Width alone carries the zoom and height follows the image aspect, so the
         # region never letterboxes; the clamp keeps its shorter side above 8 px.
         factor = 0.8 if inward else 1.25
-        w = float(np.clip(w * factor, 8 * max(1., W / H), W))
+        w = float(np.clip(w * factor, 8 * max(1.0, W / H), W))
         h = w * H / W
 
         x0 = float(np.clip(sx - fx * w, 0, W - w))
@@ -798,6 +803,7 @@ class _ViewerObject:
     def _row(self, *keys):
         """A row of the named widgets, skipping any that this backend does not provide."""
         from ipywidgets import HBox
+
         return HBox([self.widgets[key] for key in keys if key in self.widgets])
 
     def init_widgets(self):
@@ -816,25 +822,25 @@ class _ViewerObject:
         grow_layout = Layout(width="auto", flex="1 1 auto")  # Absorbs the leftover row width.
 
         self.widgets = {
-            "name" : HTML(
+            "name": HTML(
                 value=f"<b>{self.parent.name}</b>",
                 description="Viewing",
                 tooltip="Name of the hardware.",
                 layout=item_layout,
             ),
-            "cmap" : Dropdown(
+            "cmap": Dropdown(
                 options=self.state["cmap_options"],
                 value=self.state["cmap"],
                 description="Colormap",
                 tooltip="Choose the colormap to use for display.",
                 layout=item_layout,
             ),
-            "save" : Button(
+            "save": Button(
                 description="Save",
                 tooltip="Save the view as a .png, or the raw data as an .h5.",
                 layout=(Layout(width="100px") if self.parent.is_slm else Layout(width="50%")),
             ),
-            "copy" : Button(
+            "copy": Button(
                 description="Copy",
                 tooltip="Copy the current view to the system clipboard.",
                 layout=(Layout(width="100px") if self.parent.is_slm else Layout(width="50%")),
@@ -844,79 +850,83 @@ class _ViewerObject:
             "output": HTML(
                 value="",
                 tooltip="Clicked coordinates, saved file paths, and viewer errors.",
-            )
+            ),
         }
 
         self.state_keys = ["cmap"]
 
-        self.widgets.update({
-            "scale" : FloatLogSlider(
-                value=self.state["scale"],
-                base=2,
-                min=-3, # 12.5%
-                max=3,  # 800%
-                step=1,
-                description="Scale",
-                tooltip="Scale the view by powers of two.",
-                layout=Layout(width="300px"),
-                continuous_update=False,
-            ),
-            "zoom" : Checkbox(
-                value=self.state["zoom"],
-                description="Zoom",
-                tooltip=(
-                    "Enable scroll-wheel zoom and click-drag pan; double-click restores "
-                    "the full image. Disable to see the whole image again."
+        self.widgets.update(
+            {
+                "scale": FloatLogSlider(
+                    value=self.state["scale"],
+                    base=2,
+                    min=-3,  # 12.5%
+                    max=3,  # 800%
+                    step=1,
+                    description="Scale",
+                    tooltip="Scale the view by powers of two.",
+                    layout=Layout(width="300px"),
+                    continuous_update=False,
                 ),
-                layout=item_layout,
-                indent=False,   # Else a description-width gutter pads the box.
-            ),
-        })
+                "zoom": Checkbox(
+                    value=self.state["zoom"],
+                    description="Zoom",
+                    tooltip=(
+                        "Enable scroll-wheel zoom and click-drag pan; double-click restores "
+                        "the full image. Disable to see the whole image again."
+                    ),
+                    layout=item_layout,
+                    indent=False,  # Else a description-width gutter pads the box.
+                ),
+            }
+        )
         self.state_keys += ["scale", "zoom"]
 
         # Extra widgets for cameras, not relevant for SLMs.
         if not self.parent.is_slm:
-            self.widgets.update({
-                "live" : ToggleButton(
-                    value=self.state["live"],
-                    description="Live",
-                    tooltip="Toggle an asyncio loop to poll images from the hardware.",
-                    layout=item_layout,
-                    button_style=("success" if self.state["live"] else ""),
-                    disabled=self.parent.is_slm
-                ),
-                "range" : IntRangeSlider(
-                    value=self.state["range"],
-                    min=0,
-                    max=self.parent.bitresolution-1,
-                    step=1,
-                    description="Range",
-                    tooltip="Color scale of the plot.",
-                    layout=grow_layout,
-                ),
-                "autorange" : Button(
-                    description="AutoRange",
-                    tooltip="Scale the plot to the minimum and maximum of the current image.",
-                    layout=item_layout,
-                ),
-                "log" : Checkbox(
-                    value=self.state["log"],
-                    description="Logarithmic",
-                    tooltip="Toggle logarithmic scaling of the current plot.",
-                    layout=item_layout,
-                    indent=False,
-                ),
-                "crosshair" : Dropdown(
-                    options=_CROSSHAIR_OPTIONS,
-                    value=self.state["crosshair"],
-                    description="Crosshairs",
-                    tooltip=(
-                        "Overlay a solid crosshair on the center of the view and/or a dashed "
-                        "crosshair on the median-subtracted centroid (center of mass) of the view."
+            self.widgets.update(
+                {
+                    "live": ToggleButton(
+                        value=self.state["live"],
+                        description="Live",
+                        tooltip="Toggle an asyncio loop to poll images from the hardware.",
+                        layout=item_layout,
+                        button_style=("success" if self.state["live"] else ""),
+                        disabled=self.parent.is_slm,
                     ),
-                    layout=item_layout,
-                ),
-            })
+                    "range": IntRangeSlider(
+                        value=self.state["range"],
+                        min=0,
+                        max=self.parent.bitresolution - 1,
+                        step=1,
+                        description="Range",
+                        tooltip="Color scale of the plot.",
+                        layout=grow_layout,
+                    ),
+                    "autorange": Button(
+                        description="AutoRange",
+                        tooltip="Scale the plot to the minimum and maximum of the current image.",
+                        layout=item_layout,
+                    ),
+                    "log": Checkbox(
+                        value=self.state["log"],
+                        description="Logarithmic",
+                        tooltip="Toggle logarithmic scaling of the current plot.",
+                        layout=item_layout,
+                        indent=False,
+                    ),
+                    "crosshair": Dropdown(
+                        options=_CROSSHAIR_OPTIONS,
+                        value=self.state["crosshair"],
+                        description="Crosshairs",
+                        tooltip=(
+                            "Overlay a solid crosshair on the center of the view and/or a dashed "
+                            "crosshair on the median-subtracted centroid (center of mass) of the view."
+                        ),
+                        layout=item_layout,
+                    ),
+                }
+            )
             self.state_keys += ["live", "range", "log", "crosshair"]
 
         for k, w in self.widgets.items():
@@ -936,9 +946,11 @@ class _ViewerObject:
         from ipywidgets import HBox, VBox
 
         if self.parent.is_slm:
-            self.widgets["layout"] = VBox([
-                self._row("name", "cmap", "scale", "zoom", "save", "copy"),
-            ])
+            self.widgets["layout"] = VBox(
+                [
+                    self._row("name", "cmap", "scale", "zoom", "save", "copy"),
+                ]
+            )
         else:
             # The controls on the right are sized to their text; the rest of the width
             # goes to the left, where the sliders need the room to be usable.
@@ -956,24 +968,26 @@ class _ViewerObject:
                 width="200px",
             )
 
-            self.widgets["layout"] = HBox([
-                VBox(
-                    [
-                        self._row("name", "scale", "zoom"),
-                        self._row("cmap", "log", "crosshair"),
-                        self._row("range"),
-                    ],
-                    layout=box_layout1,
-                ),
-                VBox(
-                    [
-                        self.widgets["live"],
-                        self._row("save", "copy"),
-                        self.widgets["autorange"],
-                    ],
-                    layout=box_layout2,
-                )
-            ])
+            self.widgets["layout"] = HBox(
+                [
+                    VBox(
+                        [
+                            self._row("name", "scale", "zoom"),
+                            self._row("cmap", "log", "crosshair"),
+                            self._row("range"),
+                        ],
+                        layout=box_layout1,
+                    ),
+                    VBox(
+                        [
+                            self.widgets["live"],
+                            self._row("save", "copy"),
+                            self.widgets["autorange"],
+                        ],
+                        layout=box_layout2,
+                    ),
+                ]
+            )
 
         display(self.widgets["layout"])
 
@@ -1013,13 +1027,15 @@ class _ViewerDisplayIPython:
         # individual source pixels appear as crisp blocks rather than a blurred,
         # smoothly-interpolated patch.
         self.image.add_class("slmsuite-viewer-pixelated")
-        display(HTML(
-            "<style>.slmsuite-viewer-pixelated {"
-            " image-rendering: -moz-crisp-edges;"
-            " image-rendering: crisp-edges;"
-            " image-rendering: pixelated;"
-            " }</style>"
-        ))
+        display(
+            HTML(
+                "<style>.slmsuite-viewer-pixelated {"
+                " image-rendering: -moz-crisp-edges;"
+                " image-rendering: crisp-edges;"
+                " image-rendering: pixelated;"
+                " }</style>"
+            )
+        )
         self.render()
         self._attach_events()
         display(self.image)
@@ -1032,9 +1048,7 @@ class _ViewerDisplayIPython:
         self.image.layout.width = f"{int(W * scale)}px"
         self.image.layout.height = f"{int(H * scale)}px"
 
-        self.image.value = _png(
-            self.viewer.parse(self.viewer.state["roi"]), self.viewer._palette()
-        )
+        self.image.value = _png(self.viewer.parse(self.viewer.state["roi"]), self.viewer._palette())
 
     def png(self):
         """The current view as ``PNG`` bytes."""
@@ -1072,7 +1086,7 @@ class _ViewerDisplayIPython:
             viewer.state["zoom"] = viewer.widgets["zoom"].value
         if self._events is not None:
             self._events.watched_events = (
-                _MOUSE_EVENTS + ["wheel"] if viewer.state["zoom"] else list(_MOUSE_EVENTS)
+                [*_MOUSE_EVENTS, "wheel"] if viewer.state["zoom"] else list(_MOUSE_EVENTS)
             )
         viewer._reset_roi()
         self.render()
@@ -1141,7 +1155,7 @@ class _ViewerDisplayPyglet:
         H, W = self._index.shape
 
         # One scale on both axes, never so small that the window cannot be grabbed.
-        scale = max(self.viewer.state["scale"], 64. / W, 64. / H)
+        scale = max(self.viewer.state["scale"], 64.0 / W, 64.0 / H)
 
         return round(H * scale), round(W * scale)
 
@@ -1158,9 +1172,9 @@ class _ViewerDisplayPyglet:
         # Open no larger than the desktop, in the slider's powers of two, and show that
         # on the slider rather than silently capping every larger value it can reach.
         screen = get_pyglet_display().get_default_screen()
-        fit = min(.8 * screen.width / W, .8 * screen.height / H)
+        fit = min(0.8 * screen.width / W, 0.8 * screen.height / H)
         if self.viewer.state["scale"] > fit:
-            self.viewer._set("scale", 2. ** np.floor(np.log2(fit)))
+            self.viewer._set("scale", 2.0 ** np.floor(np.log2(fit)))
 
         self._scale = self.viewer.state["scale"]
 
@@ -1195,16 +1209,16 @@ class _ViewerDisplayPyglet:
     def render(self):
         """Color the whole image into the window's frame and hand it to the window thread."""
         if self.thread is not None and not self.thread.running:
-            self.viewer.parent.live(activate=False)     # The user closed the window.
+            self.viewer.parent.live(activate=False)  # The user closed the window.
             return
 
         if self._future is not None:
             try:
                 self.thread.wait(self._future, timeout=_RENDER_PERIOD_S)
             except TimeoutError:
-                return      # The window thread is wedged; skip rather than block on it.
+                return  # The window thread is wedged; skip rather than block on it.
             except Exception:
-                self._future = None     # Else the failed frame is re-raised forever.
+                self._future = None  # Else the failed frame is re-raised forever.
                 raise
 
         self._index = self.viewer.parse()
@@ -1237,9 +1251,9 @@ class _ViewerDisplayPyglet:
         # asking for one, a frame would otherwise reach the screen no earlier than the
         # user's next change, leaving the view a change behind.
         try:
-            self.thread.wait(self._future, timeout=10 if opened else .2)
+            self.thread.wait(self._future, timeout=10 if opened else 0.2)
         except TimeoutError:
-            pass    # Genuinely wedged; the next frame's wait picks this one up.
+            pass  # Genuinely wedged; the next frame's wait picks this one up.
 
     def png(self):
         """The current view, cropped to the region of interest, as ``PNG`` bytes."""

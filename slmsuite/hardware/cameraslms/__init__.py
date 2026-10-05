@@ -2,27 +2,26 @@
 Datastructures, methods, and calibrations for an SLM monitored by a camera.
 """
 
-import os
 import copy
-import matplotlib.pyplot as plt
-from slmsuite._plotting import _slmsuite_plt_show
-import numpy as np
+import os
+from typing import ClassVar
 import warnings
+
+import matplotlib.pyplot as plt
+import numpy as np
 
 from slmsuite import __version__
 from slmsuite._logging import _Loggable
-from slmsuite.holography.analysis.files import load_h5, save_h5, generate_path, latest_path
-
+from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
-from slmsuite.hardware.slms.simulated import SimulatedSLM
 
 # Import calibrations (separated into different files for readability).
 from slmsuite.hardware.cameraslms._fourier import _FourierCalibration
 from slmsuite.hardware.cameraslms._pixel import _PixelCalibration
 from slmsuite.hardware.cameraslms._settle import _SettleCalibration
 from slmsuite.hardware.cameraslms._wavefront import _WavefrontCalibration
-
-
+from slmsuite.hardware.slms.simulated import SimulatedSLM
+from slmsuite.holography.analysis.files import generate_path, latest_path, load_h5, save_h5
 from slmsuite.misc.xp import as_numpy
 
 
@@ -48,8 +47,9 @@ class CameraSLM(_Loggable):
         In this case, the images apparent on the camera are 10x larger than the true
         objects at the experiment plane.
     """
-    _pickle = ["name", "cam", "slm", "mag"]
-    _pickle_data = []
+
+    _pickle: ClassVar[list] = ["name", "cam", "slm", "mag"]
+    _pickle_data: ClassVar[list] = []
 
     def __init__(self, cam=None, slm=None, mag=1):
         """
@@ -119,7 +119,7 @@ class CameraSLM(_Loggable):
         title="",
         axs=None,
         cbar=True,
-        **kwargs
+        **kwargs,
     ):
         """
         Plots the provided phase and image for the child hardware on a pair of subplot axes.
@@ -154,19 +154,20 @@ class CameraSLM(_Loggable):
         if image is None and phase is not None and np.shape(phase) == self.slm.shape:
             self.slm.set_phase(phase, **kwargs)
 
-
         should_show = False
         if axs is None:
             if len(plt.get_fignums()) > 0:
                 fig = plt.gcf()
             else:
-                fig = plt.figure(figsize=(20,8))
+                fig = plt.figure(figsize=(20, 8))
                 should_show = True
             axs = (fig.add_subplot(1, 2, 1), fig.add_subplot(1, 2, 2))
         else:
             fig = None
             if len(axs) != 2:
-                raise ValueError(f"Expected axs to be a tuple of two axes. Found length {len(axs)} tuple.")
+                raise ValueError(
+                    f"Expected axs to be a tuple of two axes. Found length {len(axs)} tuple."
+                )
 
         self.slm.plot(phase=phase, limits=slm_limits, title="", ax=axs[0], cbar=cbar)
         self.cam.plot(image=image, limits=cam_limits, title="", ax=axs[1], cbar=cbar)
@@ -265,8 +266,15 @@ class FourierSLM(
             acquire data after a pattern is displayed. This is, of course, a tradeoff
             between measurement speed and measurement precision.
     """
-    _pickle = ["name", "cam", "slm", "mag", "_wavefront_calibration_window_multiplier"]
-    _pickle_data = ["calibrations"]
+
+    _pickle: ClassVar[list] = [
+        "name",
+        "cam",
+        "slm",
+        "mag",
+        "_wavefront_calibration_window_multiplier",
+    ]
+    _pickle_data: ClassVar[list] = ["calibrations"]
 
     def __init__(self, *args, **kwargs):
         r"""See :meth:`CameraSLM.__init__`."""
@@ -287,7 +295,7 @@ class FourierSLM(
            calibration, along with its pixel pitch, dynamic range, exposure, averaging,
            and HDR settings. The simulated sensor is built as the image the hardware
            *delivers*, so the camera's WOI, binning, and orientation are inherited
-           through :attr:`fourier_affine`. Thus, 
+           through :attr:`fourier_affine`. Thus,
            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.kxyslm_to_ijcam` agrees
            between the hardware and the clone.
         -  The SLM's measured phase response (:attr:`~slmsuite.hardware.slms.slm.SLM.gamma`,
@@ -358,7 +366,7 @@ class FourierSLM(
             ``self``) with simulated hardware.
         """
         # Make sure we have a Fourier calibration.
-        if not "fourier" in self.calibrations:
+        if "fourier" not in self.calibrations:
             raise ValueError("Cannot simulate() a FourierSLM without a Fourier calibration.")
 
         slm_sim = self._simulate_slm(settle=settle, source=source, gpu=gpu)
@@ -370,7 +378,9 @@ class FourierSLM(
         fs_sim = type(self)(cam_sim, slm_sim, mag=self.mag)
 
         fs_sim.calibrations = copy.deepcopy(self.calibrations)
-        fs_sim._wavefront_calibration_window_multiplier = self._wavefront_calibration_window_multiplier
+        fs_sim._wavefront_calibration_window_multiplier = (
+            self._wavefront_calibration_window_multiplier
+        )
 
         # The simulated sensor *is* the hardware's delivered image, so its raw pixels are
         # the hardware's "ij" pixels. Restate the Fourier calibration in that frame,
@@ -413,7 +423,7 @@ class FourierSLM(
             source=source_sim,
             gamma_sim=gamma_sim,
             bitdepth=self.slm.bitdepth,
-            name=self.slm.name+"_sim",
+            name=self.slm.name + "_sim",
             wav_um=self.slm.wav_um,
             wav_design_um=self.slm.wav_design_um,
             pitch_um=self.slm.pitch_um,
@@ -468,7 +478,7 @@ class FourierSLM(
             hdr=self.cam.hdr,
             pitch_um=self.cam.pitch_um,
             exposure_bounds_s=self.cam.exposure_bounds_s,
-            name=self.cam.name+"_sim",
+            name=self.cam.name + "_sim",
         )
         cam_sim.set_exposure(self.cam.exposure_s)
 
@@ -515,8 +525,11 @@ class FourierSLM(
 
         warnings.warn(
             f"File was saved from '{name}', which is "
-            + ("ambiguous among the imported subclasses"
-               if matches else "not among the imported subclasses")
+            + (
+                "ambiguous among the imported subclasses"
+                if matches
+                else "not among the imported subclasses"
+            )
             + f"; rebuilding as {FourierSLM.__name__}. Import the module defining "
             f"'{name}' before loading, or call '{name}.load()' directly, to keep its "
             "methods."
@@ -524,7 +537,7 @@ class FourierSLM(
         return cls
 
     @classmethod
-    def load(cls, file_path : str, gpu=None):
+    def load(cls, file_path: str, gpu=None):
         """
         Rebuilds a system as a simulation from the metadata in an :mod:`slmsuite` file,
         without the hardware present. Both a calibration written by
@@ -586,12 +599,10 @@ class FourierSLM(
         data = load_h5(file_path)
 
         # Check to see if it has the information we need.
-        if not "__meta__" in data:
-            raise ValueError(
-                f"Cannot interpret file {file_path} without field '__meta__'. "
-            )
+        if "__meta__" not in data:
+            raise ValueError(f"Cannot interpret file {file_path} without field '__meta__'. ")
         for field in ("cam", "slm"):
-            if not field in data["__meta__"]:
+            if field not in data["__meta__"]:
                 raise ValueError(
                     f"Cannot interpret file {file_path} without metadata field '{field}'. "
                 )
@@ -637,18 +648,16 @@ class FourierSLM(
         # Restore the exposure and the simulated detector characteristics, but not the
         # window or binning: this camera is rebuilt *as* the delivered image, and
         # _load_place_camera() consumes them below.
-        cam._unpickle({
-            k: v for (k, v) in cam_data.items() if k not in ("woi", "binning")
-        })
+        cam._unpickle({k: v for (k, v) in cam_data.items() if k not in ("woi", "binning")})
 
         fs = cls._load_class(data["__meta__"])(cam, slm, mag=data["__meta__"]["mag"])
         fs.name = data["__meta__"]["name"]
 
         fs.calibrations = calibrations
         if "_wavefront_calibration_window_multiplier" in data["__meta__"]:
-            fs._wavefront_calibration_window_multiplier = (
-                data["__meta__"]["_wavefront_calibration_window_multiplier"]
-            )
+            fs._wavefront_calibration_window_multiplier = data["__meta__"][
+                "_wavefront_calibration_window_multiplier"
+            ]
 
         # The phase response is not pickled on the SLM; it is rebuilt from the pixel
         # calibration that measured it. Before the SLM restores its own state, which
@@ -691,7 +700,8 @@ class FourierSLM(
                     "shape %s); load() does not reapply binning and the metadata does not "
                     "record orientation, so the simulated camera is placed as though it "
                     "were neither.",
-                    tuple(int(n) for n in woi), (height, width),
+                    tuple(int(n) for n in woi),
+                    (height, width),
                 )
             b = b - np.array([[woi[0]], [woi[2]]], dtype=float)
 
@@ -714,15 +724,21 @@ class FourierSLM(
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibrate()`, and
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_superpixel()`.
         """
+
         def calibration_detected(calibration_type):
             self.logger.info("%s calibration...", calibration_type.replace("_", " ").capitalize())
             if calibration_type in self.calibrations:
-                self.logger.info("Found calibration from %s.", self.calibrations[calibration_type]["__time__"])
+                self.logger.info(
+                    "Found calibration from %s.", self.calibrations[calibration_type]["__time__"]
+                )
                 return True
             else:
                 try:
                     self.load_calibration(calibration_type)
-                    self.logger.info("Loaded calibration from %s.", self.calibrations[calibration_type]["__time__"])
+                    self.logger.info(
+                        "Loaded calibration from %s.",
+                        self.calibrations[calibration_type]["__time__"],
+                    )
                     return True
                 except FileNotFoundError:
                     return False
@@ -766,7 +782,7 @@ class FourierSLM(
         return f"{self.name}-{calibration_type}-calibration"
 
     def write_calibration(self, calibration_type, path, name):
-        "Backwards-compatibility alias for :meth:`save_calibration()`."
+        """Backwards-compatibility alias for :meth:`save_calibration()`."""
         warnings.warn(
             "The backwards-compatible alias FourierSLM.write_calibration will be deprecated "
             "in favor of FourierSLM.save_calibration in a future release."
@@ -796,7 +812,7 @@ class FourierSLM(
         str
             The file path that the calibration was saved to.
         """
-        if not calibration_type in self.calibrations:
+        if calibration_type not in self.calibrations:
             raise ValueError(
                 f"Could not find calibration '{calibration_type}' in calibrations. Options:\n"
                 + str(list(self.calibrations.keys()))
@@ -805,18 +821,21 @@ class FourierSLM(
         if name is None:
             name = self.name_calibration(calibration_type)
         file_path = generate_path(path, name, extension="h5")
-        save_h5(file_path, {
-            key: value
-            for (key, value) in self.calibrations[calibration_type].items()
-            if key not in self._CALIBRATION_UNSAVED
-        })
+        save_h5(
+            file_path,
+            {
+                key: value
+                for (key, value) in self.calibrations[calibration_type].items()
+                if key not in self._CALIBRATION_UNSAVED
+            },
+        )
 
         self.logger.info("Saved '%s' calibration to '%s'.", calibration_type, file_path)
 
         return file_path
 
     def read_calibration(self, calibration_type, file_path=None):
-        "Backwards-compatibility alias for :meth:`load_calibration()`."
+        """Backwards-compatibility alias for :meth:`load_calibration()`."""
         warnings.warn(
             "The backwards-compatible alias FourierSLM.read_calibration will be deprecated "
             "in favor of FourierSLM.load_calibration in a future release."
@@ -856,27 +875,26 @@ class FourierSLM(
                 if len(split) > 3 and "calibration_" in split[-1]:
                     calibration_type = split[-2]
                 else:
-                    raise ValueError(
-                        f"Could not parse calibration type from '{file_path}'."
-                    )
+                    raise ValueError(f"Could not parse calibration type from '{file_path}'.")
             else:
                 name = self.name_calibration(calibration_type)
                 file_path = latest_path(path, name, extension="h5")
 
             if file_path is None:
                 raise FileNotFoundError(
-                    "Unable to find a calibration file like\n{}"
-                    "".format(os.path.join(path, name))
+                    f"Unable to find a calibration file like\n{os.path.join(path, name)}"
                 )
 
         self.calibrations[calibration_type] = cal = load_h5(file_path)
         self.logger.info("Loaded '%s' calibration from '%s'.", calibration_type, file_path)
-        cal_ver = "an unknown version" if not "__version__" in cal else cal["__version__"]
+        cal_ver = cal.get("__version__", "an unknown version")
 
         if cal_ver != __version__:
             self.logger.warning(
                 "You are using slmsuite %s, but the calibration in '%s' was created in %s.",
-                __version__, file_path, cal_ver,
+                __version__,
+                file_path,
+                cal_ver,
             )
 
         # Every calibration is wavelength specific, so flag a retuned source.
@@ -884,7 +902,9 @@ class FourierSLM(
         if cal_wav_um is not None and not np.isclose(cal_wav_um, self.slm.wav_um):
             self.logger.warning(
                 "The '%s' calibration was taken at %s um, but this SLM is set to %s um.",
-                calibration_type, cal_wav_um, self.slm.wav_um,
+                calibration_type,
+                cal_wav_um,
+                self.slm.wav_um,
             )
 
         # Restore the measured phase response, as the SLM applies it on every write.
@@ -894,7 +914,7 @@ class FourierSLM(
         return file_path
 
     def _get_calibration_metadata(self):
-        return self.pickle(attributes=False, metadata=True)      # Pickle without heavy data.
+        return self.pickle(attributes=False, metadata=True)  # Pickle without heavy data.
 
     def _get_calibration_frame(self, key):
         """
@@ -949,12 +969,10 @@ class FourierSLM(
             return True
 
         message = (
-            "The '{}' calibration was taken with the camera window {} delivering shape "
-            "{}, but the camera now uses window {} delivering shape {}. This calibration "
+            f"The '{key}' calibration was taken with the camera window {recorded[0]} delivering shape "
+            f"{recorded[1]}, but the camera now uses window {current[0]} delivering shape {current[1]}. This calibration "
             "is stated in camera image coordinates and does not follow the window; "
-            "restore the window or re-run the calibration.".format(
-                key, recorded[0], recorded[1], current[0], current[1]
-            )
+            "restore the window or re-run the calibration."
         )
 
         if raise_error:
@@ -962,5 +980,6 @@ class FourierSLM(
 
         self.logger.warning(message)
         return False
+
 
 FourierSLM.fourier_calibration_build.__doc__ = SimulatedCamera.build_affine.__doc__

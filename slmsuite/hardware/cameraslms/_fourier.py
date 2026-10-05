@@ -1,7 +1,8 @@
+import warnings
+
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import cv2
-import warnings
 
 from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.algorithms import Hologram, SpotHologram
@@ -10,7 +11,7 @@ from slmsuite.holography.toolbox import format_2vectors, format_shape, format_ve
 from slmsuite.misc.math import REAL_TYPES
 
 
-class _FourierCalibration(object):
+class _FourierCalibration:
     """
     Hidden superclass with Fourier calibration methods
     (SLM angle-space to camera-space conversion).
@@ -81,7 +82,7 @@ class _FourierCalibration(object):
         dict
             :attr:`calibrations["fourier"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`
         """
-        if "autoexposure" in kwargs.keys():
+        if "autoexposure" in kwargs:
             autoexpose = kwargs.pop("autoexposure")
             warnings.warn(
                 "fourier_calibrate(autoexposure=) was renamed fourier_calibrate(autoexpose=)."
@@ -94,7 +95,7 @@ class _FourierCalibration(object):
             plot=plot,
             autofocus=autofocus,
             autoexpose=autoexpose,
-            **kwargs
+            **kwargs,
         )
 
     def _fourier_calibrate_single(
@@ -107,7 +108,7 @@ class _FourierCalibration(object):
         autoexpose=False,
         orientation=None,
         method="autocorrelation",
-        **kwargs
+        **kwargs,
     ):
         """Helper function for Fourier calibration."""
         # Parse variables
@@ -121,7 +122,10 @@ class _FourierCalibration(object):
         # Make and project a GS hologram across a normal grid of kvecs
         try:
             hologram = self.fourier_grid_project(
-                array_shape=array_shape, array_pitch=array_pitch, array_center=array_center, **kwargs
+                array_shape=array_shape,
+                array_pitch=array_pitch,
+                array_center=array_center,
+                **kwargs,
             )
         except Exception as e:
             # The exception is the report; the caller decides whether it is fatal.
@@ -175,27 +179,25 @@ class _FourierCalibration(object):
         # blob_array_detect returns the calibration from ij to the space of the array, so
         # as a last step we must convert from the array to (centered) knm space, and then
         # one step further to kxy space. This is done by a simple scaling.
-        scaling = (
-            self.slm.pitch
-            * np.flip(np.squeeze(hologram.shape))
-            / np.squeeze(array_pitch)
-        )
+        scaling = self.slm.pitch * np.flip(np.squeeze(hologram.shape)) / np.squeeze(array_pitch)
 
-        M = np.array([
-            [M[0, 0] * scaling[0], M[0, 1] * scaling[1]],
-            [M[1, 0] * scaling[0], M[1, 1] * scaling[1]],
-        ])
+        M = np.array(
+            [
+                [M[0, 0] * scaling[0], M[0, 1] * scaling[1]],
+                [M[1, 0] * scaling[0], M[1, 1] * scaling[1]],
+            ]
+        )
 
         kxyslm_to_ijcam = Affine(M, b, a)
         # kxyslm -> ijcam -> ijraw
         kxyslm_to_ijraw = self.cam._get_ijcam_to_ijraw() @ kxyslm_to_ijcam
         self.calibrations["fourier"] = kxyslm_to_ijraw.to_dict()
         self.calibrations["fourier"]["array"] = {
-            "array_shape" : array_shape,
-            "array_pitch" : array_pitch,
-            "array_center" : array_center,
-            "autoexpose" : autoexpose,
-            "autofocus" : autofocus,
+            "array_shape": array_shape,
+            "array_pitch": array_pitch,
+            "array_center": array_center,
+            "autoexpose": autoexpose,
+            "autofocus": autofocus,
         }
         self.calibrations["fourier"].update(self._get_calibration_metadata())
 
@@ -247,8 +249,8 @@ class _FourierCalibration(object):
                 None
                 if array_center is None
                 else (
-                    format_2vectors(array_center) +
-                    format_2vectors((shape[1] / 2.0, shape[0] / 2.0))
+                    format_2vectors(array_center)
+                    + format_2vectors((shape[1] / 2.0, shape[0] / 2.0))
                 )
             ),
             basis="knm",
@@ -263,14 +265,23 @@ class _FourierCalibration(object):
         kwargs.setdefault("name", "Fourier Grid")
 
         # Warn the user in case they mistyped a default argument or something.
-        for key in kwargs.keys():
+        for key in kwargs:
             if key not in [
-                "method", "maxiter", "verbose", "callback", "feedback",
-                "stat_groups", "name", "fixed_phase", "raw_stats", "blur_ij",
+                "method",
+                "maxiter",
+                "verbose",
+                "callback",
+                "feedback",
+                "stat_groups",
+                "name",
+                "fixed_phase",
+                "raw_stats",
+                "blur_ij",
             ]:
                 self.logger.warning(
                     "Unexpected argument '%s' passed to fourier_grid_project(). "
-                    "This may be ignored.", key
+                    "This may be ignored.",
+                    key,
                 )
 
         # Optimize and project the hologram
@@ -309,9 +320,9 @@ class _FourierCalibration(object):
         """
         # Parse arguments.
         M = np.squeeze(M)
-        if np.any(M.shape != (2,2)):
+        if np.any(M.shape != (2, 2)):
             raise ValueError("Expected a 2x2 matrix for M.")
-        a = format_2vectors([0,0])
+        a = format_2vectors([0, 0])
         b = format_2vectors(b)
 
         # kxyslm -> ijcam -> ijraw, as in _fourier_calibrate_single().
@@ -550,20 +561,20 @@ class _FourierCalibration(object):
             raise RuntimeError("Fourier calibration must exist to be used.")
 
         try:
-            if "wavefront_superpixel" in self.calibrations and "fourier" in self.calibrations:
-                if (
-                    self.calibrations["wavefront_superpixel"]["__timestamp__"] >
-                    self.calibrations["fourier"]["__timestamp__"]
-                ):
-                    warn_str = (
-                        "The wavefront calibration is newer (%s) than the Fourier "
-                        "calibration (%s). The Fourier calibration may be stale." % (
-                            self.calibrations["wavefront_superpixel"]["__time__"],
-                            self.calibrations["fourier"]["__time__"],
-                        )
-                    )
-                    warnings.warn(warn_str)
-                    self.logger.debug(warn_str)     # Also pass this to the logger, but as a debug message to avoid spam.
+            if (
+                "wavefront_superpixel" in self.calibrations
+                and self.calibrations["wavefront_superpixel"]["__timestamp__"]
+                > self.calibrations["fourier"]["__timestamp__"]
+            ):
+                wavefront_time = self.calibrations["wavefront_superpixel"]["__time__"]
+                fourier_time = self.calibrations["fourier"]["__time__"]
+                warn_str = (
+                    f"The wavefront calibration is newer ({wavefront_time}) than the "
+                    f"Fourier calibration ({fourier_time}). The Fourier calibration may be stale."
+                )
+                warnings.warn(warn_str)
+                # Also pass this to the logger, but as a debug message to avoid spam.
+                self.logger.debug(warn_str)
         except Exception:
             pass
 
@@ -655,7 +666,7 @@ class _FourierCalibration(object):
             )
             return np.abs(self.kxyslm_to_ijcam([0, 0]) - self.kxyslm_to_ijcam(size_kxy)).flatten()
         else:
-            raise ValueError('Unrecognized basis "{}".'.format(basis))
+            raise ValueError(f'Unrecognized basis "{basis}".')
 
     def get_effective_focal_length(self, units="norm"):
         """
@@ -705,7 +716,7 @@ class _FourierCalibration(object):
             pass
         elif units == "norm":
             f_eff *= np.array(self.cam.pitch_um) / self.slm.wav_um
-        elif units in toolbox.LENGTH_FACTORS.keys():
+        elif units in toolbox.LENGTH_FACTORS:
             f_eff *= np.array(self.cam.pitch_um) / toolbox.LENGTH_FACTORS[units]
         else:
             raise ValueError(f"Unit '{units}' not recognized as a length.")
@@ -714,7 +725,7 @@ class _FourierCalibration(object):
 
     # Helper functions to plot the rectangles of the camera and SLM farfield onto each other.
 
-    def get_farfield_extent(self, return_mask=False, inscribe=False, margin=0.):
+    def get_farfield_extent(self, return_mask=False, inscribe=False, margin=0.0):
         """
         Find the extent of the SLM's farfield --- the first Nyquist zone, the region the
         SLM can actually diffract into --- **in the coordinates of the camera**:
@@ -761,16 +772,14 @@ class _FourierCalibration(object):
         ur = [1, 1]
         ul = [0, 1]
 
-        corners_knm = toolbox.format_2vectors(
-            np.vstack((ll, lr, ur, ul, ll)).T
-        )
+        corners_knm = toolbox.format_2vectors(np.vstack((ll, lr, ur, ul, ll)).T)
         corners_ij = self.kxyslm_to_ijcam(
             toolbox.convert_vector(
                 corners_knm,
                 from_units="knm",
                 to_units="kxy",
                 hardware=self,
-                shape=(1,1),
+                shape=(1, 1),
             )
         )
 
@@ -781,7 +790,7 @@ class _FourierCalibration(object):
             # Recover ``abs(A)`` by mapping the origin and the two unit vectors together,
             # then differencing.
             probe_knm = toolbox.convert_vector(
-                np.array([[0., 1., 0.], [0., 0., 1.]]),
+                np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
                 from_units="ij",
                 to_units="knm",
                 hardware=self,
@@ -792,16 +801,18 @@ class _FourierCalibration(object):
             # Scale the farfield's bounding box down by the largest feasible factor,
             # keeping its aspect ratio.
             center = np.mean(corners_ij[:, :4], axis=1, keepdims=True)
-            half = np.ptp(corners_ij, axis=1).reshape(2, 1) / 2.
+            half = np.ptp(corners_ij, axis=1).reshape(2, 1) / 2.0
             half = half * np.min(0.5 / np.maximum(jacobian @ half, 1e-12))
 
             margin = np.broadcast_to(np.reshape(margin, (-1, 1)), (2, 1)).astype(float)
             (low, high) = (center - half + margin, center + half - margin)
 
-            corners_ij = np.array([
-                [low[0, 0], high[0, 0], high[0, 0], low[0, 0], low[0, 0]],
-                [low[1, 0], low[1, 0], high[1, 0], high[1, 0], low[1, 0]],
-            ])
+            corners_ij = np.array(
+                [
+                    [low[0, 0], high[0, 0], high[0, 0], low[0, 0], low[0, 0]],
+                    [low[1, 0], low[1, 0], high[1, 0], high[1, 0], low[1, 0]],
+                ]
+            )
 
         if not return_mask:
             return corners_ij
@@ -855,7 +866,7 @@ class _FourierCalibration(object):
                 to_units=units,
                 hardware=self,
             )
-        else:   # Is the shape of the knm space
+        else:  # Is the shape of the knm space
             if isinstance(units, Hologram):
                 units = units.shape
 

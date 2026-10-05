@@ -1,10 +1,11 @@
 """Tests for :mod:`slmsuite._plotting` save-mode behavior."""
+
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import pytest
 from PIL import Image
+import pytest
 
 import slmsuite
 from slmsuite import _plotting
@@ -40,7 +41,7 @@ def test_configure_plotting(tmp_path, restore_handler, subtests):
         assert plt.get_fignums() == []
 
     with subtests.test("mode='save' without save_dir raises ValueError"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="save_dir is required"):
             slmsuite.configure_plotting(mode="save")
 
     with subtests.test("mode='save' defaults to a .png extension"):
@@ -100,12 +101,15 @@ def test_configure_plotting(tmp_path, restore_handler, subtests):
         assert (d / "demo_00001.png").exists()
 
     with subtests.test("a callable mode is installed as the handler verbatim"):
-        handler = lambda name=None, **kwargs: None
+
+        def handler(name=None, **kwargs):
+            return None
+
         slmsuite.configure_plotting(mode=handler)
         assert _plotting._current_handler is handler
 
     with subtests.test("an unrecognized mode raises ValueError"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unknown mode"):
             slmsuite.configure_plotting(mode="bogus")
 
 

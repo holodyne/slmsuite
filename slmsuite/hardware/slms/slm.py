@@ -11,27 +11,25 @@ try:
     import cupy as cp
 except ImportError:
     cp = np
+from abc import ABC, abstractmethod
 import inspect
+from typing import ClassVar
 import warnings
 import weakref
-from abc import ABC, abstractmethod
 
 import matplotlib.pyplot as plt
-from slmsuite._plotting import _slmsuite_plt_show
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PIL import Image
 
 from slmsuite import __version__
+from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis, toolbox
 from slmsuite.misc import fitfunctions
 from slmsuite.misc.files import generate_path, latest_path, load_h5, save_h5
 from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
 
-
-LUT_SIZE = 1 << 16      # Default number of entries in a phase lookup table.
-
-
+LUT_SIZE = 1 << 16  # Default number of entries in a phase lookup table.
 
 
 class SLM(_Common, ABC):
@@ -136,7 +134,8 @@ class SLM(_Common, ABC):
     phase_correct : bool
         Default behavior for the ``phase_correct`` argument of :meth:`set_phase()`. Defaults to ``True``.
     """
-    _pickle = [
+
+    _pickle: ClassVar[list[str]] = [
         "name",
         "shape",
         "bitdepth",
@@ -152,12 +151,12 @@ class SLM(_Common, ABC):
         "phase_correct",
         "settle",
     ]
-    _pickle_data = [
+    _pickle_data: ClassVar[list[str]] = [
         "source",
         "phase",
         "display",
     ]
-    _gamma_sign = -1        # Increasing grayscale decreases phase delay; +1 for the reverse.
+    _gamma_sign = -1  # Increasing grayscale decreases phase delay; +1 for the reverse.
 
     @abstractmethod
     def __init__(
@@ -167,7 +166,7 @@ class SLM(_Common, ABC):
         name="",
         wav_um=1,
         wav_design_um=None,
-        pitch_um=(8,8),
+        pitch_um=(8, 8),
         settle_time_s=0.3,
         gpu=None,
     ):
@@ -232,7 +231,7 @@ class SLM(_Common, ABC):
             self.logger.warning(
                 "Bitdepth %s is greater than 12 and some features "
                 "(gamma/LUT, etc) may not be supported.",
-                self.bitdepth
+                self.bitdepth,
             )
 
         if cp is not np:
@@ -254,28 +253,32 @@ class SLM(_Common, ABC):
         else:
             self.wav_design_um = float(wav_design_um)
 
-        if not (.3 < self.wav_um < 2):
-            self.logger.warning("SLM operation wavelength of %.2f um is unusual. Was this a typo?", self.wav_um)
-        if not (.3 < self.wav_design_um < 2):
-            self.logger.warning("SLM design wavelength of %.2f um is unusual. Was this a typo?", self.wav_design_um)
+        if not (0.3 < self.wav_um < 2):
+            self.logger.warning(
+                "SLM operation wavelength of %.2f um is unusual. Was this a typo?", self.wav_um
+            )
+        if not (0.3 < self.wav_design_um < 2):
+            self.logger.warning(
+                "SLM design wavelength of %.2f um is unusual. Was this a typo?", self.wav_design_um
+            )
 
         # Make normalized coordinate grids. ``_grid_base`` is the immutable geometric
         # grid (centered on the SLM); the public ``grid`` property derives the
         # aperture-centered working frame from it (see the ``grid`` property).
         height, width = self.shape
-        xpix = (width  - 1) * np.linspace(-0.5, 0.5, width)
+        xpix = (width - 1) * np.linspace(-0.5, 0.5, width)
         ypix = (height - 1) * np.linspace(-0.5, 0.5, height)
         self._grid_base = [
             self.xp.asarray(g.astype(np.float32))
             for g in np.meshgrid(self.pitch[0] * xpix, self.pitch[1] * ypix)
         ]
-        self._grid = None            # cache for the aperture-centered working grid
-        self._grid_center = None     # aperture center the cache was built for
+        self._grid = None  # cache for the aperture-centered working grid
+        self._grid_center = None  # aperture center the cache was built for
 
         # Aperture defaults to "cropped" (circumscribes the whole grid, so it
         # masks nothing until the user sets a real aperture). See set_aperture().
         self.aperture = toolbox.Aperture(self._grid_base, "cropped")
-        self._source_radius = None   # None derives it from the aperture; see source_radius.
+        self._source_radius = None  # None derives it from the aperture; see source_radius.
 
         # Source profile dictionary. Holds its arrays on self.xp; see _Source.
         self.source = _Source(self)
@@ -308,8 +311,7 @@ class SLM(_Common, ABC):
         See the note on :attr:`xp`.
         """
         center = (
-            None if self.aperture.center is None
-            else tuple(float(c) for c in self.aperture.center)
+            None if self.aperture.center is None else tuple(float(c) for c in self.aperture.center)
         )
         if self._grid is None or self._grid_center != center:
             if center is None:
@@ -397,7 +399,13 @@ class SLM(_Common, ABC):
     @abstractmethod
     def close(self):
         """Abstract method to close the SLM and delete related objects."""
-        raise NotImplementedError()
+        raise NotImplementedError
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     @staticmethod
     def info(verbose=True):
@@ -442,7 +450,7 @@ class SLM(_Common, ABC):
         phase_correction = self.bitresolution - 1 - np.array(Image.open(file_path), dtype=float)
 
         if phase_correction.ndim != 2:
-            raise ValueError("Expected 2D image; found shape {}.".format(phase_correction.shape))
+            raise ValueError(f"Expected 2D image; found shape {phase_correction.shape}.")
 
         phase_correction *= 2 * np.pi / (self.phase_scaling * self.bitresolution)
 
@@ -452,9 +460,7 @@ class SLM(_Common, ABC):
 
         if np.any(np.abs(np.diff(file_shape_error)) > 1):
             raise ValueError(
-                "Note sure how to pad or unpad correction shape {} to SLM shape {}.".format(
-                    phase_correction.shape, self.shape
-                )
+                f"Note sure how to pad or unpad correction shape {phase_correction.shape} to SLM shape {self.shape}."
             )
 
         if np.any(file_shape_error > 0):
@@ -522,16 +528,22 @@ class SLM(_Common, ABC):
         if phase is None:
             phase = self.phase
         phase = as_numpy(phase)
-        phase = np.mod(phase, 2*np.pi) / np.pi
+        phase = np.mod(phase, 2 * np.pi) / np.pi
 
         (ax, cax, should_show) = self._plot(
-            phase, limits, title, ax=ax, cbar=cbar,
+            phase,
+            limits,
+            title,
+            ax=ax,
+            cbar=cbar,
             labels=("SLM $n$ [pix]", "SLM $m$ [pix]"),
-            clim=[0, 2], cmap="twilight", interpolation="none",
+            clim=[0, 2],
+            cmap="twilight",
+            interpolation="none",
         )
 
         if cax is not None:
-            ticks = [0,1,2]
+            ticks = [0, 1, 2]
             cax.set_yticks(ticks)
             cax.set_yticklabels([f"${t}\\pi$" for t in ticks])
 
@@ -584,9 +596,7 @@ class SLM(_Common, ABC):
         levels = np.ravel(np.array(as_numpy(levels), dtype=float))
 
         if len(levels) != len(gamma):
-            raise ValueError(
-                f"Expected {len(gamma)} levels to pair with gamma; got {len(levels)}."
-            )
+            raise ValueError(f"Expected {len(gamma)} levels to pair with gamma; got {len(levels)}.")
 
         order = np.argsort(levels)
         (levels, gamma) = (levels[order], gamma[order])
@@ -672,7 +682,7 @@ class SLM(_Common, ABC):
         phase = np.mod(self._gamma_sign * gamma * 2 * np.pi, 2 * np.pi)
         ranking = np.argsort(phase)
         tiled = np.concatenate(
-            (phase[ranking] - 2*np.pi, phase[ranking], phase[ranking] + 2*np.pi)
+            (phase[ranking] - 2 * np.pi, phase[ranking], phase[ranking] + 2 * np.pi)
         )
 
         # Assign each of the lut_size uniformly spaced phases to the nearest level.
@@ -948,11 +958,11 @@ class SLM(_Common, ABC):
     def set_phase(
         self,
         phase,
-        phase_correct: bool = None,
-        settle: bool | float = None,
-        execute: bool = None,
-        block: bool = None,
-        **kwargs
+        phase_correct: bool | None = None,
+        settle: bool | float | None = None,
+        execute: bool | None = None,
+        block: bool | None = None,
+        **kwargs,
     ):
         r"""
         Checks, cleans, and adds to data, then sends the data to the SLM and
@@ -1100,9 +1110,7 @@ class SLM(_Common, ABC):
             if self._set_phase_hw_execute:
                 kwargs["execute"] = bool(execute)
             else:
-                raise ValueError(
-                    "This SLM does not support the execute argument in set_phase."
-                )
+                raise ValueError("This SLM does not support the execute argument in set_phase.")
 
         if block is None:
             block = True
@@ -1110,9 +1118,7 @@ class SLM(_Common, ABC):
             if self._set_phase_hw_block:
                 kwargs["block"] = bool(block)
             else:
-                raise ValueError(
-                    "This SLM does not support the block argument in set_phase."
-                )
+                raise ValueError("This SLM does not support the block argument in set_phase.")
 
         # Start a counter here for the settle time blocking.
         t0 = time.perf_counter()
@@ -1135,9 +1141,7 @@ class SLM(_Common, ABC):
         if phase is not None and np.issubdtype(phase.dtype, np.integer):
             # First, check the type.
             if phase.dtype != self.dtype:
-                raise TypeError(
-                    f"Unexpected integer type {phase.dtype}. Expected {self.dtype}."
-                )
+                raise TypeError(f"Unexpected integer type {phase.dtype}. Expected {self.dtype}.")
 
             # If integer data was passed, check that we are not out of range.
             if xp.any(phase >= self.bitresolution):
@@ -1154,8 +1158,9 @@ class SLM(_Common, ABC):
 
             # Update the phase variable with the integer data that we displayed.
             if self.gamma is None:
-                realized = phase * (self._gamma_sign * 2 * np.pi
-                                    / self.phase_scaling / self.bitresolution)
+                realized = phase * (
+                    self._gamma_sign * 2 * np.pi / self.phase_scaling / self.bitresolution
+                )
             else:
                 realized = self._gamma_sign * 2 * np.pi * self.gamma[phase]
             xp.copyto(self.phase, xp.mod(realized, 2 * np.pi))
@@ -1209,7 +1214,7 @@ class SLM(_Common, ABC):
         settle=False,
         **kwargs,
     ):
-        "Backwards-compatibility alias for :meth:`set_phase()`."
+        """Backwards-compatibility alias for :meth:`set_phase()`."""
         warnings.warn(
             "The backwards-compatible alias SLM.write will be deprecated "
             "in favor of SLM.set_phase in a future release."
@@ -1238,15 +1243,15 @@ class SLM(_Common, ABC):
             The file path that the phase was saved to.
         """
         if name is None:
-            name = self.name + '_phase'
+            name = self.name + "_phase"
         file_path = generate_path(path, name, extension="h5")
         save_h5(
             file_path,
             {
-                "__version__" : __version__,
-                "phase" : self.phase,
-                "display" : self.display,
-            }
+                "__version__": __version__,
+                "phase": self.phase,
+                "display": self.display,
+            },
         )
 
         self.logger.info("Saved phase to '%s'.", file_path)
@@ -1281,12 +1286,11 @@ class SLM(_Common, ABC):
         """
         if file_path is None:
             path = os.path.abspath(".")
-            name = self.name + '_phase'
+            name = self.name + "_phase"
             file_path = latest_path(path, name, extension="h5")
             if file_path is None:
                 raise FileNotFoundError(
-                    "Unable to find a phase file like\n{}"
-                    "".format(os.path.join(path, name))
+                    f"Unable to find a phase file like\n{os.path.join(path, name)}"
                 )
 
         data = load_h5(file_path)
@@ -1315,7 +1319,7 @@ class SLM(_Common, ABC):
 
     # Triggering
 
-    def set_input_trigger(self, on : bool = False):
+    def set_input_trigger(self, on: bool = False):
         r"""
         **(Not supported by this SLM.)**
         Configures the input trigger of the SLM, where an external electronic signal can
@@ -1329,7 +1333,7 @@ class SLM(_Common, ABC):
         """
         raise NotImplementedError("This SLM does not support input triggering.")
 
-    def set_output_trigger(self, on : bool = False):
+    def set_output_trigger(self, on: bool = False):
         r"""
         **(Not supported by this SLM.)**
         Configures the output trigger of the SLM, where the SLM can send an electronic
@@ -1388,7 +1392,7 @@ class SLM(_Common, ABC):
                     parent=self,
                     window=(x, w, y, h),
                     name=f"{self.name}_segment_{x}_{y}",
-                    refresh=(xi == shape[1] - 1 and yi == shape[0] - 1)
+                    refresh=(xi == shape[1] - 1 and yi == shape[0] - 1),
                 )
 
                 children.append(child)
@@ -1398,13 +1402,8 @@ class SLM(_Common, ABC):
     # Source and calibration methods
 
     def set_source_analytic(
-            self,
-            fit_function="gaussian2d",
-            units="norm",
-            phase_offset=0,
-            sim=False,
-            **kwargs
-        ):
+        self, fit_function="gaussian2d", units="norm", phase_offset=0, sim=False, **kwargs
+    ):
         """
         In the absence of a proper wavefront calibration, sets
         :attr:`~slmsuite.hardware.slms.slm.SLM.source` amplitude and phase using a
@@ -1457,30 +1456,30 @@ class SLM(_Common, ABC):
 
         # Wavelength normalized
         if units == "norm":
-            scaling = (1,1)
+            scaling = (1, 1)
         # Fractions of the display
         elif units == "frac":
             scaling = [g.max() - g.min() for g in grid]
         # Physical units
         else:
-            if units in toolbox.LENGTH_FACTORS.keys():
+            if units in toolbox.LENGTH_FACTORS:
                 factor = toolbox.LENGTH_FACTORS[units]
             else:
-                raise RuntimeError("Did not recognize units '{}'".format(units))
+                raise RuntimeError(f"Did not recognize units '{units}'")
             scaling = [factor / self.wav_um, factor / self.wav_um]
 
-        xy = [g / s for g,s in zip(grid, scaling)]
+        xy = [g / s for g, s in zip(grid, scaling)]
 
         if len(kwargs) == 0 and isinstance(fit_function, str) and fit_function == "gaussian2d":
             w = np.min([np.amax(xy[0]), np.amax(xy[1])]) / 2
-            kwargs = {"x0" : 0, "y0" : 0, "a" : 1, "c" : 0, "wx" : w, "wy" : w}
+            kwargs = {"x0": 0, "y0": 0, "a": 1, "c": 0, "wx": w, "wy": w}
 
         if isinstance(fit_function, str):
             fit_function = getattr(fitfunctions, fit_function)
 
         source = fit_function(xy, **kwargs)
 
-        # The fit ran on the host, so phase_offset joins it there 
+        # The fit ran on the host, so phase_offset joins it there
         self.source["amplitude_sim" if sim else "amplitude"] = np.abs(source)
         self.source["phase_sim" if sim else "phase"] = np.angle(source) + as_numpy(phase_offset)
 
@@ -1538,7 +1537,7 @@ class SLM(_Common, ABC):
         elif units in toolbox.LENGTH_FACTORS:
             factor = toolbox.LENGTH_FACTORS[units] / self.wav_um
         else:
-            raise RuntimeError("Did not recognize units '{}'".format(units))
+            raise RuntimeError(f"Did not recognize units '{units}'")
         return length * factor
 
     def set_aperture(self, spec=None, *, radius=None, center=None, units="norm"):
@@ -1602,9 +1601,7 @@ class SLM(_Common, ABC):
             spec = self.aperture.spec
             source_radius = self._source_radius
 
-        center_norm = (
-            spec_center_norm if center is None else self._center_pix_to_norm(center)
-        )
+        center_norm = spec_center_norm if center is None else self._center_pix_to_norm(center)
 
         self.aperture = toolbox.Aperture(self._grid_base, spec, center=center_norm)
         self._source_radius = source_radius
@@ -1660,7 +1657,7 @@ class SLM(_Common, ABC):
 
         if "amplitude" not in self.source:
             # No measured amplitude: guess a circular aperture from the grid extent.
-            radius_norm = .25 * float(np.min(np.flip(self.shape) * self.pitch))
+            radius_norm = 0.25 * float(np.min(np.flip(self.shape) * self.pitch))
             (center_norm, pupil_norm) = (None, 2.0 * radius_norm)
         else:
             power = np.square(np.abs(as_numpy(self.source["amplitude"])), dtype=float)
@@ -1679,7 +1676,7 @@ class SLM(_Common, ABC):
                 center_norm = self._center_pix_to_norm(edge_center)
                 pupil_norm = float(edge_radius * np.mean(self.pitch))
 
-        for (name, radius) in (("source", radius_norm), ("aperture", pupil_norm)):
+        for name, radius in (("source", radius_norm), ("aperture", pupil_norm)):
             if not np.isfinite(radius) or radius <= 0:
                 raise RuntimeError(
                     f"fit_aperture found a degenerate {name} radius ({radius}); the "
@@ -1691,7 +1688,7 @@ class SLM(_Common, ABC):
         self._grid = None
         return self.aperture
 
-    def fit_source_amplitude(self, method="moments", extent_threshold=.1, force=True):
+    def fit_source_amplitude(self, method="moments", extent_threshold=0.1, force=True):
         """
         Deprecated. Forwards to :meth:`fit_aperture`; ``extent_threshold`` and ``force``
         are ignored.
@@ -1716,7 +1713,7 @@ class SLM(_Common, ABC):
         else:
             amp = self.xp.ones(self.shape)
             if not self.aperture.crops:
-                return amp          # Already a fresh, independent array.
+                return amp  # Already a fresh, independent array.
         return amp * as_backend(self.aperture_mask, get_array_module(amp))
 
     def _get_source_phase(self):
@@ -1733,7 +1730,7 @@ class SLM(_Common, ABC):
         else:
             phase = self.xp.zeros(self.shape)
             if not self.aperture.crops:
-                return phase        # Already a fresh, independent array.
+                return phase  # Already a fresh, independent array.
         return phase * as_backend(self.aperture_mask, get_array_module(phase))
 
     def plot_source(self, source=None, sim=False, power=False, aperture=True):
@@ -1787,7 +1784,7 @@ class SLM(_Common, ABC):
 
         # Panel 1: Phase
         im = axs[0].imshow(
-            np.mod(phase_raw, 2*np.pi),
+            np.mod(phase_raw, 2 * np.pi),
             cmap=plt.get_cmap("twilight"),
             interpolation="none",
         )
@@ -1798,15 +1795,12 @@ class SLM(_Common, ABC):
         axs[0].set_ylabel("SLM $y$ [pix]")
         divider = make_axes_locatable(axs[0])
         cax = divider.append_axes("right", size="5%", pad=0.05)
-        im.set_clim([0, 2*np.pi])
+        im.set_clim([0, 2 * np.pi])
         plt.colorbar(im, cax=cax)
 
         # Panel 2: Amplitude or Power
         if power:
-            im = axs[1].imshow(
-                np.square(amplitude_raw),
-                clim=(0, 1)
-            )
+            im = axs[1].imshow(np.square(amplitude_raw), clim=(0, 1))
             axs[1].set_title("Simulated Source Power" if sim else "Source Power")
         else:
             im = axs[1].imshow(amplitude_raw, clim=(0, 1))
@@ -1906,7 +1900,7 @@ class SLM(_Common, ABC):
 
         orig_phase = self.phase.copy()
         count = 20
-        phase = np.random.rand(count, *self.shape) * 2 * np.pi
+        phase = np.random.default_rng().random((count, *self.shape)) * 2 * np.pi
 
         try:
             with self._test_step("write a phase"):
@@ -1940,6 +1934,7 @@ class SLM(_Common, ABC):
 
         return True
 
+
 class _Source(dict):
     """
     The :attr:`~slmsuite.hardware.slms.slm.SLM.source` dictionary, which holds every
@@ -1959,6 +1954,7 @@ class _Source(dict):
     :meth:`__setitem__`: ``update`` and ``|=`` (``__ior__``) are C-level slots that would
     otherwise write past the override and strand an array on the wrong backend.
     """
+
     def __init__(self, slm, *args, **kwargs):
         super().__init__()
         # Weak, so that the source does not keep its SLM alive through a reference cycle.

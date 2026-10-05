@@ -2,18 +2,18 @@ r"""
 Helper functions for manipulating phase patterns.
 """
 
-import numpy as np
-from scipy.spatial import distance
-from scipy.spatial import Voronoi, voronoi_plot_2d
-import cv2
-import matplotlib.pyplot as plt
-from slmsuite._plotting import _slmsuite_plt_show
 import warnings
 
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.spatial import Voronoi, distance, voronoi_plot_2d
+
+from slmsuite._logging import make_logger
+from slmsuite._plotting import _slmsuite_plt_show
+from slmsuite.holography.toolbox._aperture import Aperture as Aperture
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
 from slmsuite.misc.xp import as_backend, as_numpy, get_array_module
-from slmsuite.holography.toolbox._aperture import Aperture as Aperture
-from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
 
@@ -28,7 +28,7 @@ LENGTH_FACTORS = {
     "um": 1,
     "nm": 1e-3,
 }
-LENGTH_LABELS = {k : k for k in LENGTH_FACTORS.keys()}
+LENGTH_LABELS = {k: k for k in LENGTH_FACTORS}
 LENGTH_LABELS["um"] = r"$\mu$m"
 
 # Camera pixel units need only a Camera affine (no pixel pitch).
@@ -36,26 +36,23 @@ CAMERA_PIXEL_UNITS = ["ij", "ijraw"]
 CAMERA_UNITS = list(CAMERA_PIXEL_UNITS)
 
 BLAZE_LABELS = {
-    "rad":  (r"$\theta_x$ [rad]", r"$\theta_y$ [rad]"),
+    "rad": (r"$\theta_x$ [rad]", r"$\theta_y$ [rad]"),
     "mrad": (r"$\theta_x$ [mrad]", r"$\theta_y$ [mrad]"),
-    "deg":  (r"$\theta_x$ [$^\circ$]", r"$\theta_y$ [$^\circ$]"),
+    "deg": (r"$\theta_x$ [$^\circ$]", r"$\theta_y$ [$^\circ$]"),
     "norm": (r"$k_x/k$", r"$k_y/k$"),
-    "kxy":  (r"$k_x/k$", r"$k_y/k$"),
-    "knm":  (r"$k_n$ [pix]", r"$k_m$ [pix]"),
+    "kxy": (r"$k_x/k$", r"$k_y/k$"),
+    "knm": (r"$k_n$ [pix]", r"$k_m$ [pix]"),
     "freq": (r"$f_x$ [1/pix]", r"$f_y$ [1/pix]"),
     "lpmm": (r"$k_x/2\pi$ [1/mm]", r"$k_y/2\pi$ [1/mm]"),
-    "zernike": (
-        r"$x = Z_2 = Z_1^1$ [Zernike rad]",
-        r"$y = Z_1 = Z_1^{-1}$ [Zernike rad]"
-    ),
-    "ij":    (r"Camera $i$ [pix]", r"Camera $j$ [pix]"),
+    "zernike": (r"$x = Z_2 = Z_1^1$ [Zernike rad]", r"$y = Z_1 = Z_1^{-1}$ [Zernike rad]"),
+    "ij": (r"Camera $i$ [pix]", r"Camera $j$ [pix]"),
     "ijraw": (r"Sensor $i$ [raw pix]", r"Sensor $j$ [raw pix]"),
 }
 for prefix, name in zip(["", "mag_"], ["Camera", "Experiment"]):
-    for k in LENGTH_FACTORS.keys():
+    for k in LENGTH_FACTORS:
         u = LENGTH_LABELS[k]
-        BLAZE_LABELS[prefix+k] = (f"{name} $x$ [{u}]", f"{name} $y$ [{u}]")
-        CAMERA_UNITS.append(prefix+k)
+        BLAZE_LABELS[prefix + k] = (f"{name} $x$ [{u}]", f"{name} $y$ [{u}]")
+        CAMERA_UNITS.append(prefix + k)
 
 BLAZE_UNITS = list(BLAZE_LABELS.keys())
 
@@ -73,7 +70,7 @@ def convert_blaze_vector(*args, **kwargs):
         "in favor of convert_vector in a future release."
     )
 
-    if "slm" in kwargs.keys():
+    if "slm" in kwargs:
         kwargs["hardware"] = kwargs.pop("slm")
         warnings.warn("convert_vector(slm=) was renamed convert_vector(hardware=).")
 
@@ -90,7 +87,7 @@ def convert_blaze_radius(*args, **kwargs):
         "in favor of convert_radius in a future release."
     )
 
-    if "slm" in kwargs.keys():
+    if "slm" in kwargs:
         kwargs["hardware"] = kwargs.pop("slm")
         warnings.warn("convert_radius(slm=) was renamed convert_radius(hardware=).")
 
@@ -148,7 +145,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``.
 
     -  ``"ij"``
-        Camera sensor pixel units, the coordinates of the image array returned by 
+        Camera sensor pixel units, the coordinates of the image array returned by
         :meth:`~slmsuite.hardware.cameras.camera.Camera.get_image()` using numpy ``img[y, x]`` convention.
         When a WOI or binning is applied, the origin is shifted and units are scaled accordingly.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
@@ -160,7 +157,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     -  ``"ijraw"``
         Raw camera sensor pixel units: the **unbinned, un-WOI'd, untransformed** coordinate
         system of the physical sensor, as opposed to ``"ij"`` which lives in the WOI-,
-        binning-, and orientation-applied frame of the returned image.  Requires a 
+        binning-, and orientation-applied frame of the returned image.  Requires a
         :class:`~slmsuite.hardware.cameras.camera.Camera`
         (or :class:`~slmsuite.hardware.cameraslms.FourierSLM`) to be passed to ``hardware``.
         The mapping to ``"ij"`` is the camera's current window, binning, and orientation.
@@ -255,39 +252,37 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         Result of the unit conversion, in the cleaned format of :meth:`format_2vectors()`.
     """
     # Parse units.
-    if not (from_units in BLAZE_UNITS):
+    if from_units not in BLAZE_UNITS:
         raise ValueError(
             f"From unit '{from_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
         )
-    if not (to_units in BLAZE_UNITS):
+    if to_units not in BLAZE_UNITS:
         raise ValueError(
             f"To unit '{to_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
         )
 
     # Parse vectors.
-    vector_parsed = format_vectors(
-        vector,
-        expected_dimension=2,
-        handle_dimension="pass"
-    ).astype(float)
+    vector_parsed = format_vectors(vector, expected_dimension=2, handle_dimension="pass").astype(
+        float
+    )
 
     if from_units == to_units:
         return vector_parsed
 
     vector_xy = vector_parsed[:2, :]
     if vector_parsed.shape[0] > 2:
-        vector_z =  vector_parsed[[2], :]
+        vector_z = vector_parsed[[2], :]
     else:
         vector_z = None
 
     # Determine which hardware was passed, duck typed to avoid a circular import.
-    if hasattr(hardware, "slm") and hasattr(hardware, "cam"):       # CameraSLM
+    if hasattr(hardware, "slm") and hasattr(hardware, "cam"):  # CameraSLM
         cameraslm, slm, cam = hardware, hardware.slm, hardware.cam
-    elif hasattr(hardware, "_get_ijcam_to_ijraw"):                 # bare Camera
+    elif hasattr(hardware, "_get_ijcam_to_ijraw"):  # bare Camera
         cameraslm, slm, cam = None, None, hardware
-    elif hasattr(hardware, "set_phase"):                           # bare SLM
+    elif hasattr(hardware, "set_phase"):  # bare SLM
         cameraslm, slm, cam = None, hardware, None
-    else:                                                          # None / unknown
+    else:  # None / unknown
         cameraslm, slm, cam = None, None, None
 
     # Camera-only conversions skip the kxy round-trip and need no CameraSLM.
@@ -296,23 +291,27 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     if from_units in CAMERA_UNITS or to_units in CAMERA_UNITS:
         if cam is None:
             logger.warning(
-                "A Camera or CameraSLM must be passed as hardware "
-                "for conversion '%s' to '%s'", from_units, to_units
+                "A Camera or CameraSLM must be passed as hardware for conversion '%s' to '%s'",
+                from_units,
+                to_units,
             )
             return np.full_like(vector_parsed, np.nan)
 
-        if not camera_only and (cameraslm is None or not "fourier" in cameraslm.calibrations):
+        if not camera_only and (cameraslm is None or "fourier" not in cameraslm.calibrations):
             logger.warning(
                 "A Fourier-calibrated CameraSLM must be passed as hardware "
-                "for conversion '%s' to '%s'", from_units, to_units
+                "for conversion '%s' to '%s'",
+                from_units,
+                to_units,
             )
             return np.full_like(vector_parsed, np.nan)
 
         # "mag_..." units require the CameraSLM magnification.
         if ("mag_" in from_units or "mag_" in to_units) and cameraslm is None:
             logger.warning(
-                "A CameraSLM must be passed as hardware for 'mag_...' "
-                "conversion '%s' to '%s'", from_units, to_units
+                "A CameraSLM must be passed as hardware for 'mag_...' conversion '%s' to '%s'",
+                from_units,
+                to_units,
             )
             return np.full_like(vector_parsed, np.nan)
 
@@ -320,13 +319,13 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
         if cam_pitch_um is None:
             # Only length (non-pixel) camera units need the pixel pitch.
-            if (
-                (from_units in CAMERA_UNITS and from_units not in CAMERA_PIXEL_UNITS) or
-                (to_units in CAMERA_UNITS and to_units not in CAMERA_PIXEL_UNITS)
+            if (from_units in CAMERA_UNITS and from_units not in CAMERA_PIXEL_UNITS) or (
+                to_units in CAMERA_UNITS and to_units not in CAMERA_PIXEL_UNITS
             ):
                 logger.warning(
-                    "Camera must have filled attribute pitch_um "
-                    "for conversion '%s' to '%s'", from_units, to_units
+                    "Camera must have filled attribute pitch_um for conversion '%s' to '%s'",
+                    from_units,
+                    to_units,
                 )
                 return np.full_like(vector_parsed, np.nan)
         else:
@@ -404,7 +403,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         ij = ijcam_to_ijraw.inv @ vector_xy
     elif from_units in CAMERA_UNITS:
         unit = from_units.split("_")[-1]
-        if "mag_" in from_units: vector_xy = vector_xy * cameraslm.mag
+        if "mag_" in from_units:
+            vector_xy = vector_xy * cameraslm.mag
         ij = vector_xy * LENGTH_FACTORS[unit] / cam_pitch_um
 
     # Bridge the "ijcam" pixel and "kxy" domains, only when crossing between them.
@@ -435,7 +435,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     elif to_units in CAMERA_UNITS:
         unit = to_units.split("_")[-1]
         vector_xy = ij * cam_pitch_um / LENGTH_FACTORS[unit]
-        if "mag_" in to_units: vector_xy = vector_xy / cameraslm.mag
+        if "mag_" in to_units:
+            vector_xy = vector_xy / cameraslm.mag
 
     # Z
 
@@ -448,7 +449,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         elif from_units in CAMERA_UNITS:
             unit = from_units.split("_")[-1]
             z_ij = vector_z * LENGTH_FACTORS[unit] / np.mean(cam_pitch_um)
-            if "mag_" in from_units: z_ij = z_ij * cameraslm.mag ** 2
+            if "mag_" in from_units:
+                z_ij = z_ij * cameraslm.mag**2
         elif from_units == "zernike":
             focal_power = vector_z * ((8 * np.pi) / (zernike_scale * zernike_scale))
         else:
@@ -468,7 +470,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         elif to_units in CAMERA_UNITS:
             unit = to_units.split("_")[-1]
             vector_z = z_ij * np.mean(cam_pitch_um) / LENGTH_FACTORS[unit]
-            if "mag_" in to_units: vector_z = vector_z / cameraslm.mag ** 2
+            if "mag_" in to_units:
+                vector_z = vector_z / cameraslm.mag**2
         elif to_units == "zernike":
             vector_z = focal_power * ((zernike_scale * zernike_scale) / (8 * np.pi))
         else:
@@ -497,7 +500,7 @@ def print_blaze_conversions(vector, from_units="norm", **kwargs):
     for unit in BLAZE_UNITS:
         result = convert_vector(vector, from_units=from_units, to_units=unit, **kwargs)
 
-        print("'{}' : {}".format(unit, result.T[0, :]))
+        print(f"'{unit}' : {result.T[0, :]}")
 
 
 def convert_radius(radius, from_units="norm", to_units="norm", hardware=None, shape=None):
@@ -608,10 +611,9 @@ def window_slice(window, shape=None, centered=False, circular=False):
             y_list = np.arange(yi, yf)
             x_grid, y_grid = np.meshgrid(x_list, y_list)
 
-            rr_grid = (
-                (window[3] ** 2) * np.square(x_grid.astype(float) - xc) +
-                (window[1] ** 2) * np.square(y_grid.astype(float) - yc)
-            )
+            rr_grid = (window[3] ** 2) * np.square(x_grid.astype(float) - xc) + (
+                window[1] ** 2
+            ) * np.square(y_grid.astype(float) - yc)
 
             mask_grid = rr_grid <= (window[1] ** 2) * (window[3] ** 2) / 4.0
 
@@ -640,7 +642,7 @@ def window_slice(window, shape=None, centered=False, circular=False):
 
 def _is_mask(window):
     """Whether ``window`` is a 2D boolean mask, on any backend."""
-    return getattr(window, "dtype", None) == bool and getattr(window, "ndim", 0) == 2
+    return getattr(window, "dtype", None) == bool and getattr(window, "ndim", 0) == 2  # noqa: E721 (numpy dtype, not a type)
 
 
 def window_extent(window, padding_frac=0, padding_pix=0):
@@ -679,7 +681,7 @@ def window_extent(window, padding_frac=0, padding_pix=0):
     # For each axis...
     for a in [0, 1]:
         if len(window) == 4 and not is_mask:  # Handle the (x, w, y, h) case
-            b = 2*a
+            b = 2 * a
             limit = np.array([window[b], window[b] + window[b + 1]])
         elif len(window) == 2 and not is_mask:  # Handle two list case: window = (y_ind, x_ind)
             limit = np.array([np.amin(window[1 - a]), np.amax(window[1 - a]) + 1])
@@ -853,8 +855,10 @@ def imprint(
     .. code-block:: python
 
         canvas = np.zeros(shape=slm.shape)  # Matrix to imprint onto.
-        window = [200, 200, 200, 200]       # Region of the matrix to imprint [x, w, y, h].
-        toolbox.imprint(canvas, window=window, function=toolbox.phase.blaze, grid=slm, vector=(.001, .001))
+        window = [200, 200, 200, 200]  # Region of the matrix to imprint [x, w, y, h].
+        toolbox.imprint(
+            canvas, window=window, function=toolbox.phase.blaze, grid=slm, vector=(0.001, 0.001)
+        )
 
     See also :ref:`examples`.
 
@@ -935,25 +939,22 @@ def imprint(
     slice_ = window_slice(window, shape=shape, centered=centered, circular=circular)
 
     if not clip and window is not None and isinstance(slice_, tuple):
-        for (index, limit) in zip(slice_, matrix.shape):
+        for index, limit in zip(slice_, matrix.shape):
             if isinstance(index, slice):
                 out_of_range = index.start < 0 or index.stop > limit
             else:
                 out_of_range = np.any(index < 0) or np.any(index >= limit)
             if out_of_range:
                 raise ValueError(
-                    "Imprint window extends past the matrix of shape {}. "
-                    "Pass clip=True to crop the window.".format(matrix.shape)
+                    f"Imprint window extends past the matrix of shape {matrix.shape}. "
+                    "Pass clip=True to crop the window."
                 )
 
     # Decide whether to treat function as a float.
     is_float = isinstance(function, REAL_TYPES)
 
-    if not is_float:
-        if grid is None:
-            raise ValueError(
-                "grid cannot be None if a function is given; None is a float-only option."
-            )
+    if not is_float and grid is None:
+        raise ValueError("grid cannot be None if a function is given; None is a float-only option.")
 
     # Evaluate the function on the windowed grid. The grid and the canvas need not
     # share a backend (a GPU slm.grid is often imprinted onto a host matrix), so land
@@ -962,8 +963,7 @@ def imprint(
         grid_slice = as_backend(slice_, get_array_module(x_grid)) if _is_mask(slice_) else slice_
         function = as_backend(
             function(
-                transform_grid((x_grid[grid_slice], y_grid[grid_slice]), transform, shift),
-                **kwargs
+                transform_grid((x_grid[grid_slice], y_grid[grid_slice]), transform, shift), **kwargs
             ),
             get_array_module(matrix),
         )
@@ -977,7 +977,7 @@ def imprint(
     elif imprint_operation == "add":
         matrix[slice_] += function
     else:
-        raise ValueError("Unrecognized imprint operation {}.".format(imprint_operation))
+        raise ValueError(f"Unrecognized imprint operation {imprint_operation}.")
 
     return matrix
 
@@ -1023,7 +1023,7 @@ def format_vectors(vectors, expected_dimension=2, handle_dimension="pass"):
 
     # Parse handle_dimension
     options_dimension = ["error", "crop", "pass"]
-    if not (handle_dimension in options_dimension):
+    if handle_dimension not in options_dimension:
         raise ValueError(
             f"handle_dimension option '{handle_dimension}' not recognized. "
             f"Must be one of '{options_dimension}'."
@@ -1044,19 +1044,24 @@ def format_vectors(vectors, expected_dimension=2, handle_dimension="pass"):
 
     if vectors.shape[0] == expected_dimension:
         pass
-    elif vectors.shape[0] > expected_dimension:     # Handle unexpected case.
+    elif vectors.shape[0] > expected_dimension:  # Handle unexpected case.
         if handle_dimension == "pass":
             pass
         elif handle_dimension == "crop":
             if vectors.shape[0] > expected_dimension:
-                vectors = vectors[:expected_dimension,:]
+                vectors = vectors[:expected_dimension, :]
             else:
-                raise ValueError(f"{vectors.shape[0]}-vectors too small to crop to {expected_dimension}-vectors.")
+                raise ValueError(
+                    f"{vectors.shape[0]}-vectors too small to crop to {expected_dimension}-vectors."
+                )
         elif handle_dimension == "error":
-            raise ValueError(f"Expected {expected_dimension}-vectors. Found {vectors.shape[0]}-vectors.")
+            raise ValueError(
+                f"Expected {expected_dimension}-vectors. Found {vectors.shape[0]}-vectors."
+            )
     else:
-        raise ValueError(f"Expected {expected_dimension}-vectors. Found {vectors.shape[0]}-vectors.")
-
+        raise ValueError(
+            f"Expected {expected_dimension}-vectors. Found {vectors.shape[0]}-vectors."
+        )
 
     return vectors
 
@@ -1166,7 +1171,7 @@ def build_affine(
             raise ValueError(f"cam_pitch_um is required for unit '{units}'")
 
         f_eff *= wav_um / np.squeeze(cam_pitch_um)
-    elif units in LENGTH_FACTORS.keys():
+    elif units in LENGTH_FACTORS:
         if cam_pitch_um is None or cam_pitch_um[0] is None:
             raise ValueError(f"cam_pitch_um is required for unit '{units}'")
 
@@ -1195,16 +1200,16 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
     .. highlight:: python
     .. code-block:: python
 
-        y0 = (1.,1.)    # Origin
-        y1 = (2.,2.)    # First point in x direction
-        y2 = (1.,2.)    # first point in y direction
+        y0 = (1.0, 1.0)  # Origin
+        y1 = (2.0, 2.0)  # First point in x direction
+        y2 = (1.0, 2.0)  # first point in y direction
 
         # If N is None, return a dict with keys "M", and "b"
-        affine_dict =   fit_3pt(y0, y1, y2, N=None)
+        affine_dict = fit_3pt(y0, y1, y2, N=None)
 
         # If N is provided, evaluates the transformation on indices with the given shape
         # In this case, the requested 5x5 indices results in an array with shape (2,25)
-        vector_array =  fit_3pt(y0, y1, y2, N=(5,5))
+        vector_array = fit_3pt(y0, y1, y2, N=(5, 5))
 
     However, ``fit_3pt`` is more powerful than this, and can fit an affine
     transformation to semi-arbitrary sets of points with known indices
@@ -1215,10 +1220,10 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
     .. code-block:: python
 
         # y11 is at x index (1,1), etc
-        fit_3pt(y11, y34, y78, N=(5,5), x0=(1,1), x1=(3,4), x2=(7,8))
+        fit_3pt(y11, y34, y78, N=(5, 5), x0=(1, 1), x1=(3, 4), x2=(7, 8))
 
         # These indices don't have to be integers
-        fit_3pt(a, b, c, N=(5,5), x0=(np.pi,1.5), x1=(20.5,np.sqrt(2)), x2=(7.7,42.0))
+        fit_3pt(a, b, c, N=(5, 5), x0=(np.pi, 1.5), x1=(20.5, np.sqrt(2)), x2=(7.7, 42.0))
 
     Optionally, basis vectors can be passed directly instead of adding these
     vectors to the origin, by making use of passing ``None`` for ``x1`` or ``x2``:
@@ -1226,13 +1231,13 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
     .. highlight:: python
     .. code-block:: python
 
-        origin =    (1.,1.)     # Origin
-        dv1 =       (1.,1.)     # Basis vector in x direction
-        dv2 =       (1.,0.)     # Basis vector in y direction
+        origin = (1.0, 1.0)  # Origin
+        dv1 = (1.0, 1.0)  # Basis vector in x direction
+        dv2 = (1.0, 0.0)  # Basis vector in y direction
 
         # The following are equivalent:
-        option1 = fit_3pt(origin, np.add(origin, dv1), np.add(origin, dv2), N=(5,5))
-        option2 = fit_3pt(origin, dv1, dv2, N=(5,5), x1=None, x2=None)
+        option1 = fit_3pt(origin, np.add(origin, dv1), np.add(origin, dv2), N=(5, 5))
+        option2 = fit_3pt(origin, dv1, dv2, N=(5, 5), x1=None, x2=None)
 
     Parameters
     ----------
@@ -1305,7 +1310,7 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
     J = np.linalg.inv(np.squeeze(np.array([[dx1[0], dx2[0]], [dx1[1], dx2[1]]])))
 
     # Construct the matrix.
-    M = np.matmul(np.squeeze(np.array([[y1[0,0], y2[0,0]], [y1[1,0], y2[1,0]]])), J)
+    M = np.matmul(np.squeeze(np.array([[y1[0, 0], y2[0, 0]], [y1[1, 0], y2[1, 0]]])), J)
     b = y0 - np.matmul(M, x0)
 
     # Deal with N and make indices.
@@ -1330,7 +1335,7 @@ def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_che
     elif isinstance(N, np.ndarray):
         indices = format_2vectors(N)
     else:
-        raise ValueError("N={} not recognized.".format(N))
+        raise ValueError(f"N={N} not recognized.")
 
     if affine_return:
         return {"M": M, "b": b}
@@ -1388,8 +1393,8 @@ def smallest_distance(vectors, metric="chebyshev"):
         # Expects sorted v.
         N = v.shape[0]
 
-        if N > min_div:
-            M = int(N/2)
+        if min_div < N:
+            M = int(N / 2)
 
             # Divide the problem recursively.
             d1 = _divide_and_conquer_recursive(v[:M, :], metric, axis)
@@ -1410,7 +1415,7 @@ def smallest_distance(vectors, metric="chebyshev"):
             return min(d, distance.pdist(subset, metric=metric).min())
         else:
             # Use pdist as a fast low-level distance calculator.
-            return  distance.pdist(v, metric=metric).min()
+            return distance.pdist(v, metric=metric).min()
 
     vectors = format_2vectors(vectors)
     N = vectors.shape[1]
@@ -1418,8 +1423,8 @@ def smallest_distance(vectors, metric="chebyshev"):
     if N <= 1:
         return np.inf
 
-    if isinstance(metric, str):     # Divide and conquer.
-        if not metric in distance._METRIC_ALIAS:
+    if isinstance(metric, str):  # Divide and conquer.
+        if metric not in distance._METRIC_ALIAS:
             raise RuntimeError(f"Distance metric '{metric}' not recognized by scipy.")
 
         axis = 0
@@ -1428,21 +1433,24 @@ def smallest_distance(vectors, metric="chebyshev"):
         # pdist needs transpose.
         vectors = vectors.T
 
-        if N < 2*min_div or distance._METRIC_ALIAS[metric].canonical_name not in (
-            "chebyshev", "cityblock", "euclidean", "minkowski"
+        if 2 * min_div > N or distance._METRIC_ALIAS[metric].canonical_name not in (
+            "chebyshev",
+            "cityblock",
+            "euclidean",
+            "minkowski",
         ):
             return distance.pdist(vectors, metric=metric).min()
         else:
             centroid = np.max(vectors, axis=axis, keepdims=True)
 
             # Slightly inefficient use of cdist.
-            xorder = distance.cdist(vectors[:,[axis]], centroid[:,[axis]], metric=metric)
+            xorder = distance.cdist(vectors[:, [axis]], centroid[:, [axis]], metric=metric)
 
             I = np.argsort(np.squeeze(xorder))
             vsort = vectors[I, :]
 
             return _divide_and_conquer_recursive(vsort, metric, axis=axis, min_div=min_div)
-    else:                           # Fallback to brute force.
+    else:  # Fallback to brute force.
         minimum = np.inf
 
         for x in range(N - 1):
@@ -1484,7 +1492,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
     if isinstance(grid, (tuple, list)) and all(isinstance(x, INTEGER_TYPES) for x in grid):
         shape = grid
     else:
-        x_grid, y_grid = _process_grid(grid)
+        x_grid, _y_grid = _process_grid(grid)
         shape = x_grid.shape
     H, W = shape
 
@@ -1538,7 +1546,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
                 x = x1 + (x2 - x1) * (H - y1) / (y2 - y1)
             return [x, y]
 
-        for edge, edge_fn, intersect_fn in [
+        for _edge, edge_fn, intersect_fn in [
             ("left", lambda p: p[0] >= 0, lambda p1, p2: intersect(p1, p2, "left")),
             ("right", lambda p: p[0] <= W, lambda p1, p2: intersect(p1, p2, "right")),
             ("bottom", lambda p: p[1] >= 0, lambda p1, p2: intersect(p1, p2, "bottom")),
@@ -1602,7 +1610,7 @@ def lloyds_algorithm(grid, vectors, iterations=10, plot=False):
     return result
 
 
-def lloyds_points(grid, n_points, iterations=10, plot=False):
+def lloyds_points(grid, n_points, iterations=10, plot=False, seed=None):
     r"""
     Implements `Lloyd's Algorithm <https://en.wikipedia.org/wiki/Lloyd's_algorithm>`_
     without seed ``vectors``; instead, autogenerates the seed ``vectors`` randomly.
@@ -1634,14 +1642,21 @@ def lloyds_points(grid, n_points, iterations=10, plot=False):
         (x_grid, y_grid) = _process_grid(grid)
         shape = x_grid.shape
 
+    rng = np.random.default_rng(seed)
     vectors = np.vstack(
-        (np.random.randint(0, shape[1], n_points), np.random.randint(0, shape[0], n_points))
+        (
+            rng.integers(0, shape[1], n_points),
+            rng.integers(0, shape[0], n_points),
+        )
     )
 
     # Regenerate until no overlaps (improve for performance?)
     while smallest_distance(vectors) < 1:
         vectors = np.vstack(
-            (np.random.randint(0, shape[1], n_points), np.random.randint(0, shape[0], n_points))
+            (
+                rng.integers(0, shape[1], n_points),
+                rng.integers(0, shape[0], n_points),
+            )
         )
 
     grid2 = np.meshgrid(range(shape[1]), range(shape[0]))
@@ -1776,7 +1791,7 @@ def transform_grid(grid, transform=None, shift=None, direction="fwd"):
         transform = 0
     if not np.isscalar(transform):
         transform = np.squeeze(transform)
-        if transform.shape != (2,2):
+        if transform.shape != (2, 2):
             raise ValueError("Expected transform to be None, scalar, or a 2x2 matrix.")
 
     # Parse shift.
@@ -1840,9 +1855,8 @@ def format_shape(shape, expected_dimension=2):
     """
     shape = tuple(np.squeeze(shape))
 
-    if expected_dimension is not None:
-        if len(shape) != expected_dimension:
-            raise ValueError(f"Expected shape with {expected_dimension} dimensions, got {len(shape)}")
+    if expected_dimension is not None and len(shape) != expected_dimension:
+        raise ValueError(f"Expected shape with {expected_dimension} dimensions, got {len(shape)}")
 
     for dim in shape:
         if not isinstance(dim, INTEGER_TYPES) or dim <= 0:
@@ -1955,11 +1969,15 @@ def unpad(matrix, shape):
 # Public API: names defined here or in private submodules (e.g. ``Aperture``), plus public
 # submodules (``phase``), so that the documentation (autosummary with
 # ``autosummary_ignore_module_all = False``) lists them.
-__all__ = sorted(
-    name for name, obj in list(globals().items())
-    if not name.startswith("_")
-    and (
-        getattr(obj, "__module__", None) == __name__
-        or getattr(obj, "__module__", "").startswith(__name__ + "._")
-    )
-) + ["phase"]
+__all__ = [  # noqa: PLE0604 (built from the public names of this module)
+    *sorted(
+        name
+        for name, obj in list(globals().items())
+        if not name.startswith("_")
+        and (
+            getattr(obj, "__module__", None) == __name__
+            or getattr(obj, "__module__", "").startswith(__name__ + "._")
+        )
+    ),
+    "phase",
+]

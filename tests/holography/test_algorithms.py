@@ -1,29 +1,40 @@
 """
 Unit tests for slmsuite.holography.algorithms module.
 """
-import logging
 
-import pytest
-import numpy as np
+import logging
 from types import SimpleNamespace
-from scipy import ndimage
+
+from conftest import (
+    ground_truth_kxy_to_ij,
+    install_ground_truth_calibration,
+    seed_for,
+    spot_size_ij,
+    view_kxy_grid,
+)
 import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+from scipy import ndimage
 
 import slmsuite._plotting
 from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.algorithms import (
-    Hologram, SpotHologram, CompressedSpotHologram, MultiplaneHologram, FeedbackHologram
+    CompressedSpotHologram,
+    FeedbackHologram,
+    Hologram,
+    MultiplaneHologram,
+    SpotHologram,
+    _spots,
 )
-from slmsuite.holography.algorithms import _spots
 from slmsuite.holography.algorithms._header import (
-    ALGORITHM_DEFAULTS, cp_affine_transform, cp as xp, torch
+    ALGORITHM_DEFAULTS,
+    cp as xp,
+    cp_affine_transform,
+    torch,
 )
 from slmsuite.holography.analysis import Affine
 from slmsuite.holography.analysis.files import load_h5
-
-from conftest import (
-    seed_for, install_ground_truth_calibration, spot_size_ij, view_kxy_grid, ground_truth_kxy_to_ij
-)
 
 try:
     import cupy as cp
@@ -69,7 +80,9 @@ def _random_hologram(shape, slm_shape, seed):
     """A hologram with a random amp, propagation kernel, and phase."""
     rng = np.random.default_rng(seed)
     h = Hologram(
-        shape, slm_shape=slm_shape, amp=rng.random(slm_shape) + 0.1,
+        shape,
+        slm_shape=slm_shape,
+        amp=rng.random(slm_shape) + 0.1,
         propagation_kernel=rng.uniform(0, 2 * np.pi, slm_shape),
     )
     h.reset_phase(rng.uniform(0, 2 * np.pi, slm_shape))
@@ -78,7 +91,7 @@ def _random_hologram(shape, slm_shape, seed):
 
 # An odd shape is where fftshift and ifftshift differ.
 TRANSFORM_SHAPES = pytest.mark.parametrize(
-    "shape, slm_shape",
+    ("shape", "slm_shape"),
     [((64, 64), (64, 64)), ((64, 64), (40, 48)), ((65, 63), (65, 63))],
     ids=["unpadded", "padded", "odd"],
 )
@@ -91,14 +104,15 @@ def _multiplane(shape=(64, 64), slm_shape=None, n=2, amp=None):
     slm_shape = shape if slm_shape is None else slm_shape
     if amp is None:
         amp = np.ones(slm_shape, dtype=np.float32) / np.sqrt(np.prod(slm_shape))
-    return MultiplaneHologram([
-        Hologram(target=_spot_target(shape, spot), amp=amp, slm_shape=slm_shape)
-        for spot in [(12, 12), (20, 44), (44, 20)][:n]
-    ])
+    return MultiplaneHologram(
+        [
+            Hologram(target=_spot_target(shape, spot), amp=amp, slm_shape=slm_shape)
+            for spot in [(12, 12), (20, 44), (44, 20)][:n]
+        ]
+    )
 
 
 class TestHologram:
-
     def test_init(self, subtests):
         with subtests.test("dtype fixes the matching complex precision"):
             h = Hologram(target=np.zeros((64, 64), dtype=np.float32))
@@ -113,7 +127,7 @@ class TestHologram:
 
         with subtests.test("rejects non-float dtypes"):
             for spelling in (np.complex64, np.int32):
-                with pytest.raises(ValueError):
+                with pytest.raises(ValueError, match="not supported; use float32 or float64"):
                     Hologram((16, 16), dtype=spelling)
 
         with subtests.test("slm_shape defaults to the computational shape"):
@@ -141,10 +155,8 @@ class TestHologram:
             assert h.amp.dtype == h.dtype
 
         with subtests.test("an amp that does not match slm_shape raises"):
-            with pytest.raises(ValueError):
-                Hologram(
-                    target=np.zeros((64, 64)), phase=np.zeros((64, 64)), amp=np.ones((32, 32))
-                )
+            with pytest.raises(ValueError, match="The shape of amplitude"):
+                Hologram(target=np.zeros((64, 64)), phase=np.zeros((64, 64)), amp=np.ones((32, 32)))
 
     def test_reset(self, subtests):
         with subtests.test("clears iter and stats"):
@@ -199,15 +211,19 @@ class TestHologram:
     def test_get_padded_shape(self, subtests):
         with subtests.test("padding_order raises each dimension to that power of two"):
             # The worked example from the docstring.
-            for (order, expected) in ((0, (720, 1280)), (1, (1024, 2048)), (2, (2048, 4096))):
-                assert Hologram.get_padded_shape(
-                    (720, 1280), padding_order=order, square_padding=False
-                ) == expected
+            for order, expected in ((0, (720, 1280)), (1, (1024, 2048)), (2, (2048, 4096))):
+                assert (
+                    Hologram.get_padded_shape(
+                        (720, 1280), padding_order=order, square_padding=False
+                    )
+                    == expected
+                )
 
         with subtests.test("a shape already a power of two is left alone"):
-            assert Hologram.get_padded_shape(
-                (128, 256), padding_order=1, square_padding=False
-            ) == (128, 256)
+            assert Hologram.get_padded_shape((128, 256), padding_order=1, square_padding=False) == (
+                128,
+                256,
+            )
 
         with subtests.test("square padding takes the larger dimension"):
             assert Hologram.get_padded_shape((128, 256)) == (256, 256)
@@ -279,9 +295,7 @@ class TestHologram:
             np.testing.assert_allclose(_np(h.nearfield), nearfield, atol=1e-6)
 
         with subtests.test("the extracted phase is net of the propagation kernel"):
-            np.testing.assert_allclose(
-                np.angle(np.exp(1j * (_np(h.phase) - phase))), 0, atol=1e-4
-            )
+            np.testing.assert_allclose(np.angle(np.exp(1j * (_np(h.phase) - phase))), 0, atol=1e-4)
 
     def test_unpad_slice(self, subtests):
         """Memoized on the shapes, because subclasses adjust them after ``__init__``."""
@@ -311,7 +325,7 @@ class TestHologram:
                 )
 
         with subtests.test("an unrecognized stat group raises"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="not recognized"):
                 Hologram(target=np.zeros((64, 64))).optimize(
                     method="GS", maxiter=1, verbose=False, stat_groups=["INVALID_GROUP"]
                 )
@@ -360,9 +374,7 @@ class TestHologram:
             assert np.unravel_index(np.argmax(ff), ff.shape) == spot
 
         with subtests.test("efficiency improves over iterations"):
-            h = Hologram(
-                target=_spot_target((64, 64), (13, 17), (30, 44), (50, 10), (10, 50))
-            )
+            h = Hologram(target=_spot_target((64, 64), (13, 17), (30, 44), (50, 10), (10, 50)))
             h.optimize(method="GS", maxiter=20, verbose=False, stat_groups=["computational"])
             effs = h.stats["stats"]["computational"]["efficiency"]
             assert effs[-1] > effs[0]
@@ -387,7 +399,7 @@ class TestHologram:
     @pytest.mark.parametrize("method", WGS_METHODS)
     def test_optimize_wgs(self, method, subtests):
         """Weighting drives the spots toward equal power as the iterations proceed."""
-        seed_for(f"wgs_uniformity-{method}")    # The initial phase decides the outcome.
+        seed_for(f"wgs_uniformity-{method}")  # The initial phase decides the outcome.
         h = Hologram(
             target=_spot_target((64, 64), (13, 17), (30, 44), (50, 10), (10, 50), (32, 32))
         )
@@ -400,10 +412,7 @@ class TestHologram:
                 target=_spot_target((64, 64), (13, 17), (30, 44), (50, 10), (10, 50), (32, 32))
             )
             gs.optimize(method="GS", maxiter=30, verbose=False, stat_groups=["computational"])
-            assert (
-                comp["uniformity"][-1]
-                > gs.stats["stats"]["computational"]["uniformity"][-1]
-            )
+            assert comp["uniformity"][-1] > gs.stats["stats"]["computational"]["uniformity"][-1]
 
         with subtests.test("uniformity does not decrease"):
             assert comp["uniformity"][-1] >= comp["uniformity"][1]
@@ -424,10 +433,11 @@ class TestHologram:
         with subtests.test("a scalar amp and kernel optimize like their broadcast arrays"):
             start = np.random.default_rng(0).uniform(0, 2 * np.pi, (32, 32))
             phases = []
-            for (amp, kernel) in [(None, 0.5), (np.ones((32, 32)), np.full((32, 32), 0.5))]:
+            for amp, kernel in [(None, 0.5), (np.ones((32, 32)), np.full((32, 32), 0.5))]:
                 h = Hologram(
                     target=_spot_target((32, 32), (8, 8), (20, 24)),
-                    amp=amp, propagation_kernel=kernel,
+                    amp=amp,
+                    propagation_kernel=kernel,
                 )
                 h.reset_phase(start)
                 h.optimize(method="CG", maxiter=5, verbose=False)
@@ -477,8 +487,12 @@ class TestHologram:
                     frozen.append(_np(holo.phase_ff).copy())
 
             h.optimize(
-                method="WGS-Kim", maxiter=6, verbose=False, stat_groups=["computational"],
-                callback=record, **flags,
+                method="WGS-Kim",
+                maxiter=6,
+                verbose=False,
+                stat_groups=["computational"],
+                callback=record,
+                **flags,
             )
             return (h, frozen)
 
@@ -499,7 +513,10 @@ class TestHologram:
         with subtests.test("fix_phase_efficiency without statistics raises"):
             with pytest.raises(ValueError, match="statistics"):
                 Hologram(target=target).optimize(
-                    method="WGS-Kim", maxiter=2, verbose=False, stat_groups=[],
+                    method="WGS-Kim",
+                    maxiter=2,
+                    verbose=False,
+                    stat_groups=[],
                     fix_phase_efficiency=0.6,
                 )
 
@@ -528,6 +545,7 @@ class TestHologram:
     def test_update_weights_generic_gpu(self, method, has_cupy):
         """numpy and cupy reweight alike, zero feedback and zero target included."""
         import cupy as cp
+
         rng = np.random.default_rng(1)
         target = np.zeros(8, np.float32)
         target[:6] = rng.random(6) + 0.5
@@ -565,15 +583,14 @@ class TestHologram:
             # Any partial-coverage camera: `ijcam_to_knmslm` NaN-fills the knm it misses.
             amp = np.ones(4)
             clean = Hologram._calculate_stats(amp, amp, xp=np)
-            dirty = Hologram._calculate_stats(
-                np.append(amp, np.nan), np.append(amp, np.nan), xp=np
-            )
+            dirty = Hologram._calculate_stats(np.append(amp, np.nan), np.append(amp, np.nan), xp=np)
             assert dirty["efficiency"] == pytest.approx(clean["efficiency"])
 
     @pytest.mark.gpu
     def test_calculate_stats_gpu(self, has_cupy, subtests):
         """The device path and the host fallback report what the host path reports."""
         import cupy as cp
+
         rng = np.random.default_rng(0)
         target = np.zeros(40, np.float32)
         target[:6] = rng.random(6) + 0.5
@@ -587,14 +604,17 @@ class TestHologram:
                 cp.asarray(feedback), cp.asarray(target), xp=cp, total=total, raw=True
             )
             fallback = Hologram._calculate_stats(
-                cp.asarray(feedback), cp.asarray(target), xp=np,
-                total=None if total is None else cp.float32(total), raw=True,
+                cp.asarray(feedback),
+                cp.asarray(target),
+                xp=np,
+                total=None if total is None else cp.float32(total),
+                raw=True,
             )
 
             with subtests.test("cupy input matches numpy, on host arrays", total=total):
                 for stats in (device, fallback):
                     assert set(stats) == set(host)
-                    for (key, value) in host.items():
+                    for key, value in host.items():
                         assert type(stats[key]) is type(value), key
                         np.testing.assert_allclose(stats[key], value, rtol=1e-5, err_msg=key)
 
@@ -640,18 +660,18 @@ class TestHologram:
         h = Hologram(target=np.zeros((32, 32)))
 
         with subtests.test("mutable method defaults are not shared between holograms"):
-            monkeypatch.setitem(ALGORITHM_DEFAULTS["CG"], "optimizer_kwargs", {"lr": .1})
+            monkeypatch.setitem(ALGORITHM_DEFAULTS["CG"], "optimizer_kwargs", {"lr": 0.1})
             (a, b) = (Hologram((32, 32)), Hologram((32, 32)))
             a._update_flags("CG", None, [])
             b._update_flags("CG", None, [])
             a.flags["optimizer_kwargs"]["lr"] = 1
-            assert b.flags["optimizer_kwargs"]["lr"] == .1
+            assert b.flags["optimizer_kwargs"]["lr"] == 0.1
 
         with subtests.test("experimental bases are valid stat groups"):
             h._update_flags("GS", None, ["experimental_knm", "experimental_ij"])
 
         with subtests.test("but are not valid feedback"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="not recognized as a feedback option"):
                 h._update_flags("GS", "experimental_knm", [])
 
     def test_save_stats(self, tmp_path):
@@ -747,9 +767,7 @@ class TestHologram:
             (amp_panel, phase_panel) = panels()
 
             assert np.amax(amp_panel) == pytest.approx(0.5)
-            np.testing.assert_allclose(
-                phase_panel, np.mod(phase, 2 * np.pi) / np.pi, atol=1e-6
-            )
+            np.testing.assert_allclose(phase_panel, np.mod(phase, 2 * np.pi) / np.pi, atol=1e-6)
 
     def test_plot_farfield(self, simulated_system_factory, keep_figures, subtests):
         """The overview and zoom pair: where it crops, what it names, and the units it labels."""
@@ -764,7 +782,7 @@ class TestHologram:
             keep_figures.flush()
 
         with subtests.test("each named source titles its own plot"):
-            for (source, title) in [
+            for source, title in [
                 ("amp_ff", "Farfield Amplitude"),
                 ("phase_ff", "Farfield Phase"),
                 ("target", "Target Amplitude"),
@@ -788,9 +806,7 @@ class TestHologram:
             (_, axs) = keep_figures.subplots(1, 2)
             open_figures = len(keep_figures.get_fignums())
 
-            np.testing.assert_array_equal(
-                h.plot_farfield(axs=axs, cbar=True), target_limits
-            )
+            np.testing.assert_array_equal(h.plot_farfield(axs=axs, cbar=True), target_limits)
             assert len(keep_figures.get_fignums()) == open_figures
             keep_figures.flush()
 
@@ -805,9 +821,7 @@ class TestHologram:
             camera_hologram("fov_larger").plot_farfield(source="target")
             overview = keep_figures.gcf().axes[0]
 
-            assert {text.get_text() for text in overview.texts} == {
-                "SLM FoV", "Camera FoV", "Zoom"
-            }
+            assert {text.get_text() for text in overview.texts} == {"SLM FoV", "Camera FoV", "Zoom"}
             knm_extent = overview.images[0].get_extent()
             keep_figures.flush()
 
@@ -815,7 +829,8 @@ class TestHologram:
             camera_hologram("fov_smaller").plot_farfield(source="target")
 
             assert {text.get_text() for text in keep_figures.gcf().axes[0].texts} == {
-                "Camera FoV", "Zoom"
+                "Camera FoV",
+                "Zoom",
             }
             keep_figures.flush()
 
@@ -832,8 +847,11 @@ class TestHologram:
         h = Hologram(target=_spot_target((32, 32), (8, 8), (20, 24)))
         h.reset_phase(random_phase=0)
         h.optimize(
-            method="WGS-Kim", maxiter=4, verbose=False,
-            stat_groups=["computational"], fix_phase_iteration=2,
+            method="WGS-Kim",
+            maxiter=4,
+            verbose=False,
+            stat_groups=["computational"],
+            fix_phase_iteration=2,
         )
 
         with subtests.test("the axes are named for the class and scaled logarithmically"):
@@ -846,15 +864,21 @@ class TestHologram:
         with subtests.test("the legend names the group, the metrics, and the shading"):
             ax = h.plot_stats()
             assert [text.get_text() for text in ax.get_legend().get_texts()] == [
-                "computational", "inefficiency", "nonuniformity",
-                "pkpk_err", "std_err", "fixed_phase",
+                "computational",
+                "inefficiency",
+                "nonuniformity",
+                "pkpk_err",
+                "std_err",
+                "fixed_phase",
             ]
             keep_figures.flush()
 
         with subtests.test("an explicit stats_dict and ylim are honored"):
             ax = h.plot_stats(
-                stats_dict=h.stats, stat_groups=["computational"],
-                ylim=(1e-3, 1.0), show=True,
+                stats_dict=h.stats,
+                stat_groups=["computational"],
+                ylim=(1e-3, 1.0),
+                show=True,
             )
             assert ax.get_ylim() == pytest.approx((1e-3, 1.0))
 
@@ -882,6 +906,7 @@ class TestHologram:
     @pytest.mark.parametrize("method", ["GS", "WGS-Leonardo", "WGS-Kim", "WGS-Nogrette"])
     def test_optimize_speed_gpu(self, random_seed, method, benchmark, has_cupy):
         import cupy as cp
+
         rng = np.random.default_rng(random_seed)
         target = cp.zeros((1024, 1024))
         target[rng.integers(0, 1024, 20), rng.integers(0, 1024, 20)] = 1
@@ -891,12 +916,9 @@ class TestHologram:
 
 
 class TestSpotHologram:
-
     def test_init(self, simulated_system_factory, subtests):
         with subtests.test("a spot puts all of the target power on its pixel"):
-            h = SpotHologram(
-                shape=(64, 64), spot_vectors=np.array([[32.0], [32.0]]), basis="knm"
-            )
+            h = SpotHologram(shape=(64, 64), spot_vectors=np.array([[32.0], [32.0]]), basis="knm")
             target = _np(h.target)
             assert target[32, 32] > 0
             rest = target.copy()
@@ -917,23 +939,21 @@ class TestSpotHologram:
         with subtests.test("external_spot_amp defaults to a copy of spot_amp"):
             spots = np.array([[10.0, 20.0, 30.0, 40.0], [10.0, 20.0, 30.0, 40.0]])
             h = SpotHologram(
-                shape=(64, 64), spot_vectors=spots, basis="knm",
+                shape=(64, 64),
+                spot_vectors=spots,
+                basis="knm",
                 spot_amp=np.array([1.0, 2.0, 3.0, 4.0]),
             )
             assert np.allclose(h.external_spot_amp, h.spot_amp)
             assert h.external_spot_amp is not h.spot_amp
 
         with subtests.test("a spot outside the computational space raises"):
-            with pytest.raises(ValueError, match="[Bb]ounds"):
-                SpotHologram(
-                    shape=(64, 64), spot_vectors=np.array([[100.0], [100.0]]), basis="knm"
-                )
+            with pytest.raises(ValueError, match=r"[Bb]ounds"):
+                SpotHologram(shape=(64, 64), spot_vectors=np.array([[100.0], [100.0]]), basis="knm")
 
         with subtests.test("a spot that rounds onto the pixel past the edge raises"):
-            with pytest.raises(ValueError, match="[Bb]ounds"):
-                SpotHologram(
-                    shape=(64, 64), spot_vectors=np.array([[63.6], [10.0]]), basis="knm"
-                )
+            with pytest.raises(ValueError, match=r"[Bb]ounds"):
+                SpotHologram(shape=(64, 64), spot_vectors=np.array([[63.6], [10.0]]), basis="knm")
 
         with subtests.test("the caller's spot array is copied, not aliased"):
             spots = np.array([[16.0, 48.0], [16.0, 48.0]])
@@ -951,7 +971,7 @@ class TestSpotHologram:
         null_kxy = view_kxy_grid(fs, count=2, frac=0.6)
 
         with subtests.test("the kxy, ij and knm bases describe the same spots"):
-            for (vectors, basis) in [(spots_kxy, "kxy"), (spots_ij, "ij"), (spots_knm, "knm")]:
+            for vectors, basis in [(spots_kxy, "kxy"), (spots_ij, "ij"), (spots_knm, "knm")]:
                 h = SpotHologram(fs.slm.shape, vectors, basis=basis, cameraslm=fs)
                 np.testing.assert_allclose(h.spot_knm, spots_knm)
                 np.testing.assert_allclose(h.spot_kxy, spots_kxy)
@@ -964,22 +984,27 @@ class TestSpotHologram:
 
             uncalibrated = simulated_system_factory("matched")
             with pytest.raises(ValueError, match="fourier"):
-                SpotHologram(
-                    uncalibrated.slm.shape, spots_ij, basis="ij", cameraslm=uncalibrated
-                )
+                SpotHologram(uncalibrated.slm.shape, spots_ij, basis="ij", cameraslm=uncalibrated)
 
-            with pytest.raises(ValueError, match="[Uu]nrecognized basis"):
+            with pytest.raises(ValueError, match=r"[Uu]nrecognized basis"):
                 SpotHologram(fs.slm.shape, spots_knm, basis="nonsense", cameraslm=fs)
 
         with subtests.test("null_vectors reach the same knm points from either basis"):
             null_radius_kxy = 0.01
 
             from_kxy = SpotHologram(
-                fs.slm.shape, spots_kxy, basis="kxy", cameraslm=fs,
-                null_vectors=null_kxy, null_radius=null_radius_kxy,
+                fs.slm.shape,
+                spots_kxy,
+                basis="kxy",
+                cameraslm=fs,
+                null_vectors=null_kxy,
+                null_radius=null_radius_kxy,
             )
             from_ij = SpotHologram(
-                fs.slm.shape, spots_ij, basis="ij", cameraslm=fs,
+                fs.slm.shape,
+                spots_ij,
+                basis="ij",
+                cameraslm=fs,
                 null_vectors=fs.kxyslm_to_ijcam(null_kxy),
                 null_radius=toolbox.convert_radius(
                     null_radius_kxy, "kxy", "ij", hardware=fs, shape=fs.slm.shape
@@ -1000,8 +1025,10 @@ class TestSpotHologram:
         with subtests.test("spot_amp needs one amplitude per spot"):
             with pytest.raises(ValueError, match="spot_amp"):
                 SpotHologram(
-                    shape=(64, 64), spot_vectors=np.array([[10.0, 20.0], [10.0, 20.0]]),
-                    basis="knm", spot_amp=np.ones(3),
+                    shape=(64, 64),
+                    spot_vectors=np.array([[10.0, 20.0], [10.0, 20.0]]),
+                    basis="knm",
+                    spot_amp=np.ones(3),
                 )
 
     def test_make_rectangular_array(self, subtests):
@@ -1021,8 +1048,13 @@ class TestSpotHologram:
 
         with subtests.test("orientation_check drops the last two spots and their amplitudes"):
             h = SpotHologram.make_rectangular_array(
-                (64, 64), (3, 2), (10, 8), array_center=(30, 20), basis="knm",
-                orientation_check=True, spot_amp=np.arange(1, 7),
+                (64, 64),
+                (3, 2),
+                (10, 8),
+                array_center=(30, 20),
+                basis="knm",
+                orientation_check=True,
+                spot_amp=np.arange(1, 7),
             )
             np.testing.assert_array_equal(h.spot_knm, [[20, 30, 40, 20], [16, 16, 16, 24]])
             np.testing.assert_array_equal(h.spot_amp, [1, 2, 3, 4])
@@ -1049,8 +1081,11 @@ class TestSpotHologram:
             at_spots = (h.spot_knm_rounded[1, :], h.spot_knm_rounded[0, :])
             before = _np(h.weights[at_spots]).copy()
             h.optimize(
-                method="WGS-Kim", feedback="external_spot", maxiter=3,
-                verbose=False, stat_groups=[],
+                method="WGS-Kim",
+                feedback="external_spot",
+                maxiter=3,
+                verbose=False,
+                stat_groups=[],
             )
             return (before, _np(h.weights[at_spots]))
 
@@ -1075,8 +1110,11 @@ class TestSpotHologram:
                 fs.slm.shape, view_kxy_grid(fs, count=2, frac=0.3), basis="kxy", cameraslm=fs
             )
             h.optimize(
-                method="WGS-Kim", feedback="experimental", maxiter=3,
-                verbose=False, stat_groups=[],
+                method="WGS-Kim",
+                feedback="experimental",
+                maxiter=3,
+                verbose=False,
+                stat_groups=[],
             )
             assert h.flags["feedback"] == "experimental_spot"
 
@@ -1085,8 +1123,11 @@ class TestSpotHologram:
                 fs.slm.shape, view_kxy_grid(fs, count=2, frac=0.3), basis="kxy", cameraslm=fs
             )
             h.optimize(
-                method="WGS-Kim", feedback="computational_spot", maxiter=10,
-                verbose=False, stat_groups=["computational_spot"],
+                method="WGS-Kim",
+                feedback="computational_spot",
+                maxiter=10,
+                verbose=False,
+                stat_groups=["computational_spot"],
             )
             assert h.stats["stats"]["computational_spot"]["uniformity"][-1] > 0.999
 
@@ -1100,8 +1141,11 @@ class TestSpotHologram:
             h = SpotHologram(fs.slm.shape, spots, basis="kxy", cameraslm=fs)
             h.external_spot_amp = h.spot_amp * np.array([2.0, 1.0, 1.0, 1.0])
             h.optimize(
-                method="WGS-Kim", feedback="external_spot", maxiter=3,
-                verbose=False, stat_groups=["external_spot"],
+                method="WGS-Kim",
+                feedback="external_spot",
+                maxiter=3,
+                verbose=False,
+                stat_groups=["external_spot"],
             )
 
             # Powers of 4:1:1:1 against a flat target: 1 - (4 - 1) / (4 + 1), every iteration.
@@ -1126,9 +1170,7 @@ class TestSpotHologram:
             h = SpotHologram((64, 64), knm, basis="knm")
             h.reset_phase(np.random.default_rng(0).uniform(0, 2 * np.pi, h.slm_shape))
             farfield = np.abs(h.get_farfield()) ** 2
-            h.optimize(
-                method="GS", maxiter=1, verbose=False, stat_groups=["computational_spot"]
-            )
+            h.optimize(method="GS", maxiter=1, verbose=False, stat_groups=["computational_spot"])
             fraction = farfield[knm[1].astype(int), knm[0].astype(int)].sum() / farfield.sum()
             efficiency = h.stats["stats"]["computational_spot"]["efficiency"][0]
             assert efficiency == pytest.approx(fraction, rel=1e-4)
@@ -1138,8 +1180,11 @@ class TestSpotHologram:
             for shape in (fs.slm.shape, (256, 256)):
                 h = SpotHologram(shape, spots, basis="kxy", cameraslm=fs)
                 h.optimize(
-                    method="WGS-Kim", feedback="computational_spot", maxiter=10,
-                    verbose=False, stat_groups=["computational_spot"],
+                    method="WGS-Kim",
+                    feedback="computational_spot",
+                    maxiter=10,
+                    verbose=False,
+                    stat_groups=["computational_spot"],
                 )
                 assert h.stats["stats"]["computational_spot"]["uniformity"][-1] > 0.99
 
@@ -1164,12 +1209,11 @@ class TestSpotHologram:
             assert np.any(h.spot_knm != spot_knm)
 
         with subtests.test("an unrecognized basis raises"):
-            with pytest.raises(Exception, match="[Uu]nrecognized basis"):
+            with pytest.raises(Exception, match=r"[Uu]nrecognized basis"):
                 h.refine_offset(img=img, basis="nonsense")
 
 
 class TestCompressedSpotHologram:
-
     def test_init(self, simulated_system_factory, monkeypatch, subtests):
         fs = simulated_system_factory("matched")
         install_ground_truth_calibration(fs)
@@ -1177,8 +1221,11 @@ class TestCompressedSpotHologram:
 
         with subtests.test("external_spot_amp defaults to a copy of spot_amp"):
             h = CompressedSpotHologram(
-                spots, basis="kxy", spot_amp=np.array([1.0, 2.0, 3.0, 4.0]),
-                cameraslm=fs, cuda=False,
+                spots,
+                basis="kxy",
+                spot_amp=np.array([1.0, 2.0, 3.0, 4.0]),
+                cameraslm=fs,
+                cuda=False,
             )
             assert np.allclose(h.external_spot_amp, h.spot_amp)
             assert h.external_spot_amp is not h.spot_amp
@@ -1186,7 +1233,11 @@ class TestCompressedSpotHologram:
         with subtests.test("spot_amp needs one amplitude per spot"):
             with pytest.raises(ValueError, match="spot_amp"):
                 CompressedSpotHologram(
-                    spots, basis="kxy", spot_amp=np.ones(3), cameraslm=fs, cuda=False,
+                    spots,
+                    basis="kxy",
+                    spot_amp=np.ones(3),
+                    cameraslm=fs,
+                    cuda=False,
                 )
 
         with subtests.test("a single spot is a valid array"):
@@ -1210,7 +1261,7 @@ class TestCompressedSpotHologram:
             again = CompressedSpotHologram(
                 spots, basis="kxy", cameraslm=fs, cuda=False, quadratic_phase=True
             )
-            np.testing.assert_array_equal(_np(again.phase), phase)    # deterministic, not random
+            np.testing.assert_array_equal(_np(again.phase), phase)  # deterministic, not random
 
         with subtests.test("zernike vectors are copied, not aliased"):
             zernike = toolbox.convert_vector(spots, "kxy", "zernike", hardware=fs)
@@ -1251,9 +1302,7 @@ class TestCompressedSpotHologram:
         )
         assert len(h) == 9
 
-        h.optimize(
-            method="WGS-Kim", maxiter=10, verbose=False, stat_groups=["computational_spot"]
-        )
+        h.optimize(method="WGS-Kim", maxiter=10, verbose=False, stat_groups=["computational_spot"])
         assert h.stats["stats"]["computational_spot"]["uniformity"][-1] > 0.5
 
     KNM = np.array([[40, 70, 90, 55], [30, 80, 60, 100]])
@@ -1276,7 +1325,7 @@ class TestCompressedSpotHologram:
         fs = simulated_system_factory("matched")
         install_ground_truth_calibration(fs)
         (h, compressed, fft) = self._against_fft(fs, cuda=False)
-        compressed = compressed.copy()      # The torch branch writes into this buffer.
+        compressed = compressed.copy()  # The torch branch writes into this buffer.
 
         with subtests.test("spot amplitudes are the fft farfield's at the spots, up to a scale"):
             np.testing.assert_allclose(
@@ -1290,7 +1339,8 @@ class TestCompressedSpotHologram:
             h._nearfield2farfield(phase_torch=Hologram._get_torch_tensor_from_cupy(h.phase))
             farfield = _np(h.farfield).ravel()
             np.testing.assert_allclose(
-                farfield / np.linalg.norm(farfield), compressed / np.linalg.norm(compressed),
+                farfield / np.linalg.norm(farfield),
+                compressed / np.linalg.norm(compressed),
                 atol=1e-5,
             )
 
@@ -1355,8 +1405,11 @@ class TestCompressedSpotHologram:
 
         with subtests.test("an overrunning width is clipped, so the feedback stays finite"):
             h.optimize(
-                method="WGS-Kim", feedback="experimental_spot", maxiter=3,
-                verbose=False, stat_groups=[],
+                method="WGS-Kim",
+                feedback="experimental_spot",
+                maxiter=3,
+                verbose=False,
+                stat_groups=[],
             )
             assert np.all(np.isfinite(h.get_weights()))
 
@@ -1379,7 +1432,7 @@ class TestCompressedSpotHologram:
             assert np.all(np.abs(shift) < bound)
 
         with subtests.test("spot against the sensor edge"):
-            h.spot_ij[:, 0] = [1.0, 1.0]    # As a previous refine_offset(basis="ij") could.
+            h.spot_ij[:, 0] = [1.0, 1.0]  # As a previous refine_offset(basis="ij") could.
             shift = h.refine_offset(img=img, basis=None)
             assert np.all(np.isfinite(shift[:, 0]))
             assert np.all(np.abs(shift[:, 1:]) < bound)
@@ -1422,7 +1475,7 @@ class TestCompressedSpotHologram:
             np.testing.assert_allclose(after[1:], after[1])
 
         with subtests.test("'computational' and 'experimental' mean their spot forms"):
-            for (feedback, spot_feedback) in [
+            for feedback, spot_feedback in [
                 ("computational", "computational_spot"),
                 ("experimental", "experimental_spot"),
             ]:
@@ -1431,7 +1484,6 @@ class TestCompressedSpotHologram:
 
 
 class TestMultiplaneHologram:
-
     def test_init(self, subtests):
         mph = _multiplane(n=2)
 
@@ -1442,11 +1494,11 @@ class TestMultiplaneHologram:
             assert mph.holograms[0].phase is mph.holograms[1].phase
 
         with subtests.test("a non-hologram child is rejected"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="must be provided child holograms"):
                 MultiplaneHologram([mph.holograms[0], "not a hologram"])
 
         with subtests.test("a nested MultiplaneHologram is rejected"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="recursion is not supported"):
                 MultiplaneHologram([mph, mph.holograms[0]])
 
         with subtests.test("the caller's weights are copied, not normalized in place"):
@@ -1458,14 +1510,16 @@ class TestMultiplaneHologram:
         """The meta hologram removes each child's vortices, as the child itself would."""
         (yy, xx) = np.mgrid[:64, :64]
         amp = np.ones((64, 64), dtype=np.float32) / 64
-        mph = MultiplaneHologram([
-            Hologram(target=(np.hypot(yy - c, xx - c) <= 10).astype(np.float32), amp=amp)
-            for c in (20, 44)
-        ])
+        mph = MultiplaneHologram(
+            [
+                Hologram(target=(np.hypot(yy - c, xx - c) <= 10).astype(np.float32), amp=amp)
+                for c in (20, 44)
+            ]
+        )
         mph.optimize(method="GS", maxiter=3, verbose=False)
         before = [_np(h.phase_ff).copy() for h in mph.holograms]
         expected = []
-        for (h, phase) in zip(mph.holograms, before):
+        for h, phase in zip(mph.holograms, before):
             phase = phase.copy()
             analysis.image_remove_vortices(phase, _np(h.target) > 0)
             expected.append(phase)
@@ -1475,7 +1529,7 @@ class TestMultiplaneHologram:
 
         with subtests.test("each child matches its own vortex removal"):
             mph.remove_vortices()
-            for (h, phase) in zip(mph.holograms, expected):
+            for h, phase in zip(mph.holograms, expected):
                 np.testing.assert_allclose(_np(h.phase_ff), phase)
 
         with subtests.test("callable from an optimize callback"):
@@ -1497,8 +1551,12 @@ class TestMultiplaneHologram:
         install_ground_truth_calibration(fs)
         children = [
             SpotHologram.make_rectangular_array(
-                fs.slm.shape, (2, 2), (20, 20), array_center=(64 + offset, 64),
-                basis="knm", cameraslm=fs,
+                fs.slm.shape,
+                (2, 2),
+                (20, 20),
+                array_center=(64 + offset, 64),
+                basis="knm",
+                cameraslm=fs,
             )
             for offset in (0, 25)
         ]
@@ -1507,17 +1565,22 @@ class TestMultiplaneHologram:
         grabs = []
         for child in children:
             inner = child.measure
+
             def measure(basis="ij", child=child, inner=inner):
                 fresh = child.img_ij is None
                 out = inner(basis)
                 if fresh:
                     grabs.append(float(np.nansum(_np(child.img_ij))))
                 return out
+
             child.measure = measure
 
         mph.optimize(
-            method="WGS-Kim", maxiter=3, verbose=False,
-            feedback="experimental_spot", stat_groups=["experimental_spot"],
+            method="WGS-Kim",
+            maxiter=3,
+            verbose=False,
+            feedback="experimental_spot",
+            stat_groups=["experimental_spot"],
         )
 
         with subtests.test("every child grabs a frame every iteration"):
@@ -1537,9 +1600,11 @@ class TestMultiplaneHologram:
         mph = _multiplane(n=3)
         counts = {id(h): 0 for h in mph.holograms}
         for h in mph.holograms:
+
             def counted(_h=h, _orig=h.reset_weights):
                 counts[id(_h)] += 1
                 return _orig()
+
             h.reset_weights = counted
 
         with subtests.test("each child resets its weights exactly once"):
@@ -1616,10 +1681,10 @@ class TestMultiplaneHologram:
         """Handing over the stack must be indistinguishable from assigning each child
         individually -- that equivalence is the whole basis for using it."""
         rng = np.random.default_rng(3)
-        stack = (rng.random((3,) + slm_shape) * 6.28).astype(np.float32)
+        stack = (rng.random((3, *slm_shape)) * 6.28).astype(np.float32)
 
         legacy = _multiplane(slm_shape=slm_shape, n=3)
-        for (i, h) in enumerate(legacy.holograms):
+        for i, h in enumerate(legacy.holograms):
             h.propagation_kernel = cp.asarray(stack[i]) if cp is not None else stack[i]
         legacy._refresh_batched_kernels()
 
@@ -1634,7 +1699,7 @@ class TestMultiplaneHologram:
             )
 
         with subtests.test("each child sees its own kernel"):
-            for (i, h) in enumerate(batched.holograms):
+            for i, h in enumerate(batched.holograms):
                 assert np.allclose(_np(h.propagation_kernel), stack[i], atol=1e-6)
 
         with subtests.test("no restack is triggered afterwards"):
@@ -1659,15 +1724,17 @@ class TestMultiplaneHologram:
     def test_update_weights(self):
         """The batched amplitude replacement uses the weights WGS left, not the targets."""
         amp = np.ones((32, 32), dtype=np.float32) / 32
-        mph = MultiplaneHologram([
-            Hologram(_spot_target((32, 32), (5, 5), (20, 9)), amp=amp),
-            Hologram(_spot_target((32, 32), (12, 25), (27, 3)), amp=amp),
-        ])
+        mph = MultiplaneHologram(
+            [
+                Hologram(_spot_target((32, 32), (5, 5), (20, 9)), amp=amp),
+                Hologram(_spot_target((32, 32), (12, 25), (27, 3)), amp=amp),
+            ]
+        )
         assert mph._batched
         mph.optimize(method="GS", maxiter=2, verbose=False)
         mph.optimize(method="WGS-Leonardo", maxiter=5, verbose=False)
         mph.optimize(method="GS", maxiter=1, verbose=False)
-        for (i, h) in enumerate(mph.holograms):
+        for i, h in enumerate(mph.holograms):
             np.testing.assert_allclose(
                 _np(mph._batched_child_weights[i]), _np(h.weights), atol=1e-7
             )
@@ -1691,20 +1758,17 @@ class TestMultiplaneHologram:
         with subtests.test("rebinding one child's kernel is picked up"):
             # In-place mutation is explicitly outside the contract; see `_restack_children`.
             kernel = (np.random.default_rng(9).random((64, 64)) * 6.28).astype(np.float32)
-            mph.holograms[1].propagation_kernel = (
-                cp.asarray(kernel) if cp is not None else kernel
-            )
+            mph.holograms[1].propagation_kernel = cp.asarray(kernel) if cp is not None else kernel
             mph._refresh_batched_kernels()
             phasor = _np(mph._batched_kernel_phasor)
             assert np.allclose(phasor[1], np.exp(1j * kernel), atol=1e-5)
             assert np.allclose(phasor[0], 1.0, atol=1e-6), "untouched planes stay put"
 
-    @pytest.mark.parametrize(
-        "slm_shape", [(64, 64), (32, 32)], ids=["unpadded", "padded"]
-    )
+    @pytest.mark.parametrize("slm_shape", [(64, 64), (32, 32)], ids=["unpadded", "padded"])
     @pytest.mark.gpu
     def test_gs_farfield_routines_batched(self, slm_shape, monkeypatch, subtests):
         """One pass over the batched tensors must land where the per-child loop does."""
+
         def run(iterations=8):
             mph = _multiplane(slm_shape=slm_shape, n=2)
             mph.reset_phase(random_phase=0)
@@ -1712,21 +1776,19 @@ class TestMultiplaneHologram:
             return mph
 
         reference = run()
-        monkeypatch.setattr(
-            MultiplaneHologram, "_can_batch_routines", lambda self, mraf: False
-        )
+        monkeypatch.setattr(MultiplaneHologram, "_can_batch_routines", lambda self, mraf: False)
         legacy = run()
 
         with subtests.test("phase"):
             assert np.allclose(_np(reference.phase), _np(legacy.phase), atol=1e-4)
 
         with subtests.test("child amp_ff"):
-            for (i, (a, b)) in enumerate(zip(reference.holograms, legacy.holograms)):
+            for i, (a, b) in enumerate(zip(reference.holograms, legacy.holograms)):
                 assert np.allclose(_np(a.amp_ff), _np(b.amp_ff), atol=1e-5), f"child {i}"
 
     # "odd-pad": an odd shape difference makes `unpad` return a 0-based slice that under-covers.
     @pytest.mark.parametrize(
-        "shape, slm_shape",
+        ("shape", "slm_shape"),
         [((64, 64), (64, 64)), ((64, 64), (32, 32)), ((65, 65), (64, 64))],
         ids=["unpadded", "padded", "odd-pad"],
     )
@@ -1735,7 +1797,7 @@ class TestMultiplaneHologram:
         """The batched path fuses the propagation kernel into the nearfield build, so
         only non-trivial kernels against `Hologram._build_nearfield` can pin it."""
         rng = np.random.default_rng(5)
-        stack = (rng.random((3,) + slm_shape) * 6.28).astype(np.float32)
+        stack = (rng.random((3, *slm_shape)) * 6.28).astype(np.float32)
 
         # A non-uniform source: GS renormalizes, so a uniform amp hides a dropped factor.
         (yy, xx) = np.meshgrid(
@@ -1818,7 +1880,7 @@ class TestFeedbackHologram:
         patch = rng.random(patch_shape).astype(np.float32)
         canvas = np.full(self.CAM_SHAPE, np.nan, dtype=np.float32)
         (y0, x0) = roi
-        canvas[y0:y0 + patch_shape[0], x0:x0 + patch_shape[1]] = patch
+        canvas[y0 : y0 + patch_shape[0], x0 : x0 + patch_shape[1]] = patch
         return canvas, patch
 
     def _pair(self, roi=None, patch_shape=None, seed=7):
@@ -1828,7 +1890,9 @@ class TestFeedbackHologram:
             self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE)
         )
         sub = FeedbackHologram(
-            self.SHAPE, target_ij=patch, target_ij_roi=self.ROI if roi is None else roi,
+            self.SHAPE,
+            target_ij=patch,
+            target_ij_roi=self.ROI if roi is None else roi,
             cameraslm=_StubCameraSLM(self.CAM_SHAPE),
         )
         return (full, sub, canvas, patch)
@@ -1855,7 +1919,9 @@ class TestFeedbackHologram:
             # Uncalibrated, set_target() never runs, so the roi would drop silently.
             with pytest.raises(ValueError, match="Fourier calibration"):
                 FeedbackHologram(
-                    self.SHAPE, target_ij=patch, target_ij_roi=self.ROI,
+                    self.SHAPE,
+                    target_ij=patch,
+                    target_ij_roi=self.ROI,
                     cameraslm=_StubCameraSLM(self.CAM_SHAPE, calibrated=False),
                 )
 
@@ -1874,9 +1940,7 @@ class TestFeedbackHologram:
 
         # A small patch leaves most of the knm grid undefined, on both sides of the radius.
         (canvas, _) = self._canvas_and_patch(roi=(24, 34), patch_shape=(12, 12))
-        h = FeedbackHologram(
-            self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE)
-        )
+        h = FeedbackHologram(self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE))
         radius = np.hypot(*np.meshgrid(*[np.linspace(-1, 1, n) for n in self.SHAPE[::-1]]))
 
         with subtests.test("null_region_radius_frac zeros only the undefined target beyond it"):
@@ -1899,15 +1963,15 @@ class TestFeedbackHologram:
         """A sub-image hanging off the frame has samples no camera could supply. The check
         lives at the `_ijcam_to_knmslm_resampler` choke point, so every entry point sees it."""
         (canvas, patch) = self._canvas_and_patch()
-        h = FeedbackHologram(
-            self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE)
-        )
+        h = FeedbackHologram(self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE))
 
         for roi in [(-1, 0), (0, -1), (52, 34), (24, 72)]:
             with subtests.test(f"the constructor rejects {roi}"):
                 with pytest.raises(ValueError, match="camera frame"):
                     FeedbackHologram(
-                        self.SHAPE, target_ij=patch, target_ij_roi=roi,
+                        self.SHAPE,
+                        target_ij=patch,
+                        target_ij_roi=roi,
                         cameraslm=_StubCameraSLM(self.CAM_SHAPE),
                     )
 
@@ -1953,7 +2017,7 @@ class TestFeedbackHologram:
 
         with subtests.test("a dark frame has no power to normalize by, warm cache or cold"):
             dark = np.zeros_like(_np(full.target_ij))
-            for _ in range(2):      # The second call runs against a warmed resampler cache.
+            for _ in range(2):  # The second call runs against a warmed resampler cache.
                 with pytest.raises(ValueError, match="No power in hologram"):
                     full.ijcam_to_knmslm(dark)
 
@@ -1962,10 +2026,8 @@ class TestFeedbackHologram:
         """The augmented (2, 3) matrix `affine_transform` is handed must be equivalent to
         a separate `offset=`, NaN fill included: MRAF's undefined region depends on it."""
         (canvas, _) = self._canvas_and_patch((24, 34), patch_shape=(20, 20))
-        canvas = np.nan_to_num(canvas, nan=0.0)     # affine_transform cannot blur NaNs.
-        h = FeedbackHologram(
-            self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE)
-        )
+        canvas = np.nan_to_num(canvas, nan=0.0)  # affine_transform cannot blur NaNs.
+        h = FeedbackHologram(self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE))
 
         matrix = h._ijcam_to_knmslm_resampler(np.shape(canvas), None)
         assert matrix.shape == (2, 3)
@@ -2009,7 +2071,7 @@ class TestFeedbackHologram:
             assert other._resampler_memo[1] is not first
 
         with subtests.test("recalibrating in place invalidates"):
-            stub.fourier_affine.M[0, 0] *= 2        # Same object, new contents.
+            stub.fourier_affine.M[0, 0] *= 2  # Same object, new contents.
             h.set_target(canvas)
             assert not np.allclose(_np(h._resampler_memo[1]), _np(first))
 
@@ -2037,9 +2099,7 @@ class TestFeedbackHologram:
 
         with subtests.test("img_knm agrees exactly at order=0, the order set_target uses"):
             windows = [
-                h.ijcam_to_knmslm(
-                    np.square(h._roi_window(frame)), roi=h.target_ij_roi, order=0
-                )
+                h.ijcam_to_knmslm(np.square(h._roi_window(frame)), roi=h.target_ij_roi, order=0)
                 for h in (full, sub)
             ]
             assert np.array_equal(_np(windows[0]), _np(windows[1]), equal_nan=True)
@@ -2062,9 +2122,13 @@ class TestFeedbackHologram:
         counts = {"write": 0, "grab": 0}
         (set_phase, get_image) = (fs.slm.set_phase, fs.cam.get_image)
         fs.slm.set_phase = lambda p, *a, **k: (
-            counts.update(write=counts["write"] + 1), set_phase(p, *a, **k))[1]
+            counts.update(write=counts["write"] + 1),
+            set_phase(p, *a, **k),
+        )[1]
         fs.cam.get_image = lambda *a, **k: (
-            counts.update(grab=counts["grab"] + 1), get_image(*a, **k))[1]
+            counts.update(grab=counts["grab"] + 1),
+            get_image(*a, **k),
+        )[1]
         try:
             with subtests.test("computational feedback leaves the SLM to its owner"):
                 h.measure(basis="ij")
@@ -2096,7 +2160,7 @@ class TestFeedbackHologram:
         install_ground_truth_calibration(fs)
         target_ij = np.zeros(fs.cam.shape, dtype=np.float32)
         spots_ij = ground_truth_kxy_to_ij(fs, view_kxy_grid(fs, count=3, frac=0.5))
-        for (x, y) in np.rint(spots_ij.T).astype(int):
+        for x, y in np.rint(spots_ij.T).astype(int):
             target_ij[y, x] = 1
 
         h = FeedbackHologram(fs.slm.shape, target_ij=target_ij, cameraslm=fs)
@@ -2104,8 +2168,11 @@ class TestFeedbackHologram:
         start = _np(h.phase).copy()
         maxiter = 20
         h.optimize(
-            method="CG", feedback="experimental", maxiter=maxiter,
-            verbose=False, stat_groups=["experimental_ij"],
+            method="CG",
+            feedback="experimental",
+            maxiter=maxiter,
+            verbose=False,
+            stat_groups=["experimental_ij"],
         )
         uniformity = h.stats["stats"]["experimental_ij"]["uniformity"][-maxiter:]
 

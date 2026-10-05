@@ -1,17 +1,21 @@
 """
 Handles pickling of objects.
 """
-import warnings
+
 import datetime
+from typing import ClassVar
+import warnings
 
 from slmsuite import __version__
 
-class _Picklable(object):
+
+class _Picklable:
     """
     Class for hardware objects to handle state saving.
     """
-    _pickle = []        # Baseline parameters to pickle.
-    _pickle_data = []
+
+    _pickle: ClassVar[list] = []  # Baseline parameters to pickle.
+    _pickle_data: ClassVar[list] = []  #
 
     def pickle(self, attributes=True, metadata=True):
         """
@@ -34,7 +38,7 @@ class _Picklable(object):
             This information is used as standard metadata for calibrations and saving.
         """
         # Parse attributes.
-        recursive_attributes = attributes is True   # Heavy pickling only if True.
+        recursive_attributes = attributes is True  # Heavy pickling only if True.
         if isinstance(attributes, bool):
             attributes = self._pickle + (self._pickle_data if attributes else [])
 
@@ -59,10 +63,10 @@ class _Picklable(object):
             if hasattr(self, "get_log"):
                 pickled["__log__"] = "\n".join(self.get_log())
             return {
-                "__version__" : __version__,
-                "__time__" : str(t),
-                "__timestamp__" : t.timestamp(),
-                "__meta__" : pickled
+                "__version__": __version__,
+                "__time__": str(t),
+                "__timestamp__": t.timestamp(),
+                "__meta__": pickled,
             }
         else:
             return pickled
@@ -83,7 +87,6 @@ class _Picklable(object):
             The dictionary that :meth:`pickle()` produced for this object, i.e. the
             ``"__meta__"`` payload without its metadata wrapper.
         """
-        pass
 
     def save(self, path=".", name=None, **kwargs):
         """
@@ -107,12 +110,9 @@ class _Picklable(object):
         from slmsuite.misc.files import generate_path, save_h5
 
         if name is None:
-            name = self.name + '-pickle'
+            name = self.name + "-pickle"
         file_path = generate_path(path, name, extension="h5")
 
-        save_h5(
-            file_path,
-            self.pickle(**kwargs)
-        )
+        save_h5(file_path, self.pickle(**kwargs))
 
         return file_path

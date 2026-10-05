@@ -1,32 +1,34 @@
 """
 Unit tests for slmsuite.holography.toolbox.phase module.
 """
+
 import gc
 import threading
+from typing import ClassVar
 import warnings
 import weakref
 
-import pytest
 import numpy as np
+import pytest
 
 from slmsuite.hardware.slms.simulated import SimulatedSLM
-from slmsuite.holography.toolbox import phase, Aperture
-from slmsuite.misc.xp import as_numpy
-from slmsuite.holography.toolbox.phase import _zernike as Z
+from slmsuite.holography.toolbox import Aperture, phase
 from slmsuite.holography.toolbox.phase import (
     ZernikeBasis,
-    clear_zernike_basis_cache,
-    _parse_focal_length,
-    _zernike_indices_parse,
     _cantor_pairing,
-    _inverse_cantor_pairing,
-    _parse_out,
     _determine_source_radius,
     _ince_polynomial,
+    _inverse_cantor_pairing,
+    _parse_focal_length,
+    _parse_out,
+    _zernike as Z,
     _zernike_build_order,
     _zernike_coefficients,
+    _zernike_indices_parse,
     _zernike_populate_basis_map,
+    clear_zernike_basis_cache,
 )
+from slmsuite.misc.xp import as_numpy
 
 
 @pytest.fixture
@@ -109,9 +111,7 @@ def test_blaze(simple_grid, subtests, benchmark):
         assert np.allclose(y_only, y_only[:, [0]])
 
     with subtests.test("the third vector component adds pi|x|^2 of focus"):
-        focus = (
-            phase.blaze(simple_grid, vector=(1, 1, 1)) - phase.blaze(simple_grid, vector=(1, 1))
-        )
+        focus = phase.blaze(simple_grid, vector=(1, 1, 1)) - phase.blaze(simple_grid, vector=(1, 1))
         assert np.allclose(focus, np.pi * (simple_grid[0] ** 2 + simple_grid[1] ** 2))
 
     with subtests.test("a float32 grid gives the float64 phase in float32"):
@@ -123,7 +123,7 @@ def test_triangle(simple_grid, subtests):
     vector = (0.1, 0.05)
 
     with subtests.test("a bias of one is a blaze, of minus one the opposite blaze"):
-        blazed = np.mod(phase.blaze(simple_grid, vector=vector), 2*np.pi)
+        blazed = np.mod(phase.blaze(simple_grid, vector=vector), 2 * np.pi)
         assert np.allclose(phase.triangle(simple_grid, vector=vector, bias=1), blazed)
         assert np.allclose(
             np.exp(1j * phase.triangle(simple_grid, vector=vector, bias=-1)),
@@ -145,7 +145,7 @@ def test_triangle(simple_grid, subtests):
         )
 
     with subtests.test("a and b bound the ramp"):
-        (a, b) = (np.pi, np.pi/2)
+        (a, b) = (np.pi, np.pi / 2)
         result = phase.triangle(simple_grid, vector=(1, 0), a=a, b=b)
         assert np.min(result) >= b - 1e-9
         assert np.max(result) <= a + 1e-9
@@ -156,7 +156,7 @@ def test_triangle(simple_grid, subtests):
         shift = np.pi / 2
         shifted = phase.triangle(simple_grid, vector=(1, 0), shift=shift)
         translated = phase.triangle(
-            (simple_grid[0] + shift / (2*np.pi), simple_grid[1]), vector=(1, 0)
+            (simple_grid[0] + shift / (2 * np.pi), simple_grid[1]), vector=(1, 0)
         )
         assert np.allclose(shifted, translated)
 
@@ -170,14 +170,14 @@ def test_sinusoid(simple_grid, subtests):
         assert np.allclose(phase.sinusoid(simple_grid, vector=(0, 0), a=2.0, b=0), 2.0)
 
     with subtests.test("a and b bound the sinusoid and are nearly attained"):
-        for (a, b) in ((np.pi, 0), (np.pi, np.pi/2), (2*np.pi, np.pi/2)):
+        for a, b in ((np.pi, 0), (np.pi, np.pi / 2), (2 * np.pi, np.pi / 2)):
             result = phase.sinusoid(simple_grid, vector=(1, 0), a=a, b=b)
             assert np.min(result) >= b - 1e-9
             assert np.max(result) <= a + 1e-9
             assert np.ptp(result) > 0.99 * (a - b)
 
     with subtests.test("shifting by pi reflects about the midpoint"):
-        kwargs = dict(vector=(1, 0), a=np.pi, b=0.5)
+        kwargs = {"vector": (1, 0), "a": np.pi, "b": 0.5}
         assert np.allclose(
             phase.sinusoid(simple_grid, shift=0, **kwargs)
             + phase.sinusoid(simple_grid, shift=np.pi, **kwargs),
@@ -201,7 +201,7 @@ def test_binary(simple_grid, subtests):
 
     with subtests.test("the duty cycle is the fraction of the period held at a"):
         for duty_cycle in (0.1, 0.25, 0.5, 0.75, 0.9):
-            result = phase.binary(simple_grid, vector=(.1, .1), duty_cycle=duty_cycle, a=1, b=0)
+            result = phase.binary(simple_grid, vector=(0.1, 0.1), duty_cycle=duty_cycle, a=1, b=0)
             assert np.mean(result > 0.5) == pytest.approx(duty_cycle, abs=0.02)
 
     with subtests.test("a vector component above one is a period in pixels"):
@@ -218,7 +218,7 @@ def test_binary(simple_grid, subtests):
         np.testing.assert_array_equal(y_only, np.broadcast_to(y_only[:, [0]], y_only.shape))
 
     with subtests.test("a zero vector selects a or b by whether the shift lies in the duty"):
-        for (shift, duty, expected) in ((0, 0.5, np.pi), (0.1, 0.5, np.pi), (np.pi, 0.25, 0)):
+        for shift, duty, expected in ((0, 0.5, np.pi), (0.1, 0.5, np.pi), (np.pi, 0.25, 0)):
             result = phase.binary(
                 simple_grid, vector=(0, 0), a=np.pi, b=0, shift=shift, duty_cycle=duty
             )
@@ -227,7 +227,7 @@ def test_binary(simple_grid, subtests):
     with subtests.test("a float32 grid gives the float64 grating in float32"):
         # Rounding the grid may move a duty-cycle edge across a pixel.
         for vector in ((0.1, 0.05), (4, 0), (0, 0)):
-            _assert_float32(phase.binary, simple_grid, fraction=.99, vector=vector)
+            _assert_float32(phase.binary, simple_grid, fraction=0.99, vector=vector)
 
 
 def test_lens(simple_grid, subtests, benchmark):
@@ -260,7 +260,7 @@ def test_lens(simple_grid, subtests, benchmark):
         assert np.allclose(
             result,
             phase.polynomial(
-                simple_grid, weights=[np.pi/50, np.pi/50], terms=np.array([[2, 0], [0, 2]])
+                simple_grid, weights=[np.pi / 50, np.pi / 50], terms=np.array([[2, 0], [0, 2]])
             ).squeeze(),
         )
 
@@ -319,7 +319,7 @@ def test_zernike(normalized_grid, subtests):
         assert np.allclose(phase.zernike(normalized_grid, index=2), normalized_grid[0] * x_scale)
 
     with subtests.test("defocus (j=4) is 2 rho^2 - 1"):
-        rho_squared = (normalized_grid[0] * x_scale)**2 + (normalized_grid[1] * y_scale)**2
+        rho_squared = (normalized_grid[0] * x_scale) ** 2 + (normalized_grid[1] * y_scale) ** 2
         assert np.allclose(phase.zernike(normalized_grid, index=4), 2 * rho_squared - 1)
 
     with subtests.test("weight scales the polynomial linearly"):
@@ -339,7 +339,7 @@ def test_zernike(normalized_grid, subtests):
         axis = np.linspace(-0.7, 0.7, 29)
         (x, y) = np.meshgrid(axis, axis)
         r2 = x**2 + y**2
-        for (index, expected) in (
+        for index, expected in (
             (6, 3 * x**2 * y - y**3),
             (7, (3 * r2 - 2) * y),
             (8, (3 * r2 - 2) * x),
@@ -351,8 +351,10 @@ def test_zernike(normalized_grid, subtests):
             (14, x**4 - 6 * x**2 * y**2 + y**4),
         ):
             np.testing.assert_allclose(
-                phase.zernike((x, y), index, aperture=1.0, use_mask=False), expected,
-                atol=1e-12, err_msg=f"Z{index}",
+                phase.zernike((x, y), index, aperture=1.0, use_mask=False),
+                expected,
+                atol=1e-12,
+                err_msg=f"Z{index}",
             )
 
 
@@ -362,15 +364,15 @@ def test_quadrants(simple_grid, subtests):
     v = radius / np.sqrt(2)
     odd_grid = (simple_grid[0][:-1, :-1], simple_grid[1][:-1, :-1])
 
-    for (name, grid) in (("even", simple_grid), ("odd", odd_grid)):
+    for name, grid in (("even", simple_grid), ("odd", odd_grid)):
         with subtests.test(f"every pixel of an {name} grid lies in a quadrant"):
             result = phase.quadrants(grid, radius=radius, center=center)
             (rows, cols) = result.shape
-            for (row, col, vector) in (
-                (slice(None, rows//2), slice(cols//2, None), (v, -v)),
-                (slice(rows//2, None), slice(cols//2, None), (v, v)),
-                (slice(None, rows//2), slice(None, cols//2), (-v, -v)),
-                (slice(rows//2, None), slice(None, cols//2), (-v, v)),
+            for row, col, vector in (
+                (slice(None, rows // 2), slice(cols // 2, None), (v, -v)),
+                (slice(rows // 2, None), slice(cols // 2, None), (v, v)),
+                (slice(None, rows // 2), slice(None, cols // 2), (-v, -v)),
+                (slice(rows // 2, None), slice(None, cols // 2), (-v, v)),
             ):
                 expected = phase.blaze(grid, vector=np.add(vector, center))
                 assert np.allclose(result[row, col], expected[row, col])
@@ -388,10 +390,10 @@ def test_bahtinov(simple_grid, subtests):
         (rows, cols) = result.shape
         (s, c) = (radius * np.sin(angle), radius * np.cos(angle))
 
-        for (row, col, vector) in (
-            (slice(None, rows//2), slice(cols//2, None), (s, c)),
-            (slice(rows//2, None), slice(cols//2, None), (s, -c)),
-            (slice(None, None), slice(None, cols//2), (0, radius)),
+        for row, col, vector in (
+            (slice(None, rows // 2), slice(cols // 2, None), (s, c)),
+            (slice(rows // 2, None), slice(cols // 2, None), (s, -c)),
+            (slice(None, None), slice(None, cols // 2), (0, radius)),
         ):
             expected = phase.binary(simple_grid, vector=vector)
             assert np.allclose(result[row, col], expected[row, col])
@@ -403,9 +405,7 @@ def test_bahtinov(simple_grid, subtests):
 def test_zernike_get_string(subtests):
     """Test zernike_get_string() LaTeX representations."""
     with subtests.test("the low orders are the cartesian Zernike monomials"):
-        for (index, string) in enumerate(
-            ["1", "1y", "1x", "2xy", "2y^2+2x^2-1", "-1y^2+1x^2"]
-        ):
+        for index, string in enumerate(["1", "1y", "1x", "2xy", "2y^2+2x^2-1", "-1y^2+1x^2"]):
             assert phase.zernike_get_string(index) == string
 
     with subtests.test("a derivative differentiates the monomials"):
@@ -424,9 +424,9 @@ def test_zernike_convert_index(subtests):
         )
 
     with subtests.test("an unknown convention raises"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r"From index .* not recognized"):
             phase.zernike_convert_index([0], from_index="bogus", to_index="ansi")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r"To index .* not recognized"):
             phase.zernike_convert_index([0], "ansi", "bogus")
 
     # The full matrix of conventions, over a range every convention can express.
@@ -467,9 +467,7 @@ def test_zernike_convert_index(subtests):
                         phase.zernike_convert_index(source[a], a, b), b, c
                     )
                     direct = phase.zernike_convert_index(source[a], a, c)
-                    np.testing.assert_array_equal(
-                        via.ravel(), direct.ravel(), f"{a} -> {b} -> {c}"
-                    )
+                    np.testing.assert_array_equal(via.ravel(), direct.ravel(), f"{a} -> {b} -> {c}")
 
     with subtests.test("Fringe 37 (Wyant 36) is R_12^0, ANSI 84"):
         np.testing.assert_array_equal(
@@ -520,22 +518,50 @@ def test_zernike_convert_index(subtests):
             back = phase.zernike_convert_index(there, scheme, "ansi").ravel()
             np.testing.assert_array_equal(back[:21], np.arange(21), scheme)
             assert back[21] == undefined, scheme
-            assert back[21] != -1, scheme       # Not the vortex.
-            assert back[21] < 0, scheme         # Not any ANSI polynomial.
+            assert back[21] != -1, scheme  # Not the vortex.
+            assert back[21] < 0, scheme  # Not any ANSI polynomial.
 
     with subtests.test("ANSI -> Noll matches Noll (1976)"):
         # J. Opt. Soc. Am. 66, 207, doi:10.1364/JOSA.66.000207, through radial order 6.
         np.testing.assert_array_equal(
             phase.zernike_convert_index(np.arange(28), "ansi", "noll").ravel(),
-            [1, 3, 2, 5, 4, 6, 9, 7, 8, 10, 15, 13, 11, 12, 14,
-             21, 19, 17, 16, 18, 20, 27, 25, 23, 22, 24, 26, 28],
+            [
+                1,
+                3,
+                2,
+                5,
+                4,
+                6,
+                9,
+                7,
+                8,
+                10,
+                15,
+                13,
+                11,
+                12,
+                14,
+                21,
+                19,
+                17,
+                16,
+                18,
+                20,
+                27,
+                25,
+                23,
+                22,
+                24,
+                26,
+                28,
+            ],
         )
 
     with subtests.test("a malformed radial index raises"):
         for shape_error in ([[1, 2, 3]], [1, 2, 3, 4]):
             with pytest.raises(ValueError, match="Expected dimension"):
                 phase.zernike_convert_index(shape_error, "radial", "ansi")
-        for (n, l) in ((2, 3), (2, -4), (-2, 0)):
+        for n, l in ((2, 3), (2, -4), (-2, 0)):
             with pytest.raises(ValueError, match="Invalid Zernike index"):
                 phase.zernike_convert_index([[n, l]], "radial", "ansi")
 
@@ -579,10 +605,9 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
 
     with subtests.test("derivatives are the analytic monomial coefficients"):
         # Z2 = x, Z4 = 2y^2 + 2x^2 - 1, Z3 = 2xy, in normalized pupil coordinates.
-        for (index, derivative, expected) in ((2, (1, 0), 1), (4, (2, 0), 4), (3, (1, 1), 2)):
+        for index, derivative, expected in ((2, (1, 0), 1), (4, (2, 0), 4), (3, (1, 1), 2)):
             result = phase.zernike_sum(
-                normalized_grid, indices=[index], weights=[1],
-                use_mask=False, derivative=derivative
+                normalized_grid, indices=[index], weights=[1], use_mask=False, derivative=derivative
             )
             assert np.allclose(result, expected)
 
@@ -597,7 +622,10 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
     with subtests.test("a float32 grid gives the float64 phase in float32"):
         for use_mask in (True, np.nan):
             _assert_float32(
-                phase.zernike_sum, normalized_grid, indices=[1, 4, 7], weights=[1.0, 2.0, 3.0],
+                phase.zernike_sum,
+                normalized_grid,
+                indices=[1, 4, 7],
+                weights=[1.0, 2.0, 3.0],
                 use_mask=use_mask,
             )
 
@@ -608,7 +636,12 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
         grid64 = tuple(g.astype(float) for g in grid32)
         for n in range(2, 25, 2):
             index = np.ravel(phase.zernike_convert_index([[n, 0]], "radial", "ansi"))
-            kwargs = dict(indices=index, weights=[1.0], aperture="circular", use_mask=np.nan)
+            kwargs = {
+                "indices": index,
+                "weights": [1.0],
+                "aperture": "circular",
+                "use_mask": np.nan,
+            }
             with warnings.catch_warnings(record=True) as record:
                 warnings.simplefilter("always")
                 single = phase.zernike_sum(grid32, **kwargs)
@@ -623,7 +656,9 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
             phase.zernike_sum(normalized_grid, indices=high, weights=[1], use_mask=np.nan)
             phase.zernike_sum(
                 tuple(g.astype(np.float32) for g in normalized_grid),
-                indices=[4], weights=[1], use_mask=np.nan,
+                indices=[4],
+                weights=[1],
+                use_mask=np.nan,
             )
 
     with subtests.test("scalar index and weight give a single pattern"):
@@ -657,7 +692,7 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
         with pytest.raises(ValueError, match="derivative"):
             phase.zernike_sum(basis, None, np.ones(len(indices)), derivative=(1, 0))
 
-    for (kwargs, match) in (
+    for kwargs, match in (
         ({"indices": [0], "weights": [1], "derivative": (1,)}, "Expected derivative"),
         ({"indices": [0, 1, 2], "weights": np.ones((3, 2, 2))}, "1D or 2D"),
         ({"indices": [0, 1], "weights": [1.0, 2.0, 3.0]}, "common dimension"),
@@ -670,7 +705,7 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
 class TestZernikeBasis:
     """Tests for the ZernikeBasis cache of basis images."""
 
-    indices = [2, 1, 4, 3, 5, 6, 7, 8]
+    indices: ClassVar[list] = [2, 1, 4, 3, 5, 6, 7, 8]
 
     def test_init(self, normalized_grid, subtests):
         D = len(self.indices)
@@ -685,7 +720,7 @@ class TestZernikeBasis:
             assert basis.norm.shape == (D,)
 
         with subtests.test("each basis image is its polynomial"):
-            for (image, index) in zip(basis.basis, self.indices):
+            for image, index in zip(basis.basis, self.indices):
                 np.testing.assert_allclose(
                     image,
                     Z._zernike_sum_direct(normalized_grid, [index], [1], None, True, (0, 0), None),
@@ -702,9 +737,7 @@ class TestZernikeBasis:
             direct = Z._zernike_sum_direct(
                 normalized_grid, self.indices[2:], weights[2:], None, True, (0, 0), None
             )
-            np.testing.assert_allclose(
-                phase.zernike_sum(sub, None, weights[2:]), direct, atol=1e-9
-            )
+            np.testing.assert_allclose(phase.zernike_sum(sub, None, weights[2:]), direct, atol=1e-9)
 
 
 def test_zernike_get_basis(normalized_grid, subtests):
@@ -802,12 +835,12 @@ def test_polynomial(simple_grid, subtests):
     (x, y) = simple_grid
 
     with subtests.test("each term is the monomial x^i y^j"):
-        for (terms, weights, expected) in (
+        for terms, weights, expected in (
             (np.array([[0, 0]]), [5.0], 5.0 * np.ones_like(x)),
             (np.array([[1, 0]]), [1.0], x),
             (np.array([[0, 1]]), [1.0], y),
             (np.array([[2, 0], [0, 2]]), [1.0, 1.0], x**2 + y**2),
-            (np.array([[-1, 0]]), [1.0], np.arctan2(y, x)),      # Vortex waveplate.
+            (np.array([[-1, 0]]), [1.0], np.arctan2(y, x)),  # Vortex waveplate.
         ):
             result = phase.polynomial(simple_grid, weights=weights, terms=terms)
             assert np.allclose(result.squeeze(), expected)
@@ -818,7 +851,8 @@ def test_polynomial(simple_grid, subtests):
 
     with subtests.test("weights of shape (D, N) return a stack of N patterns"):
         result = phase.polynomial(
-            simple_grid, weights=np.array([[1.0, 2.0], [3.0, 4.0]]),
+            simple_grid,
+            weights=np.array([[1.0, 2.0], [3.0, 4.0]]),
             terms=np.array([[1, 0], [0, 1]]),
         )
         assert np.allclose(result[0], 1.0 * x + 3.0 * y)
@@ -847,7 +881,7 @@ def test_polynomial(simple_grid, subtests):
             phase.polynomial, simple_grid, weights=[0.1, 0.2], terms=np.array([[2, 0], [0, 1]])
         )
 
-    for (weights, terms, match) in (
+    for weights, terms, match in (
         ([1.0], np.array([[1, 0, 0]]), "Terms must be"),
         ([1.0, 2.0, 3.0], np.array([[1, 0], [0, 1]]), "common dimension"),
         (np.ones((3, 1)), np.array([[1, 0], [0, 1]]), "common dimension"),
@@ -889,7 +923,8 @@ def test_laguerre_gaussian(simple_grid, fine_grid, subtests):
         slm.set_aperture("elliptical")
         (x_grid, y_grid) = (as_numpy(g) for g in slm.grid)
         np.testing.assert_allclose(
-            as_numpy(phase.laguerre_gaussian(slm, l=2)), 2 * np.arctan2(y_grid, x_grid),
+            as_numpy(phase.laguerre_gaussian(slm, l=2)),
+            2 * np.arctan2(y_grid, x_grid),
             atol=1e-5,
         )
 
@@ -901,7 +936,7 @@ def test_hermite_gaussian(simple_grid, fine_grid, subtests):
     """Test hermite_gaussian() structured light generation."""
     with subtests.test("the phase is binary, and flat for the n = m = 0 Gaussian"):
         assert np.allclose(phase.hermite_gaussian(simple_grid, n=0, m=0), np.pi)
-        for (n, m) in ((1, 0), (0, 1), (2, 2)):
+        for n, m in ((1, 0), (0, 1), (2, 2)):
             np.testing.assert_array_equal(
                 np.unique(phase.hermite_gaussian(simple_grid, n=n, m=m)), [0, np.pi]
             )
@@ -938,8 +973,14 @@ def test_ince_polynomial(subtests):
     """Test _ince_polynomial() against Ince's equation, DLMF 28.31.1."""
     ellipticity = 2.0
     cases = (
-        (4, 0, 1), (4, 4, 1), (3, 1, 1), (5, 3, 1),
-        (4, 2, -1), (6, 2, -1), (3, 1, -1), (5, 5, -1),
+        (4, 0, 1),
+        (4, 4, 1),
+        (3, 1, 1),
+        (5, 3, 1),
+        (4, 2, -1),
+        (6, 2, -1),
+        (3, 1, -1),
+        (5, 5, -1),
     )
     # Spectral derivatives are exact for a trigonometric polynomial this well sampled.
     z = 2 * np.pi * np.arange(256) / 256
@@ -949,40 +990,43 @@ def test_ince_polynomial(subtests):
         return np.real(np.fft.ifft((1j * k) ** order * np.fft.fft(f)))
 
     with subtests.test("each polynomial solves w'' + e sin(2z) w' + (eta - p e cos(2z)) w = 0"):
-        for (p, m, parity) in cases:
+        for p, m, parity in cases:
             f = _ince_polynomial(p, m, parity, ellipticity, z)
             operator = (
-                derivative(f, 2) + ellipticity * np.sin(2 * z) * derivative(f, 1)
+                derivative(f, 2)
+                + ellipticity * np.sin(2 * z) * derivative(f, 1)
                 - p * ellipticity * np.cos(2 * z) * f
             )
             eta = -np.dot(operator, f) / np.dot(f, f)
             assert np.max(np.abs(operator + eta * f)) < 1e-9 * np.max(np.abs(f)), (p, m, parity)
 
     with subtests.test("C_p^m is even and S_p^m is odd in z"):
-        for (p, m, parity) in cases:
+        for p, m, parity in cases:
             np.testing.assert_allclose(
                 _ince_polynomial(p, m, parity, ellipticity, -z),
                 parity * _ince_polynomial(p, m, parity, ellipticity, z),
-                atol=1e-12, err_msg=str((p, m, parity)),
+                atol=1e-12,
+                err_msg=str((p, m, parity)),
             )
 
     with subtests.test("the polynomial has m zeros in [0, pi)"):
         # Sampled off the symmetry points, where zeros sit exactly; S_p^m also vanishes at 0.
         interior = (np.arange(512) + 0.5) * np.pi / 512
-        for (p, m, parity) in cases:
+        for p, m, parity in cases:
             f = _ince_polynomial(p, m, parity, ellipticity, interior)
             assert np.count_nonzero(np.diff(np.sign(f))) + (parity == -1) == m, (p, m, parity)
 
     with subtests.test("the polynomials are normalized to (1/pi) int (C_p^m)^2 dz = 1"):
-        for (p, m, parity) in cases:
+        for p, m, parity in cases:
             f = _ince_polynomial(p, m, parity, ellipticity, z)
-            assert np.sum(f ** 2) * (z[1] - z[0]) / np.pi == pytest.approx(1, abs=1e-12)
+            assert np.sum(f**2) * (z[1] - z[0]) / np.pi == pytest.approx(1, abs=1e-12)
 
     with subtests.test("ellipticity -> 0 recovers cos(mz) and sin(mz)"):
-        for (p, m, parity, expected) in ((4, 2, 1, np.cos(2 * z)), (3, 1, -1, np.sin(z))):
+        for p, m, parity, expected in ((4, 2, 1, np.cos(2 * z)), (3, 1, -1, np.sin(z))):
             f = _ince_polynomial(p, m, parity, 1e-10, z)
             assert np.allclose(
-                np.abs(f / np.linalg.norm(f)), np.abs(expected / np.linalg.norm(expected)),
+                np.abs(f / np.linalg.norm(f)),
+                np.abs(expected / np.linalg.norm(expected)),
                 atol=0.01,
             )
 
@@ -990,18 +1034,21 @@ def test_ince_polynomial(subtests):
         xi = np.linspace(0, 1, 11)
         coarse = 2 * np.pi * np.arange(16) / 16
         continuation = np.exp(-np.outer(xi, np.fft.fftfreq(16, 1 / 16)))
-        for (p, m, parity) in cases:
+        for p, m, parity in cases:
             coefficients = np.fft.fft(_ince_polynomial(p, m, parity, ellipticity, coarse)) / 16
             np.testing.assert_allclose(
-                _ince_polynomial(p, m, parity, ellipticity, 1j * xi), continuation @ coefficients,
-                rtol=1e-9, atol=1e-12, err_msg=str((p, m, parity)),
+                _ince_polynomial(p, m, parity, ellipticity, 1j * xi),
+                continuation @ coefficients,
+                rtol=1e-9,
+                atol=1e-12,
+                err_msg=str((p, m, parity)),
             )
 
 
 def test_ince_gaussian(simple_grid, subtests):
     """Test ince_gaussian() structured light generation."""
     with subtests.test("an invalid (p, m, parity) raises"):
-        for (p, m, parity, match) in (
+        for p, m, parity, match in (
             (2, 5, 1, "invalid Ince"),
             (2, 0, -1, "invalid Ince"),
             (2, 1, 1, "same parity"),
@@ -1018,19 +1065,18 @@ def test_ince_gaussian(simple_grid, subtests):
         for result in results:
             assert np.all(np.isin(np.round(np.abs(result), 8), [0.0, np.round(np.pi, 8)]))
         assert all(
-            not np.allclose(results[i], results[j])
-            for i in range(len(results)) for j in range(i)
+            not np.allclose(results[i], results[j]) for i in range(len(results)) for j in range(i)
         )
 
     with subtests.test("a helical mode winds continuously and negates under y -> -y"):
-        for (p, m) in ((4, 2), (6, 2)):
+        for p, m in ((4, 2), (6, 2)):
             result = phase.ince_gaussian(simple_grid, p=p, m=m, parity=0)
             assert len(np.unique(np.round(result, 4))) > 10
             assert np.all(np.abs(result) <= np.pi + 1e-10)
             assert np.allclose(result, -result[::-1, :])
 
     with subtests.test("ellipticity -> 0 recovers laguerre_gaussian"):
-        for (p, radial) in ((2, 1), (4, 2)):
+        for p, radial in ((2, 1), (4, 2)):
             assert np.allclose(
                 phase.ince_gaussian(simple_grid, p, 0, ellipticity=1e-3),
                 phase.laguerre_gaussian(simple_grid, l=0, p=radial),
@@ -1048,7 +1094,9 @@ def test_ince_gaussian(simple_grid, subtests):
     with subtests.test("a float32 grid gives the float64 phase in float32"):
         for parity in (1, -1, 0):
             # Float32 rounding flips the phase on a few pixels beside amplitude nodes.
-            _assert_float32(phase.ince_gaussian, simple_grid, fraction=.99, p=4, m=2, parity=parity)
+            _assert_float32(
+                phase.ince_gaussian, simple_grid, fraction=0.99, p=4, m=2, parity=parity
+            )
 
 
 def test_mathieu_gaussian(simple_grid, fine_grid, subtests):
@@ -1058,16 +1106,15 @@ def test_mathieu_gaussian(simple_grid, fine_grid, subtests):
         for result in results:
             assert np.all(np.isin(np.round(np.abs(result), 8), [0.0, np.round(np.pi, 8)]))
         assert all(
-            not np.allclose(results[i], results[j])
-            for i in range(len(results)) for j in range(i)
+            not np.allclose(results[i], results[j]) for i in range(len(results)) for j in range(i)
         )
 
     with subtests.test("the q=0 rings sit at the zeros of J_r"):
         # The circular limit is J_r(2 sqrt(2) rho / w), so each ring is one of its zeros.
         x = fine_grid[0][0, :]
-        half = x[len(x) // 2:]
-        for (r, bessel_zero) in ((0, 2.404826), (1, 3.831706), (2, 5.135622)):
-            row = phase.mathieu_gaussian(fine_grid, r=r, q=0, w=40.0)[len(x) // 2, len(x) // 2:]
+        half = x[len(x) // 2 :]
+        for r, bessel_zero in ((0, 2.404826), (1, 3.831706), (2, 5.135622)):
+            row = phase.mathieu_gaussian(fine_grid, r=r, q=0, w=40.0)[len(x) // 2, len(x) // 2 :]
             ring = _nodes(row, half)[0]
             assert ring == pytest.approx(
                 bessel_zero * 40.0 / (2 * np.sqrt(2)), abs=2 * (x[1] - x[0])
@@ -1152,8 +1199,11 @@ def test_parse_focal_length(subtests):
 def test_zernike_indices_parse(subtests):
     """Test _zernike_indices_parse() defaults and consistency checks."""
     with subtests.test("D alone gives the default basis of that dimension"):
-        for (D, expected) in (
-            (2, [2, 1]), (3, [2, 1, 4]), (4, [2, 1, 4, 3]), (6, [2, 1, 4, 3, 5, 6])
+        for D, expected in (
+            (2, [2, 1]),
+            (3, [2, 1, 4]),
+            (4, [2, 1, 4, 3]),
+            (6, [2, 1, 4, 3, 5, 6]),
         ):
             np.testing.assert_array_equal(_zernike_indices_parse(indices=None, D=D), expected)
 
@@ -1180,7 +1230,9 @@ def test_zernike_indices_parse(subtests):
             {"indices": [1, 2, 3], "D": 5, "smaller_okay": False},
             {"indices": None, "D": None},
         ):
-            with pytest.raises(ValueError):
+            with pytest.raises(
+                ValueError, match=r"common size with indices|Either dimension or indices"
+            ):
                 _zernike_indices_parse(**kwargs)
 
 
@@ -1204,7 +1256,7 @@ def test_inverse_cantor_pairing(subtests):
         np.testing.assert_array_equal(_inverse_cantor_pairing(np.array([-1]))[0], [-1, 0])
 
     with subtests.test("a non-1D input raises"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Expected a list of shape"):
             _inverse_cantor_pairing(np.array([[1, 2]]))
 
 
@@ -1248,22 +1300,30 @@ def test_determine_source_radius(simple_grid, subtests):
             _determine_source_radius(slm, w=None)
 
     with subtests.test("an SLM-like object supplies its own source_radius"):
+
         class FakeSLM:
             x_grid = simple_grid[0]
             y_grid = simple_grid[1]
             source_radius = 42.0
+
         assert _determine_source_radius(FakeSLM(), w=None) == 42.0
 
     with subtests.test("a CameraSLM-like object delegates to its slm"):
+
         class FakeCameraSLM:
             x_grid = simple_grid[0]
             y_grid = simple_grid[1]
-            slm = type('FakeSLM', (), {
-                'source_radius': 99.0,
-                'x_grid': simple_grid[0],
-                'y_grid': simple_grid[1],
-            })()
+            slm = type(
+                "FakeSLM",
+                (),
+                {
+                    "source_radius": 99.0,
+                    "x_grid": simple_grid[0],
+                    "y_grid": simple_grid[1],
+                },
+            )()
             cam = True
+
         assert _determine_source_radius(FakeCameraSLM(), w=None) == 99.0
 
 
@@ -1285,8 +1345,11 @@ def test_zernike_coefficients(subtests):
         area = np.outer(u_weights / 4, np.full(len(theta), 2 * np.pi / len(theta)))
 
         images = phase.zernike_sum(
-            (rho * np.cos(t), rho * np.sin(t)), np.arange(D), np.eye(D),
-            aperture=1.0, use_mask=False,
+            (rho * np.cos(t), rho * np.sin(t)),
+            np.arange(D),
+            np.eye(D),
+            aperture=1.0,
+            use_mask=False,
         )
         gram = np.einsum("ixy,jxy,xy->ij", images, images, area)
         (n, m) = phase.zernike_convert_index(np.arange(D), to_index="radial").T
@@ -1362,7 +1425,7 @@ def test_zernike_pyramid_plot(normalized_grid, mpl_test, subtests):
         assert len(figure.axes) == phase.zernike_order_number(2)
 
     with subtests.test("each panel shows its polynomial, titled by its ANSI index"):
-        for (index, ax) in enumerate(figure.axes):
+        for index, ax in enumerate(figure.axes):
             assert ax.get_title().split("\n")[0] == str(index)
             np.testing.assert_allclose(
                 ax.images[0].get_array(), phase.zernike(normalized_grid, index, use_mask=False)
@@ -1380,7 +1443,7 @@ def test_ince_gaussian_gpu(simple_grid, has_cupy):
     reference = phase.ince_gaussian(tuple(g.astype(float) for g in grid32), p=4, m=2, parity=0)
     # Float32 rounding flips the phase on a few pixels beside amplitude nodes.
     error = np.abs(np.angle(np.exp(1j * (cp.asnumpy(result).astype(float) - reference))))
-    assert np.mean(error < 1e-4) >= .99
+    assert np.mean(error < 1e-4) >= 0.99
 
 
 @pytest.mark.gpu
@@ -1420,8 +1483,11 @@ def test_zernike_sum_gpu(benchmark, has_cupy, subtests):
             result = phase.zernike_sum(device, *args, **kwargs)
             assert isinstance(result, cp.ndarray)
             np.testing.assert_allclose(
-                cp.asnumpy(result), phase.zernike_sum(host, *args, **kwargs),
-                atol=1e-12, equal_nan=True, err_msg=str(kwargs),
+                cp.asnumpy(result),
+                phase.zernike_sum(host, *args, **kwargs),
+                atol=1e-12,
+                equal_nan=True,
+                err_msg=str(kwargs),
             )
 
 
@@ -1438,7 +1504,7 @@ def test_zernike_get_basis_gpu(has_cupy, subtests):
 
     with subtests.test("a discarded device grid returns the memory pool to its start"):
         clear_zernike_basis_cache()
-        synthesize_on_a_fresh_grid()    # Any lazy device state is allocated here, not below.
+        synthesize_on_a_fresh_grid()  # Any lazy device state is allocated here, not below.
         gc.collect()
         before = pool.used_bytes()
         synthesize_on_a_fresh_grid()
@@ -1450,8 +1516,9 @@ def test_zernike_get_basis_gpu(has_cupy, subtests):
 def test_zernike_basis_gpu(has_cupy):
     """ZernikeBasis on the GPU: cupy-resident basis, and numpy/cupy parity."""
     import cupy as cp
-    from slmsuite.holography.toolbox.phase import ZernikeBasis
+
     from slmsuite.holography.analysis import image_zernike_fit
+    from slmsuite.holography.toolbox.phase import ZernikeBasis
 
     indices = [2, 1, 4, 3, 5, 6]
     D = len(indices)

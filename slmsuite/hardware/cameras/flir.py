@@ -10,9 +10,11 @@ details on alternative approaches using the full Spinnaker API.
 """
 
 import warnings
+
 import numpy as np
-from slmsuite.hardware.cameras.camera import Camera
+
 from slmsuite._logging import make_logger
+from slmsuite.hardware.cameras.camera import Camera
 
 logger = make_logger(__name__)
 
@@ -21,6 +23,7 @@ try:
 except ImportError:
     PySpin = None
     warnings.warn("PySpin not installed. Install to use FLIR cameras.")
+
 
 class FLIR(Camera):
     """
@@ -80,7 +83,7 @@ class FLIR(Camera):
         for i in range(num_cameras):
             cam_temp = self.camera_list.GetByIndex(i)
             nodemap_tldevice = cam_temp.GetTLDeviceNodeMap()
-            node_serial = PySpin.CStringPtr(nodemap_tldevice.GetNode('DeviceSerialNumber'))
+            node_serial = PySpin.CStringPtr(nodemap_tldevice.GetNode("DeviceSerialNumber"))
             if PySpin.IsReadable(node_serial):
                 serial_list.append(node_serial.GetValue())
 
@@ -92,16 +95,14 @@ class FLIR(Camera):
             self.cam = self.camera_list.GetByIndex(0)
             # Get actual serial for naming
             nodemap_tldevice = self.cam.GetTLDeviceNodeMap()
-            node_serial = PySpin.CStringPtr(nodemap_tldevice.GetNode('DeviceSerialNumber'))
+            node_serial = PySpin.CStringPtr(nodemap_tldevice.GetNode("DeviceSerialNumber"))
             if PySpin.IsReadable(node_serial):
                 serial = node_serial.GetValue()
         else:
             if serial in serial_list:
                 self.cam = self.camera_list.GetBySerial(serial)
             else:
-                raise RuntimeError(
-                    f"Serial {serial} not found by PySpin. Available: {serial_list}"
-                )
+                raise RuntimeError(f"Serial {serial} not found by PySpin. Available: {serial_list}")
 
         # Initialize camera
         logger.debug("PySpin sn '%s' initializing...", serial)
@@ -109,7 +110,7 @@ class FLIR(Camera):
         try:
             self.cam.Init()
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Failed to initialize camera: {ex}")
+            raise RuntimeError(f"Failed to initialize camera: {ex}") from ex
 
         # If the camera was left streaming from a previous crashed session,
         # PixelFormat becomes RO while streaming, preventing format changes.
@@ -151,7 +152,7 @@ class FLIR(Camera):
                 else:
                     logger.warning("BlackLevel is not writable; could not set to 0.0.")
             except PySpin.SpinnakerException as ex:
-                logger.warning(f"BlackLevel configuration failed: {ex}")
+                logger.warning("BlackLevel configuration failed: %s", ex)
 
             # Gamma: disable for linear sensor response
             try:
@@ -166,7 +167,7 @@ class FLIR(Camera):
                     else:
                         logger.warning("Gamma is not writable; could not set to 1.0.")
                 except PySpin.SpinnakerException as ex:
-                    logger.warning(f"Gamma configuration failed: {ex}")
+                    logger.warning("Gamma configuration failed: %s", ex)
 
             # Configure pixel format
             bitdepth = self._configure_adc_depth(bitdepth=bitdepth)
@@ -200,22 +201,25 @@ class FLIR(Camera):
             self._configure_frame_rate()
 
         except PySpin.SpinnakerException as ex:
-            logger.warning(f"Failed to configure camera: {ex}")
+            logger.warning("Failed to configure camera: %s", ex)
 
         # Begin acquisition
         try:
             self.cam.BeginAcquisition()
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Failed to begin acquisition: {ex}")
+            raise RuntimeError(f"Failed to begin acquisition: {ex}") from ex
 
         current_binning = self._get_binning_hw()
 
         super().__init__(
-            (current_binning[0] * self.cam.WidthMax.GetValue(), current_binning[1] * self.cam.HeightMax.GetValue()),
+            (
+                current_binning[0] * self.cam.WidthMax.GetValue(),
+                current_binning[1] * self.cam.HeightMax.GetValue(),
+            ),
             bitdepth=bitdepth,
             pitch_um=pitch_um,
             name=kwargs.pop("name", serial),
-            **kwargs
+            **kwargs,
         )
 
         # Cache exposure bounds from hardware, unless the user supplied them.
@@ -243,14 +247,14 @@ class FLIR(Camera):
             pass
 
         # Clean up camera list
-        if hasattr(self, 'camera_list'):
+        if hasattr(self, "camera_list"):
             try:
                 self.camera_list.Clear()
             except Exception:
                 pass
             del self.camera_list
 
-        if hasattr(self, 'cam'):
+        if hasattr(self, "cam"):
             del self.cam
 
     @staticmethod
@@ -285,8 +289,8 @@ class FLIR(Camera):
             for i in range(num_cameras):
                 cam = camera_list.GetByIndex(i)
                 nodemap_tldevice = cam.GetTLDeviceNodeMap()
-                node_serial = PySpin.CStringPtr(nodemap_tldevice.GetNode('DeviceSerialNumber'))
-                node_model = PySpin.CStringPtr(nodemap_tldevice.GetNode('DeviceModelName'))
+                node_serial = PySpin.CStringPtr(nodemap_tldevice.GetNode("DeviceSerialNumber"))
+                node_model = PySpin.CStringPtr(nodemap_tldevice.GetNode("DeviceModelName"))
                 sn = node_serial.GetValue() if PySpin.IsReadable(node_serial) else f"cam_{i}"
                 model = node_model.GetValue() if PySpin.IsReadable(node_model) else "unknown"
                 serial_list.append(sn)
@@ -300,7 +304,7 @@ class FLIR(Camera):
             del camera_list
 
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Failed to enumerate cameras: {ex}")
+            raise RuntimeError(f"Failed to enumerate cameras: {ex}") from ex
 
         return serial_list
 
@@ -353,11 +357,13 @@ class FLIR(Camera):
         # are omitted in favor of Mono16 with the matching ADC depth.
         # Mono16 stores the ADC value left-shifted into the upper bits, so
         # _get_image_hw right-shifts the data back to the true ADC range.
+        # fmt: off
         all_candidates = [
             (PySpin.PixelFormat_Mono16, PySpin.AdcBitDepth_Bit12, 12, "Mono16"),
             (PySpin.PixelFormat_Mono16, PySpin.AdcBitDepth_Bit10, 10, "Mono16"),
             (PySpin.PixelFormat_Mono8,  PySpin.AdcBitDepth_Bit8,   8, "Mono8"),
         ]
+        # fmt: on
 
         if bitdepth is not None:
             # Filter to the requested ADC depth
@@ -589,13 +595,16 @@ class FLIR(Camera):
                 self.cam.OffsetY.SetValue(y)
             self._configure_frame_rate()
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Failed to set WOI: {ex}")
+            raise RuntimeError(f"Failed to set WOI: {ex}") from ex
+
         finally:
             if acquisition_active:
                 try:
                     self.cam.BeginAcquisition()
                 except PySpin.SpinnakerException as ex:
-                    raise RuntimeError(f"Failed to restart acquisition after WOI change: {ex}")
+                    raise RuntimeError(
+                        f"Failed to restart acquisition after WOI change: {ex}"
+                    ) from ex
 
     def _get_woi_hw(self):
         """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
@@ -625,7 +634,7 @@ class FLIR(Camera):
             bh.SetValue(binx)
             bv.SetValue(biny)
         except PySpin.SpinnakerException as ex:
-            raise NotImplementedError(f"Camera {self.name} does not support binning: {ex}")
+            raise NotImplementedError(f"Camera {self.name} does not support binning: {ex}") from ex
         finally:
             if acquisition_active:
                 try:
@@ -643,7 +652,7 @@ class FLIR(Camera):
         except PySpin.SpinnakerException:
             return (1, 1)
 
-    def _get_image_hw(self, timeout_s = 1.0):
+    def _get_image_hw(self, timeout_s=1.0):
         """
         See :meth:`.Camera._get_image_hw`.
 
@@ -655,7 +664,6 @@ class FLIR(Camera):
         timeout_s : float
             Timeout in seconds.
         """
-
         try:
             # Only fire software trigger if in software trigger mode; an externally
             # triggered camera must not be force-triggered here.
@@ -686,4 +694,4 @@ class FLIR(Camera):
             return image_data
 
         except PySpin.SpinnakerException as ex:
-            raise RuntimeError(f"Camera acquisition failed: {ex}")
+            raise RuntimeError(f"Camera acquisition failed: {ex}") from ex

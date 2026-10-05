@@ -1,11 +1,11 @@
 """
 Unit tests for slmsuite.holography.toolbox module.
 """
+
 import logging
 
-import pytest
 import numpy as np
-
+import pytest
 from scipy.spatial import distance
 
 from slmsuite.holography import toolbox
@@ -56,10 +56,12 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
 
     # The blaze this vector describes, against which the grating units are measured.
     ramp = as_numpy(phase.blaze(slm, (vec[0, 0], vec[1, 0])))
-    cycles = np.array([
-        [(ramp[0, -1] - ramp[0, 0]) / (width - 1)],
-        [(ramp[-1, 0] - ramp[0, 0]) / (height - 1)],
-    ]) / (2 * np.pi)
+    cycles = np.array(
+        [
+            [(ramp[0, -1] - ramp[0, 0]) / (width - 1)],
+            [(ramp[-1, 0] - ramp[0, 0]) / (height - 1)],
+        ]
+    ) / (2 * np.pi)
 
     with subtests.test("freq is the blaze's phase cycles per pixel"):
         # An SLM stores its grid in float32, hence the tolerance here and below.
@@ -105,9 +107,7 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
             np.testing.assert_allclose(
                 experiment, convert_vector(v, "norm", "um", hardware=fs) / 4.0
             )
-            np.testing.assert_allclose(
-                convert_vector(experiment, "mag_um", "norm", hardware=fs), v
-            )
+            np.testing.assert_allclose(convert_vector(experiment, "mag_um", "norm", hardware=fs), v)
         finally:
             fs.mag = mag
 
@@ -119,7 +119,9 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
             beam = np.array([[w], [0.0], [np.pi * w**2 / fs.slm.wav_um]])
             experiment = convert_vector(beam, "um", "mag_um", hardware=fs)
             assert experiment[2, 0] == pytest.approx(np.pi * experiment[0, 0] ** 2 / fs.slm.wav_um)
-            np.testing.assert_allclose(convert_vector(experiment, "mag_um", "um", hardware=fs), beam)
+            np.testing.assert_allclose(
+                convert_vector(experiment, "mag_um", "um", hardware=fs), beam
+            )
         finally:
             fs.mag = mag
 
@@ -216,7 +218,7 @@ def test_imprint(slm, subtests, benchmark):
     """Test imprint's in-place write of a function into a windowed region."""
     (H, W) = (40, 60)
     grid = np.meshgrid(np.arange(W, dtype=float), np.arange(H, dtype=float))
-    win = [10, 20, 5, 15]                       # (x, w, y, h): upper-left (10, 5), size 20x15
+    win = [10, 20, 5, 15]  # (x, w, y, h): upper-left (10, 5), size 20x15
     sl = (slice(5, 20), slice(10, 30))
     sub = (grid[0][sl], grid[1][sl])
     vector = (0.1, -0.05)
@@ -224,8 +226,12 @@ def test_imprint(slm, subtests, benchmark):
     with subtests.test("benchmark"):
         bench_grid = np.meshgrid(np.arange(512, dtype=float), np.arange(512, dtype=float))
         benchmark(
-            imprint, np.zeros((512, 512)), [50, 400, 50, 400],
-            phase.blaze, grid=bench_grid, vector=vector,
+            imprint,
+            np.zeros((512, 512)),
+            [50, 400, 50, 400],
+            phase.blaze,
+            grid=bench_grid,
+            vector=vector,
         )
 
     with subtests.test("replace fills exactly the window and nothing else"):
@@ -295,7 +301,7 @@ def test_imprint(slm, subtests, benchmark):
     with subtests.test("clip keeps only the in-bounds corner of the window"):
         mat = np.zeros((H, W))
         imprint(mat, [W - 5, 20, H - 5, 20], 1.0, clip=True)
-        np.testing.assert_array_equal(mat[H - 5:, W - 5:], 1.0)
+        np.testing.assert_array_equal(mat[H - 5 :, W - 5 :], 1.0)
         assert np.sum(mat) == 5 * 5
 
     with subtests.test("clip=False rejects a window that leaves the matrix"):
@@ -309,7 +315,9 @@ def test_imprint(slm, subtests, benchmark):
         # The window slices the leading axes, so a stack would otherwise imprint nothing.
         for clip in (True, False):
             mat = np.zeros((3, H, W))
-            with pytest.raises(ValueError):
+            with pytest.raises(
+                ValueError, match=r"Imprint window extends past|Expected shape with 2 dimensions"
+            ):
                 imprint(mat, [2, 5, 3, 4], 1.0, clip=clip)
             np.testing.assert_array_equal(mat, 0)
 
@@ -340,7 +348,7 @@ def test_format_vectors(subtests):
             format_vectors(vec3, 2, "error")
 
     with subtests.test("malformed input raises"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Expected 3-vectors"):
             format_vectors(np.array([[1, 2]]), expected_dimension=3)
         with pytest.raises(ValueError, match="not recognized"):
             format_vectors(np.array([1, 2]), handle_dimension="bad")
@@ -385,7 +393,9 @@ def test_build_affine(subtests):
             {"units": "mm"},
             {"units": "bogus", "cam_pitch_um": 5.0},
         ):
-            with pytest.raises(ValueError):
+            with pytest.raises(
+                ValueError, match=r"is required for unit|not recognized as a length"
+            ):
                 build_affine(1.0, **kwargs)
 
 
@@ -431,7 +441,8 @@ def test_fit_3pt(subtests):
     with subtests.test("an ndarray N supplies the indices directly"):
         indices = np.array([[0, 1, 2], [0, 0, 0]])
         np.testing.assert_allclose(
-            fit_3pt((5, 10), (6, 10), (5, 11), N=indices), indices + [[5], [10]], atol=1e-14
+            fit_3pt((5, 10), (6, 10), (5, 11), N=indices),
+            indices + [[5], [10]],  # noqa: RUF005 (ndarray broadcast, not concatenation), atol=1e-14
         )
 
     with subtests.test("a non-positive N returns the affine instead of a lattice"):
@@ -462,15 +473,21 @@ def test_smallest_distance(subtests):
         "euclidean is the straight-line distance": (pair, "euclidean", 5.0),
         "cityblock sums the coordinate differences": (pair, "cityblock", 7.0),
         "the closest pair wins, not the first": (
-            np.array([[0, 10, 11, 50], [0, 10, 11, 50]]), "chebyshev", 1.0,
+            np.array([[0, 10, 11, 50], [0, 10, 11, 50]]),
+            "chebyshev",
+            1.0,
         ),
         "duplicated points are zero apart": (np.array([[1, 2, 1], [3, 4, 3]]), "chebyshev", 0.0),
         "negative coordinates are signed": (np.array([[-5, -3], [10, 10]]), "chebyshev", 2.0),
         "evenly spaced collinear points give the spacing": (
-            np.array([[0, 2, 4, 6, 8], [0, 0, 0, 0, 0]]), "chebyshev", 2.0,
+            np.array([[0, 2, 4, 6, 8], [0, 0, 0, 0, 0]]),
+            "chebyshev",
+            2.0,
         ),
         "unevenly spaced collinear points give the tightest gap": (
-            np.array([[0, 1, 5, 20], [0, 0, 0, 0]]), "chebyshev", 1.0,
+            np.array([[0, 1, 5, 20], [0, 0, 0, 0]]),
+            "chebyshev",
+            1.0,
         ),
     }
     for name, (vectors, metric, expected) in cases.items():
@@ -489,7 +506,7 @@ def test_smallest_distance(subtests):
         metrics = ["euclidean", "chebyshev", "cityblock"]
         for trial in range(200):
             rng = np.random.default_rng(trial)
-            n = int(rng.integers(400, 800))     # >= 2*min_div, so divide and conquer runs
+            n = int(rng.integers(400, 800))  # >= 2*min_div, so divide and conquer runs
             metric = metrics[trial % len(metrics)]
             layout = trial % 4
             if layout == 0:
@@ -498,8 +515,9 @@ def test_smallest_distance(subtests):
                 vectors = rng.uniform(0, 30, size=(2, n))
             elif layout == 2:
                 centers = rng.uniform(0, 1000, size=(int(rng.integers(2, 6)), 2))
-                vectors = (centers[rng.integers(0, len(centers), n)]
-                           + rng.normal(0, 0.5, size=(n, 2))).T
+                vectors = (
+                    centers[rng.integers(0, len(centers), n)] + rng.normal(0, 0.5, size=(n, 2))
+                ).T
             else:
                 vectors = np.vstack((np.sort(rng.uniform(0, 1000, n)), rng.uniform(0, 5, n)))
             expected = distance.pdist(vectors.T, metric=metric).min()
@@ -598,11 +616,15 @@ def test_assign_vectors(subtests):
         "exact matches map onto themselves": (diagonal, diagonal, [0, 1, 2]),
         "each vector takes its nearest option": (np.array([[1, 11], [1, 11]]), diagonal, [0, 1]),
         "a distant cluster still takes the nearest": (
-            np.array([[1, 2, 3], [1, 2, 3]]), np.array([[0, 100], [0, 100]]), [0, 0, 0],
+            np.array([[1, 2, 3], [1, 2, 3]]),
+            np.array([[0, 100], [0, 100]]),
+            [0, 0, 0],
         ),
         "a tie goes to the lower index": (np.array([[0], [0]]), np.array([[-1, 1], [0, 0]]), [0]),
         "options may be reused and outnumbered": (
-            np.array([[5, 15, 25, 35], [5, 15, 25, 35]]), diagonal, [0, 1, 2, 2],
+            np.array([[5, 15, 25, 35], [5, 15, 25, 35]]),
+            diagonal,
+            [0, 1, 2, 2],
         ),
     }
     for name, (vectors, options, expected) in cases.items():
@@ -676,22 +698,28 @@ def test_window_slice(subtests):
     """Test window_slice's parsing of the several window formats."""
     cases = {
         "None is the whole array": (
-            (None, {}), (slice(None), slice(None)),
+            (None, {}),
+            (slice(None), slice(None)),
         ),
         "(x, w, y, h) is an upper-left corner plus an extent": (
-            ([10, 20, 5, 15], {}), (slice(5, 20), slice(10, 30)),
+            ([10, 20, 5, 15], {}),
+            (slice(5, 20), slice(10, 30)),
         ),
         "a unit window is a single pixel": (
-            ([7, 1, 4, 1], {}), (slice(4, 5), slice(7, 8)),
+            ([7, 1, 4, 1], {}),
+            (slice(4, 5), slice(7, 8)),
         ),
         "centered puts (x, y) at the middle of the window": (
-            ([10, 20, 5, 15], {"centered": True}), (slice(-2, 13), slice(0, 20)),
+            ([10, 20, 5, 15], {"centered": True}),
+            (slice(-2, 13), slice(0, 20)),
         ),
         "shape clips the far edge": (
-            ([0, 20, 0, 20], {"shape": (10, 10)}), (slice(0, 10), slice(0, 10)),
+            ([0, 20, 0, 20], {"shape": (10, 10)}),
+            (slice(0, 10), slice(0, 10)),
         ),
         "shape clips a negative start up to zero": (
-            ([-5, 10, -5, 10], {"shape": (20, 20)}), (slice(0, 5), slice(0, 5)),
+            ([-5, 10, -5, 10], {"shape": (20, 20)}),
+            (slice(0, 5), slice(0, 5)),
         ),
     }
     for name, ((window, kwargs), expected) in cases.items():
@@ -743,10 +771,12 @@ def test_window_extent(subtests):
         "an L-shape gives its bounding box": ((ell, {}), (2, 5, 1, 5)),
         "an (x, w, y, h) window comes back unchanged": (((3, 4, 2, 5), {}), (3, 4, 2, 5)),
         "padding_frac grows the extent proportionally": (
-            (square, {"padding_frac": 0.5}), (4, 7, 4, 7),
+            (square, {"padding_frac": 0.5}),
+            (4, 7, 4, 7),
         ),
         "padding_pix grows the extent by whole pixels": (
-            (square, {"padding_pix": 3}), (2, 11, 2, 11),
+            (square, {"padding_pix": 3}),
+            (2, 11, 2, 11),
         ),
     }
     for name, ((window, kwargs), expected) in cases.items():
@@ -852,7 +882,7 @@ def test_voronoi_windows(subtests):
 
     with subtests.test("a shape of numpy integers is a shape"):
         numpy_shape = (np.int64(shape[0]), np.int64(shape[1]))
-        for (window, expected) in zip(voronoi_windows(numpy_shape, vectors), windows):
+        for window, expected in zip(voronoi_windows(numpy_shape, vectors), windows):
             np.testing.assert_array_equal(window, expected)
 
 
@@ -913,7 +943,7 @@ class TestAperture:
 
     def test_init(self, normalized_grid, subtests):
         with subtests.test("an invalid spec raises eagerly at construction"):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="is not implemented"):
                 Aperture(normalized_grid, "invalid")
             with pytest.raises(ValueError, match="not recognized"):
                 Aperture(normalized_grid, object())
@@ -923,7 +953,7 @@ class TestAperture:
         rect_grid = np.meshgrid(np.linspace(-200, 200, 128), np.linspace(-500, 500, 128))
 
         with subtests.test("the spec sets the scale analytically"):
-            for (grid, spec, expected) in (
+            for grid, spec, expected in (
                 (normalized_grid, "circular", (1 / max_coord, 1 / max_coord)),
                 (normalized_grid, "elliptical", (1 / max_coord, 1 / max_coord)),
                 (normalized_grid, "cropped", (1 / (max_coord * np.sqrt(2)),) * 2),
@@ -1003,22 +1033,30 @@ class TestAperture:
             assert ap_other.center == ap.center
 
         with subtests.test("SLM-like object's aperture is the source of truth"):
+
             class FakeSLM:
                 def __init__(self, grid):
                     self.x_grid, self.y_grid = grid
                     self.aperture = Aperture(grid, (0.01, 0.02))
+
             assert Aperture.resolve(FakeSLM(normalized_grid), None).scale == (0.01, 0.02)
 
         with subtests.test("CameraSLM-like object delegates to slm.aperture"):
+
             class FakeCameraSLM:
                 def __init__(self, grid):
                     self.x_grid, self.y_grid = grid
-                    self.slm = type('FakeSLM', (), {
-                        'aperture': Aperture(grid, (0.03, 0.04)),
-                        'x_grid': grid[0],
-                        'y_grid': grid[1],
-                    })()
+                    self.slm = type(
+                        "FakeSLM",
+                        (),
+                        {
+                            "aperture": Aperture(grid, (0.03, 0.04)),
+                            "x_grid": grid[0],
+                            "y_grid": grid[1],
+                        },
+                    )()
                     self.cam = True
+
             assert Aperture.resolve(FakeCameraSLM(normalized_grid), None).scale == (0.03, 0.04)
 
         with subtests.test("resolve takes only the spec for an explicit aperture on an SLM"):
@@ -1027,6 +1065,7 @@ class TestAperture:
                 def __init__(self, grid):
                     self.x_grid, self.y_grid = grid
                     self.aperture = Aperture(grid, "circular", center=(1.0, 2.0))
+
             passed = Aperture(normalized_grid, (0.01, 0.02), center=(3.0, 4.0))
             resolved = Aperture.resolve(FakeSLM(normalized_grid), passed)
             assert resolved.spec == passed.spec

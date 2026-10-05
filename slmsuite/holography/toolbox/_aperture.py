@@ -2,9 +2,11 @@
 Unified description of the SLM's aperture, used to crop, scale, and shift
 the SLM's source and applied functions (e.g., lenses, Zernike polynomials).
 """
+
 from functools import cached_property
 
 import numpy as np
+
 from slmsuite.misc.xp import get_array_module
 
 # The string ``spec`` keywords understood by :class:`Aperture`.
@@ -129,12 +131,10 @@ class Aperture:
         if isinstance(spec, str):
             if spec not in _STRING_SPECS:
                 raise ValueError(f"Aperture spec '{spec}' is not implemented.")
-        elif np.isscalar(spec):
-            pass
-        elif isinstance(spec, (list, tuple, np.ndarray)) and len(spec) == 2:
+        elif np.isscalar(spec) or (isinstance(spec, (list, tuple, np.ndarray)) and len(spec) == 2):
             pass
         else:
-            raise ValueError("Aperture spec type {} not recognized.".format(type(spec)))
+            raise ValueError(f"Aperture spec type {type(spec)} not recognized.")
 
     @property
     def is_isotropic(self):
@@ -267,7 +267,7 @@ class Aperture:
     def resolve(cls, grid, aperture=None):
         """
         Resolve an ``aperture`` argument into an :class:`Aperture` instance bound to
-        ``grid``. 
+        ``grid``.
 
         Centering is owned by the bound grid (see the class centering note). When ``grid``
         resolves to an SLM, its working :attr:`~slmsuite.hardware.slms.slm.SLM.grid` is
@@ -324,4 +324,4 @@ class Aperture:
         return {"spec": self._spec, "center": self._center}
 
     def __repr__(self):
-        return "Aperture(spec={!r}, center={!r})".format(self._spec, self._center)
+        return f"Aperture(spec={self._spec!r}, center={self._center!r})"
