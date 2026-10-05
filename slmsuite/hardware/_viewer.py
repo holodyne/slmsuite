@@ -143,13 +143,14 @@ class _Viewable:
         Creates and displays a live viewer.
 
           - When used with a camera, the viewer displays the last image:
-            the result of :meth:`get_image()` or the last image of :meth:`get_images()`
+            the result of :meth:`~slmsuite.hardware.cameras.camera.Camera.get_image()` or the
+            last image of :meth:`~slmsuite.hardware.cameras.camera.Camera.get_images()`
             **whenever these methods are called**.
             Averaging and HDR are displayed with the same color scaling as without.
           - When used with an SLM, the viewer displays the phase pattern currently on the
-            SLM: the phase pattern passed to :meth:`set_phase()` or
-            the last phase pattern passed to :meth:`set_phases()`
-            **whenever these methods are called**.
+            SLM: the phase pattern passed to
+            :meth:`~slmsuite.hardware.slms.slm.SLM.set_phase()`
+            **whenever it is called**.
 
         The view itself is drawn either inside the notebook (``backend="ipython"``) or in
         a resizable window of its own (``backend="pyglet"``), which also works from a

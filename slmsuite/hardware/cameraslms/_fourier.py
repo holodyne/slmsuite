@@ -79,7 +79,7 @@ class _FourierCalibration(object):
         Returns
         -------
         dict
-            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["fourier"]`
+            :attr:`calibrations["fourier"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`
         """
         if "autoexposure" in kwargs.keys():
             autoexpose = kwargs.pop("autoexposure")
@@ -612,7 +612,7 @@ class _FourierCalibration(object):
         is accomplished using the calibration produced by
         :meth:`~slmsuite.hardware.cameraslms.FourierSLM.fourier_calibrate()`
         and stored in
-        :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["fourier"]`.
+        :attr:`calibrations["fourier"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`.
 
         Parameters
         ----------

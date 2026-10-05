@@ -46,6 +46,9 @@ class SimulatedCamera(Camera):
     shape_padded : (int, int)
         Size of the FFT computational space required to faithfully reproduce the far-field at
         full camera resolution.
+    gain : float
+        Gain to emulate physical cameras while keeping the same values for exposure time.
+        Set to match a hardware camera with :meth:`match_counts()`.
     noise : GaussianDetectorNoise OR dict OR None
         The detector noise added to each rendered frame. Either a
         :class:`GaussianDetectorNoise` (what :meth:`set_noise_from_background()` builds,
@@ -72,7 +75,7 @@ class SimulatedCamera(Camera):
         Note
         ~~~~
         Callables cannot be written to an ``.h5``, so a noise assigned this way does not
-        survive :meth:`~slmsuite._pickling._Picklable.save()`. Noise set through
+        survive :meth:`save()`. Noise set through
         :meth:`set_noise_from_background()` does, as that model is two scalars.
 
     """

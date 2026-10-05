@@ -25,3 +25,10 @@ from slmsuite.holography.toolbox.phase._zernike import (
     _inverse_cantor_pairing,
     _parse_out,
 )
+# Public API: names defined in the submodules above, so that the documentation
+# (autosummary with ``autosummary_ignore_module_all = False``) lists them here.
+__all__ = sorted(
+    name for name, obj in list(globals().items())
+    if not name.startswith("_")
+    and getattr(obj, "__module__", "").startswith(__name__ + ".")
+)

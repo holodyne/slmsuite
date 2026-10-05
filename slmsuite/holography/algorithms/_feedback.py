@@ -11,7 +11,7 @@ class FeedbackHologram(Hologram):
 
     Attributes
     ----------
-    cameraslm : slmsuite.hardware.cameraslms.FourierSLM OR None
+    cameraslm : :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         A hologram with experimental feedback needs access to an SLM and camera.
         If ``None``, no feedback is applied (mostly defaults to :class:`Hologram`).
     _cam_points : numpy.ndarray
@@ -29,11 +29,12 @@ class FeedbackHologram(Hologram):
         when the target was supplied as a sub-image rather than a full camera
         frame. Everything outside the sub-image is undefined. ``None`` when
         :attr:`target_ij` covers the full frame.
-    img_ij, img_knm
-        Cached **amplitude** feedback image in the
-        ``"ij"`` (raw camera) basis or
-        ``"knm"`` (transformed to computational k-space) basis.
+    img_ij : numpy.ndarray OR cupy.ndarray OR None
+        Cached **amplitude** feedback image in the ``"ij"`` (raw camera) basis.
         Measured with :meth:`.measure()`.
+    img_knm : numpy.ndarray OR cupy.ndarray OR None
+        Cached **amplitude** feedback image in the ``"knm"`` basis (transformed to
+        computational k-space). Measured with :meth:`.measure()`.
     """
 
     # Camera feedback adds the experimental source. See Hologram._feedback_supported.
@@ -66,7 +67,7 @@ class FeedbackHologram(Hologram):
             There is not currently a way to request a target in the ``"knm"`` basis and
             use the camera for feedback. In particular, the analog ``knmslm_to_ijcam``
             for :meth:`ijcam_to_knmslm()` is not written, but is definitely possible.
-        cameraslm : slmsuite.hardware.cameraslms.FourierSLM OR slmsuite.hardware.slms.SLM OR None
+        cameraslm : :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR :class:`~slmsuite.hardware.slms.slm.SLM` OR None
             Provides access to experimental feedback.
             If an :class:`~slmsuite.hardware.slms.slm.SLM` is passed, the attribute is set to ``None``,
             but the information contained in the SLM is passed to the superclass :class:`.Hologram`.

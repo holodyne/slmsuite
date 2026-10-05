@@ -97,9 +97,8 @@ class ScreenMirrored(SLM):
     -   ``"pinned"``, page-locked host memory for fast DMA. Requires a ``CUDA`` device.
     -   ``"pageable"``, ordinary host memory, which always works.
 
-    See :attr:`~slmsuite.hardware._pyglet._Window.mode`. Beyond the transport, ``gpu=True``
-    keeps the phase pipeline itself on the GPU, avoiding a host round-trip before the
-    expansion.
+    Beyond the transport, ``gpu=True`` keeps the phase pipeline itself on the GPU, avoiding
+    a host round-trip before the expansion.
 
     Important
     ~~~~~~~~~
@@ -112,13 +111,11 @@ class ScreenMirrored(SLM):
     .. rubric:: Threading Model
 
     Each :class:`ScreenMirrored` window is created on its own dedicated background
-    thread via :class:`~slmsuite.hardware._pyglet._WindowThread`. This allows
-    the background threads to handle OS events and independent event
+    thread. This allows the background threads to handle OS events and independent event
     dispatch/vsync timing for multi-SLM support.
 
-    The main thread communicates with those window threads via
-    :meth:`~slmsuite.hardware._pyglet._WindowThread.submit`, which queues a command and
-    returns. Since a single frame is shared with the window thread, each
+    The main thread communicates with those window threads by queueing commands, which
+    returns immediately. Since a single frame is shared with the window thread, each
     :meth:`.set_phase` waits for the previous render regardless of ``block``, and for its
     own only when ``block=True``.
 

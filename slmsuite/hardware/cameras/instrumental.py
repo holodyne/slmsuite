@@ -41,14 +41,14 @@ class Instrumental(Camera):
     """
     A wrapped :mod:`instrumental` camera.
 
+    Instrumental doesn't save exposure. It sets the exposure at each
+    :meth:`.get_image`, so :attr:`exposure_s` stores the desired exposure.
+    Defaults to .001 (1 ms).
+
     Attributes
     ----------
     cam : instrumental.drivers.cameras.Camera
         Object to talk with the desired camera.
-    exposure_s : float
-        Instrumental doesn't save exposure. It sets the exposure at each
-        :meth:`.get_image`. This variable stores the desired exposure.
-        Defaults to .001 (1 ms).
     """
 
     ### Initialization and termination ###

@@ -1694,8 +1694,10 @@ def image_vortices_coordinates(phase_image, mask=None):
 
     Returns
     -------
-    coordinates, weights
-        The coordinates and winding number of each coordinate.
+    coordinates : numpy.ndarray
+        The coordinates of each vortex.
+    weights : numpy.ndarray
+        The winding number of each coordinate.
     """
     xp = get_array_module(phase_image)
 
@@ -3162,9 +3164,11 @@ class Affine(object):
         return Affine(M_inv, b_inv)
 
     def det(self):
+        """Determinant of ``M``, the area scaling of the transformation."""
         return np.linalg.det(self.M)
 
     def to_dict(self):
+        """Returns the legacy ``{"M", "b", "a"}`` dictionary form of this transformation."""
         return {"M": self.M, "b": self.b, "a": 0 * self.b}
 
 

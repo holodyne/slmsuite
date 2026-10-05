@@ -55,7 +55,7 @@ class _WavefrontCalibrationSuperpixel(object):
         Correction at many points over the plane permits a better understanding of the
         aberration and greater possibility of compensation.
 
-        Sets :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront_superpixel"]`.
+        Sets :attr:`calibrations["wavefront_superpixel"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`.
         Run :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibration_superpixel_process`
         afterwards to produce the usable calibration which can be written to the SLM.
 
@@ -85,7 +85,7 @@ class _WavefrontCalibrationSuperpixel(object):
             prioritizing points near the center of the camera.
         superpixel_size : int
             The width and height in pixels of each SLM superpixel.
-            If this is not a divisor of both dimensions in the SLM's :attr:`shape`,
+            If this is not a divisor of both dimensions in the SLM's :attr:`~slmsuite.hardware.slms.slm.SLM.shape`,
             then superpixels at the edge of the SLM may be cropped and give undefined results.
             Currently, superpixels are forced to be square, and this value must be a scalar.
         reference_superpixels : (int,int) OR numpy.ndarray of int OR None
@@ -165,7 +165,7 @@ class _WavefrontCalibrationSuperpixel(object):
         -------
         dict
             The contents of
-            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront_superpixel"]`.
+            :attr:`calibrations["wavefront_superpixel"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`.
 
         Raises
         ------

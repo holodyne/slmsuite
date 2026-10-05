@@ -93,10 +93,10 @@ class DisplayMode(IntEnum):
     """
     DLPC900 display modes.
     """
-    VIDEO         = 0
-    PATTERN       = 1
-    VIDEO_PATTERN = 2
-    OTF           = 3
+    VIDEO         = 0     #: Video mode: display the video input directly.
+    PATTERN       = 1     #: Pattern mode from pre-stored images in flash.
+    VIDEO_PATTERN = 2     #: Video pattern mode: patterns from the video input.
+    OTF           = 3     #: Pattern on-the-fly mode: patterns loaded over USB.
 
 class DLPC900Command(IntEnum):
     """
@@ -107,17 +107,17 @@ class DLPC900Command(IntEnum):
     <https://www.ti.com/lit/ug/dlpu018j/dlpu018j.pdf>`_.
     """
                               # Programmer Guide Sections
-    POWER_MODE     = 0x0200   # 2.2.1 — Standby / wakeup / reset
-    VERSION        = 0x0206   # 2.1.5 — Firmware version info
-    HW_STATUS      = 0x1A0A   # 2.1.1 — Hardware status register
-    MAIN_STATUS    = 0x1A0C   # 2.1.3 — Main status register
-    INPUT_SOURCE   = 0x1A00   # 2.3.1 — Input source selection
-    IT6535_POWER   = 0x1A01   # 2.3.2 — IT6535 receiver power mode
-    PORT_CLOCK     = 0x1A03   # 2.3.3 — Port and clock configuration
-    DISPLAY_MODE   = 0x1A1B   # 2.4.1 — Display mode selection
-    PAT_STARTSTOP  = 0x1A24   # 2.4.4.3.1 — Pattern start / stop / pause
-    PAT_LUT_CONFIG = 0x1A31   # 2.4.4.3.3 — Pattern LUT configuration
-    PAT_LUT_DEFINE = 0x1A34   # 2.4.4.3.5 — Pattern LUT entry definition
+    POWER_MODE     = 0x0200   #: 2.2.1 — Standby / wakeup / reset
+    VERSION        = 0x0206   #: 2.1.5 — Firmware version info
+    HW_STATUS      = 0x1A0A   #: 2.1.1 — Hardware status register
+    MAIN_STATUS    = 0x1A0C   #: 2.1.3 — Main status register
+    INPUT_SOURCE   = 0x1A00   #: 2.3.1 — Input source selection
+    IT6535_POWER   = 0x1A01   #: 2.3.2 — IT6535 receiver power mode
+    PORT_CLOCK     = 0x1A03   #: 2.3.3 — Port and clock configuration
+    DISPLAY_MODE   = 0x1A1B   #: 2.4.1 — Display mode selection
+    PAT_STARTSTOP  = 0x1A24   #: 2.4.4.3.1 — Pattern start / stop / pause
+    PAT_LUT_CONFIG = 0x1A31   #: 2.4.4.3.3 — Pattern LUT configuration
+    PAT_LUT_DEFINE = 0x1A34   #: 2.4.4.3.5 — Pattern LUT entry definition
 
 
 class PLM(ScreenMirrored):

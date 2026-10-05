@@ -46,7 +46,8 @@ def laguerre_gaussian(grid, l, p=0, w=None):
         The radial wavenumber. Should be non-negative.
     w : float OR None
         The source :math:`1/e` field-amplitude (:math:`1/e^2` intensity) radius.
-        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
+        If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
+        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
 
     Returns
     -------
@@ -89,7 +90,8 @@ def hermite_gaussian(grid, n, m, w=None):
         phase and a Gaussian beam.
     w : float
         The source :math:`1/e` field-amplitude (:math:`1/e^2` intensity) radius.
-        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
+        If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
+        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
 
     Returns
     -------
@@ -303,7 +305,8 @@ def ince_gaussian(grid, p, m, parity=1, ellipticity=1, w=None):
         :math:`w\sqrt{\varepsilon/2}`, where the foci are the points which define the
         elliptical coordinate system.
     w : float
-        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
+        If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
+        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
 
     Returns
     -------
@@ -381,7 +384,8 @@ def mathieu_gaussian(grid, r, q, w=None):
         ``q = 0`` gives circular symmetry (Bessel beams).
         The semifocal distance is :math:`h = w\sqrt{q/2}`.
     w : float
-        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
+        If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
+        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
 
     Returns
     -------
@@ -456,7 +460,8 @@ def airy(grid, f=(np.inf, np.inf), w=None):
         Larger values produce weaker cubic phase (more gradual acceleration).
         ``np.inf`` disables the cubic phase in that direction.
     w : float
-        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
+        If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
+        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
 
 
     Returns

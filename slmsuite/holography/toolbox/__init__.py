@@ -158,13 +158,12 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         and :meth:`~slmsuite.hardware.cameraslms.FourierSLM.ijcam_to_kxyslm`.
 
     -  ``"ijraw"``
-        Raw camera sensor pixel units: the **unbinned, un-WOI'd** coordinate system of the 
-        transformed physical sensor, as opposed to ``"ij"`` which lives in the WOI- and
-        binning-applied frame of the returned image.  Requires a 
+        Raw camera sensor pixel units: the **unbinned, un-WOI'd, untransformed** coordinate
+        system of the physical sensor, as opposed to ``"ij"`` which lives in the WOI-,
+        binning-, and orientation-applied frame of the returned image.  Requires a 
         :class:`~slmsuite.hardware.cameras.camera.Camera`
         (or :class:`~slmsuite.hardware.cameraslms.FourierSLM`) to be passed to ``hardware``.
-        The mapping to ``"ij"`` is the camera's
-        :meth:`~slmsuite.hardware.cameras.camera.Camera._get_ijraw_to_ijcam` affine.
+        The mapping to ``"ij"`` is the camera's current window, binning, and orientation.
 
     -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
         Camera position in metric length units, relative to the origin of the camera (potentially with WOI applied).
@@ -174,7 +173,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     -  ``"mag_m"``, ``"mag_cm"``, ``"mag_mm"``, ``"mag_um"``, ``"mag_nm"``
         Scales the corresponding metric length unit according to the value stored in
-        :attr:`~slmsuite.hardware.cameraslms.FourierSLM.mag` to match the true
+        :attr:`~slmsuite.hardware.cameraslms.CameraSLM.mag` to match the true
         dimensions of the experiment plane, as opposed to the camera plane.
         Requires a :class:`~slmsuite.hardware.cameraslms.FourierSLM` to be passed to ``hardware``,
         along with knowledge of the camera pixel size ``pitch_um``.
@@ -206,7 +205,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     -  ``"mag_m"``, ``"mag_cm"``, ``"mag_mm"``, ``"mag_um"``, ``"mag_nm"``
         True cartesian distance relative to the **experiment plane** in metric units.
         Importantly, :math:`x` and :math:`y` are divided by
-        :attr:`~slmsuite.hardware.cameraslms.FourierSLM.mag`,
+        :attr:`~slmsuite.hardware.cameraslms.CameraSLM.mag`,
         while :math:`z` is divided by its square, the longitudinal magnification
         between planes of equal refractive index.
 
@@ -651,8 +650,8 @@ def window_extent(window, padding_frac=0, padding_pix=0):
 
     Parameters
     ----------
-    window : numpy.ndarray<bool> (height, width)
-        Boolean mask.
+    window : numpy.ndarray<bool>
+        Boolean mask of shape ``(height, width)``.
     padding_frac : float
         If this default window has width ``w`` and height ``h``,
         ``padding_frac`` proportionally changes these dimensions all sides.
@@ -1950,3 +1949,16 @@ def unpad(matrix, shape):
         raise RuntimeError("Unpadded result should have desired shape.")
 
     return unpadded
+
+
+# Public API: names defined here or in private submodules (e.g. ``Aperture``), plus public
+# submodules (``phase``), so that the documentation (autosummary with
+# ``autosummary_ignore_module_all = False``) lists them.
+__all__ = sorted(
+    name for name, obj in list(globals().items())
+    if not name.startswith("_")
+    and (
+        getattr(obj, "__module__", None) == __name__
+        or getattr(obj, "__module__", "").startswith(__name__ + "._")
+    )
+) + ["phase"]

@@ -301,7 +301,7 @@ class Aperture:
     def pickle(self, attributes=True, metadata=False):
         """
         Return an h5-serializable dict describing this aperture. Compatible with the
-        :class:`~slmsuite._pickling._Picklable` recursion used by the SLM.
+        pickling recursion used by :meth:`SLM.save() <slmsuite.hardware.slms.slm.SLM.save>`.
         """
         return {"spec": self._spec, "center": self._center}
 

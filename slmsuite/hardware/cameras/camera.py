@@ -31,25 +31,11 @@ class Camera(_Common, ABC):
     ----------
     name : str
         Camera identifier.
-    shape : (int, int)
-        ``(height, width)`` of the image returned by :meth:`.get_image()`, in the same
-        order as :attr:`numpy.ndarray.shape`. Read-only property derived from the current
-        WOI, binning, and orientation transform (a 90/270 rotation swaps the two), so
-        ``get_image().shape == shape`` always holds.
     bitdepth : int
         Depth of a camera pixel well in bits.
-    bitresolution : int
-        Returns ``(2**bitdepth) * averaging``. The action of averaging here is a sum
-        rather than a mean, so the effective bitresolution increases accordingly.
     dtype : np.dtype
         Type returned by :meth:`._get_image_hw()`, probed and cached upon initialization.
         Falls back to the narrowest type fitting :attr:`bitdepth` if the probe fails.
-    pitch_um : (float, float) OR None
-        Pixel pitch in microns.
-        This is a property that updates with binning.
-    exposure_s : float
-        Caches the last result of :meth:`.get_exposure()`. Can be used if the user wants to
-        avoid the overhead of calling the method.
     exposure_bounds_s : (float, float) OR None
         Shortest and longest allowable integration in seconds.
     averaging : int OR None
@@ -66,25 +52,6 @@ class Camera(_Common, ABC):
         try again for a total of ``capture_attempts`` attempts.
         This is useful for resilience against errors that happen with low probability.
         Defaults to 5.
-    binning : (int, int)
-        Binning of the camera in the transformed orientation. Defaults to (1, 1) for no binning.
-    woi : (int, int, int, int)
-        WOI (window of interest) in ``(x, width, y, height)`` form, in the
-        **transformed, unbinned** frame (the orientation the user sees, at full sensor
-        resolution). Stored unbinned because the WOI marks a physical sensor region
-        independent of :attr:`binning`; this keeps it binning-invariant so
-        ``set_woi(get_woi())`` round-trips and the Fourier calibration stays valid. The
-        binned output size is reported by :attr:`shape` instead.
-
-        Warning
-        ~~~~~~~
-        This feature is less fleshed out than most. There may be issues
-        (e.g. :meth:`.get_image()` with the ``averaging`` or ``hdr`` flags).
-    origin : (int, int)
-        Read-only ``(x, y)`` of the image's upper-left corner (the WOI offset), in the
-        same frame as :attr:`woi`. ``(0, 0)`` for a full-sensor WOI.
-    center : (float, float)
-        Read-only ``(x, y)`` center of the returned image, ``(shape[1]/2, shape[0]/2)``.
     transform : callable
         Orientation transform (:class:`~slmsuite.holography.analysis.OrientationTransform`)
         of flips and 90 degree rotations, applied to raw camera frames before they are
@@ -95,7 +62,7 @@ class Camera(_Common, ABC):
         receives (to avoid copying overhead). Thus, if the user modifies the returned data,
         then this data will be modified also. It sits on whichever backend the last
         :meth:`get_image()` returned, i.e. the device if that call passed ``get=False``.
-        This may be of :attr:`dtype`, or may be a float, depending on whether :attr:`hdr` is
+        This may be of :attr:`~slmsuite.hardware.cameras.camera.Camera.dtype`, or may be a float, depending on whether :attr:`hdr` is
         used and the type of :attr:`averaging`.
         Is ``None`` if no image has ever been taken.
     """
@@ -243,6 +210,10 @@ class Camera(_Common, ABC):
 
     @property
     def bitresolution(self) -> int:
+        """
+        Returns ``(2**bitdepth) * averaging``. The action of averaging here is a sum
+        rather than a mean, so the effective bitresolution increases accordingly.
+        """
         # This overwrites the _Common bitresolution, as averaging and software binning
         # both sum into a range wider than the bitdepth.
         return self._bitresolution(self._parse_averaging(self.averaging))
@@ -258,7 +229,10 @@ class Camera(_Common, ABC):
 
     @property
     def pitch_um(self) -> np.ndarray | None:
-        """Returns the pixel pitch in micrometers (potentially after binning)."""
+        """
+        Returns the pixel pitch in micrometers in the transformed frame, scaled by
+        :attr:`binning`, or ``None`` if the pitch is unknown.
+        """
         if self._pitch_um is not None:
             # Report in the transformed frame: transform the raw pitch the same way as
             # binning, so a 90/270 swap pairs the correct pitch and binning per axis.
@@ -274,7 +248,10 @@ class Camera(_Common, ABC):
 
     @property
     def binning(self) -> tuple[int, int]:
-        """Returns the current binning."""
+        """
+        Returns the current binning in the transformed orientation. ``(1, 1)`` means no
+        binning. Setting this calls :meth:`set_binning`.
+        """
         return self.transform.transform_shape(self._binning)
 
     @binning.setter
@@ -355,8 +332,9 @@ class Camera(_Common, ABC):
         """
         Returns ``(height, width)`` of images returned by :meth:`.get_image()`.
 
-        Accounts for the current WOI, binning, and orientation transform so that
-        ``get_image().shape == camera.shape`` always holds.
+        Accounts for the current WOI, binning, and orientation transform (a 90/270
+        rotation swaps the two) so that ``get_image().shape == camera.shape`` always holds.
+        Read-only.
         """
         h_bin = self._woi[3] // self._binning[1]
         w_bin = self._woi[1] // self._binning[0]
@@ -418,7 +396,15 @@ class Camera(_Common, ABC):
         Returns the WOI ``(x, w, y, h)`` in transformed, unbinned pixel coordinates.
 
         This is the same coordinate convention accepted by :meth:`set_woi` and returned
-        by :meth:`get_woi`, so it is invariant under changes to :attr:`binning`.
+        by :meth:`get_woi`. The WOI marks a physical region of the sensor, so it is stored
+        unbinned and is invariant under changes to :attr:`binning`: ``set_woi(get_woi())``
+        round-trips and the Fourier calibration stays valid. The binned output size is
+        reported by :attr:`shape`. Read-only; use :meth:`set_woi` to change it.
+
+        Warning
+        ~~~~~~~
+        This feature is less fleshed out than most. There may be issues
+        (e.g. :meth:`.get_image()` with the ``averaging`` or ``hdr`` flags).
         """
         return self.transform.transform_woi(
             self._woi,
@@ -627,7 +613,11 @@ class Camera(_Common, ABC):
 
     @property
     def exposure_s(self):
-        """Returns the current exposure time in seconds."""
+        """
+        Returns the exposure time in seconds, cached from the last
+        :meth:`.get_exposure()` to avoid the overhead of querying the camera.
+        Setting this calls :meth:`.set_exposure()`.
+        """
         return self._exposure_s
 
     @exposure_s.setter
@@ -781,7 +771,7 @@ class Camera(_Common, ABC):
 
         Returns
         -------
-        dtype
+        numpy.dtype
             The numpy dtype of the image returned by :meth:`.get_image()`.
         """
         # HDR always returns float.
@@ -871,7 +861,7 @@ class Camera(_Common, ABC):
     def _get_out(self, shape, out=None, dtype=None):
         """
         Allocate a buffer of ``shape`` and ``dtype``, or check that ``out`` is one.
-        Defaults to the raw sensor :attr:`dtype`; software binning widens it.
+        Defaults to the raw sensor :attr:`~slmsuite.hardware.cameras.camera.Camera.dtype`; software binning widens it.
         """
         shape = tuple(int(s) for s in shape)
         dtype = np.dtype(self.dtype if dtype is None else dtype)

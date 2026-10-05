@@ -78,7 +78,7 @@ docs = [
     "sphinx_last_updated_by_git",
     "sphinx_rtd_theme",
     "requests",
-    "pandoc",
+    "pypandoc_binary",     # Bundles the pandoc binary that nbsphinx needs.
     "pydata-sphinx-theme",
     "sphinx_design",
     "sphinx-autodoc-typehints",
@@ -108,7 +108,7 @@ dev = [
 
 [project.urls]
 "Homepage" = "https://github.com/holodyne/slmsuite"
-"Documentation" = "https://slmsuite.readthedocs.io/en/latest/"
+"Documentation" = "https://slmsuite.holodyne.com/en/latest/"
 
 [tool.setuptools.dynamic]
 version = { attr = "slmsuite.__version__" }

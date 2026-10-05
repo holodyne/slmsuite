@@ -213,7 +213,7 @@ def configure_logging(level: "int | str | None" = _DEFAULT_LEVEL, stream=None):
 
 
 def make_logger(name, color="default"):
-    """Return a colorized :class:`logging.LoggerAdapter` for use outside :class:`_Loggable`.
+    """Return a colorized :class:`logging.LoggerAdapter` for code outside slmsuite's classes.
 
     Parameters
     ----------

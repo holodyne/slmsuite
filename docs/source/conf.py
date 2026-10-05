@@ -12,9 +12,11 @@
 
 import base64
 import os
+import re
 import sys
 import inspect
 import shutil
+import types
 
 import requests
 
@@ -32,12 +34,23 @@ for module_path in module_paths:
 
 from examples import download_example_notebooks
 
+# nbsphinx needs a pandoc binary. Fall back to the one bundled with pypandoc_binary
+# (in the ``docs`` extra) when pandoc is not installed on the system.
+if shutil.which("pandoc") is None:
+    try:
+        import pypandoc
+        os.environ["PATH"] = os.path.dirname(pypandoc.get_pandoc_path()) + os.pathsep + os.environ["PATH"]
+    except (ImportError, OSError):
+        pass
+
 # -- Project information -----------------------------------------------------
 
 project = "slmsuite"
 copyright = "2021-2025 slmsuite Developers. 2026 Holodyne Labs, Inc."
 author = "Holodyne Labs, Inc."
-release = "0.5.0"
+# Read the version from the package, as pyproject.toml does, so it never needs a manual bump.
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "slmsuite", "__init__.py")) as f:
+    release = re.search(r"""^__version__ = ['"]([^'"]+)['"]""", f.read(), re.M).group(1)
 
 # -- General configuration ---------------------------------------------------
 
@@ -103,6 +116,7 @@ toc_object_entries_show_parents = 'hide'
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 autosummary_generate = True
+autosummary_ignore_module_all = False  # Respect __all__ (e.g. toolbox.phase re-exports).
 autodoc_member_order = "bysource"   # This doesn't work for autosummary unfortunately
                                     # https://github.com/sphinx-doc/sphinx/issues/5379
 # autodoc_typehints = "signature"
@@ -202,8 +216,98 @@ def skip(app, what, name, obj, would_skip, options):
     # Don't document private things.
     elif name[0] == '_':
         skip_ = True
+    # Don't document members implemented in C on builtin bases (e.g. ``int.to_bytes`` on
+    # an ``IntEnum``). Every slmsuite method is a Python function, so none are skipped.
+    elif isinstance(obj, (
+        types.BuiltinFunctionType, types.MethodDescriptorType, types.WrapperDescriptorType,
+        types.GetSetDescriptorType, types.MemberDescriptorType, types.ClassMethodDescriptorType,
+    )):
+        skip_ = True
 
     return skip_
+
+def public_bases(app, name, obj, options, bases):
+    """
+    Show base classes by their public path (e.g. ``algorithms.SpotHologram`` rather than
+    ``algorithms._spots.SpotHologram``), and drop private mixins, which are undocumented.
+    """
+    import importlib
+
+    public = []
+    for base in bases:
+        if base.__module__ == "builtins" or base.__name__.startswith("_"):
+            if base.__module__ == "builtins":
+                public.append(base)
+            continue
+        parts = base.__module__.split(".")
+        if any(part.startswith("_") for part in parts):
+            module = ".".join(part for part in parts if not part.startswith("_"))
+            try:
+                if getattr(importlib.import_module(module), base.__name__, None) is base:
+                    public.append(f":class:`~{module}.{base.__name__}`")
+            except ImportError:
+                pass
+        else:
+            public.append(base)
+    bases[:] = public
+
+def resolve_relative(app, env, node, contnode):
+    """
+    Resolve relative references to slmsuite objects that Sphinx misses. Docstrings are
+    written from the perspective of their own class, so ``:attr:`aperture``` in an
+    inherited method documented on a subclass page should link to the base class's
+    attribute. Tries, in order: the context class's MRO, then a unique match among the
+    documented objects. References to private names render as plain code.
+    """
+    import importlib
+    from sphinx.util.nodes import make_refnode
+
+    if node.get("refdomain") != "py":
+        return None
+    target = node["reftarget"].lstrip("~").lstrip(".")
+    objects = env.get_domain("py").objects
+
+    def unique(names):
+        """Collapse aliases (e.g. ``toolbox.phase._zernike.ZernikeBasis``) of one object."""
+        anchors = {}
+        for name in names:
+            anchors.setdefault((objects[name].docname, objects[name].node_id), name)
+        return list(anchors.values())
+
+    def link(name):
+        entry = objects[name]
+        return make_refnode(app.builder, node["refdoc"], entry.docname, entry.node_id, contnode, name)
+
+    # 1) Walk the MRO of the class this docstring is documented under.
+    module, cls = node.get("py:module"), node.get("py:class")
+    if module and cls:
+        try:
+            obj = importlib.import_module(module)
+            for part in cls.split("."):
+                obj = getattr(obj, part)
+            for base in getattr(obj, "__mro__", ()):
+                # The documented (public) path of this base, e.g. ``algorithms._hologram``
+                # is documented as ``algorithms``.
+                public = ".".join(p for p in base.__module__.split(".") if not p.startswith("_"))
+                name = f"{public}.{base.__name__}.{target}"
+                if name in objects:
+                    return link(name)
+        except (ImportError, AttributeError):
+            pass
+
+    # 2) A unique documented slmsuite object with this (dotted) name. Not for modules, as
+    #    e.g. :mod:`pylablib` means the external library, not slmsuite's wrapper of it.
+    if node.get("reftype") != "mod":
+        suffix = "." + target
+        matches = unique([n for n in objects if n.startswith("slmsuite") and n.endswith(suffix)])
+        if len(matches) == 1:
+            return link(matches[0])
+
+    # 3) Private names are undocumented by design: show them as code, without a link.
+    if target.split(".")[-1].startswith("_"):
+        return contnode
+
+    return None
 
 # relative to this directory
 examples_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_examples")
@@ -214,6 +318,8 @@ images_path = os.path.join(
 
 def setup(app):
     app.connect("autodoc-skip-member", skip)
+    app.connect("autodoc-process-bases", public_bases)
+    app.connect("missing-reference", resolve_relative)
     app.add_css_file('css/custom.css')
 
     # Use local notebooks

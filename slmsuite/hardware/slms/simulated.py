@@ -20,11 +20,6 @@ class SimulatedSLM(SLM):
             User-defined source amplitude (with the dimensions of :attr:`shape`) on the SLM.
         ``"phase_sim"`` : numpy.ndarray
             User-defined source phase (with the dimensions of :attr:`shape`) on the SLM.
-    gamma_sim : numpy.ndarray OR None
-        User-defined phase response actually realized by each grayscale level, in units of
-        :math:`2\pi`. ``None`` simulates the ideal linear response. This is the truth which
-        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibrate` measures, as
-        opposed to the :attr:`~slmsuite.hardware.slms.slm.SLM.gamma` it recovers.
     """
     _pickle_data = SLM._pickle_data + ["gamma_sim"]
 
@@ -51,8 +46,7 @@ class SimulatedSLM(SLM):
             simulated is its negative, and an unmeasured half defaults to ideal.
         gamma_sim : array_like OR None
             See :attr:`gamma_sim`. Must span every one of the ``bitresolution`` levels;
-            interpolate a sparse measurement with
-            :meth:`~slmsuite.hardware.slms.slm.SLM._interpolate_gamma` first.
+            interpolate a sparse measurement onto every level first.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
         """
@@ -89,7 +83,12 @@ class SimulatedSLM(SLM):
 
     @property
     def gamma_sim(self):
-        """The phase response that this SLM simulates, or ``None`` for the ideal one."""
+        r"""
+        User-defined phase response actually realized by each grayscale level, in units of
+        :math:`2\pi`. ``None`` simulates the ideal linear response. This is the truth which
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.pixel_calibrate` measures, as
+        opposed to the :attr:`~slmsuite.hardware.slms.slm.SLM.gamma` it recovers.
+        """
         return self._gamma_sim
 
     @gamma_sim.setter

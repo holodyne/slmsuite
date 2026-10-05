@@ -115,9 +115,11 @@ class Webcam(Camera):
         raise NotImplementedError()
 
     def get_auto_exposure(self):
+        """Returns the OpenCV auto exposure setting (``CAP_PROP_AUTO_EXPOSURE``)."""
         return self.cam.get(cv2.CAP_PROP_AUTO_EXPOSURE)
 
     def set_auto_exposure(self, tf):
+        """Enables (``True``) or disables (``False``) auto exposure."""
         self.cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
         self.cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3 if tf else 1)
 

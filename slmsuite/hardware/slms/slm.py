@@ -48,17 +48,12 @@ class SLM(_Common, ABC):
         Depth of SLM pixel well in bits. This is useful for converting the floats which
         the user provides to the ``bitdepth``-bit ints that the SLM reads (see the
         private method :meth:`_phase2gray`).
-    bitresolution : int
-        Stores ``2 ** bitdepth``.
     settle_time_s : float
         Delay in seconds to allow the SLM to settle. This is mostly useful for applications
         requiring high precision. This delay is applied if the user flags ``settle``
         in :meth:`set_phase()`. Defaults to .3 sec for precision.
     pitch_um : (float, float)
         Pixel pitch in microns.
-    pitch : (float, float)
-        Pixel pitch normalized to wavelengths ``pitch_um / wav_um``. This value is more
-        useful than ``pitch_um`` when considering conversions to :math:`k`-space.
     wav_um : float
         Operating wavelength targeted by the SLM in microns. Defaults to 780 nm.
     wav_design_um : float
@@ -76,15 +71,6 @@ class SLM(_Common, ABC):
         than :attr:`wav_um` should the user want to have a phase range larger than
         :math:`2\pi`, for SLMs with lookup table capability.
 
-    phase_scaling : float
-        Wavelength normalized to the phase range of the SLM. See :attr:`wav_design_um`.
-        Determined by ``phase_scaling = wav_um / wav_design_um``.
-    grid : (numpy.ndarray<float> (height, width), numpy.ndarray<float> (height, width))
-        :math:`x` and :math:`y` coordinates of the SLM's pixels in wavelengths
-        (see :attr:`wav_um`, :attr:`pitch_um`)
-        measured from the center of the :attr:`aperture`.
-        Of size :attr:`shape`. A read-only property derived from the
-        immutable geometric grid and the :attr:`aperture` center.
     aperture : :class:`~slmsuite.holography.toolbox.Aperture`
         Aperture applied to the SLM's nearfield. Set with :meth:`set_aperture`
         or fitted to a measured amplitude with :meth:`fit_aperture`.
@@ -314,7 +300,8 @@ class SLM(_Common, ABC):
         :math:`(x, y)` coordinate meshgrids of the SLM's pixels in normalized units
         (wavelengths), measured from the **aperture center**. This is the working
         coordinate frame that analytic phase functions (lenses, gratings, Zernike, ...)
-        are generated in.
+        are generated in. Of size :attr:`shape`. Read-only: it is derived from the
+        immutable geometric grid and the :attr:`aperture` center.
 
         Held on :attr:`xp`, so this is a :mod:`cupy` meshgrid for a :mod:`cupy`-backed SLM;
         pass it through :meth:`slmsuite.misc.xp.as_numpy` where host memory is required.
@@ -558,12 +545,20 @@ class SLM(_Common, ABC):
 
     @property
     def pitch(self):
+        """
+        Pixel pitch ``(x, y)`` normalized to wavelengths, ``pitch_um / wav_um``. This value
+        is more useful than ``pitch_um`` when considering conversions to :math:`k`-space.
+        """
         return self.pitch_um / self.wav_um
 
     # Phase scaling and LUT methods
 
     @property
     def phase_scaling(self):
+        """
+        Wavelength normalized to the phase range of the SLM, ``wav_um / wav_design_um``.
+        See :attr:`wav_design_um`.
+        """
         return self.wav_um / self.wav_design_um
 
     def _interpolate_gamma(self, gamma, levels):
@@ -1433,7 +1428,7 @@ class SLM(_Common, ABC):
         Parameters
         ----------
         fit_function : str OR lambda
-            Function name from :mod:`~slmsuite.misc.fitfunctions` used to set the
+            Function name from :mod:`~slmsuite.holography.analysis.fitfunctions` used to set the
             source profile. The function can also be passed directly.
             Defaults to ``"gaussian2d"``.
         units : str in {"norm", "frac", "nm", "um", "mm", "m"}
@@ -1696,6 +1691,10 @@ class SLM(_Common, ABC):
         return self.aperture
 
     def fit_source_amplitude(self, method="moments", extent_threshold=.1, force=True):
+        """
+        Deprecated. Forwards to :meth:`fit_aperture`; ``extent_threshold`` and ``force``
+        are ignored.
+        """
         warnings.warn(
             "fit_source_amplitude is deprecated in favor of fit_aperture and "
             "will be removed in a future release."

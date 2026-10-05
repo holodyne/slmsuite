@@ -26,8 +26,8 @@ class _AbstractSpotHologram(FeedbackHologram):
     def spot_integration_width_ij(self):
         """
         Width in camera pixels of the square region integrated around each spot for
-        ``"experimental_spot"`` feedback. ``None`` when the spots are not located on a
-        camera.
+        ``"experimental_spot"`` feedback. Integrating over many camera pixels gives better
+        SNR. ``None`` when the spots are not located on a camera.
 
         Setting this re-runs :meth:`_check_spots_in_frame()`, as a width assigned after
         construction (as
@@ -354,10 +354,6 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         attribute. For iterative feedback, have the ``callback()`` function set
         :attr:`external_spot_amp` dynamically. By default, this variable is set to a
         copy of :attr:`spot_amp`.
-    spot_integration_width_ij : int
-        For spot-specific feedback methods, better SNR is achieved when integrating over
-        many camera pixels. This variable stores the width of the integration region
-        in ``"ij"`` (camera) space.
     cuda : bool
         Whether the custom CUDA kernel is used for optimization (option 2).
     """
@@ -1145,24 +1141,27 @@ class SpotHologram(_AbstractSpotHologram):
 
     Attributes
     ----------
-    spot_knm, spot_kxy, spot_ij : array_like of float OR None
-        Stored vectors with shape ``(2, N)`` in the style of
+    spot_knm : array_like of float
+        Spot locations in the ``"knm"`` (computational k-space) basis, stored as float
+        vectors with shape ``(2, N)`` in the style of
         :meth:`~slmsuite.holography.toolbox.format_2vectors()`.
-        These vectors are floats.
-        The subscript refers to the basis of the vectors, the transformations between
-        which are autocomputed.
-        If necessary transformations do not exist, :attr:`spot_ij` is set to ``None``.
+    spot_kxy : array_like of float OR None
+        Spot locations in the ``"kxy"`` basis, autocomputed from the others.
+    spot_ij : array_like of float OR None
+        Spot locations in the ``"ij"`` (camera) basis, autocomputed from the others.
+        ``None`` if the necessary transformations do not exist.
     spot_knm_rounded : array_like of int
         :attr:`spot_knm` rounded to nearest integers (indices).
         These vectors are integers.
         This is necessary because
         GS algorithms operate on a pixel grid, and the target for each spot in a
         :class:`SpotHologram` is a single pixel (index).
-    spot_kxy_rounded, spot_ij_rounded : array_like of float
-        Once :attr:`spot_knm_rounded` is rounded, the original :attr:`spot_kxy`
-        and :attr:`spot_ij` are no longer accurate. Transformations are again used
-        to backcompute the positions in the ``"ij"`` and ``"kxy"`` bases corresponding
-        to the true computational location of a given spot.
+    spot_kxy_rounded : array_like of float
+        Once :attr:`spot_knm_rounded` is rounded, the original :attr:`spot_kxy` is no
+        longer accurate. Transformations are again used to backcompute the position in
+        the ``"kxy"`` basis corresponding to the true computational location of a given spot.
+    spot_ij_rounded : array_like of float
+        As :attr:`spot_kxy_rounded`, but in the ``"ij"`` basis.
         These vectors are floats.
     spot_amp : array_like of float
         The **amplitudes** to target for each spot.
@@ -1179,10 +1178,6 @@ class SpotHologram(_AbstractSpotHologram):
         For spot-specific feedback methods, better SNR is achieved when integrating over
         many farfield pixels. This variable stores the width of the integration region
         in ``"knm"`` (farfield) space.
-    spot_integration_width_ij : int
-        For spot-specific feedback methods, better SNR is achieved when integrating over
-        many camera pixels. This variable stores the width of the integration region
-        in ``"ij"`` (camera) space.
     null_knm : array_like of float OR None
         In addition to points where power is desired, :class:`SpotHologram` is equipped
         with quality of life features to select points where power is undesired. These
@@ -1237,7 +1232,7 @@ class SpotHologram(_AbstractSpotHologram):
             If ``None``, all spots are assumed to have the same amplitude.
             Normalization is performed automatically; the user is not required to
             normalize.
-        cameraslm : slmsuite.hardware.cameraslms.FourierSLM OR None
+        cameraslm : :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
             If the ``"ij"`` or ``"kxy"`` bases are chosen, and/or if the user wants to make use of camera
             feedback, a :class:`slmsuite.hardware.cameraslms.FourierSLM` must be provided.
         null_vectors : array_like OR None

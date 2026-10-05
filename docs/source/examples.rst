@@ -16,9 +16,9 @@ simply download the example files and run the simulated hardware cells instead o
    _examples/computational_holography
    _examples/experimental_holography
    _examples/simulated_hardware
+   _examples/lut_calibration
    _examples/wavefront_calibration
    _examples/structured_light
    _examples/zernike_holography
    _examples/multipoint_calibration
-   _examples/interpolated_wavefront
    _examples/multiplane_holography

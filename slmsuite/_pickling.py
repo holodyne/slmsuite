@@ -94,7 +94,7 @@ class _Picklable(object):
         path : str
             Path to directory to save in. Default is current directory.
         name : str OR None
-            Name of the save file. If ``None``, will use :attr:`name` + ``'-pickle'``.
+            Name of the save file. If ``None``, will use the object's ``name`` + ``'-pickle'``.
         **kwargs
             Passed to :meth:`pickle()` to customize how and what data is saved.
 

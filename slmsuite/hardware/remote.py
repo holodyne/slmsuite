@@ -284,6 +284,7 @@ class Server(object):
 
     @staticmethod
     def identify_hardware(hw: object) -> str:
+        """Returns ``"camera"`` or ``"slm"`` for the type of ``hw``, or ``None`` if neither."""
         if hasattr(hw, "_get_image_hw"):
             return "camera"
         elif hasattr(hw, "_set_phase_hw"):

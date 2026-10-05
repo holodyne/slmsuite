@@ -139,7 +139,7 @@ class _WavefrontCalibrationZernike(object):
         -------
         dict OR SpotHologram
             The contents of
-            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.calibrations["wavefront_zernike"]`,
+            :attr:`calibrations["wavefront_zernike"] <slmsuite.hardware.cameraslms.FourierSLM.calibrations>`,
             or the projected :class:`~slmsuite.holography.algorithms.SpotHologram` if
             ``perturbation`` is non-positive or empty.
 

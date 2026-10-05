@@ -28,7 +28,7 @@ class MindVision(Camera):
     MindVision camera subclass for interfacing with the :mod:`mvsdk`.
     """
 
-    # Class variable (same for all instances of MindVision) pointing to a singleton SDK.
+    #: Class variable (same for all instances of MindVision) pointing to a singleton SDK.
     sdk = None
 
     def __init__(self, serial="", pitch_um=None, **kwargs):

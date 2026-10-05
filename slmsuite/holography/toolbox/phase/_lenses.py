@@ -96,7 +96,8 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
         Scalars are interpreted as a non-cylindrical isotropic axicon.
         Defaults to infinity (no axicon).
     w : float OR None
-        See :meth:`~slmsuite.holography.toolbox.phase._determine_source_radius()`.
+        If ``None``, uses the :attr:`~slmsuite.hardware.slms.slm.SLM.source_radius` of an SLM
+        passed as ``grid``, or else a quarter of the smallest normalized screen dimension.
 
     Returns
     -------

@@ -95,18 +95,22 @@ class _Common(_Viewable, _Loggable, ABC):
 
     @property
     def bitresolution(self):
+        """Number of levels, ``2**bitdepth``."""
         return 2**self.bitdepth     # Overwritten in Camera to account for averaging.
 
     @property
     def width(self):
+        """Width in pixels, ``shape[1]``."""
         return self.shape[1]
 
     @property
     def height(self):
+        """Height in pixels, ``shape[0]``."""
         return self.shape[0]
 
     @property
     def resolution(self):
+        """``(width, height)`` in pixels, the reverse of :attr:`shape`."""
         return (self.shape[1], self.shape[0])
 
     def _get_dtype(self, test_data=None):

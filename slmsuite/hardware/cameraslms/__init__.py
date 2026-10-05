@@ -58,14 +58,14 @@ class CameraSLM(_Loggable):
 
         Parameters
         ----------
-        cam : ~slmsuite.hardware.cameras.camera.Camera OR (int, int) OR None
+        cam : :class:`~slmsuite.hardware.cameras.camera.Camera` OR (int, int) OR None
             Instance of :class:`~slmsuite.hardware.cameras.camera.Camera`
             which interfaces with a camera. This camera is
             used to provide closed-loop feedback to an SLM for calibration and holography.
             If a shape ``(int, int)`` is passed and ``slm=None``,
             then a simulated system is constructed with the desired resolution.
             If ``None``, then the shape defaults to ``(512, 512)``.
-        slm : ~slmsuite.hardware.slms.slm.SLM OR None
+        slm : :class:`~slmsuite.hardware.slms.slm.SLM` OR None
             Instance of :class:`~slmsuite.hardware.slms.slm.SLM`
             which interfaces with a phase display.
         mag : float
@@ -128,7 +128,7 @@ class CameraSLM(_Loggable):
         ----------
         phase : ndarray OR None
             Phase to be plotted.
-            If ``None``, grabs the last written :attr:`phase` from the SLM.
+            If ``None``, grabs the last written :attr:`~slmsuite.hardware.slms.slm.SLM.phase` from the SLM.
 
             Important
             ---------
@@ -530,7 +530,7 @@ class FourierSLM(
         Rebuilds a system as a simulation from the metadata in an :mod:`slmsuite` file,
         without the hardware present. Both a calibration written by
         :meth:`save_calibration()` and a pickle written by
-        :meth:`~slmsuite._pickling._Picklable.save()` carry this metadata; a pickle
+        :meth:`save()` carry this metadata; a pickle
         saved with ``attributes=True`` also carries the SLM's measured
         :attr:`~slmsuite.hardware.slms.slm.SLM.source`, its measured phase response,
         :attr:`~slmsuite.hardware.slms.slm.SLM.aperture`, and displayed

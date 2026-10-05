@@ -261,7 +261,7 @@ class Hologram(_HologramStats, _Loggable):
             The nearfield initial phase. This is the displayed wavefront at the SLM plane.
             See :attr:`phase`. :attr:`phase` should only be passed if the user wants to
             precondition the optimization. Of shape :attr:`slm_shape`.
-        slm_shape : (int, int) OR slmsuite.hardware.FourierSLM OR slmsuite.hardware.slms.SLM OR None
+        slm_shape : (int, int) OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR :class:`~slmsuite.hardware.slms.slm.SLM` OR None
             The shape of the nearfield of the SLM in :mod:`numpy` `(h, w)` form.
             Optionally, as a quality of life feature, the user can pass a
             :class:`~slmsuite.hardware.cameraslms.FourierSLM` or
@@ -1391,7 +1391,7 @@ class Hologram(_HologramStats, _Loggable):
               spots in an optical focus array. More stable than ``"experimental"`` for spots.
               Specific to subclasses of :class:`SpotHologram`.
             - ``"external_spot"`` Uses some external user-provided metric for spot
-              feedback. See :attr:`external_spot_amp`. Usually applied during ``callback``.
+              feedback. See :attr:`SpotHologram.external_spot_amp <slmsuite.holography.algorithms.SpotHologram.external_spot_amp>`. Usually applied during ``callback``.
               Specific to subclasses of :class:`SpotHologram`.
 
         stat_groups : list of str OR None
