@@ -1,0 +1,4 @@
+/* Show stderr output (e.g. tqdm progress bars) like normal output, not on a red background, in light and dark mode. */
+div.nboutput.container div.output_area.stderr {
+    background: transparent !important;
+}
