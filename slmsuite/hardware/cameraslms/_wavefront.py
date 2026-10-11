@@ -219,6 +219,8 @@ class _WavefrontCalibration(
             low = np.maximum(low, np.min(zone_ij, axis=1, keepdims=True))
             high = np.minimum(high, np.max(zone_ij, axis=1, keepdims=True))
 
+        # Integer bounds, so the integer lattice below cannot overshoot ``high``.
+        (low, high) = (np.ceil(low), np.floor(high))
         usable = np.maximum(high - low, 0)
 
         # Points land on integer pixels, so the lattice step is ``pitch`` rounded up.

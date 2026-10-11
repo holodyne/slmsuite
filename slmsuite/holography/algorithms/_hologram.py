@@ -617,8 +617,8 @@ class Hologram(_HologramStats, _Loggable):
         if custom_phase is not None:
             custom_phase = cp.array(custom_phase, dtype=self.dtype, copy=(False if np.__version__[0] == '1' else None))
 
-            if not np.all(np.array(self.slm_shape) == np.array(custom_phase.shape)):
-                raise ValueError(f"Reset phase of shape {custom_phase.shape} is not of slm_shape {self.slm_shape}")
+            if custom_phase.shape != self.phase.shape:
+                raise ValueError(f"Reset phase of shape {custom_phase.shape} is not of shape {self.phase.shape}")
 
             cp.copyto(self.phase, custom_phase)
         else:
@@ -1080,8 +1080,8 @@ class Hologram(_HologramStats, _Loggable):
         (i0, i1, i2, i3) = self._unpad_slice
 
         self.phase = cp.arctan2(
-            self.nearfield.imag[i0:i1, i2:i3],
-            self.nearfield.real[i0:i1, i2:i3],
+            self.nearfield.imag[..., i0:i1, i2:i3],
+            self.nearfield.real[..., i0:i1, i2:i3],
             out=self.phase,
         )
         if self.propagation_kernel is not None:

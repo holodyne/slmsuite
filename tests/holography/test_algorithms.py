@@ -1896,28 +1896,27 @@ class TestFeedbackHologram:
             assert not np.any(_np(null_region))
 
     def test_validate_roi(self, subtests):
-        """A sub-image hanging off the frame has samples no camera could supply. The check
-        lives at the `_ijcam_to_knmslm_resampler` choke point, so every entry point sees it."""
+        """A sub-image may be placed past the frame (a window of interest moves the frame,
+        not the target), but a measurement cannot supply samples the frame lacks."""
         (canvas, patch) = self._canvas_and_patch()
+        frame = np.nan_to_num(canvas, nan=0.0).astype(np.float32)
+
         h = FeedbackHologram(
             self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE)
         )
-
         for roi in [(-1, 0), (0, -1), (52, 34), (24, 72)]:
-            with subtests.test(f"the constructor rejects {roi}"):
-                with pytest.raises(ValueError, match="camera frame"):
-                    FeedbackHologram(
-                        self.SHAPE, target_ij=patch, target_ij_roi=roi,
-                        cameraslm=_StubCameraSLM(self.CAM_SHAPE),
-                    )
-
-            with subtests.test(f"set_target rejects {roi}"):
-                with pytest.raises(ValueError, match="camera frame"):
-                    h.set_target(patch, roi=roi)
-
-            with subtests.test(f"ijcam_to_knmslm rejects {roi}"):
-                with pytest.raises(ValueError, match="camera frame"):
+            with subtests.test(f"the target accepts {roi}"):
+                assert h._validate_roi(roi, patch.shape) == roi
+                try:
                     h.ijcam_to_knmslm(patch, order=0, roi=roi)
+                except ValueError as error:      # Off the frame may also be off knm space.
+                    assert "camera frame" not in str(error)
+
+            with subtests.test(f"a measurement rejects {roi}"):
+                h.target_ij_roi = roi
+                h.target_ij = patch
+                with pytest.raises(ValueError, match="camera frame"):
+                    h._roi_window(frame)
 
     def test_roi_window(self, subtests):
         """The window is the roi sub-image of a full frame, or the frame itself."""

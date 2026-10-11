@@ -1060,6 +1060,15 @@ class TestFourierSLM:
                 pitch=60, field_exclusion=0, avoid_mirrors=False, avoid_nyquist=False, plot=1
             ).shape[1] > points.shape[1]
 
+        with subtests.test("the lattice is centered in the addressable region"):
+            # Rounding must not push the far row or column past the region and drop it.
+            for pitch in np.arange(20, 400):
+                lattice = fs.wavefront_calibration_points(pitch, field_exclusion=0, avoid_mirrors=False)
+                box = fs.get_farfield_extent(inscribe=True, margin=pitch / 2)
+                box_center = (np.min(box, axis=1) + np.max(box, axis=1)) / 2
+                lattice_center = (np.min(lattice, axis=1) + np.max(lattice, axis=1)) / 2
+                assert np.all(np.abs(lattice_center - box_center) <= 1), pitch
+
     def test_wavefront_calibration_points_parse(self, fourierslm_calibrated, subtests):
         """How the calibration routines turn a count, a list, or nothing into camera points."""
         fs = fourierslm_calibrated
