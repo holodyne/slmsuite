@@ -1,11 +1,11 @@
-"""Tests for :mod:`slmsuite._progress`: the ``tqdm`` stand-in and :func:`progress_to`."""
+"""Tests for :mod:`slmsuite._progress`: the ``tqdm`` stand-in and :func:`progress_bar`."""
 import threading
 
 import pytest
 import tqdm.std
 
 import slmsuite
-from slmsuite import ProgressCancelled, progress_to
+from slmsuite import progress_bar
 from slmsuite.hardware.cameraslms import _settle
 
 
@@ -23,7 +23,7 @@ def test_tqdm(subtests):
 
     with subtests.test("wrapping an iterable reports a start, each step, and a close"):
         events = []
-        with progress_to(lambda event: events.append(event) or False):
+        with progress_bar(lambda event: events.append(event) or False):
             assert list(slmsuite.tqdm(range(3), desc="settling")) == [0, 1, 2]
         assert [event["kind"] for event in events] == ["start", "update", "update", "update", "close"]
         assert events[0]["desc"] == "settling"
@@ -32,7 +32,7 @@ def test_tqdm(subtests):
 
     with subtests.test("the update() form reports too"):
         events = []
-        with progress_to(lambda event: events.append(event) or False):
+        with progress_bar(lambda event: events.append(event) or False):
             bar = slmsuite.tqdm(total=2, desc="iterating")
             bar.update()
             bar.update()
@@ -42,23 +42,41 @@ def test_tqdm(subtests):
 
     with subtests.test("a truthy return cancels the loop where it stands"):
         seen = []
-        with progress_to(lambda event: event["kind"] == "update" and event["n"] >= 2):
-            with pytest.raises(ProgressCancelled):
+        with progress_bar(lambda event: event["kind"] == "update" and event["n"] >= 2):
+            with pytest.raises(KeyboardInterrupt):
                 for value in slmsuite.tqdm(range(100), desc="long"):
                     seen.append(value)
         assert seen == [0, 1]
 
+    with subtests.test("a loop left by break or an exception still reports a close"):
+        events = []
+        with progress_bar(lambda event: events.append(event) or False):
+            for value in slmsuite.tqdm(range(5)):
+                break
+            with pytest.raises(RuntimeError):
+                for value in slmsuite.tqdm(range(5)):
+                    raise RuntimeError
+        assert [event["kind"] for event in events] == ["start", "close"] * 2
 
-def test_progress_to(subtests):
-    """Test :func:`progress_to` scoping: per thread, and restored on exit."""
+    with subtests.test("a truthy return on close does not raise after the loop finished"):
+        with progress_bar(lambda event: event["kind"] == "close"):
+            assert list(slmsuite.tqdm(range(2))) == [0, 1]
+
+    with subtests.test("a disabled bar stays a real tqdm bar"):
+        with progress_bar(lambda event: True):
+            assert isinstance(slmsuite.tqdm(range(1), disable=True), tqdm.std.tqdm)
+
+
+def test_progress_bar(subtests):
+    """Test :func:`progress_bar` scoping: per thread, and restored on exit."""
     with subtests.test("handlers are per thread"):
         mine, theirs = [], []
 
         def other():
-            with progress_to(lambda event: theirs.append(event) or False):
+            with progress_bar(lambda event: theirs.append(event) or False):
                 list(slmsuite.tqdm(range(2), desc="theirs"))
 
-        with progress_to(lambda event: mine.append(event) or False):
+        with progress_bar(lambda event: mine.append(event) or False):
             thread = threading.Thread(target=other)
             thread.start()
             thread.join()
@@ -68,8 +86,8 @@ def test_progress_to(subtests):
 
     with subtests.test("nested blocks restore the outer handler"):
         outer, inner = [], []
-        with progress_to(lambda event: outer.append(event) or False):
-            with progress_to(lambda event: inner.append(event) or False):
+        with progress_bar(lambda event: outer.append(event) or False):
+            with progress_bar(lambda event: inner.append(event) or False):
                 list(slmsuite.tqdm(range(1), desc="inner"))
             list(slmsuite.tqdm(range(1), desc="outer"))
         assert {event["desc"] for event in inner} == {"inner"}

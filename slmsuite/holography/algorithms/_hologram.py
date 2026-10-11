@@ -507,7 +507,7 @@ class Hologram(_HologramStats, _Loggable):
         # Reset complex looping variables. Reuse the existing buffers when able.
         # (Note: reset() also runs from __init__, before these first exist.)
         self.nearfield = Hologram._fill_zeros(
-            getattr(self, "nearfield", None), self.shape, self.dtype_complex)
+            getattr(self, "nearfield", None), self.phase.shape[:-2] + tuple(self.shape), self.dtype_complex)
         if not self.target is None:
             self.farfield = Hologram._fill_zeros(
                 getattr(self, "farfield", None), self.target.shape, self.dtype_complex)
@@ -574,9 +574,9 @@ class Hologram(_HologramStats, _Loggable):
 
     def _get_random_phase(self):
         if cp == np:        # numpy does not support `dtype=`
-            return np.random.uniform(-np.pi, np.pi, self.slm_shape).astype(self.dtype)
+            return np.random.uniform(-np.pi, np.pi, self.phase.shape).astype(self.dtype)
         else:
-            return cp.random.uniform(-np.pi, np.pi, self.slm_shape, dtype=self.dtype)
+            return cp.random.uniform(-np.pi, np.pi, self.phase.shape, dtype=self.dtype)
 
     def reset_phase(self, custom_phase=None, random_phase=None, quadratic_phase=None):
         r"""

@@ -272,11 +272,6 @@ class _Loggable(_Picklable):
         detail = self._log_detail()
         self.logger.info(f"Initialized {cls}." if detail is None else f"Initialized {cls} {detail}.")
 
-    @property
-    def log_uid(self):
-        """Process-unique id of this object, which also tags its log records (``record.log_uid``)."""
-        return self._log_uid
-
     def _log_detail(self):
         """
         Extra phrase for the ``"Initialized ..."`` message, e.g. ``"on display 1"``.

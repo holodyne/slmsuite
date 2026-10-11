@@ -13,4 +13,4 @@ logger.debug("Activated version %s", __version__)
 from slmsuite._plotting import configure_plotting
 
 # (3) Handle progress defaults
-from slmsuite._progress import ProgressCancelled, progress_to, tqdm
+from slmsuite._progress import progress_bar, tqdm

@@ -97,8 +97,7 @@ a program instead of the terminal:
    get_log
    make_logger
    configure_plotting
-   progress_to
-   ProgressCancelled
+   progress_bar
 
 With :mod:`cupy` installed, holograms and SLMs (unless ``gpu=False``) keep their arrays
 on the GPU; camera frames are returned in host memory unless requested with

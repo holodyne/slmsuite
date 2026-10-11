@@ -1061,7 +1061,6 @@ class TestFourierSLM:
             ).shape[1] > points.shape[1]
 
         with subtests.test("the lattice is centered in the addressable region"):
-            # Rounding must not push the far row or column past the region and drop it.
             for pitch in np.arange(20, 400):
                 lattice = fs.wavefront_calibration_points(pitch, field_exclusion=0, avoid_mirrors=False)
                 box = fs.get_farfield_extent(inscribe=True, margin=pitch / 2)
