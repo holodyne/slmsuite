@@ -1,7 +1,9 @@
 """
 Unit tests for the _Picklable base class, which handles object serialization and saving.
 """
+
 import os
+from typing import ClassVar
 
 import pytest
 
@@ -13,8 +15,8 @@ from slmsuite.misc.files import load_h5
 class _TestPicklableClass(_Picklable):
     """Concrete _Picklable used by most tests."""
 
-    _pickle = ["basic_attr", "name"]
-    _pickle_data = ["heavy_attr"]
+    _pickle: ClassVar[list] = ["basic_attr", "name"]
+    _pickle_data: ClassVar[list] = ["heavy_attr"]
 
     def __init__(self):
         self.basic_attr = 42
@@ -68,15 +70,14 @@ class TestPicklable:
             }
 
         with subtests.test("a missing attribute warns and is skipped"):
-            with pytest.warns(
-                UserWarning, match="Expected attribute 'nonexistent' not present"
-            ):
+            with pytest.warns(UserWarning, match="Expected attribute 'nonexistent' not present"):
                 result = self.obj.pickle(attributes=["nonexistent"], metadata=False)
             assert result == {"__class__": "_TestPicklableClass"}
 
         with subtests.test("a nested Picklable is recursively pickled"):
+
             class _Nested(_Picklable):
-                _pickle = ["nested_value"]
+                _pickle: ClassVar[list] = ["nested_value"]
 
                 def __init__(self):
                     self.nested_value = "nested"
@@ -92,9 +93,10 @@ class TestPicklable:
             }
 
         with subtests.test("empty _pickle lists yield only __class__"):
+
             class _Empty(_Picklable):
-                _pickle = []
-                _pickle_data = []
+                _pickle: ClassVar[list] = []
+                _pickle_data: ClassVar[list] = []
 
                 def __init__(self):
                     self.some_attr = "value"
@@ -102,9 +104,7 @@ class TestPicklable:
                 def __str__(self):
                     return "EmptyPicklable"
 
-            assert _Empty().pickle(attributes=True, metadata=False) == {
-                "__class__": "_Empty"
-            }
+            assert _Empty().pickle(attributes=True, metadata=False) == {"__class__": "_Empty"}
 
     def test_save(self, subtests, temp_dir):
         """Test save() file naming, kwargs forwarding, and the .name requirement."""
@@ -124,8 +124,9 @@ class TestPicklable:
             assert "heavy_attr" not in saved["__meta__"]
 
         with subtests.test("no .name attribute raises AttributeError"):
+
             class _NoName(_Picklable):
-                _pickle = ["value"]
+                _pickle: ClassVar[list] = ["value"]
 
                 def __init__(self):
                     self.value = 123

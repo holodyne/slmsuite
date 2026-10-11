@@ -1,7 +1,8 @@
 """Matplotlib plot interception for headless and programmatic use."""
+
 import pathlib
 
-_current_handler = None # set by configure_plotting(); None means call real plt.show()
+_current_handler = None  # set by configure_plotting(); None means call real plt.show()
 
 
 def _slmsuite_plt_show(name=None, *args, **kwargs):
@@ -17,6 +18,7 @@ def _slmsuite_plt_show(name=None, *args, **kwargs):
         Forwarded to ``plt.show()`` when no handler is active.
     """
     import matplotlib.pyplot as plt
+
     if _current_handler is not None:
         _current_handler(*args, name=name, **kwargs)
     else:
@@ -24,20 +26,16 @@ def _slmsuite_plt_show(name=None, *args, **kwargs):
 
 
 def configure_plotting(
-    mode="show",
-    save_dir=None,
-    headless=False,
-    extension="png",
-    savefig_kwargs=None
+    mode="show", save_dir=None, headless=False, extension="png", savefig_kwargs=None
 ):
     """Configure how slmsuite plots are displayed or saved.
 
     Parameters
     ----------
-    mode : str or callable
+    mode : str or callable or None
         One of:
 
-        ``"show"``
+        ``"show"`` or ``None``
             Pass through to ``plt.show()`` (default).
         ``"suppress"``
             Close all figures silently.
@@ -63,25 +61,37 @@ def configure_plotting(
         Extra keyword arguments forwarded to ``Figure.savefig`` in ``"save"``
         mode, merged over the defaults ``{"dpi": 150, "bbox_inches": "tight"}``
         (user keys take precedence).  Ignored for other modes.
+
+    Returns
+    -------
+    callable or None
+        The handler that was active before this call, or ``None`` if plots were shown.
+        Pass it back as ``mode`` to restore the previous configuration.
     """
+    global _current_handler
+    previous = _current_handler
+
     import matplotlib
+
     if headless:
         try:
             import matplotlib.pyplot as plt
+
             plt.switch_backend("Agg")
         except Exception:
             matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
-    global _current_handler
 
     if headless:
         plt.ioff()
-    if mode == "show":
+    if mode == "show" or mode is None:
         _current_handler = None
 
     elif mode == "suppress":
+
         def _suppress(name=None, **kwargs):
             plt.close("all")
+
         _current_handler = _suppress
 
     elif mode == "save":
@@ -93,6 +103,7 @@ def configure_plotting(
         def _save(name=None, **kwargs):
             from slmsuite._logging import make_logger
             from slmsuite.holography.analysis.files import generate_path
+
             logger = make_logger("plotting")
             ctx = name or "fig"
             figs = [plt.figure(n) for n in plt.get_fignums()]
@@ -110,3 +121,5 @@ def configure_plotting(
 
     else:
         raise ValueError(f"Unknown mode: {mode!r}")
+
+    return previous

@@ -8,11 +8,13 @@ for :func:`get_log`/h5 capture, and a console handler that importing
 tagged with a unique ``log_uid``, so :meth:`_Loggable.get_log` returns only
 that instance's records.
 """
+
 import collections
 import itertools
 import logging
 import logging.config
 import sys
+from typing import ClassVar
 
 from slmsuite._pickling import _Picklable
 
@@ -20,32 +22,32 @@ _DEFAULT_LEVEL = logging.INFO
 _BUFFER_CAPACITY = 10000
 
 _LOGGER_COLORS = {
-    "reset":                  "\033[0m",
-    "gray":                   "\033[90m",
-    "red":                    "\033[31m",
-    "green":                  "\033[32m",
-    "yellow":                 "\033[33m",
-    "blue":                   "\033[34m",
-    "magenta":                "\033[35m",
-    "cyan":                   "\033[36m",
-    "bold_red":               "\033[1;31m",
-    "bold_green":             "\033[1;32m",
-    "bold_yellow":            "\033[1;33m",
-    "bold_blue":              "\033[1;34m",
-    "bold_magenta":           "\033[1;35m",
-    "bold_cyan":              "\033[1;36m",
+    "reset": "\033[0m",
+    "gray": "\033[90m",
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[34m",
+    "magenta": "\033[35m",
+    "cyan": "\033[36m",
+    "bold_red": "\033[1;31m",
+    "bold_green": "\033[1;32m",
+    "bold_yellow": "\033[1;33m",
+    "bold_blue": "\033[1;34m",
+    "bold_magenta": "\033[1;35m",
+    "bold_cyan": "\033[1;36m",
     "bold_italic_bright_red": "\033[1;3;91m",
 }
 
-_LOGGER_COLORS["grey"] = _LOGGER_COLORS["gray"]       # Alias.
+_LOGGER_COLORS["grey"] = _LOGGER_COLORS["gray"]  # Alias.
 
 _SLMSUITE_COLORS = {
-    "Camera":    "bold_blue",
+    "Camera": "bold_blue",
     "CameraSLM": "bold_cyan",
-    "SLM":       "bold_green",
-    "Hologram":  "bold_yellow",
-    "slmsuite":  "bold_magenta",
-    "default":   "reset",
+    "SLM": "bold_green",
+    "Hologram": "bold_yellow",
+    "slmsuite": "bold_magenta",
+    "default": "reset",
 }
 _LOGGER_COLORS.update({k: _LOGGER_COLORS[v] for k, v in _SLMSUITE_COLORS.items()})
 
@@ -71,22 +73,27 @@ def _attr_repr(value):
         return f"<dict keys={tuple(value.keys())}>"
     return repr(value)
 
+
 #  Abbreviations to prepend onto log messages
 _LEVEL_ABBR = {
-    logging.DEBUG:    "DBG",
-    logging.INFO:     "INF",
-    logging.WARNING:  "WRN",
-    logging.ERROR:    "ERR",
+    logging.DEBUG: "DBG",
+    logging.INFO: "INF",
+    logging.WARNING: "WRN",
+    logging.ERROR: "ERR",
     logging.CRITICAL: "CRT",
 }
+
+
 def _level_tag(record):
     """Fixed-width ``[LVL]`` tag (always 5 chars) so class names stay aligned."""
     abbr = _LEVEL_ABBR.get(record.levelno, record.levelname[:3].upper())
     return f"[{abbr:>3.3}]"
 
+
 # Global counters to keep track of _Loggable instances
 _uid_counter = itertools.count()
 _name_counts = {}
+
 
 def _display_name(record):
     """Display name for a logging record.
@@ -101,12 +108,14 @@ def _display_name(record):
         return f"{name} #{index}"
     return name
 
+
 def _infer_color(cls):
     """Pick a default device color from the first class in the MRO with a known color."""
     for c in cls.__mro__:
         if c.__name__ in _SLMSUITE_COLORS:
             return _SLMSUITE_COLORS[c.__name__]
     return _SLMSUITE_COLORS["default"]
+
 
 class _PlainFormatter(logging.Formatter):
     """Uncolored format used for in-memory capture and h5 export."""
@@ -123,11 +132,11 @@ class _PlainFormatter(logging.Formatter):
 class _ColorFormatter(logging.Formatter):
     """Colorized console format, with one sub-formatter built per level."""
 
-    _LEVEL_COLORS = {
-        logging.DEBUG:    _LOGGER_COLORS["gray"],
-        logging.INFO:     _LOGGER_COLORS["reset"],
-        logging.WARNING:  _LOGGER_COLORS["red"],
-        logging.ERROR:    _LOGGER_COLORS["bold_red"],
+    _LEVEL_COLORS: ClassVar[dict] = {
+        logging.DEBUG: _LOGGER_COLORS["gray"],
+        logging.INFO: _LOGGER_COLORS["reset"],
+        logging.WARNING: _LOGGER_COLORS["red"],
+        logging.ERROR: _LOGGER_COLORS["bold_red"],
         logging.CRITICAL: _LOGGER_COLORS["bold_italic_bright_red"],
     }
 
@@ -139,7 +148,7 @@ class _ColorFormatter(logging.Formatter):
             level: logging.Formatter(
                 f"{gray}%(leveltag)s{reset} {gray}%(asctime)s{reset} "
                 f"%(logcolor)s%(display)s{reset} {color}%(message)s{reset}",
-                "%H:%M:%S"
+                "%H:%M:%S",
             )
             for level, color in self._LEVEL_COLORS.items()
         }
@@ -150,6 +159,7 @@ class _ColorFormatter(logging.Formatter):
         record.logcolor = getattr(record, "log_color", _LOGGER_COLORS["reset"])
         formatter = self._formatters.get(record.levelno, self._formatters[logging.INFO])
         return formatter.format(record)
+
 
 class _BufferHandler(logging.Handler):
     """Stores all plain-text log messages for file output."""
@@ -166,6 +176,7 @@ class _BufferHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
+
 # slmsuite logger: capture everything; let handlers filter by level
 _package_logger = logging.getLogger("slmsuite")
 _package_logger.setLevel(logging.DEBUG)
@@ -178,6 +189,7 @@ logger = logging.LoggerAdapter(
     _package_logger,
     extra={"log_name": "slmsuite", "log_color": _LOGGER_COLORS[_SLMSUITE_COLORS["slmsuite"]]},
 )
+
 
 def get_log():
     """Return all records emitted by any slmsuite object this session, as plain strings."""
@@ -199,7 +211,6 @@ def configure_logging(level: "int | str | None" = _DEFAULT_LEVEL, stream=None):
     stream : stream, optional
         Output stream. Defaults to ``sys.stdout``.
     """
-
     # Remove existing console handlers on re-call
     for handler in [h for h in _package_logger.handlers if getattr(h, "_slmsuite_console", False)]:
         _package_logger.removeHandler(handler)
@@ -270,7 +281,9 @@ class _Loggable(_Picklable):
         )
 
         detail = self._log_detail()
-        self.logger.info(f"Initialized {cls}." if detail is None else f"Initialized {cls} {detail}.")
+        self.logger.info(
+            f"Initialized {cls}." if detail is None else f"Initialized {cls} {detail}."
+        )
 
     def _log_detail(self):
         """

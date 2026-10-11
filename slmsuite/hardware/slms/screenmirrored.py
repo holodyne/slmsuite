@@ -6,12 +6,13 @@ on a dedicated background thread. This thread continuously dispatches OS events
 to prevent window freezing, while rendering commands are submitted from the main
 thread via a thread-safe queue.
 """
+
 import time
 import warnings
 
-from slmsuite.hardware.slms.slm import SLM
-from slmsuite.hardware._pyglet import _Window, _WindowManager, _WindowThread, get_pyglet_display
 from slmsuite._logging import make_logger
+from slmsuite.hardware._pyglet import _Window, _WindowManager, _WindowThread, get_pyglet_display
+from slmsuite.hardware.slms.slm import SLM
 
 logger = make_logger(__name__)
 
@@ -25,6 +26,7 @@ try:
     import cupy as cp
 except ImportError:
     cp = None
+
 
 class ScreenMirrored(SLM):
     """
@@ -137,13 +139,7 @@ class ScreenMirrored(SLM):
     """
 
     def __init__(
-        self,
-        display_number,
-        bitdepth=8,
-        wav_um=1,
-        pitch_um=(8,8),
-        slm_resolution=None,
-        **kwargs
+        self, display_number, bitdepth=8, wav_um=1, pitch_um=(8, 8), slm_resolution=None, **kwargs
     ):
         """
         Initializes a :mod:`pyglet` window for displaying data to an SLM.
@@ -207,15 +203,16 @@ class ScreenMirrored(SLM):
         logger.debug("Searching for window with display_number=%s...", display_number)
 
         if len(screens) <= display_number:
-            raise ValueError("Could not find display_number={}; only {} displays"
-                .format(display_number, len(screens)))
+            raise ValueError(
+                f"Could not find display_number={display_number}; only {len(screens)} displays"
+            )
 
         screen_info = ScreenMirrored.info(verbose=False)
 
         if screen_info[display_number][3]:
             raise ValueError(
-                "ScreenMirrored window already created on display_number={}"
-                .format(display_number))
+                f"ScreenMirrored window already created on display_number={display_number}"
+            )
 
         if screen_info[display_number][2]:
             logger.warning("display_number=%s is the main display.", display_number)
@@ -240,11 +237,7 @@ class ScreenMirrored(SLM):
             )
 
         super().__init__(
-            resolution=slm_resolution,
-            bitdepth=bitdepth,
-            wav_um=wav_um,
-            pitch_um=pitch_um,
-            **kwargs
+            resolution=slm_resolution, bitdepth=bitdepth, wav_um=wav_um, pitch_um=pitch_um, **kwargs
         )
 
         # Interop maps cupy device memory into the OpenGL buffer, so it is only
@@ -253,7 +246,7 @@ class ScreenMirrored(SLM):
 
         # Create the window on a dedicated background thread.
         try:
-            time.sleep(0.2) # Short delay
+            time.sleep(0.2)  # Short delay
             wm = _WindowManager.get_instance()
             self._window_thread = wm.create_window(None, screen, self.name, interop=interop)
             self.window = self._window_thread.window
@@ -269,7 +262,8 @@ class ScreenMirrored(SLM):
         if self.phase_scaling > 1:
             self.logger.warning(
                 "Wavelength %s μm is inaccessible to this SLM with design wavelength %s μm",
-                self.wav_um, self.wav_design_um,
+                self.wav_um,
+                self.wav_design_um,
             )
 
         # Variable to keep track of the last thread future.
@@ -277,19 +271,20 @@ class ScreenMirrored(SLM):
 
         # Staging array for expanding a GPU display to RGBA before a single transfer.
         self._display_rgba = None
-        
+
     def _log_detail(self):
         """Identify which display this SLM is mirrored onto. See :meth:`._Loggable._log_detail`."""
-        return "on display {}".format(self.display_number)
+        return f"on display {self.display_number}"
 
     def _set_phase_hw(self, display, execute=True, block=True):
         """
         Writes phase data from `display` to the screen via the window's
         dedicated thread.
 
-        The expansion to RGBA happens on the main thread, then the ``OpenGL`` render is
-        submitted to the window thread. By default the main thread blocks until rendering
-        is complete.
+        The expansion to RGBA and the ``OpenGL`` render both run on the window thread,
+        which is the only thread holding the ``OpenGL`` context that mapping the frame
+        needs, so this may be called from any thread. By default the caller blocks until
+        rendering is complete.
 
         Parameters
         ----------
@@ -308,13 +303,23 @@ class ScreenMirrored(SLM):
         if not execute:
             return
 
-        frame = self.window.acquire()
-        try:
-            self._pack(display, frame)
-        finally:
-            self.window.commit()
+        # The window thread packs on its own stream, so wait for the caller's writes first.
+        ready = None
+        if cp is not None and isinstance(display, cp.ndarray):
+            ready = cp.cuda.Event()
+            ready.record()
 
-        self._window_thread_future = self._window_thread.submit(self.window.render)
+        def write():
+            if ready is not None:
+                ready.synchronize()
+            frame = self.window.acquire()
+            try:
+                self._pack(display, frame)
+            finally:
+                self.window.commit()
+            self.window.render()
+
+        self._window_thread_future = self._window_thread.submit(write)
 
         if block:
             self._wait()

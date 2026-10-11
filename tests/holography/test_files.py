@@ -1,6 +1,7 @@
 """
 Unit tests for slmsuite.holography.analysis.files module.
 """
+
 import os
 import sys
 
@@ -11,9 +12,16 @@ import numpy as np
 import pytest
 
 from slmsuite.holography.analysis.files import (
-    _max_numeric_id, generate_path, latest_path,
-    load_h5, save_h5, read_h5, write_h5, _load_image,
-    _gray2rgb, save_image,
+    _gray2rgb,
+    _load_image,
+    _max_numeric_id,
+    generate_path,
+    latest_path,
+    load_h5,
+    read_h5,
+    save_h5,
+    save_image,
+    write_h5,
 )
 
 
@@ -47,30 +55,36 @@ def test_max_numeric_id(temp_dir, subtests):
 def test_generate_path(temp_dir, subtests):
     """Test generate_path(): positional and keyword signatures, increments, dirs, and options."""
     with subtests.test("positional signature"):
-        assert generate_path(temp_dir, "test", "txt", "file", 5, 1) == \
-            os.path.join(temp_dir, "test_00000.txt")
+        assert generate_path(temp_dir, "test", "txt", "file", 5, 1) == os.path.join(
+            temp_dir, "test_00000.txt"
+        )
 
     with subtests.test("keyword signature, defaults start numbering at zero"):
-        assert generate_path(temp_dir, "data", extension="h5") == \
-            os.path.join(temp_dir, "data_00000.h5")
+        assert generate_path(temp_dir, "data", extension="h5") == os.path.join(
+            temp_dir, "data_00000.h5"
+        )
 
     with subtests.test("extension=None omits the dot"):
-        assert generate_path(temp_dir, "run", None, "file", 5, 1) == \
-            os.path.join(temp_dir, "run_00000")
+        assert generate_path(temp_dir, "run", None, "file", 5, 1) == os.path.join(
+            temp_dir, "run_00000"
+        )
 
     with subtests.test("digit_count sets the zero-padding width"):
-        assert generate_path(temp_dir, "dig", "txt", "file", 3, 1) == \
-            os.path.join(temp_dir, "dig_000.txt")
+        assert generate_path(temp_dir, "dig", "txt", "file", 3, 1) == os.path.join(
+            temp_dir, "dig_000.txt"
+        )
 
     with subtests.test("path_count returns consecutive paths"):
-        assert generate_path(temp_dir, "multi", "txt", "file", 5, 3) == \
-            [os.path.join(temp_dir, f"multi_0000{i}.txt") for i in range(3)]
+        assert generate_path(temp_dir, "multi", "txt", "file", 5, 3) == [
+            os.path.join(temp_dir, f"multi_0000{i}.txt") for i in range(3)
+        ]
 
     with subtests.test("increments past the highest existing id"):
         for name in ["inc_00000.txt", "inc_00001.txt"]:
             _touch(os.path.join(temp_dir, name))
-        assert generate_path(temp_dir, "inc", "txt", "file", 5, 1) == \
-            os.path.join(temp_dir, "inc_00002.txt")
+        assert generate_path(temp_dir, "inc", "txt", "file", 5, 1) == os.path.join(
+            temp_dir, "inc_00002.txt"
+        )
 
     with subtests.test("kind='dir' creates the directory"):
         result = generate_path(temp_dir, "asdir", None, "dir", 5, 1)
@@ -92,8 +106,9 @@ def test_latest_path(temp_dir, subtests):
     with subtests.test("returns the path with the highest id, ignoring other names"):
         for name in ["test_00001.txt", "test_00003.txt", "test_00002.txt", "other_00099.txt"]:
             _touch(os.path.join(temp_dir, name))
-        assert latest_path(temp_dir, "test", "txt", "file", 5) == \
-            os.path.join(temp_dir, "test_00003.txt")
+        assert latest_path(temp_dir, "test", "txt", "file", 5) == os.path.join(
+            temp_dir, "test_00003.txt"
+        )
 
     with subtests.test("works with directories"):
         for name in ["dir_00001", "dir_00005", "dir_00003"]:
@@ -131,6 +146,7 @@ def test_save_h5(temp_dir, subtests):
             save_h5(path, {"staggered": [[1, 2], [3, 4, 5]]})
 
     with subtests.test("exceptions other than ValueError propagate unchanged"):
+
         class BadObj:
             def __array__(self, *args, **kwargs):
                 raise TypeError("cannot convert")
@@ -165,7 +181,9 @@ def test_load_h5(temp_dir, subtests):
         assert raw["scalar"] == b"hello"
         assert isinstance(raw["array"][0], bytes)
 
-    with subtests.test("the __none__ placeholder decodes to None, or an all-None list with its shape"):
+    with subtests.test(
+        "the __none__ placeholder decodes to None, or an all-None list with its shape"
+    ):
         with h5py.File(path, "w") as f:
             f["scalar"] = False
             f["scalar"].attrs["__none__"] = True
@@ -235,20 +253,23 @@ def test_gray2rgb(subtests):
         np.testing.assert_array_equal(_gray2rgb(img, cmap="grayscale"), _gray2rgb(img, cmap=False))
 
     cases = {
-        "grayscale": dict(cmap=False),
-        "default colormap": dict(cmap=True),
-        "named colormap, integer lut defaults to the image max": dict(cmap="viridis"),
-        "explicit lut": dict(cmap="viridis", lut=100),
-        "float image, normalized": dict(cmap="viridis", normalize=True, dtype=float),
-        "float image, unnormalized": dict(cmap="viridis", normalize=False, dtype=float),
-        "grayscale with an out-of-range lut": dict(cmap=False, lut=300),
+        "grayscale": {"cmap": False},
+        "default colormap": {"cmap": True},
+        "named colormap, integer lut defaults to the image max": {"cmap": "viridis"},
+        "explicit lut": {"cmap": "viridis", "lut": 100},
+        "float image, normalized": {"cmap": "viridis", "normalize": True, "dtype": float},
+        "float image, unnormalized": {"cmap": "viridis", "normalize": False, "dtype": float},
+        "grayscale with an out-of-range lut": {"cmap": False, "lut": 300},
     }
     for label, kwargs in cases.items():
         with subtests.test(f"produces well-formed output: {label}"):
             kwargs = dict(kwargs)
             is_float = kwargs.pop("dtype", None) is float
-            img = np.random.rand(1, 10, 10) if is_float else \
-                np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
+            img = (
+                np.random.rand(1, 10, 10)
+                if is_float
+                else np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
+            )
             result = _gray2rgb(img, **kwargs)
             assert result.dtype == np.uint8
             if kwargs.get("cmap") is not False:
@@ -259,6 +280,7 @@ def test_gray2rgb(subtests):
 
         class NoColorsCmap:
             """Colormap-like object exposing N and __call__ but no .colors."""
+
             N = 10
 
             def __call__(self, x):
@@ -313,7 +335,9 @@ def test_save_image(temp_dir, subtests):
         "single image with a colormap": (gray, "test_cmap.png", {"cmap": "viridis"}),
         "float image": (rng.random((10, 10)), "test_float.png", {"cmap": "viridis"}),
         "float image, unnormalized": (
-            rng.random((10, 10)) * 0.5, "test_nonorm.png", {"cmap": "viridis", "normalize": False},
+            rng.random((10, 10)) * 0.5,
+            "test_nonorm.png",
+            {"cmap": "viridis", "normalize": False},
         ),
         "border option": (gray, "test_border.png", {"cmap": "viridis", "border": 255}),
     }

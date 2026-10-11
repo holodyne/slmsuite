@@ -19,11 +19,8 @@ REAL_TYPES = (
     *FLOAT_TYPES,
 )
 
-SCALAR_TYPES =  (
-    *REAL_TYPES,
-    complex,
-    np.complexfloating
-)
+SCALAR_TYPES = (*REAL_TYPES, complex, np.complexfloating)
+
 
 def iseven(x):
     """

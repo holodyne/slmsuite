@@ -101,6 +101,7 @@ dev = [
     "slmsuite[cameras]",
     "line-profiler",
     "snakeviz",
+    "ruff==0.17.*",
 ]
 
 [project.urls]
@@ -141,3 +142,59 @@ include = [
     "slmsuite/holography/**/*.py",
     "slmsuite/misc/*.py",
 ]
+
+[tool.ruff]
+required-version = "==0.17.*"  # keep in sync with the dev extra and CI
+line-length = 100
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "PIE",      # misc lints
+    "PERF",     # perflint
+    "NPY",      # numpy
+    "RUF",      # ruff-specific
+    "D",        # pydocstyle (numpy convention)
+    "G",        # logging format
+    "PGH",      # pygrep-hooks
+    "PLE",      # pylint errors
+    "RSE",      # raise
+    "PT006", "PT007", "PT011",  # pytest parametrize style, `raises` needs `match=`
+]
+ignore = [
+    "E501",    # line length: the formatter handles code; docstrings and URLs may exceed
+    "E741",    # ambiguous names (l, I, O) are standard in optics math
+    "B008",    # function calls in defaults (np.array(...)) are fine
+    "B028",    # warnings.warn without stacklevel
+    "B905",    # zip without strict=
+    "SIM105",  # try/except/pass is clearer than contextlib.suppress
+    "SIM108",  # ternaries hurt readability in math
+    "SIM117",  # nested with-statements read better around hardware
+    "PERF203", # try/except in loops is unavoidable around hardware I/O
+    "NPY002",  # legacy np.random keeps np.random.seed() reproducibility for users
+    "D1",      # missing docstrings
+    "D200",    # one-line docstring on one line
+    "D205",    # blank line after summary
+    "D401",    # imperative mood
+]
+# `a + [b]` -> `[*a, b]` changes meaning when `a` is an ndarray.
+unfixable = ["RUF005"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]                           # re-exports and star-imports
+"slmsuite/holography/algorithms/_header.py" = ["F401"]     # re-exports for star-import
+"slmsuite/holography/algorithms/_*.py" = ["F403", "F405"]  # numpy/scipy/cupy symbols from _header
+"slmsuite/misc/files.py" = ["F403"]                        # backwards-compatible shim
+"slmsuite/misc/fitfunctions.py" = ["F403"]                 # backwards-compatible shim
+"slmsuite/hardware/*/template.py" = ["F821"]               # TODO placeholders
+"tests/**/*.py" = ["D", "SIM", "F403", "F405"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"

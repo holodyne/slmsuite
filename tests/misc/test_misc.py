@@ -1,21 +1,22 @@
 """
 Unit tests for slmsuite.misc modules.
 """
-import pytest
+
 import numpy as np
+import pytest
 
-from slmsuite.misc.math import *
-from slmsuite.misc.fitfunctions import *
 from slmsuite.holography.analysis import image_variances
-
+from slmsuite.misc.fitfunctions import *
+from slmsuite.misc.math import *
 
 # slmsuite.misc.math
+
 
 def test_iseven(subtests):
     """Test iseven() parity."""
     with subtests.test("parity of scalar and array integers, including negatives"):
-        assert iseven(0) == True
-        assert iseven(-1) == False
+        assert iseven(0)
+        assert not iseven(-1)
         x = np.array([0, 1, 2, 3, 4, -1, -2])
         expected = np.array([True, False, True, False, True, False, True])
         np.testing.assert_array_equal(iseven(x), expected)
@@ -39,7 +40,16 @@ def test_type_tuples(subtests):
             assert t in SCALAR_TYPES
 
     with subtests.test("numpy scalar dtypes are members of the matching tuple"):
-        for dtype in (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64):
+        for dtype in (
+            np.int8,
+            np.int16,
+            np.int32,
+            np.int64,
+            np.uint8,
+            np.uint16,
+            np.uint32,
+            np.uint64,
+        ):
             assert isinstance(dtype(1), INTEGER_TYPES)
         for dtype in (np.float32, np.float64):
             assert isinstance(dtype(1.0), FLOAT_TYPES)
@@ -48,6 +58,7 @@ def test_type_tuples(subtests):
 
 
 # slmsuite.misc.fitfunctions -- 1D
+
 
 def test_linear(subtests):
     """Test linear() line fit function."""
@@ -179,11 +190,16 @@ def test_gaussian(subtests):
 
 # slmsuite.misc.fitfunctions -- 2D
 
+
 def test_gaussian2d(subtests):
     """Test gaussian2d() 2D fit function."""
     with subtests.test("value at (x0, y0) is a + c, at center or offset"):
-        assert gaussian2d(np.array([[0.0], [0.0]]), x0=0, y0=0, a=10, c=1, wx=2, wy=2)[0] == pytest.approx(11.0)
-        assert gaussian2d(np.array([[2.0], [-3.0]]), x0=2, y0=-3, a=1, c=0, wx=1, wy=1)[0] == pytest.approx(1.0)
+        assert gaussian2d(np.array([[0.0], [0.0]]), x0=0, y0=0, a=10, c=1, wx=2, wy=2)[
+            0
+        ] == pytest.approx(11.0)
+        assert gaussian2d(np.array([[2.0], [-3.0]]), x0=2, y0=-3, a=1, c=0, wx=1, wy=1)[
+            0
+        ] == pytest.approx(1.0)
 
     with subtests.test("factors into the product of 1D gaussians when wxy=0"):
         x = np.linspace(-5, 5, 51)
@@ -209,8 +225,12 @@ def test_gaussian2d(subtests):
 def test_tophat2d(subtests):
     """Test tophat2d() fit function."""
     with subtests.test("inside the disk is a + c, outside is c"):
-        assert tophat2d(np.array([[0.0], [0.0]]), x0=0, y0=0, R=5, a=10, c=1)[0] == pytest.approx(11.0)
-        assert tophat2d(np.array([[20.0], [20.0]]), x0=0, y0=0, R=5, a=10, c=1)[0] == pytest.approx(1.0)
+        assert tophat2d(np.array([[0.0], [0.0]]), x0=0, y0=0, R=5, a=10, c=1)[0] == pytest.approx(
+            11.0
+        )
+        assert tophat2d(np.array([[20.0], [20.0]]), x0=0, y0=0, R=5, a=10, c=1)[0] == pytest.approx(
+            1.0
+        )
 
     with subtests.test("boundary r=R is inside (inclusive)"):
         z = tophat2d(np.array([[5.0], [0.0]]), x0=0, y0=0, R=5, a=10, c=1)
@@ -254,7 +274,8 @@ def test_sinc2d(subtests):
 def test_sinc2d_centered_jacobian(subtests):
     """Test _sinc2d_centered_jacobian() against differences of _sinc2d_centered()."""
     from slmsuite.holography.analysis.fitfunctions import (
-        _sinc2d_centered, _sinc2d_centered_jacobian
+        _sinc2d_centered,
+        _sinc2d_centered_jacobian,
     )
 
     (x, y) = np.meshgrid(np.linspace(-2.5, 2.5, 11), np.linspace(-2.5, 2.5, 11))
@@ -264,7 +285,7 @@ def test_sinc2d_centered_jacobian(subtests):
     with subtests.test("every column is the central difference of the model"):
         jacobian = _sinc2d_centered_jacobian(xy, *params)
         assert jacobian.shape == (xy.shape[1], params.size)
-        for (index, step) in enumerate(1e-6 * np.maximum(1, np.abs(params))):
+        for index, step in enumerate(1e-6 * np.maximum(1, np.abs(params))):
             shift = np.eye(params.size)[index] * step
             difference = (
                 _sinc2d_centered(xy, *(params + shift)) - _sinc2d_centered(xy, *(params - shift))

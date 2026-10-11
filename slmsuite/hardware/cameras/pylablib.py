@@ -1,5 +1,6 @@
 """
 Light wrapper for the :mod:`pylablib` package.
+
 See the supported `cameras
 <https://pylablib.readthedocs.io/en/stable/devices/cameras_root.html>`_.
 :mod:`pylablib` must be installed ``pip install pylablib``.
@@ -10,12 +11,15 @@ For example, the following code loads a UC480 camera:
 
     # Load a legacy Thorlabs camera using the UC480 driver.
     import pylablib as pll
+
     pll.par["devices/dlls/uc480"] = "path/to/uc480/dlls"
     from pylablib.devices.uc480 import UC480Camera
+
     pll_cam = UC480Camera()
 
     # Wrap the camera with the slmsuite-compatible class.
     from slmsuite.hardware.cameras.pylablib import PyLabLib
+
     cam = PyLabLib(pll_cam)
 
 Note
@@ -24,8 +28,11 @@ Color cameras reduce each frame to a single channel selected by the base-class
 :attr:`~slmsuite.hardware.cameras.camera.Camera.color_channel` setting, for both
 single-frame and batch/averaging acquisition.
 """
-import numpy as np
+
 import warnings
+
+import numpy as np
+
 from slmsuite.hardware.cameras.camera import Camera
 
 try:
@@ -37,6 +44,7 @@ except Exception:
 from slmsuite._logging import make_logger
 
 logger = make_logger(__name__)
+
 
 class PyLabLib(Camera):
     """
@@ -65,12 +73,15 @@ class PyLabLib(Camera):
 
                 # Load a legacy Thorlabs camera using the UC480 driver.
                 import pylablib as pll
+
                 pll.par["devices/dlls/uc480"] = "path/to/uc480/dlls"
                 from pylablib.devices.uc480 import UC480Camera
+
                 pll_cam = UC480Camera()
 
                 # Wrap the camera with the slmsuite-compatible class.
                 from slmsuite.hardware.cameras.pylablib import PyLabLib
+
                 cam = PyLabLib(pll_cam)
 
         pitch_um : (float, float) OR None
@@ -97,7 +108,7 @@ class PyLabLib(Camera):
         di = cam.get_device_info()
         info_counter = 1
         for info in di:
-            if isinstance(info, str):   # This will usually catch the mode name and serial number.
+            if isinstance(info, str):  # This will usually catch the mode name and serial number.
                 name += info + "_"
                 info_counter += 1
 
@@ -114,10 +125,12 @@ class PyLabLib(Camera):
 
         super().__init__(
             (width, height),
-            bitdepth=kwargs.pop("bitdepth", 8),     # Currently defaults to 8 because pylablib doesn't cache this for most cameras. Update in the future, maybe.
-            pitch_um=pitch_um,                      # Currently unset because pylablib doesn't cache this. Update in the future, maybe.
+            bitdepth=kwargs.pop(
+                "bitdepth", 8
+            ),  # Currently defaults to 8 because pylablib doesn't cache this for most cameras. Update in the future, maybe.
+            pitch_um=pitch_um,  # Currently unset because pylablib doesn't cache this. Update in the future, maybe.
             name=name,
-            **kwargs
+            **kwargs,
         )
         self.logger.debug("PyLabLib camera initialized.")
 
@@ -128,9 +141,7 @@ class PyLabLib(Camera):
         try:
             self.cam.close()
         except Exception as e:
-            raise RuntimeError(
-                "This pylablib camera failed to close:\n{}".format(e)
-            ) from e
+            raise RuntimeError(f"This pylablib camera failed to close:\n{e}") from e
 
     @staticmethod
     def info(verbose=True):
@@ -156,12 +167,17 @@ class PyLabLib(Camera):
         self.cam.set_exposure(float(exposure_s))
 
     def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._set_woi_hw`."""
         # pylablib ROI coordinates are physical (unbinned) sensor pixels, exclusive end.
         # https://pylablib.readthedocs.io/en/stable/_modules/pylablib/devices/Thorlabs/TLCamera.html
         binx, biny = self._binning
         x, w, y, h = (int(v) for v in woi)
-        roi = dict(hstart=x * binx, hend=(x + w) * binx, vstart=y * biny, vend=(y + h) * biny)
+        roi = {
+            "hstart": x * binx,
+            "hend": (x + w) * binx,
+            "vstart": y * biny,
+            "vend": (y + h) * biny,
+        }
         try:
             self.cam.set_roi(**roi, hbin=binx, vbin=biny)
         except Exception:
@@ -169,7 +185,7 @@ class PyLabLib(Camera):
             self.cam.set_roi(**roi)
 
     def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._get_woi_hw`."""
         # pylablib get_roi() returns (hstart, hend, vstart, vend[, hbin, vbin]) in physical pixels.
         binx, biny = self._binning
         roi = self.cam.get_roi()

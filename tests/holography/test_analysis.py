@@ -1,13 +1,14 @@
 """
 Unit tests for slmsuite.holography.analysis module.
 """
+
 import contextlib
 import itertools
 import logging
 
-import pytest
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import pytest
 
 from slmsuite.holography import analysis
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
@@ -118,15 +119,16 @@ def test_take(subtests, benchmark):
 
     with subtests.test("integrate sums each region"):
         np.testing.assert_array_equal(
-            analysis.take(np.ones((100, 100)), vectors=[50, 50], size=10,
-                          centered=True, integrate=True),
+            analysis.take(
+                np.ones((100, 100)), vectors=[50, 50], size=10, centered=True, integrate=True
+            ),
             [100.0],
         )
 
     with subtests.test("output shape tracks the stack, the vector count, and integrate"):
         stack = np.ones((4, 100, 100))
         vectors = np.array([[25, 50, 75], [50, 50, 50]])
-        for (images, integrate, shape) in (
+        for images, integrate, shape in (
             (image, False, (3, 10, 10)),
             (stack, False, (4, 3, 10, 10)),
             (image, True, (3,)),
@@ -185,16 +187,21 @@ def test_take(subtests, benchmark):
     with subtests.test("clip=True integrates only the pixels it measured"):
         # A window hanging off the frame must not poison the whole spot with nan.
         result = analysis.take(
-            np.ones((50, 50)), vectors=[0, 0], size=3, centered=True,
-            integrate=True, clip=True,
+            np.ones((50, 50)),
+            vectors=[0, 0],
+            size=3,
+            centered=True,
+            integrate=True,
+            clip=True,
         )
-        assert result[0] == pytest.approx(4)     # the 2x2 corner that exists
+        assert result[0] == pytest.approx(4)  # the 2x2 corner that exists
 
     with subtests.test("clip=True is a no-op for an in-range region, integrated too"):
         # The in-range fast path must agree exactly with clip=False.
         np.testing.assert_array_equal(
-            analysis.take(image, vectors=[50, 40], size=10, centered=True,
-                          integrate=True, clip=True),
+            analysis.take(
+                image, vectors=[50, 40], size=10, centered=True, integrate=True, clip=True
+            ),
             analysis.take(image, vectors=[50, 40], size=10, centered=True, integrate=True),
         )
 
@@ -205,8 +212,9 @@ def test_take(subtests, benchmark):
     with subtests.test("plot renders the region, or the mask for return_mask"):
         with _shows() as shown:
             analysis.take(image, vectors=[30, 30], size=10, centered=True, plot=True)
-            analysis.take(image, vectors=[30, 30], size=10, centered=True,
-                          return_mask=True, plot=True)
+            analysis.take(
+                image, vectors=[30, 30], size=10, centered=True, return_mask=True, plot=True
+            )
         assert shown == ["take_plot", "take"]
 
 
@@ -456,7 +464,7 @@ def test_image_positions(subtests):
 
     with subtests.test("a sampled Gaussian's centroid is its center, in any image shape"):
         # By Poisson summation, sampling moves the centroid by order exp(-2 pi^2 sigma^2).
-        for (h, w) in ((64, 64), (63, 80)):
+        for h, w in ((64, 64), (63, 80)):
             spot = _sampled_gaussian((h, w), (w - 1) / 2 + 3.3, (h - 1) / 2 - 4.7, 2.5, 4.0)
             np.testing.assert_allclose(analysis.image_positions(spot), [[3.3], [-4.7]], atol=1e-9)
 
@@ -507,7 +515,8 @@ def test_image_variances(subtests):
             [[4 * 100.0], [9 * 25.0], [6 * 50.0]],
         )
         np.testing.assert_allclose(
-            analysis.image_variances(points, grid=2.5), analysis.image_variances(points, grid=(2.5, 2.5))
+            analysis.image_variances(points, grid=2.5),
+            analysis.image_variances(points, grid=(2.5, 2.5)),
         )
 
     with subtests.test("given centers, the moment is not central but parallel-axis shifted"):
@@ -555,9 +564,7 @@ def test_image_ellipticity(subtests):
 
     with subtests.test("ellipticity is invariant under rotation of the moment matrix"):
         for theta in (0.0, 0.3, np.pi / 4, -0.7):
-            rotation = np.array(
-                [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
-            )
+            rotation = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
             moments = rotation @ np.diag([200.0, 100.0]) @ rotation.T
             variances = np.array([[moments[0, 0]], [moments[1, 1]], [moments[0, 1]]])
             assert analysis.image_ellipticity(variances)[0] == pytest.approx(0.5)
@@ -574,9 +581,7 @@ def test_image_areas(subtests):
 
     with subtests.test("the area is invariant under rotation of the moment matrix"):
         for theta in (0.0, 0.3, np.pi / 4, -0.7):
-            rotation = np.array(
-                [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
-            )
+            rotation = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
             moments = rotation @ np.diag([200.0, 100.0]) @ rotation.T
             variances = np.array([[moments[0, 0]], [moments[1, 1]], [moments[0, 1]]])
             assert analysis.image_areas(variances)[0] == pytest.approx(20000.0)
@@ -589,9 +594,7 @@ def test_image_ellipticity_angle(subtests):
 
     with subtests.test("the angle is the rotation of the moment matrix eigenbasis"):
         for theta in (0.0, 0.3, np.pi / 4, -0.7):
-            rotation = np.array(
-                [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
-            )
+            rotation = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
             moments = rotation @ np.diag([200.0, 100.0]) @ rotation.T
             variances = np.array([[moments[0, 0]], [moments[1, 1]], [moments[0, 1]]])
             assert analysis.image_ellipticity_angle(variances)[0] == pytest.approx(theta)
@@ -606,9 +609,9 @@ def test_image_ellipticity_angle(subtests):
 def test_image_strehl(subtests):
     """Test image_strehl() against a diffraction-limited reference."""
     (x, y) = np.meshgrid(np.arange(-16, 16), np.arange(-16, 16))
-    r2 = x ** 2 + y ** 2
-    narrow = np.exp(-r2 / (2 * 1.5 ** 2))
-    broad = np.exp(-r2 / (2 * 3.0 ** 2))
+    r2 = x**2 + y**2
+    narrow = np.exp(-r2 / (2 * 1.5**2))
+    broad = np.exp(-r2 / (2 * 3.0**2))
 
     with subtests.test("an image against itself is unity"):
         np.testing.assert_allclose(analysis.image_strehl(narrow, narrow), 1)
@@ -636,7 +639,7 @@ def test_image_fit(subtests, benchmark, caplog):
     """Test image_fit() fitting of a stack of images."""
     x = np.linspace(-10, 10, 50)
     grid = np.meshgrid(x, x)
-    truth = dict(x0=2, y0=-1, a=10, c=1, wx=2, wy=3)
+    truth = {"x0": 2, "y0": -1, "a": 10, "c": 1, "wx": 2, "wy": 3}
     image = gaussian2d(grid, **truth)[np.newaxis]
 
     def linear(xy, a, b):
@@ -649,9 +652,7 @@ def test_image_fit(subtests, benchmark, caplog):
         result = analysis.image_fit(image, grid=grid, function=gaussian2d, plot=False)
         assert result.shape == (1, 15)
         assert result[0, 0] == pytest.approx(1.0)
-        np.testing.assert_allclose(
-            result[0, 1:8], [2, -1, 10, 1, 2, 3, 0], atol=1e-6
-        )
+        np.testing.assert_allclose(result[0, 1:8], [2, -1, 10, 1, 2, 3, 0], atol=1e-6)
         np.testing.assert_allclose(result[0, 8:], 0, atol=1e-6)
 
     with subtests.test("a 2D image is fitted as a stack of one"):
@@ -710,7 +711,10 @@ def test_image_fit(subtests, benchmark, caplog):
             analysis.image_fit(image, grid=grid, function=gaussian2d, plot=True)
             analysis.image_fit(
                 (2.0 * grid[0] + 3.0 * grid[1])[np.newaxis],
-                grid=grid, function=linear, guess=None, plot=True,
+                grid=grid,
+                function=linear,
+                guess=None,
+                plot=True,
             )
         assert shown == ["image_fit", "image_fit"]
 
@@ -780,7 +784,10 @@ def test_image_aperture_fit(subtests):
         assert analysis.image_aperture_fit(gaussian * (r <= 1.25 * 60)) is None
 
     with subtests.test("the fit is deterministic"):
-        (first, second) = (analysis.image_aperture_fit(clipped), analysis.image_aperture_fit(clipped))
+        (first, second) = (
+            analysis.image_aperture_fit(clipped),
+            analysis.image_aperture_fit(clipped),
+        )
         np.testing.assert_array_equal(first[0], second[0])
         assert first[1] == second[1]
 
@@ -791,7 +798,9 @@ def test_image_aperture_fit(subtests):
     with subtests.test("plot renders with or without an edge"):
         with _shows() as shown:
             analysis.image_aperture_fit(iris(250, 150, 100), plot=True)
-            analysis.image_aperture_fit(np.exp(-((xx - 250) ** 2 + (yy - 150) ** 2) / 60.0**2), plot=True)
+            analysis.image_aperture_fit(
+                np.exp(-((xx - 250) ** 2 + (yy - 150) ** 2) / 60.0**2), plot=True
+            )
         assert shown == ["image_aperture_fit", "image_aperture_fit"]
 
 
@@ -818,7 +827,7 @@ def test_image_zernike_fit(subtests):
             analysis.image_zernike_fit(
                 analysis.zernike_sum(pixels, [1, 2], [0.3, -0.4]), order=[1, 2]
             )
-        assert len(Z._ZERNIKE_BASIS_CACHE) == 2     # the synthesis grid, then the fit grid
+        assert len(Z._ZERNIKE_BASIS_CACHE) == 2  # the synthesis grid, then the fit grid
 
     with subtests.test("exact least-squares recovers a known combination"):
         indices = [1, 2, 3, 4, 5]
@@ -842,7 +851,7 @@ def test_image_zernike_fit(subtests):
         assert np.allclose(coeffs[:2, 0], np.sqrt(2) * np.array([0.3, 0.5]), atol=1e-6)
 
     with subtests.test("leastsquares=False is rejected against the gradient basis"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="gradient basis is not orthogonal"):
             analysis.image_zernike_fit(
                 0.5 * grid_small[0], grid_small, order=3, leastsquares=False, gradient=True
             )
@@ -893,9 +902,7 @@ def test_image_zernike_fit(subtests):
         weights = np.array([1.5, -1.0, 3.0, 0.4, -0.6])
         phase_image = analysis.zernike_sum(grid_small, indices, weights)
         wrapped = np.angle(np.exp(1j * phase_image))
-        grad_coeffs = analysis.image_zernike_fit(
-            wrapped, grid_small, order=indices, gradient=True
-        )
+        grad_coeffs = analysis.image_zernike_fit(wrapped, grid_small, order=indices, gradient=True)
         assert np.allclose(grad_coeffs[:, 0], weights, atol=1e-2)
 
 
@@ -946,7 +953,9 @@ def test_image_remove_vortices(subtests):
 
     with subtests.test("return_vortices_negative gives the correction that is added in place"):
         correction = analysis.image_remove_vortices(phase.copy(), return_vortices_negative=True)
-        np.testing.assert_array_equal(phase + correction, analysis.image_remove_vortices(phase.copy()))
+        np.testing.assert_array_equal(
+            phase + correction, analysis.image_remove_vortices(phase.copy())
+        )
 
     with subtests.test("a mask restricts removal to the vortices inside it"):
         mask = np.zeros_like(phase, dtype=bool)
@@ -954,9 +963,7 @@ def test_image_remove_vortices(subtests):
         np.testing.assert_array_equal(
             analysis.image_remove_vortices(phase.copy(), mask=mask), phase
         )
-        removed = analysis.image_remove_vortices(
-            phase.copy(), mask=np.ones_like(phase, dtype=bool)
-        )
+        removed = analysis.image_remove_vortices(phase.copy(), mask=np.ones_like(phase, dtype=bool))
         assert np.count_nonzero(analysis.image_vortices(removed)) == 0
 
 
@@ -985,7 +992,7 @@ def test_image_remove_blaze(subtests):
         assert np.ptp(masked[interior]) < 0.2 * np.ptp(analysis.image_remove_blaze(mixed)[interior])
 
     with subtests.test("a stack of phase images is rejected"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="too small to calculate a numerical gradient"):
             analysis.image_remove_blaze(ramp[np.newaxis])
 
     with subtests.test("plot renders the phase, both gradients, and the result"):
@@ -1040,7 +1047,7 @@ def test_fit_affine(subtests):
         "shear with offset": (np.array([[1.5, -0.3], [0.4, 2.0]]), np.array([[10.0], [-5.0]])),
     }
 
-    for (name, (M, b)) in cases.items():
+    for name, (M, b) in cases.items():
         with subtests.test(f"a noiseless {name} is recovered"):
             result = analysis.fit_affine(x, M @ x + b)
             assert set(result.keys()) == {"M", "b"}
@@ -1083,7 +1090,7 @@ def test_fit_affine(subtests):
 
     with subtests.test("mismatched point counts raise a ValueError, not an assertion"):
         # An assert vanishes under python -O, which would return the guess as a fit.
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="must have the same shape"):
             analysis.fit_affine(x[:, :5], x[:, :6])
 
     with subtests.test("a failed optimization falls back to the guess"):
@@ -1113,13 +1120,14 @@ def _spot_array(lattice, count=(9, 9), shape=(160, 160), center=None, spot=1.2):
 
     (yy, xx) = np.indices(shape)
     image = np.zeros(shape)
-    for (px, py) in zip(points[0] + center[0], points[1] + center[1]):
+    for px, py in zip(points[0] + center[0], points[1] + center[1]):
         image += np.exp(-((xx - px) ** 2 + (yy - py) ** 2) / (2 * spot**2))
     return image
 
 
 def test_image_lattice_detect(subtests):
     """Test analysis.image_lattice_detect() over pitches, rotation, shear, and hexagons."""
+
     def shortest_pair(lattice):
         """Norms of the two shortest independent lattice vectors, by brute force."""
         vectors = sorted(
@@ -1139,9 +1147,7 @@ def test_image_lattice_detect(subtests):
         )
 
     theta = np.radians(20)
-    rotation = np.array(
-        [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
-    )
+    rotation = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
     hexagonal = 9.0 * np.array([[1.0, 0.5], [0.0, np.sqrt(3) / 2]])
     lattices = {
         "square": np.array([[8.0, 0.0], [0.0, 8.0]]),
@@ -1159,7 +1165,7 @@ def test_image_lattice_detect(subtests):
     # Past this pitch a lattice's reciprocal peaks collapse into the 0th order Fourier filters.
     fourier_limit = 10.0
 
-    for (name, lattice) in lattices.items():
+    for name, lattice in lattices.items():
         for method in ("autocorrelation", "fourier"):
             if method == "fourier" and np.max(np.linalg.norm(lattice, axis=0)) > fourier_limit:
                 continue
@@ -1174,7 +1180,7 @@ def test_image_lattice_detect(subtests):
         assert_reduced_basis(detected, lattices["coarse"])
 
     with subtests.test("unknown method raises"):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Unrecognized lattice detection method"):
             analysis.image_lattice_detect(np.zeros((64, 64)), method="bogus")
 
     for method in ("autocorrelation", "fourier"):
@@ -1209,16 +1215,19 @@ def test_score_array_orientation(subtests):
     M = np.array([[22.0, 0.0], [0.0, 22.0]])
     b = np.array([[150.0], [150.0]])
     codes = list(analysis.OrientationTransform.D_4)
-    centers = analysis._array_indices(array_shape)
+    analysis._array_indices(array_shape)
 
     def placement(code, shape=array_shape):
-        return np.matmul(
-            M,
+        return (
             np.matmul(
-                analysis.OrientationTransform.from_code(code).M(),
-                analysis._array_indices(shape),
-            ),
-        ) + b
+                M,
+                np.matmul(
+                    analysis.OrientationTransform.from_code(code).M(),
+                    analysis._array_indices(shape),
+                ),
+            )
+            + b
+        )
 
     def render(code, withhold=True, dark=(), sigma=0, blank=(), shape=array_shape):
         """Image of the array under ``code``, optionally dimming or keeping the fiducials."""
@@ -1264,9 +1273,7 @@ def test_score_array_orientation(subtests):
         # A rotation carries a non-square array off its own lattice, darkening its spots.
         wide = (6, 4)
         for code in codes:
-            best = analysis._score_array_orientation(
-                render(code, shape=wide), M, b, wide, 5
-            )
+            best = analysis._score_array_orientation(render(code, shape=wide), M, b, wide, 5)
             assert best is not None and best[0] == code
 
     with subtests.test("an orientation is picked even when a rival's pair is dark too"):
@@ -1299,7 +1306,7 @@ def test_get_orientation_transformation(subtests):
         )
 
     with subtests.test("rot names and rot90 step counts agree"):
-        for (name, steps) in (("90", 1), ("180", 2), ("270", 3)):
+        for name, steps in (("90", 1), ("180", 2), ("270", 3)):
             np.testing.assert_array_equal(
                 analysis.get_orientation_transformation(rot=name)(image), np.rot90(image, steps)
             )
@@ -1310,7 +1317,7 @@ def test_get_orientation_transformation(subtests):
     with subtests.test("flips are applied after the rotation, for every combination"):
         # Non-square, so an orientation that swaps the axes cannot hide.
         wide = np.arange(40).reshape(5, 8)
-        for (rot, steps) in (("0", 0), ("90", 1), ("180", 2), ("270", 3)):
+        for rot, steps in (("0", 0), ("90", 1), ("180", 2), ("270", 3)):
             for fliplr in (False, True):
                 for flipud in (False, True):
                     expected = np.rot90(wide, steps)
@@ -1411,17 +1418,20 @@ class TestOrientationTransform:
                 (x_out, y_out) = np.round(destination).astype(int)
                 assert transformed.shape == transform.transform_shape((h, w))
                 assert (x_out.min(), y_out.min()) == (0, 0)
-                assert (x_out.max(), y_out.max()) == (transformed.shape[1] - 1, transformed.shape[0] - 1)
+                assert (x_out.max(), y_out.max()) == (
+                    transformed.shape[1] - 1,
+                    transformed.shape[0] - 1,
+                )
                 np.testing.assert_array_equal(transformed[y_out, x_out], image.ravel())
 
     def test_matmul(self, subtests):
         """a @ b is the transform that applies b, then a."""
-        image = np.arange(12).reshape(3, 4)     # Non-square, to expose an axis swap.
+        image = np.arange(12).reshape(3, 4)  # Non-square, to expose an axis swap.
         OT = analysis.OrientationTransform
         transforms = [OT.from_code(code) for code in OT.D_4]
 
         with subtests.test("composition applies the right operand first, for every pair"):
-            for (a, b) in itertools.product(transforms, transforms):
+            for a, b in itertools.product(transforms, transforms):
                 np.testing.assert_array_equal((a @ b)(image), a(b(image)), err_msg=f"{a} @ {b}")
                 assert a * b == a @ b
 
@@ -1445,7 +1455,7 @@ class TestOrientationTransform:
         copies = [OT.from_code(t.code) for t in transforms]
 
         with subtests.test("transforms are equal exactly when they act identically"):
-            for (a, b) in itertools.product(transforms, copies):
+            for a, b in itertools.product(transforms, copies):
                 acts_alike = np.array_equal(a(image), b(image))
                 assert (a == b) == acts_alike, f"{a} == {b}"
 
@@ -1462,9 +1472,7 @@ def test_image_fit_gpu(has_cupy):
     grid = np.meshgrid(x, x)
     image = gaussian2d(grid, x0=2, y0=-1, a=10, c=1, wx=2, wy=3)[np.newaxis]
     result = analysis.image_fit(cp.asarray(image), grid=tuple(cp.asarray(g) for g in grid))
-    np.testing.assert_allclose(
-        result, analysis.image_fit(image, grid=grid), atol=1e-6
-    )
+    np.testing.assert_allclose(result, analysis.image_fit(image, grid=grid), atol=1e-6)
 
 
 @pytest.mark.gpu
@@ -1498,7 +1506,7 @@ def test_take_gpu(benchmark, has_cupy, subtests):
         edge = np.array([[3, 40, 78], [2, 30, 62]])
         for dtype in (np.float32, np.uint8):
             host = (200 * rng.random((64, 80))).astype(dtype)
-            for (vectors, integrate) in itertools.product((edge[:, 1:2], edge), (False, True)):
+            for vectors, integrate in itertools.product((edge[:, 1:2], edge), (False, True)):
                 expected = analysis.take(host, vectors, 9, clip=True, integrate=integrate)
                 result = analysis.take(
                     cp.asarray(host), vectors, 9, clip=True, integrate=integrate, xp=cp

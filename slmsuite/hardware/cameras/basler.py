@@ -4,7 +4,9 @@ Consider also installing Basler software for testing cameras outside of python
 (see `downloads <https://www.baslerweb.com/en/downloads/software-downloads/#type=pylonsoftware>`_).
 Install :mod:`pypylon` by following the `provided instructions <https://github.com/basler/pypylon>`_.
 """
+
 import warnings
+
 from slmsuite.hardware.cameras.camera import Camera
 
 try:
@@ -83,27 +85,27 @@ class Basler(Camera):
 
         # Apply default settings.
         try:
-            self.cam.CenterX=False
-            self.cam.CenterY=False
+            self.cam.CenterX = False
+            self.cam.CenterY = False
             self.cam.BinningHorizontal.SetValue(1)
             self.cam.BinningVertical.SetValue(1)
 
-            self.cam.GainAuto.SetValue('Off')
-            self.cam.ExposureAuto.SetValue('Off')
-            self.cam.ExposureMode.SetValue('Timed')
+            self.cam.GainAuto.SetValue("Off")
+            self.cam.ExposureAuto.SetValue("Off")
+            self.cam.ExposureMode.SetValue("Timed")
 
-            self.cam.AcquisitionMode.SetValue('SingleFrame')
+            self.cam.AcquisitionMode.SetValue("SingleFrame")
 
-            self.cam.TriggerSelector.SetValue('FrameStart')
-            self.cam.TriggerMode.SetValue('Off')
+            self.cam.TriggerSelector.SetValue("FrameStart")
+            self.cam.TriggerMode.SetValue("Off")
 
-            self.cam.TriggerActivation.SetValue('RisingEdge')
-            self.cam.TriggerSource.SetValue('Software')
+            self.cam.TriggerActivation.SetValue("RisingEdge")
+            self.cam.TriggerSource.SetValue("Software")
 
             self.cam.RegisterConfiguration(
                 pylon.SoftwareTriggerConfiguration(),
                 pylon.RegistrationMode_ReplaceAll,
-                pylon.Cleanup_Delete
+                pylon.Cleanup_Delete,
             )
 
         except Exception as e:
@@ -120,11 +122,11 @@ class Basler(Camera):
 
         # Initialize the superclass attributes.
         super().__init__(
-            (self.cam.SensorWidth(), self.cam.SensorHeight()), #pixels
-            bitdepth=self.get_adc_bitdepth(), #bits
+            (self.cam.SensorWidth(), self.cam.SensorHeight()),  # pixels
+            bitdepth=self.get_adc_bitdepth(),  # bits
             pitch_um=pitch_um,
             name=serial,
-            **kwargs
+            **kwargs,
         )
 
         self.logger.debug("Basler camera initialized.")
@@ -139,7 +141,7 @@ class Basler(Camera):
             Does nothing, as the ``pylon.TlFactory`` instance stored in :attr:`sdk`
             does not appear to need to be closed.
         """
-        #self.cam.__exit__(None, None, None) weird
+        # self.cam.__exit__(None, None, None) weird
         self.cam.StopGrabbing()
         self.cam.Close()
 
@@ -208,11 +210,11 @@ class Basler(Camera):
             properties = self.cam.__dict__.keys()
 
         for key in properties:
-            prop=self.cam.__dict__[key]
+            prop = self.cam.__dict__[key]
             try:
                 print(prop.get_name(), end="\t")
             except BaseException as e:
-                print("Error accessing property dictionary, '{}':{}".format(key, e))
+                print(f"Error accessing property dictionary, '{key}':{e}")
                 continue
 
             try:
@@ -228,7 +230,7 @@ class Basler(Camera):
             try:
                 print(prop.get_description(), end="\n")
             except Exception:
-                print("")
+                print()
 
     def set_adc_bitdepth(self, bitdepth):
         """
@@ -247,7 +249,7 @@ class Basler(Camera):
                 self.cam.PixelSize.SetValue(value[1])
                 break
         else:
-            raise RuntimeError("ADC bitdepth {} not found.".format(bitdepth))
+            raise RuntimeError(f"ADC bitdepth {bitdepth} not found.")
 
     def get_adc_bitdepth(self):
         """
@@ -316,10 +318,7 @@ class Basler(Camera):
 
     def _get_image_hw(self, timeout_s):
         """See :meth:`.Camera.get_image`."""
-        self.cam.StartGrabbing(
-            self.GrabStrategy,
-            pylon.GrabLoop_ProvidedByUser
-        )
+        self.cam.StartGrabbing(self.GrabStrategy, pylon.GrabLoop_ProvidedByUser)
 
         try:
             if not self.cam.IsGrabbing():
@@ -327,13 +326,15 @@ class Basler(Camera):
 
             self.cam.ExecuteSoftwareTrigger()
 
-            grab = self.cam.RetrieveResult(int(timeout_s*1000), pylon.TimeoutHandling_Return)
+            grab = self.cam.RetrieveResult(int(timeout_s * 1000), pylon.TimeoutHandling_Return)
 
             # Image grabbed successfully?
             if not grab.GrabSucceeded():
-                raise RuntimeError(f"Basler error {grab.GetErrorCode()}: {grab.GetErrorDescription()}")
+                raise RuntimeError(
+                    f"Basler error {grab.GetErrorCode()}: {grab.GetErrorDescription()}"
+                )
 
-            im = grab.GetArray() # This returns an np.array
+            im = grab.GetArray()  # This returns an np.array
         finally:
             self.cam.StopGrabbing()
 

@@ -5,6 +5,7 @@ and the `RemoteSLM` / `RemoteCamera` clients, which have no contract apart from 
 Every connection here is over loopback to a server running in this process, so the suite
 needs no network and no second machine.
 """
+
 import gc
 import json
 import logging
@@ -13,19 +14,16 @@ import threading
 import time
 import warnings
 
-import pytest
 import numpy as np
+import pytest
 
-from slmsuite.hardware.remote import (
-    Server, _Client, _NpEncoder, _delim, _recurse_decompress
-)
-from slmsuite.hardware.slms.simulated import SimulatedSLM
-from slmsuite.hardware.slms.remote import RemoteSLM
-from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.hardware.cameras.remote import RemoteCamera
+from slmsuite.hardware.cameras.simulated import SimulatedCamera
+from slmsuite.hardware.remote import Server, _Client, _delim, _NpEncoder, _recurse_decompress
+from slmsuite.hardware.slms.remote import RemoteSLM
+from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography.toolbox.phase import blaze
 from slmsuite.misc.xp import as_numpy
-
 
 # The server is IPv4-only, and "localhost" can offer it ::1 first.
 HOST = "127.0.0.1"
@@ -72,7 +70,7 @@ def serve():
 
     yield start
 
-    for (server, thread) in running:
+    for server, thread in running:
         server.stop()
         thread.join(timeout=10)
         assert not thread.is_alive(), "the server did not stop within its timeout"
@@ -89,7 +87,7 @@ def test_recurse_decompress(subtests):
     result = _recurse_decompress(json.loads(json.dumps(payload, cls=_NpEncoder)))
 
     with subtests.test("arrays survive at any depth, with their dtype and shape"):
-        for (actual, expected) in [
+        for actual, expected in [
             (result["image"], payload["image"]),
             (result["nested"][0]["empty"], payload["nested"][0]["empty"]),
         ]:
@@ -106,7 +104,6 @@ def test_recurse_decompress(subtests):
 
 
 class TestServer:
-
     def test_init(self, hardware, subtests):
         """What a server accepts to host, and what it refuses."""
         (slm, cam) = hardware
@@ -123,6 +120,7 @@ class TestServer:
                 Server([slm, slm], port=_free_port())
 
         with subtests.test("only cameras and SLMs can be served"):
+
             class _Neither:
                 name = "neither"
 
@@ -131,7 +129,7 @@ class TestServer:
 
         with subtests.test("the port must be an unprivileged one in range"):
             for port in (80, 70000):
-                with pytest.raises(ValueError, match="[Pp]ort"):
+                with pytest.raises(ValueError, match=r"[Pp]ort"):
                     Server([slm], port=port)
 
     def test_identify_hardware(self, hardware):
@@ -169,14 +167,20 @@ class TestServer:
             assert np.shape(reply) == cam.shape
 
         with subtests.test("a client cannot choose which attributes pickle reads"):
-            (_, chosen) = server._handle({
-                "name": "test_slm",
-                "command": "pickle",
-                "kwargs": {"attributes": ["name"]},
-            })
-            (_, everything) = server._handle({
-                "name": "test_slm", "command": "pickle", "kwargs": {"attributes": True},
-            })
+            (_, chosen) = server._handle(
+                {
+                    "name": "test_slm",
+                    "command": "pickle",
+                    "kwargs": {"attributes": ["name"]},
+                }
+            )
+            (_, everything) = server._handle(
+                {
+                    "name": "test_slm",
+                    "command": "pickle",
+                    "kwargs": {"attributes": True},
+                }
+            )
             assert set(chosen["__meta__"]) == set(everything["__meta__"])
 
         with subtests.test("a rejected keyword names the argument"):
@@ -201,7 +205,8 @@ class TestServer:
 
         with subtests.test("a client reaches the hosted hardware"):
             assert _Client.info(host=HOST, port=port, verbose=False) == {
-                "test_slm": "slm", "test_camera": "camera"
+                "test_slm": "slm",
+                "test_camera": "camera",
             }
 
         with subtests.test("a malformed request does not take the server down"):
@@ -221,7 +226,8 @@ class TestServer:
                     _Client.info(host=HOST, port=blocked, verbose=False)
 
             assert [
-                record for record in caplog.records
+                record
+                for record in caplog.records
                 if record.levelno == logging.WARNING and "allowlist" in record.message
             ], "the server should record the rejection it made"
 
@@ -249,7 +255,8 @@ def test_info(hardware, serve, subtests):
 
     with subtests.test("a served port lists its hardware by kind"):
         assert _Client.info(host=HOST, port=port, verbose=False) == {
-            "test_slm": "slm", "test_camera": "camera"
+            "test_slm": "slm",
+            "test_camera": "camera",
         }
 
     with subtests.test("an unserved port is reported as absent"):
@@ -257,7 +264,7 @@ def test_info(hardware, serve, subtests):
             _Client.info(host=HOST, port=_free_port(), timeout=0.2, verbose=False)
 
     with subtests.test("a failed connect closes its socket"):
-        gc.collect()    # Else garbage from earlier tests can warn inside the block.
+        gc.collect()  # Else garbage from earlier tests can warn inside the block.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", ResourceWarning)
             with pytest.raises(TimeoutError, match="not responsive"):
@@ -282,7 +289,7 @@ def test_info(hardware, serve, subtests):
         thread = threading.Thread(target=reply_garbage, daemon=True)
         thread.start()
         try:
-            with pytest.raises(Exception) as excinfo:
+            with pytest.raises(Exception) as excinfo:  # noqa: PT011 (any failure but a timeout)
                 _Client.info(host=HOST, port=other.getsockname()[1], verbose=False)
             assert not isinstance(excinfo.value, TimeoutError)
         finally:
@@ -291,7 +298,6 @@ def test_info(hardware, serve, subtests):
 
 
 class TestRemoteSLM:
-
     def test_init(self, hardware, serve, subtests):
         """The client reads its geometry from the server it connects to."""
         (slm, _) = hardware
@@ -306,8 +312,11 @@ class TestRemoteSLM:
 
         with subtests.test("wav_um and settle_time_s override what the server reports"):
             remote = RemoteSLM(
-                name="test_slm", host=HOST, port=port,
-                wav_um=2 * slm.wav_um, settle_time_s=0.25,
+                name="test_slm",
+                host=HOST,
+                port=port,
+                wav_um=2 * slm.wav_um,
+                settle_time_s=0.25,
             )
             assert remote.wav_um == 2 * slm.wav_um
             assert remote.settle_time_s == 0.25
@@ -333,7 +342,6 @@ class TestRemoteSLM:
 
 
 class TestRemoteCamera:
-
     def test_init(self, hardware, serve, subtests):
         """The client reads its sensor from the server it connects to."""
         (_, cam) = hardware

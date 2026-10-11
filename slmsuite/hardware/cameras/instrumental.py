@@ -1,5 +1,6 @@
 """
 Light wrapper for the :mod:`instrumental-lib` package.
+
 The :mod:`instrumental` module must be
 `installed <https://instrumental-lib.readthedocs.io/en/stable/install.html>`_.
 ``pip install instrumental-lib``.
@@ -10,23 +11,27 @@ For example, the following code loads a UC480 camera:
 
     # Load a legacy Thorlabs camera using the UC480 driver.
     from instrumental.drivers.cameras.uc480 import UC480Camera
+
     i_cam = UC480Camera()
 
     # Wrap the camera with the slmsuite-compatible class.
     from slmsuite.hardware.cameras.instrumental import Instrumental
+
     cam = Instrumental(i_cam)
 
 Note
 ~~~~
 Color camera functionality is not currently implemented, and will lead to undefined behavior.
 """
+
 import warnings
+
 from slmsuite.hardware.cameras.camera import Camera
 
 try:
     import instrumental.drivers.cameras as instrumental_cameras
-    from instrumental.drivers import ParamSet
     from instrumental import instrument, list_instruments, u
+    from instrumental.drivers import ParamSet
 except ImportError:
     instrument = None
     u = None
@@ -68,10 +73,12 @@ class Instrumental(Camera):
 
                 # Load a legacy Thorlabs camera using the UC480 driver.
                 from instrumental.drivers.cameras.uc480 import UC480Camera
+
                 i_cam = UC480Camera()
 
                 # Wrap the camera with the slmsuite-compatible class.
                 from slmsuite.hardware.cameras.instrumental import Instrumental
+
                 cam = Instrumental(i_cam)
 
         pitch_um : (float, float) OR None
@@ -86,7 +93,9 @@ class Instrumental(Camera):
            If the camera can not be reached.
         """
         if instrument is None:
-            raise ImportError("instrumental-lib not installed. Install to use Instrumental cameras.")
+            raise ImportError(
+                "instrumental-lib not installed. Install to use Instrumental cameras."
+            )
 
         if cam is None:
             instruments = list_instruments()
@@ -112,10 +121,10 @@ class Instrumental(Camera):
 
         super().__init__(
             (self.cam.width, self.cam.height),
-            bitdepth=8,         # Currently defaults to 8 because instrumental doesn't cache this. Update in the future, maybe.
+            bitdepth=8,  # Currently defaults to 8 because instrumental doesn't cache this. Update in the future, maybe.
             pitch_um=pitch_um,  # Currently unset because instrumental doesn't cache this. Update in the future, maybe.
             name=name,
-            **kwargs
+            **kwargs,
         )
         self.logger.debug("Instrumental camera initialized.")
 
@@ -126,9 +135,7 @@ class Instrumental(Camera):
         try:
             self.cam.close()
         except Exception as e:
-            raise RuntimeError(
-                "This instrumental camera failed to close:\n{}".format(e)
-            ) from e
+            raise RuntimeError(f"This instrumental camera failed to close:\n{e}") from e
 
     @staticmethod
     def info(verbose=True):

@@ -1,7 +1,6 @@
 from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._hologram import Hologram
 
-
 # amp * exp(1j * phase) * phasor, in one pass, avoiding three full (S, h, w)
 # temporaries per transform. `amp`/`phase` are broadcast across the S planes by
 # the caller.
@@ -45,9 +44,11 @@ class MultiplaneHologram(Hologram):
         Weight for each hologram. This allows the user to redistribute power between
         holograms. Keep in mind that each hologram will normalize itself, so differences
         in intensity between target patterns cannot be relied upon.
+    batch : int
+        Number of independent composite holograms; see :meth:`__init__`.
     """
 
-    def __init__(self, holograms, weights=None):
+    def __init__(self, holograms, weights=None, batch=1):
         """
         Initializes a 'meta' hologram consisting of several sub-holograms optimizing at
         the same time.
@@ -59,8 +60,19 @@ class MultiplaneHologram(Hologram):
         weights : array_like of float OR None
             List of ``N`` floats.
             If ``None``, defaults to even power.
+        batch : int
+            Splits the children into this many consecutive groups of equal size, each
+            combining into its own composite phase. The groups never mix: this is
+            ``batch`` independent multiplane holograms sharing one set of transforms,
+            with :attr:`phase` of shape ``(batch, h, w)``. The default ``1`` is a single
+            composite hologram with a two-dimensional :attr:`phase`.
         """
         self.holograms = holograms
+        self.batch = int(batch)
+        if self.batch < 1 or len(holograms) % self.batch:
+            raise ValueError(
+                f"batch={batch} must divide the {len(holograms)} child holograms evenly."
+            )
 
         # Check that all holograms are actually holograms and not MultiplaneHolograms.
         for h in self.holograms:
@@ -81,10 +93,16 @@ class MultiplaneHologram(Hologram):
         )
         self.target = None
 
-        # Force all the child holograms to point to the same data.
-        for h in self.holograms:
+        if self.batch > 1:
+            self.phase = cp.stack(
+                [cp.asarray(h.phase, dtype=self.dtype) for h in holograms[:: self._per_batch]]
+            )
+            self.nearfield = cp.zeros((self.batch, *self.shape), dtype=self.dtype_complex)
+
+        # Force all the child holograms to point to the same data: their group's phase.
+        for i, h in enumerate(self.holograms):
             h.amp = self.amp
-            h.phase = self.phase
+            h.phase = self.phase if self.batch == 1 else self.phase[i // self._per_batch]
 
         # Parse weights
         if weights is None:
@@ -93,34 +111,26 @@ class MultiplaneHologram(Hologram):
         self.weights = np.array(weights, copy=True, dtype=self.dtype)
         self.weights /= Hologram._norm(self.weights, xp=np)
 
-        # Batched-FFT fast path, when the children share shape, dtype, and transforms.
-        self._batched = self._can_batch()
+        # Batched-FFT fast path, when the children share shape, dtype, and default transforms.
+        h0 = self.holograms[0]
+        self._batched = (
+            cp is not np
+            and len(self.holograms) > 1
+            and all(
+                (tuple(h.shape), tuple(h.slm_shape), h.dtype)
+                == (tuple(h0.shape), tuple(h0.slm_shape), h0.dtype)
+                and type(h)._nearfield2farfield is Hologram._nearfield2farfield
+                and type(h)._farfield2nearfield is Hologram._farfield2nearfield
+                for h in self.holograms
+            )
+        )
         if self._batched:
             self._batched_setup()
 
-    def _can_batch(self):
-        """Whether the children can share a single batched FFT2 call."""
-        if cp is np:
-            return False
-        if len(self.holograms) < 2:
-            return False
-        h0 = self.holograms[0]
-        for h in self.holograms[1:]:
-            if tuple(h.shape) != tuple(h0.shape):
-                return False
-            if tuple(h.slm_shape) != tuple(h0.slm_shape):
-                return False
-            if h.dtype != h0.dtype:
-                return False
-        # Only batch subclasses that use Hologram's default transforms.
-        # Subclasses with custom transforms (e.g. CompressedSpotHologram)
-        # override these methods.
-        for h in self.holograms:
-            if type(h)._nearfield2farfield is not Hologram._nearfield2farfield:
-                return False
-            if type(h)._farfield2nearfield is not Hologram._farfield2nearfield:
-                return False
-        return True
+    @property
+    def _per_batch(self):
+        """Children per independent group."""
+        return len(self.holograms) // self.batch
 
     def _can_batch_routines(self, mraf_variables):
         """
@@ -146,22 +156,22 @@ class MultiplaneHologram(Hologram):
         complex_dtype = h0.dtype_complex
         real_dtype = h0.dtype
 
-        self._batched_nearfield = cp.zeros((S,) + shape, dtype=complex_dtype)
-        self._batched_amp_ff = cp.zeros((S,) + shape, dtype=real_dtype)
-        self._batched_phase_ff = cp.zeros((S,) + shape, dtype=real_dtype)
+        self._batched_nearfield = cp.zeros((S, *shape), dtype=complex_dtype)
+        self._batched_amp_ff = cp.zeros((S, *shape), dtype=real_dtype)
+        self._batched_phase_ff = cp.zeros((S, *shape), dtype=real_dtype)
         # _batched_farfield gets reassigned by every cp.fft.fft2 call; init it
         # so children can be rebound before the first FFT (e.g. for tests).
-        self._batched_farfield = cp.zeros((S,) + shape, dtype=complex_dtype)
+        self._batched_farfield = cp.zeros((S, *shape), dtype=complex_dtype)
 
         # Stacked child propagation_kernels and their phasor, and the stacked
         # child target-amplitude weights used by the batched amplitude
         # replacement. Both are refreshed through _restack_children; see there
         # for the invalidation scheme.
-        self._batched_kernels = cp.zeros((S,) + tuple(h0.slm_shape), dtype=real_dtype)
+        self._batched_kernels = cp.zeros((S, *h0.slm_shape), dtype=real_dtype)
         self._batched_kernel_ids = [None] * S
         self._batched_kernel_phasor = None  # (S, slm_h, slm_w) complex
 
-        self._batched_child_weights = cp.zeros((S,) + shape, dtype=real_dtype)
+        self._batched_child_weights = cp.zeros((S, *shape), dtype=real_dtype)
         self._batched_child_weights_ids = [None] * S
 
         # Cache the meta weights on GPU; refreshed if self.weights changes.
@@ -188,8 +198,7 @@ class MultiplaneHologram(Hologram):
         device synchronization per child per transform -- measured at ~36% of a
         GS iteration -- so it is deliberately not done.
         """
-        if all(id(getattr(h, attr)) == cached for h, cached in
-               zip(self.holograms, ids)):
+        if all(id(getattr(h, attr)) == cached for h, cached in zip(self.holograms, ids)):
             return False
 
         for i, h in enumerate(self.holograms):
@@ -220,22 +229,23 @@ class MultiplaneHologram(Hologram):
         kernels : array_like
             Phase kernels of shape ``(S, slm_h, slm_w)``, or anything
             broadcastable to it (e.g. a single ``(slm_h, slm_w)`` array applied
-            to every plane).
+            to every plane). With :attr:`batch` groups, the shape is
+            ``(batch, S / batch, slm_h, slm_w)`` or anything broadcastable to it.
         """
         h0 = self.holograms[0]
-        target_shape = (len(self.holograms),) + tuple(h0.slm_shape)
+        slm_shape = tuple(h0.slm_shape)
+        target_shape = (self.batch, self._per_batch, *slm_shape)
 
         kernels = cp.ascontiguousarray(
             cp.broadcast_to(cp.asarray(kernels, dtype=h0.dtype), target_shape)
-        )
+        ).reshape((len(self.holograms), *slm_shape))
 
         for i, h in enumerate(self.holograms):
             h.propagation_kernel = kernels[i]
 
         if self._batched:
             self._batched_kernels = kernels
-            self._batched_kernel_ids = [id(h.propagation_kernel) for h in
-                                        self.holograms]
+            self._batched_kernel_ids = [id(h.propagation_kernel) for h in self.holograms]
             self._rebuild_batched_kernel_phasor()
 
     def _rebuild_batched_kernel_phasor(self):
@@ -253,16 +263,21 @@ class MultiplaneHologram(Hologram):
         # children that all start with propagation_kernel=None leave the stack
         # matching its initial state, so a restack alone would not be
         # triggered.
-        if (self._restack_children("propagation_kernel", self._batched_kernels,
-                                   self._batched_kernel_ids) or
-            self._batched_kernel_phasor is None):
+        if (
+            self._restack_children(
+                "propagation_kernel", self._batched_kernels, self._batched_kernel_ids
+            )
+            or self._batched_kernel_phasor is None
+        ):
             self._rebuild_batched_kernel_phasor()
 
     def _refresh_batched_child_weights(self):
         """Restack the children's target-amplitude ``weights`` if any was
-        reassigned."""
-        self._restack_children( "weights", self._batched_child_weights,
-                               self._batched_child_weights_ids)
+        reassigned.
+        """
+        self._restack_children(
+            "weights", self._batched_child_weights, self._batched_child_weights_ids
+        )
 
     def _refresh_batched_weights(self):
         """Mirror self.weights (numpy) onto the GPU."""
@@ -334,9 +349,7 @@ class MultiplaneHologram(Hologram):
 
         # Check target_depths.
         if image_count != len(target_depths):
-            raise ValueError(
-                "There should be the same number of images as target_depths."
-            )
+            raise ValueError("There should be the same number of images as target_depths.")
 
         # Make the return data and gather useful parameters.
         canvas = np.zeros((len(return_depths), h, w))
@@ -359,9 +372,7 @@ class MultiplaneHologram(Hologram):
             for i, z1 in enumerate(target_depths):
                 dz = (z1 - z2) * (f_eff * f_eff)
 
-                blur = w0_pix * (
-                    np.sqrt(1 + (dz / zr) ** 2) - (1 if sharp_focus else 0)
-                )
+                blur = w0_pix * (np.sqrt(1 + (dz / zr) ** 2) - (1 if sharp_focus else 0))
                 blur = 2 * int(blur) + 1
 
                 canvas[j, :, :] += cv2.GaussianBlur(targets[i], (blur, blur), 0)
@@ -389,6 +400,9 @@ class MultiplaneHologram(Hologram):
             h._update_weights(*args, **kwargs)
 
     def _get_target_moments_knm_norm(self):
+        if self.batch > 1:
+            raise NotImplementedError("quadratic_phase is not supported with batch > 1.")
+
         # Get the data from the child holograms.
         centers = []
         stds = []
@@ -415,9 +429,7 @@ class MultiplaneHologram(Hologram):
 
         integral_normalized = (r * r * r - l * l * l) / (2 * stds * np.sqrt(3)) / 3
         std = np.sqrt(
-            np.nansum(
-                np.square(self.weights).reshape(-1, 1) * integral_normalized, axis=0
-            )
+            np.nansum(np.square(self.weights).reshape(-1, 1) * integral_normalized, axis=0)
         )
 
         return center, std
@@ -453,16 +465,60 @@ class MultiplaneHologram(Hologram):
         for h in self.holograms:
             h._update_stats(stat_groups)
 
+    def get_farfield(self, *args, **kwargs):
+        if self.batch > 1:
+            raise NotImplementedError(
+                "get_farfield() is not supported with batch > 1; use a child."
+            )
+        return super().get_farfield(*args, **kwargs)
+
     def set_target(self, *args, **kwargs):
         raise RuntimeError(
             "Do not use MultiplaneHologram.set_target(). "
-            "Instead, update the targets of the children holograms directly."
+            "Instead, update the targets of the children holograms directly, or use "
+            "set_targets() for camera-basis targets."
         )
+
+    def set_targets(self, targets_ij, roi=None):
+        """
+        Set every child's camera-basis target at once, resampling the whole stack in
+        one transform. The children must be :class:`FeedbackHologram` of one shape sharing
+        a cameraslm; see :meth:`FeedbackHologram.set_target()`, whose null-region
+        options are not applied here.
+
+        Parameters
+        ----------
+        targets_ij : numpy.ndarray OR cupy.ndarray
+            Stack of shape ``(N, h, w)``, one camera-basis target per child.
+        roi : (int, int) OR None
+            The ``(y, x)`` camera pixel that every ``targets_ij[i, 0, 0]``
+            corresponds to, when the targets are sub-images of the camera frame.
+        """
+        if np.shape(targets_ij)[0] != len(self.holograms):
+            raise ValueError(
+                f"Expected one target per child ({len(self.holograms)}); "
+                f"got {np.shape(targets_ij)[0]}."
+            )
+        h0 = self.holograms[0]
+        if any(
+            tuple(h.shape) != tuple(h0.shape) or getattr(h, "cameraslm", None) is not h0.cameraslm
+            for h in self.holograms
+        ):
+            raise ValueError("set_targets() requires children of one shape sharing one cameraslm.")
+        targets = h0.ijcam_to_knmslm(targets_ij, blur_ij=0, order=0, roi=roi)
+        roi = h0._validate_roi(roi)
+
+        for h, target_ij, target in zip(self.holograms, targets_ij, targets):
+            h.target_ij = target_ij.astype(h.dtype)
+            h.target_ij_roi = roi
+            h.target = target
 
     # Multiplane hacks to get meta optimization to work.
 
     def _cg_loss(self, phase_torch):
         """Sum the losses of all the child holograms."""
+        if self.batch > 1:
+            raise NotImplementedError("Conjugate gradient is not supported with batch > 1.")
         loss = self.holograms[0]._cg_loss(phase_torch)
 
         for h in self.holograms[1:]:
@@ -489,19 +545,18 @@ class MultiplaneHologram(Hologram):
 
         self.nearfield.fill(0)
 
-        for h, w in zip(self.holograms, self.weights):
+        for i, (h, w) in enumerate(zip(self.holograms, self.weights)):
             h._farfield2nearfield(extract=False)  # Avoid individually extracting phase.
 
             (i0, i1, i2, i3) = h._unpad_slice
+            nearfield = self.nearfield if self.batch == 1 else self.nearfield[i // self._per_batch]
 
             # Add the complex individual nearfields to our meta nearfield.
             if h.propagation_kernel is None:
-                self.nearfield += w * h.nearfield[i0:i1, i2:i3]
+                nearfield += w * h.nearfield[i0:i1, i2:i3]
             else:
                 # Remove the propagation kernel if necessary.
-                self.nearfield += (
-                    w * h.nearfield[i0:i1, i2:i3] * cp.exp(-1j * h.propagation_kernel)
-                )
+                nearfield += w * h.nearfield[i0:i1, i2:i3] * cp.exp(-1j * h.propagation_kernel)
             h.iter = self.iter
 
         # Get meta self phase.
@@ -524,7 +579,7 @@ class MultiplaneHologram(Hologram):
         self._invalidate_phase()
 
     def _nearfield2farfield_batched(self):
-        """Batched FFT2 across child planes. See `_can_batch` for preconditions."""
+        """Batched FFT2 across child planes. See :meth:`__init__` for preconditions."""
         self._refresh_batched_kernels()
 
         h0 = self.holograms[0]
@@ -539,11 +594,14 @@ class MultiplaneHologram(Hologram):
         if (i1 - i0, i3 - i2) != tuple(h0.shape):
             self._batched_nearfield.fill(0)
 
+        # (batch, planes per batch, h, w): each group's phase broadcasts over its planes.
+        grouped = (self.batch, -1)
         _nearfield_build(
-            self.amp if np.ndim(self.amp) == 0 else self.amp[None, :, :],
-            self.phase[None, :, :],
-            self._batched_kernel_phasor,
-            self._batched_nearfield[:, i0:i1, i2:i3])
+            self.amp if np.ndim(self.amp) == 0 else self.amp[None, None, :, :],
+            self.phase.reshape((self.batch, 1, *h0.slm_shape)),
+            self._batched_kernel_phasor.reshape(grouped + tuple(h0.slm_shape)),
+            self._batched_nearfield[:, i0:i1, i2:i3].reshape((*grouped, i1 - i0, i3 - i2)),
+        )
 
         # One batched FFT2 over the trailing axes.
         self._batched_farfield = cp.fft.fftshift(
@@ -596,7 +654,12 @@ class MultiplaneHologram(Hologram):
             * self._batched_nearfield[:, i0:i1, i2:i3]
             * cp.conj(self._batched_kernel_phasor)
         )
-        cp.sum(weighted, axis=0, out=self.nearfield)
+        if self.batch == 1:
+            cp.sum(weighted, axis=0, out=self.nearfield)
+        else:
+            cp.sum(
+                weighted.reshape((self.batch, -1, *weighted.shape[1:])), axis=1, out=self.nearfield
+            )
 
         # Extract meta self.phase from self.nearfield.
         self._nearfield_extract()
@@ -634,8 +697,7 @@ class MultiplaneHologram(Hologram):
             out=self._batched_phase_ff,
         )
         cp.exp(1j * self._batched_phase_ff, out=self._batched_farfield)
-        cp.multiply( self._batched_farfield, self._batched_child_weights,
-                    out=self._batched_farfield)
+        cp.multiply(self._batched_farfield, self._batched_child_weights, out=self._batched_farfield)
 
     def remove_vortices(self, plot=False):
         """Removes each child's farfield phase vortices; see :meth:`Hologram.remove_vortices()`."""

@@ -1,14 +1,16 @@
 """
 Lens phase patterns.
 """
+
 import numpy as np
 
-from slmsuite.misc.math import REAL_TYPES
 from slmsuite.holography.toolbox import _process_grid
 from slmsuite.holography.toolbox.phase._misc import _determine_source_radius
+from slmsuite.misc.math import REAL_TYPES
 from slmsuite.misc.xp import get_array_module
 
 # Basic lenses.
+
 
 def _parse_focal_length(f):
     """Helper function to parse focal length used by `lens` and `axicon`."""
@@ -18,9 +20,9 @@ def _parse_focal_length(f):
         f = np.squeeze(f)
 
         if f.size != 2:
-            raise ValueError("Expected two terms in focal list. Found {}.".format(f))
+            raise ValueError(f"Expected two terms in focal list. Found {f}.")
         if np.any(f == 0):
-            raise ValueError("Cannot interpret a focal length of zero. Found {}.".format(f))
+            raise ValueError(f"Cannot interpret a focal length of zero. Found {f}.")
 
         f = tuple(float(x) for x in f)
 
@@ -111,7 +113,7 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
     f = _parse_focal_length(f)
     xp = get_array_module(x_grid)
 
-    angle = [w / f[0] / 2, w / f[1] / 2]    # Notice that this fraction is in radians.
+    angle = [w / f[0] / 2, w / f[1] / 2]  # Notice that this fraction is in radians.
 
     # Optimize phase construction based on context (for speed, to avoid sqrt, etc).
     if angle[0] == 0 and angle[1] == 0:
@@ -124,10 +126,9 @@ def axicon(grid, f=(np.inf, np.inf), w=None):
         if angle[0] * angle[1] < 0:
             raise ValueError(
                 "A cylindrical axicon cannot converge on one axis and diverge on the other. "
-                "Found {}.".format(f)
+                f"Found {f}."
             )
         # sqrt discards the sign of f, so reapply it; a diverging axicon is f < 0.
         return (2 * np.pi * float(np.sign(angle[0]))) * xp.sqrt(
             xp.square(x_grid * angle[0]) + xp.square(y_grid * angle[1])
         )
-

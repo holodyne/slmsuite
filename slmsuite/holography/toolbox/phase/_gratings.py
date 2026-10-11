@@ -1,17 +1,21 @@
 """
 Grating phase patterns.
 """
+
+from collections.abc import Callable
+
 import numpy as np
 from scipy.special import jn_zeros
-from typing import Tuple, Union, Callable
-from slmsuite.holography.toolbox import _process_grid, imprint, format_2vectors
+
+from slmsuite.holography.toolbox import _process_grid, format_2vectors, imprint
 from slmsuite.misc.xp import as_numpy, get_array_module
 
 # Basic gratings.
 
+
 def blaze(
-    grid: Union[Tuple[np.ndarray, np.ndarray], object],
-    vector: Tuple[float, float] = (0, 0),
+    grid: tuple[np.ndarray, np.ndarray] | object,
+    vector: tuple[float, float] = (0, 0),
 ):
     r"""
     Returns a simple `blazed grating <https://en.wikipedia.org/wiki/Blazed_grating>`_,
@@ -60,8 +64,8 @@ def blaze(
 
 
 def triangle(
-    grid: Union[Tuple[np.ndarray, np.ndarray], object],
-    vector: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
+    grid: tuple[np.ndarray, np.ndarray] | object,
+    vector: tuple[float, float] | tuple[int, int] = (0, 0),
     shift: float = 0,
     a: float = 2 * np.pi,
     b: float = 0,
@@ -124,8 +128,8 @@ def triangle(
 
 
 def sinusoid(
-    grid: Union[Tuple[np.ndarray, np.ndarray], object],
-    vector: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
+    grid: tuple[np.ndarray, np.ndarray] | object,
+    vector: tuple[float, float] | tuple[int, int] = (0, 0),
     shift: float = 0,
     a: float = float(2 * jn_zeros(0, 1)[0]),
     b: float = 0,
@@ -169,9 +173,9 @@ def sinusoid(
     """
     if vector[0] == 0 and vector[1] == 0:
         (x_grid, _) = _process_grid(grid)
-        result = np.full_like(x_grid, (a-b)/2 * (1 + np.cos(shift)))
+        result = np.full_like(x_grid, (a - b) / 2 * (1 + np.cos(shift)))
     else:
-        result = (a-b)/2 * (1 + np.cos(blaze(grid, vector) + shift))
+        result = (a - b) / 2 * (1 + np.cos(blaze(grid, vector) + shift))
 
     # Add offset if provided.
     if b != 0:
@@ -181,12 +185,12 @@ def sinusoid(
 
 
 def binary(
-    grid: Union[Tuple[np.ndarray, np.ndarray], object],
-    vector: Union[Tuple[float, float], Tuple[int, int]] = (0, 0),
+    grid: tuple[np.ndarray, np.ndarray] | object,
+    vector: tuple[float, float] | tuple[int, int] = (0, 0),
     shift: float = 0,
     a: float = np.pi,
     b: float = 0,
-    duty_cycle: float = .5
+    duty_cycle: float = 0.5,
 ) -> np.ndarray:
     r"""
     Returns a simple binary grating toward a given vector in :math:`k`-space.
@@ -261,7 +265,7 @@ def binary(
     numpy.ndarray
         The phase for this function.
     """
-    grid = (x_grid, y_grid) = _process_grid(grid)
+    grid = (x_grid, _) = _process_grid(grid)
     dtype = x_grid.dtype
     duty_cycle = np.clip(float(duty_cycle), 0, 1)
 
@@ -270,13 +274,13 @@ def binary(
         # This is not computationally efficient.
         # Counted from the grid itself, so the indices land on its own backend.
         ones = np.ones_like(x_grid, dtype=float)
-        grid = (x_grid, y_grid) = (
+        grid = (x_grid, _y_grid) = (
             np.cumsum(ones, axis=1) - 1,
             np.cumsum(ones, axis=0) - 1,
         )
         vector = (
-            0 if vector[0] == 0 else 1. / vector[0],
-            0 if vector[1] == 0 else 1. / vector[1]
+            0 if vector[0] == 0 else 1.0 / vector[0],
+            0 if vector[1] == 0 else 1.0 / vector[1],
         )
 
     # Check if we're in an orthogonal case.
@@ -289,21 +293,19 @@ def binary(
         return np.full_like(x_grid, phase, dtype=dtype)
 
     # If we have not returned, then we have to use the slow np.mod option.
-    decision = np.mod(blaze(grid, vector) + shift, 2*np.pi)
-    decision[np.isclose(decision, 2*np.pi)] = 0   # Handle edge case
-    decision -= (2 * np.pi * duty_cycle)
+    decision = np.mod(blaze(grid, vector) + shift, 2 * np.pi)
+    decision[np.isclose(decision, 2 * np.pi)] = 0  # Handle edge case
+    decision -= 2 * np.pi * duty_cycle
     # An integer level map keeps its kind; a float phase follows the grid.
     out_dtype = np.result_type(a, b)
     if out_dtype.kind == "f":
         out_dtype = dtype
 
-    return np.where(
-        (decision < 0) & ~np.isclose(decision, 0), out_dtype.type(a), out_dtype.type(b)
-    )
+    return np.where((decision < 0) & ~np.isclose(decision, 0), out_dtype.type(a), out_dtype.type(b))
 
 
 def _quadrants(
-    grid: Union[Tuple[np.ndarray, np.ndarray], object],
+    grid: tuple[np.ndarray, np.ndarray] | object,
     vectors: np.ndarray,
     grating: Callable = blaze,
 ) -> np.ndarray:
@@ -313,38 +315,38 @@ def _quadrants(
     """
     # Parse vectors
     vectors = format_2vectors(vectors)
-    if vectors.shape != (2,4):
-        raise ValueError("Expected four 2-vectors (2,4). Found {}.".format(vectors.shape))
+    if vectors.shape != (2, 4):
+        raise ValueError(f"Expected four 2-vectors (2,4). Found {vectors.shape}.")
 
     # Parse grid.
-    grid = (x_grid, y_grid) = _process_grid(grid)
+    grid = (x_grid, _y_grid) = _process_grid(grid)
     canvas = np.zeros_like(x_grid)
     (h, w) = canvas.shape
 
     # Fill the quadrants; the right and bottom halves take the odd row and column.
     for i, vector in enumerate(vectors.T):
-        (right, bottom) = ((3-i) // 2, i % 2)
+        (right, bottom) = ((3 - i) // 2, i % 2)
         # Future: center this on the (0,0) point of the current grid?
         imprint(
             matrix=canvas,
             window=[
-                (w // 2) * right,                           # x
-                (w + right) // 2,                           # w
-                (h // 2) * bottom,                          # y
-                (h + bottom) // 2,                          # h
+                (w // 2) * right,  # x
+                (w + right) // 2,  # w
+                (h // 2) * bottom,  # y
+                (h + bottom) // 2,  # h
             ],
             function=grating,
             grid=grid,
-            vector=vector,      # Passed to function=grating
+            vector=vector,  # Passed to function=grating
         )
 
     return canvas
 
 
 def bahtinov(
-    grid: Union[Tuple[np.ndarray, np.ndarray], object],
-    radius: float = .001,
-    angle: float = 10*np.pi/180,
+    grid: tuple[np.ndarray, np.ndarray] | object,
+    radius: float = 0.001,
+    angle: float = 10 * np.pi / 180,
     grating: Callable = binary,
 ) -> np.ndarray:
     r"""
@@ -379,12 +381,15 @@ def bahtinov(
     c = np.cos(angle)
 
     vectors = format_2vectors(
-        radius * np.array([
-            (s, c),
-            (s, -c),
-            (0, 1),
-            (0, 1),
-        ]).T
+        radius
+        * np.array(
+            [
+                (s, c),
+                (s, -c),
+                (0, 1),
+                (0, 1),
+            ]
+        ).T
     )
 
     return _quadrants(
@@ -395,9 +400,9 @@ def bahtinov(
 
 
 def quadrants(
-    grid: Union[Tuple[np.ndarray, np.ndarray], object],
-    radius: float = .001,
-    center: Tuple[float, float] = (0, 0),
+    grid: tuple[np.ndarray, np.ndarray] | object,
+    radius: float = 0.001,
+    center: tuple[float, float] = (0, 0),
 ) -> np.ndarray:
     r"""
     Returns a quadrant-based alignment mask similar to
@@ -429,12 +434,15 @@ def quadrants(
         The phase for this function.
     """
     vectors = format_2vectors(
-        (radius / np.sqrt(2)) * np.array([
-            (1, -1),
-            (1, 1),
-            (-1, -1),
-            (-1, 1),
-        ]).T
+        (radius / np.sqrt(2))
+        * np.array(
+            [
+                (1, -1),
+                (1, 1),
+                (-1, -1),
+                (-1, 1),
+            ]
+        ).T
     ) + format_2vectors(center)
 
     return _quadrants(
@@ -442,4 +450,3 @@ def quadrants(
         vectors=vectors,
         grating=blaze,
     )
-

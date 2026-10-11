@@ -1,5 +1,5 @@
-import numpy as np
 from slmsuite.holography.toolbox import _process_grid
+
 
 def _determine_source_radius(grid, w=None):
     r"""

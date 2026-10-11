@@ -2,9 +2,13 @@
 A simulated SLM.
 """
 
+from typing import ClassVar
+
 import numpy as np
+
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.misc.xp import as_backend, as_numpy, get_array_module
+
 
 class SimulatedSLM(SLM):
     r"""
@@ -21,9 +25,10 @@ class SimulatedSLM(SLM):
         ``"phase_sim"`` : numpy.ndarray
             User-defined source phase (with the dimensions of :attr:`shape`) on the SLM.
     """
-    _pickle_data = SLM._pickle_data + ["gamma_sim"]
 
-    def __init__(self, resolution, pitch_um=(8,8), source=None, gamma_sim=None, **kwargs):
+    _pickle_data: ClassVar[list] = [*SLM._pickle_data, "gamma_sim"]
+
+    def __init__(self, resolution, pitch_um=(8, 8), source=None, gamma_sim=None, **kwargs):
         r"""
         Initialize simulated slm.
 
@@ -100,8 +105,7 @@ class SimulatedSLM(SLM):
         gamma_sim = np.ravel(np.array(as_numpy(gamma_sim), dtype=float))
         if len(gamma_sim) != self.bitresolution:
             raise ValueError(
-                f"Expected gamma_sim to span all {self.bitresolution} levels; "
-                f"got {len(gamma_sim)}."
+                f"Expected gamma_sim to span all {self.bitresolution} levels; got {len(gamma_sim)}."
             )
         if not np.all(np.isfinite(gamma_sim)):
             raise ValueError("Expected finite gamma_sim.")
@@ -123,9 +127,8 @@ class SimulatedSLM(SLM):
         """
         xp = get_array_module(display)
         if self.gamma_sim is None:
-            return (
-                display.astype(dtype)
-                * (self._gamma_sign * 2 * np.pi / self.phase_scaling / self.bitresolution)
+            return display.astype(dtype) * (
+                self._gamma_sign * 2 * np.pi / self.phase_scaling / self.bitresolution
             )
 
         gamma_sim = as_backend(self.gamma_sim, xp).astype(dtype)
@@ -136,7 +139,6 @@ class SimulatedSLM(SLM):
 
     def _set_phase_hw(self, display):
         """Updates SLM.display to implement various physical artifacts of SLMs."""
-
         # FUTURE: apply physical effects directly to SLM.display
 
         return

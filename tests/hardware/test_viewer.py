@@ -1,6 +1,8 @@
 """
 Unit tests for the live viewer, its region-of-interest math, and its display backends.
 """
+
+import itertools
 import threading
 import time
 
@@ -12,6 +14,7 @@ from slmsuite.hardware.cameras.simulated import SimulatedCamera
 
 try:
     from slmsuite.hardware._pyglet import get_pyglet_display
+
     get_pyglet_display().get_default_screen()
     HAS_DISPLAY = True
 except Exception:
@@ -100,11 +103,11 @@ class TestViewer:
         with subtests.test("a region is a slice of the whole"):
             region = [W // 8, H // 4, W // 2, 3 * H // 4]
             crop = viewer.parse(region)
-            assert np.array_equal(crop, full[region[1]:region[3], region[0]:region[2]])
+            assert np.array_equal(crop, full[region[1] : region[3], region[0] : region[2]])
 
         with subtests.test("a region larger than the display box is downsampled"):
-            viewer.state["scale"] = .25
-            assert viewer.parse([0., 0., float(W), float(H)]).shape == (H // 4, W // 4)
+            viewer.state["scale"] = 0.25
+            assert viewer.parse([0.0, 0.0, float(W), float(H)]).shape == (H // 4, W // 4)
             viewer.state["scale"] = 1
 
         with subtests.test("the integer lookup table matches the float pipeline"):
@@ -156,65 +159,65 @@ class TestViewer:
             H, W = parent.shape[0], parent.shape[1]
             viewer.last_image = np.zeros(parent.shape, np.uint8)
             viewer._reset_roi()
-            full = [0., 0., float(W), float(H)]
+            full = [0.0, 0.0, float(W), float(H)]
 
             with subtests.test(f"{W}x{H}: zooming in and back out round-trips"):
-                viewer._zoom(.5, .5, True)
+                viewer._zoom(0.5, 0.5, True)
                 assert viewer.state["roi"] != full
-                viewer._zoom(.5, .5, False)
+                viewer._zoom(0.5, 0.5, False)
                 assert viewer.state["roi"] == full
 
             with subtests.test(f"{W}x{H}: every depth stays inside, at 8 px or more"):
                 for _ in range(40):
-                    viewer._zoom(.31, .77, True)
+                    viewer._zoom(0.31, 0.77, True)
                     x0, y0, x1, y1 = viewer.state["roi"]
                     assert 0 <= x0 < x1 <= W and 0 <= y0 < y1 <= H
                     assert x1 - x0 >= 8 and y1 - y0 >= 8
-                    assert (x1 - x0) / (y1 - y0) == pytest.approx(W / H, rel=.15)
+                    assert (x1 - x0) / (y1 - y0) == pytest.approx(W / H, rel=0.15)
 
             with subtests.test(f"{W}x{H}: zooming out clamps at the full image"):
                 for _ in range(40):
-                    viewer._zoom(.31, .77, False)
+                    viewer._zoom(0.31, 0.77, False)
                 assert viewer.state["roi"] == full
 
     def test_pan(self, viewer, subtests):
         """Click-drag translates the region without resizing it or leaving the image."""
         H, W = viewer.parent.shape[0], viewer.parent.shape[1]
-        viewer._zoom(.5, .5, True)
+        viewer._zoom(0.5, 0.5, True)
         zoomed = list(viewer.state["roi"])
 
-        viewer._grab(.5, .5)
+        viewer._grab(0.5, 0.5)
         with subtests.test("a pan back to the grabbed point is not a move"):
-            assert viewer._pan(.5, .5) is False
+            assert viewer._pan(0.5, 0.5) is False
 
         with subtests.test("a pan translates only"):
-            assert viewer._pan(.9, .9) is True
+            assert viewer._pan(0.9, 0.9) is True
             x0, y0, x1, y1 = viewer.state["roi"]
             assert (x1 - x0, y1 - y0) == (zoomed[2] - zoomed[0], zoomed[3] - zoomed[1])
             assert viewer._dragged
 
         with subtests.test("a pan past the edge clamps to the image"):
-            viewer._grab(.5, .5)
-            assert viewer._pan(-5., -5.) is True
+            viewer._grab(0.5, 0.5)
+            assert viewer._pan(-5.0, -5.0) is True
             assert viewer.state["roi"][2:] == [float(W), float(H)]
 
         with subtests.test("releasing ends the drag"):
             viewer._release()
             assert viewer._drag is None
-            assert viewer._pan(.1, .1) is False
+            assert viewer._pan(0.1, 0.1) is False
 
         with subtests.test("reset restores the full image"):
             viewer._reset_roi()
-            assert viewer.state["roi"] == [0., 0., float(W), float(H)]
+            assert viewer.state["roi"] == [0.0, 0.0, float(W), float(H)]
 
     def test_to_source(self, viewer):
         """View fractions map onto source pixels through the current region."""
         H, W = viewer.parent.shape[0], viewer.parent.shape[1]
-        assert viewer._to_source(0., 0.) == (0., 0.)
-        assert viewer._to_source(1., 1.) == (float(W), float(H))
+        assert viewer._to_source(0.0, 0.0) == (0.0, 0.0)
+        assert viewer._to_source(1.0, 1.0) == (float(W), float(H))
 
-        viewer.state["roi"] = [10., 20., 50., 52.]
-        assert viewer._to_source(.5, .25) == (30., 28.)
+        viewer.state["roi"] = [10.0, 20.0, 50.0, 52.0]
+        assert viewer._to_source(0.5, 0.25) == (30.0, 28.0)
 
 
 class TestViewerWidgets:
@@ -239,7 +242,7 @@ class TestViewerWidgets:
             H, W = widget_viewer.parent.shape[0], widget_viewer.parent.shape[1]
             widgets["scale"].value = 2
             assert widget_viewer.display.image.layout.width == f"{2 * W}px"
-            assert widget_viewer.state["roi"] == [0., 0., float(W), float(H)]
+            assert widget_viewer.state["roi"] == [0.0, 0.0, float(W), float(H)]
             widgets["scale"].value = 1
 
     def test_post(self, widget_viewer, subtests):
@@ -280,12 +283,17 @@ class TestViewerWidgets:
         """ipyevents mouse events drive the region the same way the window does."""
         display = widget_viewer.display
         H, W = widget_viewer.parent.shape[0], widget_viewer.parent.shape[1]
-        full = [0., 0., float(W), float(H)]
+        full = [0.0, 0.0, float(W), float(H)]
 
-        def event(etype, fx=.5, fy=.5, **extra):
+        def event(etype, fx=0.5, fy=0.5, **extra):
             return dict(
-                {"type": etype, "relativeX": fx * 400, "boundingRectWidth": 400,
-                 "relativeY": fy * 320, "boundingRectHeight": 320},
+                {
+                    "type": etype,
+                    "relativeX": fx * 400,
+                    "boundingRectWidth": 400,
+                    "relativeY": fy * 320,
+                    "boundingRectHeight": 320,
+                },
                 **extra,
             )
 
@@ -301,12 +309,12 @@ class TestViewerWidgets:
 
         with subtests.test("drag pans without resizing"):
             zoomed = list(widget_viewer.state["roi"])
-            display._on_dom_event(event("mousedown", .5, .5))
-            display._on_dom_event(event("mousemove", .8, .8))
+            display._on_dom_event(event("mousedown", 0.5, 0.5))
+            display._on_dom_event(event("mousemove", 0.8, 0.8))
             panned = widget_viewer.state["roi"]
             assert panned != zoomed
             assert panned[2] - panned[0] == pytest.approx(zoomed[2] - zoomed[0])
-            display._on_dom_event(event("mouseup", .8, .8))
+            display._on_dom_event(event("mouseup", 0.8, 0.8))
 
         with subtests.test("double-click restores the full image"):
             display._on_dom_event(event("dblclick"))
@@ -314,9 +322,11 @@ class TestViewerWidgets:
 
         with subtests.test("a click reads out the source pixel under the cursor"):
             widget_viewer._dragged = False
-            display._on_dom_event(event("click", .25, .75))
-            assert widget_viewer.widgets["output"].value.strip("[]").split() == \
-                [str(W // 4), str(3 * H // 4)]
+            display._on_dom_event(event("click", 0.25, 0.75))
+            assert widget_viewer.widgets["output"].value.strip("[]").split() == [
+                str(W // 4),
+                str(3 * H // 4),
+            ]
 
         with subtests.test("turning Zoom off restores the full image"):
             display._on_dom_event(event("wheel", deltaY=-1))
@@ -346,7 +356,7 @@ class TestViewerPyglet:
             H, W = viewer.parent.shape[0], viewer.parent.shape[1]
             viewer.render(np.tile(np.linspace(0, 255, W, dtype=np.uint8), (H, 1)))
             whole = viewer.display.png()
-            viewer._zoom(.5, .5, True)
+            viewer._zoom(0.5, 0.5, True)
             assert viewer.parse(viewer.state["roi"]).shape != (H, W)
             assert viewer.display.png() != whole, "the export ignored the zoom"
             viewer._reset_roi()
@@ -361,7 +371,7 @@ class TestViewerPyglet:
             for value in (40, 80, 120, 160):
                 viewer.render(np.full(camera_small.shape, value, np.uint8))
                 seen.append(int(display._index.max()))
-            assert all(b > a for a, b in zip(seen, seen[1:])), seen
+            assert all(b > a for a, b in itertools.pairwise(seen)), seen
 
         with subtests.test("a single write right after opening is drawn"):
             camera_small.live(activate=False)
@@ -468,7 +478,7 @@ class TestViewerPyglet:
         for _ in range(50):
             if not window.running:
                 break
-            time.sleep(.1)
+            time.sleep(0.1)
         assert not window.running
 
         camera_small.get_image()
@@ -504,6 +514,4 @@ class TestViewerPyglet:
             camera_small.live(activate=False)
 
         assert frames[0] > 0, "the spinner never rendered"
-        assert not errors, "{}/{} frames failed: {}".format(
-            len(errors), frames[0], errors[:3]
-        )
+        assert not errors, f"{len(errors)}/{frames[0]} frames failed: {errors[:3]}"

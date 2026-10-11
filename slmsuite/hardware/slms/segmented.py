@@ -3,10 +3,12 @@ A segment of a larger SLM.
 This class allows the user to work with a specific region
 of a parent SLM as if it were a separate SLM.
 """
+
 import numpy as np
 
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.holography.toolbox import window_extent, window_slice
+
 
 class SegmentedSLM(SLM):
     """
@@ -61,7 +63,9 @@ class SegmentedSLM(SLM):
 
         # Parse window -- preserve original for unclipped bounds checking.
         window_raw = window
-        window = window_slice(window, shape=parent.shape)  # 2 slice, 2 indices, or boolean array format
+        window = window_slice(
+            window, shape=parent.shape
+        )  # 2 slice, 2 indices, or boolean array format
 
         # Get the rectangular extent of the window.
         self.subwindow = None
@@ -73,24 +77,26 @@ class SegmentedSLM(SLM):
             yi = int(window_raw[2])
             yf = yi + int(window_raw[3])
             extent = (xi, xf - xi, yi, yf - yi)
-            self.extent_slice = window               # clipped slices for actual indexing
+            self.extent_slice = window  # clipped slices for actual indexing
         else:
-            extent = window_extent(window)           # (x, w, y, h) format
-            self.extent_slice = window_slice(extent) # 2 slice format
+            extent = window_extent(window)  # (x, w, y, h) format
+            self.extent_slice = window_slice(extent)  # 2 slice format
 
             # Handle the case where the window is not rectangular.
-            if isinstance(window, np.ndarray):    # Boolean array
+            if isinstance(window, np.ndarray):  # Boolean array
                 self.subwindow = window[tuple(self.extent_slice)]
-            else:                                 # Lists of indices (y_ind, x_ind)
+            else:  # Lists of indices (y_ind, x_ind)
                 self.subwindow = (
-                    window[0] - extent[2],        # y_ind - y_start
-                    window[1] - extent[0],        # x_ind - x_start
+                    window[0] - extent[2],  # y_ind - y_start
+                    window[1] - extent[0],  # x_ind - x_start
                 )
 
         # Error check the window against the parent SLM's shape.
         if (
-            extent[0] < 0 or extent[0] + extent[1] > parent.shape[1] or
-            extent[2] < 0 or extent[2] + extent[3] > parent.shape[0]
+            extent[0] < 0
+            or extent[0] + extent[1] > parent.shape[1]
+            or extent[2] < 0
+            or extent[2] + extent[3] > parent.shape[0]
         ):
             raise ValueError("Window is out of bounds of the parent SLM.")
 
@@ -114,7 +120,7 @@ class SegmentedSLM(SLM):
 
     @property
     def gamma(self):
-        """This segment's own phase response, falling back to the parent's when unset."""
+        """Phase response of this segment, falling back to the parent's when unset."""
         return self.parent.gamma if self._gamma is None else self._gamma
 
     @gamma.setter
@@ -123,7 +129,7 @@ class SegmentedSLM(SLM):
 
     @property
     def lut(self):
-        """This segment's own lookup table, falling back to the parent's when unset."""
+        """Lookup table of this segment, falling back to the parent's when unset."""
         return self.parent.lut if self._lut is None else self._lut
 
     @lut.setter
@@ -162,16 +168,16 @@ class SegmentedSLM(SLM):
             for the final segment of a segmented SLM by default.
         """
         # Update the parent SLM's display and phase data.
-        if self.subwindow is None:                  # Rectangular window case
+        if self.subwindow is None:  # Rectangular window case
             self.parent.display[tuple(self.extent_slice)] = display
             if self.phase is not None:
                 self.parent.phase[tuple(self.extent_slice)] = self.phase
-        else:                                       # Non-rectangular window case
+        else:  # Non-rectangular window case
             self.parent.display[tuple(self.extent_slice)][self.subwindow] = display[self.subwindow]
             if self.phase is not None:
-                self.parent.phase[tuple(self.extent_slice)][self.subwindow] = (
-                    self.phase[self.subwindow]
-                )
+                self.parent.phase[tuple(self.extent_slice)][self.subwindow] = self.phase[
+                    self.subwindow
+                ]
 
         # Update the parent SLM's hardware if desired.
         if refresh is None:
@@ -179,7 +185,7 @@ class SegmentedSLM(SLM):
         if refresh:
             self.parent._set_phase_hw(self.parent.display)
 
-    def set_input_trigger(self, on : bool = False):
+    def set_input_trigger(self, on: bool = False):
         r"""
         Program the input trigger on the parent SLM.
 
@@ -189,7 +195,7 @@ class SegmentedSLM(SLM):
         """
         raise RuntimeError("Program the input trigger on the parent SLM.")
 
-    def set_output_trigger(self, on : bool = False):
+    def set_output_trigger(self, on: bool = False):
         r"""
         Program the output trigger on the parent SLM.
 
