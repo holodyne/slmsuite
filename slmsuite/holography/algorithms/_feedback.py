@@ -384,6 +384,7 @@ class FeedbackHologram(Hologram):
     def _update_slm(self, force=False, cleanup_images=True):
         """
         Method to update the SLM with the current phase pattern.
+
         This is separate from :meth:`measure()`
         """
         if not self._updated_slm or force:  # If we have not already updated the SLM.

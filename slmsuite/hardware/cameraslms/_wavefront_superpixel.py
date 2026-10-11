@@ -1707,8 +1707,9 @@ class _WavefrontCalibrationSuperpixel:
         self, index=0, r2_threshold=0, phase_detail=True
     ):
         """
-        Plots raw data from the superpixel-style wavefront calibration. Specifically,
-        plots:
+        Plots raw data from the superpixel-style wavefront calibration.
+
+        Specifically, plots:
 
         - The location of the point in the camera plane,
         - The measured source phase at each superpixel,

@@ -1,5 +1,6 @@
 """
 Light wrapper for the :mod:`instrumental-lib` package.
+
 The :mod:`instrumental` module must be
 `installed <https://instrumental-lib.readthedocs.io/en/stable/install.html>`_.
 ``pip install instrumental-lib``.

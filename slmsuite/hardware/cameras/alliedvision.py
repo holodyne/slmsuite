@@ -179,7 +179,7 @@ class AlliedVision(Camera):
 
     def close(self, close_sdk=False):
         """
-        See :meth:`.Camera.close`
+        See :meth:`.Camera.close`.
 
         Parameters
         ----------

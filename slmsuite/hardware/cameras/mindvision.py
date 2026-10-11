@@ -218,7 +218,7 @@ class MindVision(Camera):
         _mvsdk.CameraSetExposureTime(self.handle, exposure_s * 1e6)
 
     def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._set_woi_hw`."""
         # MindVision iHOffsetFOV/iVOffsetFOV/iWidthFOV/iHeightFOV are physical (unbinned) sensor pixels.
         # iWidth/iHeight are the output (binned) dimensions.
         binx, biny = self._binning
@@ -234,7 +234,7 @@ class MindVision(Camera):
         _mvsdk.CameraSetImageResolution(self.handle, resolution)
 
     def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._get_woi_hw`."""
         # Physical FOV coordinates; divide by binning to get binned coords.
         binx, biny = self._binning
         resolution = _mvsdk.CameraGetImageResolution(self.handle)
@@ -246,7 +246,7 @@ class MindVision(Camera):
         )
 
     def _set_binning_hw(self, binning):
-        """See :meth:`.Camera._set_binning_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._set_binning_hw`."""
         # MindVision binning via uBinSumMode: bit 0 = 2x2, bit 1 = 3x3, bit 2 = 4x4.
         binx, biny = int(binning[0]), int(binning[1])
         if biny != binx:
@@ -266,7 +266,7 @@ class MindVision(Camera):
         _mvsdk.CameraSetImageResolution(self.handle, resolution)
 
     def _get_binning_hw(self):
-        """See :meth:`.Camera._get_binning_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._get_binning_hw`."""
         resolution = _mvsdk.CameraGetImageResolution(self.handle)
         mode = int(resolution.uBinSumMode) or int(resolution.uBinAverageMode)
         b = mode.bit_length() + 1 if mode else 1

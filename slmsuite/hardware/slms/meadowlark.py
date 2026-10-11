@@ -370,7 +370,7 @@ class Meadowlark(SLM):
     @staticmethod
     def _get_height(sdk_mode: _SDK_MODE, slm_number: int) -> int:
         """
-        Get the height of the SLM
+        Get the height of the SLM.
 
         Returns
         -------
@@ -847,7 +847,7 @@ class Meadowlark(SLM):
 
     @staticmethod
     def _parse_header(file: str, warn: bool = False) -> tuple[_SDK_MODE, str, tuple[int, int]]:
-        """Checks if a path has an appropriate header"""
+        """Checks if a path has an appropriate header."""
         dll_path = os.path.join(file, "Blink_C_wrapper.dll")
         dll_present = os.path.isfile(dll_path)
         header_path = os.path.join(file, "Blink_C_wrapper.h")

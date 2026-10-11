@@ -1191,7 +1191,7 @@ def build_affine(
 
 def fit_3pt(y0, y1, y2, N=None, x0=(0, 0), x1=(1, 0), x2=(0, 1), orientation_check=False):
     r"""
-    Fits three points to an affine transformation. This transformation is given by:
+    Fits three points to an affine transformation.
 
     .. math:: \vec{y} = M \cdot \vec{x} + \vec{b}
 

@@ -182,7 +182,6 @@ ignore = [
     "D1",      # missing docstrings
     "D200",    # one-line docstring on one line
     "D205",    # blank line after summary
-    "D400",    # trailing period
     "D401",    # imperative mood
 ]
 # `a + [b]` -> `[*a, b]` changes meaning when `a` is an ndarray.

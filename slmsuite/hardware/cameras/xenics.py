@@ -520,7 +520,7 @@ class Cheetah640(Camera):
 
     def configure(self, format_file):
         """
-        Loads pre-stored imaging profile from XC_SaveSettings XCF file
+        Loads pre-stored imaging profile from XC_SaveSettings XCF file.
 
         Parameters
         ----------
@@ -552,7 +552,7 @@ class Cheetah640(Camera):
             self.logger.warning("Error encountered! Error codes: %d, %d, %d", err1, err2, err3)
 
     def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._set_woi_hw`."""
         # Xenics WoiSX/WoiEX/WoiSY/WoiEY are physical (unbinned) sensor pixel coordinates.
         binx, biny = self._binning
         x, w, y, h = [int(v) for v in woi]
@@ -585,7 +585,7 @@ class Cheetah640(Camera):
             self.logger.warning("Warning! Error(s) in _set_woi_hw: %s", errs)
 
     def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._get_woi_hw`."""
         # Physical (unbinned) start/end coordinates; divide by binning to get binned coords.
         binx, biny = self._binning
         woi_props = [b"WoiSX(0)", b"WoiEX(0)", b"WoiSY(0)", b"WoiEY(0)"]
@@ -1208,7 +1208,7 @@ class Cheetah640(Camera):
         return self.xeneth.XC_GetFrameCount(self.cam)
 
     def start_capture(self):
-        """Initiates the current capture run"""
+        """Initiates the current capture run."""
         self.logger.info("Starting capture...")
         err = self.xeneth.XC_StartCapture(self.cam)
         if err != I_OK:
@@ -1218,21 +1218,21 @@ class Cheetah640(Camera):
             time.sleep(0.1)
 
     def stop_capture(self):
-        """Terminates the current capture run"""
+        """Terminates the current capture run."""
         self.logger.info("Stopping capture...")
         err = self.xeneth.XC_StopCapture(self.cam)
         if err != I_OK:
             self.logger.warning("Could not stop capturing, errorCode: %d", err)
 
     def abort_capture(self):
-        """Cancels any long, live frame captures"""
+        """Cancels any long, live frame captures."""
         self.logger.info("Aborting capture...")
         err = self.xeneth.XC_SetPropertyValueE(self.cam, b"AbortExposure", b"Abort")
         if err != I_OK:
             self.logger.warning("Could not abort capture, errorCode: %d", err)
 
     def flush(self, timeout_s=1):
-        """See :meth:`.Camera.flush`"""
+        """See :meth:`.Camera.flush`."""
         time.sleep(0.1)  # Allow some time to grab free-running images
         err = self._get_image_hw(block=False, convert=False, return_img=False)
         while not err:
@@ -1240,7 +1240,7 @@ class Cheetah640(Camera):
 
     def is_capturing(self):
         """
-        Checks if currently capturing
+        Checks if currently capturing.
 
         Returns
         -------

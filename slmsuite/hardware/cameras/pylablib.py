@@ -1,5 +1,6 @@
 """
 Light wrapper for the :mod:`pylablib` package.
+
 See the supported `cameras
 <https://pylablib.readthedocs.io/en/stable/devices/cameras_root.html>`_.
 :mod:`pylablib` must be installed ``pip install pylablib``.
@@ -166,7 +167,7 @@ class PyLabLib(Camera):
         self.cam.set_exposure(float(exposure_s))
 
     def _set_woi_hw(self, woi):
-        """See :meth:`.Camera._set_woi_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._set_woi_hw`."""
         # pylablib ROI coordinates are physical (unbinned) sensor pixels, exclusive end.
         # https://pylablib.readthedocs.io/en/stable/_modules/pylablib/devices/Thorlabs/TLCamera.html
         binx, biny = self._binning
@@ -184,7 +185,7 @@ class PyLabLib(Camera):
             self.cam.set_roi(**roi)
 
     def _get_woi_hw(self):
-        """See :meth:`.Camera._get_woi_hw`. **(Untested)**"""
+        """**Untested**, see :meth:`.Camera._get_woi_hw`."""
         # pylablib get_roi() returns (hstart, hend, vstart, vend[, hbin, vbin]) in physical pixels.
         binx, biny = self._binning
         roi = self.cam.get_roi()

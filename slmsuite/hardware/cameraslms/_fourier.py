@@ -31,6 +31,7 @@ class _FourierCalibration:
         """
         Project and fit a SLM computational Fourier space ``"knm"`` grid onto
         camera pixel space ``"ij"`` for affine fitting.
+
         An array produced by
         :meth:`~slmsuite.holography.algorithms.SpotHologram.make_rectangular_array()`
         is projected for analysis by
@@ -408,6 +409,7 @@ class _FourierCalibration:
     def kxyslm_to_ijcam(self, kxy):
         r"""
         Converts SLM Fourier space (``"kxy"``) to camera pixel space (``"ij"``).
+
         For blaze vectors :math:`\vec{x}` and camera pixel indices :math:`\vec{y}`
         (with binning and WOI applied), computes:
 
@@ -490,6 +492,7 @@ class _FourierCalibration:
     def ijcam_to_kxyslm(self, ij):
         r"""
         Converts camera pixel space (``"ij"``) to SLM Fourier space (``"kxy"``).
+
         For camera pixel indices :math:`\vec{y}` (with binning and WOI applied)
         and blaze vectors :math:`\vec{x}`, computes:
 

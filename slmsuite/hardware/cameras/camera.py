@@ -1784,7 +1784,7 @@ class Camera(_Common, ABC):
 
     @staticmethod
     def _autofocus_metric(img, plot=False):
-        """See :meth:`.autofocus()` ``metric=``"""
+        """See :meth:`.autofocus()` ``metric=``."""
         dft = np.fft.fftshift(np.fft.fft2(img.astype(float)))
         dft_amp = np.abs(dft)
         dft_norm = dft_amp / np.amax(dft_amp)

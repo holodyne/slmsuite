@@ -534,6 +534,7 @@ def image_moment(images, moment=(1, 0), centers=(0, 0), grid=None, normalize=Tru
     r"""
     Computes the given `moment <https://en.wikipedia.org/wiki/Moment_(mathematics)>`_
     :math:`M_{m_xm_y}` for a stack of images.
+
     This involves discretely integrating each image against polynomial trial functions:
 
     .. math:: M_{m_xm_y} = \frac{   \int_{-w_x/2}^{+w_x/2} dx \, (x-c_x)^{m_x}
@@ -812,7 +813,7 @@ def image_positions(images, grid=None, normalize=True, nansum=False):
 
 
 def image_centroids(images, grid=None, normalize=True, nansum=False):
-    """Alias for :meth:`image_positions()`"""
+    """Alias for :meth:`image_positions()`."""
     return image_positions(images, grid, normalize, nansum)
 
 
@@ -822,6 +823,7 @@ def image_variances(
     r"""
     Computes the three second order central moments, equivalent to variance, for a stack
     of images.
+
     Specifically, this function returns a stack of the moments :math:`M_{20}` and
     :math:`M_{02}`, along with :math:`M_{11}`, which are the variance in the :math:`x`
     and :math:`y` directions, along with the so-called shear variance.
@@ -2567,7 +2569,7 @@ def _lattice_fourier(image, dft_threshold=100, dft_padding=0, k=8, tol=0.1, plot
     # 3) Fit the primitive lattice vectors
     # 3.1) Make a list of displacements to each peak's k nearest neighbors
     def get_kNN(points, k):
-        """Return list of k closest points for each x"""
+        """Return list of k closest points for each x."""
         dx = points[:, 0][:, np.newaxis] - points[:, 0][:, np.newaxis].T
         dy = points[:, 1][:, np.newaxis] - points[:, 1][:, np.newaxis].T
         d = np.sqrt(dx**2 + dy**2)
@@ -2595,7 +2597,7 @@ def _lattice_fourier(image, dft_threshold=100, dft_padding=0, k=8, tol=0.1, plot
 
     # 3.2) Cluster into lattice vectors.
     def cluster(points, k, tol=tol):
-        """Cluster points from k nearest neighbors into groups and return the centers"""
+        """Cluster points from k nearest neighbors into groups and return the centers."""
         # Find matrix of normalized displacements between points.
         dx = points[:, 0][:, np.newaxis] - points[:, 0][:, np.newaxis].T
         dy = points[:, 1][:, np.newaxis] - points[:, 1][:, np.newaxis].T
@@ -3359,7 +3361,7 @@ class OrientationTransform:
 
     def M(self):
         """
-        numpy.ndarray : 2x2 matrix transformation
+        numpy.ndarray : 2x2 matrix transformation.
         """
         return np.array(self._MATRICES[self.code.value], dtype=float)
 
@@ -3447,8 +3449,6 @@ class OrientationTransform:
         """
         H, W = shape
         return (W, H) if self.swaps_xy else (H, W)
-
-    # ---- WOI transform ----------------------------------------------------
 
     def transform_woi(self, woi, shape, binning_in=1, binning_out=1):
         """

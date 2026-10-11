@@ -535,7 +535,7 @@ class Hologram(_HologramStats, _Loggable):
     def _get_target_moments_knm_norm(self):
         """
         Get the first and second order moments of the target in normalized knm space
-        (knm integers divided by shape)
+        (knm integers divided by shape).
         """
         # Grab the target. analysis is host-only here.
         target = as_numpy(self.target)
@@ -990,18 +990,7 @@ class Hologram(_HologramStats, _Loggable):
 
     # Propagation: nearfield-farfield helper functions.
     def _populate_results(self):
-        """
-        Helper function to populate:
-            - farfield
-            - amp_ff
-            - phase_ff
-
-        From the data in:
-            - amp
-            - phase
-
-        Pass a nearfield complex matrix of self.shape shape to avoid memory reallocation.
-        """
+        """Populates :attr:`farfield`, :attr:`amp_ff` and :attr:`phase_ff` from :attr:`amp` and :attr:`phase`."""
         self._nearfield2farfield()
 
         # _nearfield2farfield already populates amp_ff except for
@@ -1013,6 +1002,7 @@ class Hologram(_HologramStats, _Loggable):
     def remove_vortices(self, plot=False):
         """
         Removes the computed phase vortices in the farfield where the target amplitude is positive.
+
         Useful for smoothing out the pattern and reducing speckle.
         The user can call this method by passing a ``callback=`` function containing it.
         For instance:
@@ -1173,6 +1163,7 @@ class Hologram(_HologramStats, _Loggable):
         Optimizes to solve the "phase problem": approximating the nearfield phase that
         transforms a known nearfield source amplitude to a desired farfield
         target amplitude.
+
         Supported optimization methods include:
 
         -   Gerchberg-Saxton (GS) phase retrieval.
@@ -2062,7 +2053,7 @@ class Hologram(_HologramStats, _Loggable):
     @staticmethod
     def _norm(matrix, xp=cp):
         r"""
-        Computes the root of the sum of squares of the given ``matrix``. Implements
+        Computes the root of the sum of squares of the given ``matrix``.
 
         .. math:: \sqrt{\iint |\vec{E}|^2}.
 

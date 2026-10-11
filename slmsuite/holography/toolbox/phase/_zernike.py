@@ -877,6 +877,7 @@ def zernike_sum(grid, indices, weights, aperture=None, use_mask=True, derivative
     Returns a summation of
     `Zernike polynomials <https://en.wikipedia.org/wiki/Zernike_polynomials>`_
     in a computationally-efficient manner.
+
     These polynomials are commonly used as an orthogonal basis for optical aberration
     and are used in a number of places inside :mod:`slmsuite` for aberration compensation.
     This function returns a sum of polynomials:
@@ -1444,7 +1445,7 @@ def _parse_out(x_grid, out, stack=1):
 
 def polynomial(grid, weights, terms=None, pathing=None, out=None):
     r"""
-    Returns a summation of monomials. Specifically,
+    Returns a summation of monomials.
 
     .. math:: \phi(x, y) = \sum_{n,m \in T} w_{nm}x^ny^m
 

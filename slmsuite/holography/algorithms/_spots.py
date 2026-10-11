@@ -385,6 +385,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
     ):
         r"""
         Initializes a :class:`CompressedSpotHologram` targeting given spots at ``spot_vectors``.
+
         This class makes use of so-called 'compressed' methods. Instead of
         effectively evaluating a blazing nearfield-farfield transformation kernel
         :math:`\phi(x,y,k_x,k_y) = k_xx + k_yy` at every
@@ -703,7 +704,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
     def _get_target_moments_knm_norm(self):
         """
         Get the first and second order moments of the target in normalized knm space
-        (knm integers divided by shape)
+        (knm integers divided by shape).
         """
         # Grab the target.
         target = as_numpy(self.target).reshape(1, -1, 1)

@@ -176,7 +176,7 @@ def latest_path(path, name, extension=None, kind="file", digit_count=5):
 
 
 def read_h5(file_path, decode_bytes=True):
-    """Backwards-compatible alias of :meth:`load_h5`"""
+    """Backwards-compatible alias of :meth:`load_h5`."""
     return load_h5(file_path, decode_bytes)
 
 
@@ -229,7 +229,7 @@ def load_h5(file_path, decode_bytes=True):
 
 
 def write_h5(file_path, data, mode="w"):
-    """Backwards-compatible alias of :meth:`save_h5`"""
+    """Backwards-compatible alias of :meth:`save_h5`."""
     return save_h5(file_path, data, mode)
 
 

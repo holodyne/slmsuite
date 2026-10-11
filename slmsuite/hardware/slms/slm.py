@@ -1611,7 +1611,9 @@ class SLM(_Common, ABC):
     def fit_aperture(self, method="moments", edge_level=0.1):
         r"""
         Fits the SLM's :attr:`aperture` to the measured source amplitude distribution in
-        :attr:`source` ``["amplitude"]``. Two radii are fit independently:
+        :attr:`source` ``["amplitude"]``.
+
+        Two radii are fit independently:
 
         -   The circular aperture (pupil), which sets :attr:`aperture_mask` and
             :attr:`zernike_scaling`, is fit to the **rolloff** of the measured source power
