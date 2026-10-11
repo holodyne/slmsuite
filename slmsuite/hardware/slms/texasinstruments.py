@@ -25,7 +25,7 @@ compatibility.
     plm = PLM("p47", display_number=1)
 
     # Set phase pattern
-    phase = np.random.default_rng().random((540, 960)) * 2 * np.pi
+    phase = np.random.rand(540, 960) * 2 * np.pi
     plm.write(phase)
 
 The USB configuration is accomplished by :class:`DLPC900`, a USB HID interface
@@ -44,9 +44,9 @@ last example above) leaves whatever state the EVM was in, so phase written to
 the display can silently fail to reach the mirrors.
 """
 
-from enum import IntEnum
 import os
 import time
+from enum import IntEnum
 
 import numpy as np
 

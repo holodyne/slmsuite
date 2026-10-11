@@ -4,7 +4,6 @@ Connects to a camera on a remote :class:`~slmsuite.hardware.remote.Server`.
 
 import time
 from typing import ClassVar
-import warnings
 
 from slmsuite.hardware.cameras.camera import Camera
 from slmsuite.hardware.remote import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, _Client

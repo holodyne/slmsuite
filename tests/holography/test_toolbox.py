@@ -442,7 +442,8 @@ def test_fit_3pt(subtests):
         indices = np.array([[0, 1, 2], [0, 0, 0]])
         np.testing.assert_allclose(
             fit_3pt((5, 10), (6, 10), (5, 11), N=indices),
-            indices + [[5], [10]],  # noqa: RUF005 (ndarray broadcast, not concatenation), atol=1e-14
+            indices + [[5], [10]],  # noqa: RUF005 (ndarray broadcast, not concatenation)
+            atol=1e-14,
         )
 
     with subtests.test("a non-positive N returns the affine instead of a lattice"):
@@ -597,15 +598,13 @@ def test_lloyds_points(subtests):
     shape = (100, 100)
 
     with subtests.test("n_points distinct points come back, from either form of grid"):
-        np.random.seed(42)
         for space in (shape, np.meshgrid(range(shape[1]), range(shape[0]))):
-            result = lloyds_points(space, 7, iterations=5)
+            result = lloyds_points(space, 7, iterations=5, seed=42)
             assert result.shape == (2, 7)
             assert smallest_distance(result) > 0
 
     with subtests.test("a lone point relaxes onto the center of the grid"):
-        np.random.seed(22)
-        result = lloyds_points(shape, 1, iterations=50)
+        result = lloyds_points(shape, 1, iterations=50, seed=22)
         np.testing.assert_allclose(result.ravel(), [50, 50], atol=1)
 
 

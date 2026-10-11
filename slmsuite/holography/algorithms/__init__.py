@@ -44,6 +44,8 @@ from slmsuite.holography.algorithms._hologram import Hologram as _Hologram
 from slmsuite.holography.algorithms._multiplane import MultiplaneHologram as _MultiplaneHologram
 from slmsuite.holography.algorithms._spots import (
     CompressedSpotHologram as _CompressedSpotHologram,
+)
+from slmsuite.holography.algorithms._spots import (
     SpotHologram as _SpotHologram,
 )
 

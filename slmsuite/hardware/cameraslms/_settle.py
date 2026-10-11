@@ -113,7 +113,7 @@ class _SettleCalibration:
             results_set_phase_time = np.zeros(len(times))
             results_get_image_time = np.zeros(len(times))
 
-            I = np.random.default_rng().permutation(len(times))
+            I = np.random.permutation(len(times))
 
             iterations = tqdm(I) if plot >= 0 else I
 

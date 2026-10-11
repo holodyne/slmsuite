@@ -2,8 +2,8 @@
 Simulated camera to image the simulated SLM.
 """
 
-from typing import ClassVar
 import warnings
+from typing import ClassVar
 
 import numpy as np
 
@@ -70,8 +70,8 @@ class SimulatedCamera(Camera):
         .. code-block:: python
 
             self.noise = {
-                "dark": lambda img: np.random.default_rng().normal(0.5 * img, 0.05 * img),
-                "read": lambda img: np.random.default_rng().poisson(0.2 * img),
+                "dark": lambda img: np.random.normal(0.5 * img, 0.05 * img),
+                "read": lambda img: np.random.poisson(0.2 * img),
             }
 
         Note

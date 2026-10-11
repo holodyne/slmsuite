@@ -26,26 +26,18 @@ Reading/writing data to a microSD card is currently unsupported.
 """
 
 import ctypes
+import os
+import warnings
 from ctypes import (
     POINTER,
     byref,
     c_char,
-    c_char_p,
     c_double,
     c_int,
     c_int32,
-    c_short,
-    c_ubyte,
-    c_uint,
     c_uint8,
     c_uint32,
-    c_ulonglong,
-    c_ushort,
-    c_void_p,
-    c_wchar,
 )
-import os
-import warnings
 
 import numpy as np
 

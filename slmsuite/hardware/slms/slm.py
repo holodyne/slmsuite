@@ -11,11 +11,11 @@ try:
     import cupy as cp
 except ImportError:
     cp = np
-from abc import ABC, abstractmethod
 import inspect
-from typing import ClassVar
 import warnings
 import weakref
+from abc import ABC, abstractmethod
+from typing import ClassVar
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -1900,7 +1900,7 @@ class SLM(_Common, ABC):
 
         orig_phase = self.phase.copy()
         count = 20
-        phase = np.random.default_rng().random((count, *self.shape)) * 2 * np.pi
+        phase = np.random.rand(count, *self.shape) * 2 * np.pi
 
         try:
             with self._test_step("write a phase"):

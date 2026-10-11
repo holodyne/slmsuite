@@ -3,14 +3,14 @@ Helper functions for processing images.
 """
 
 import enum
-from typing import ClassVar
 import warnings
+from typing import ClassVar
 
 import cv2
 import matplotlib
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.fft import next_fast_len
 from scipy.ndimage import binary_erosion, gaussian_filter, map_coordinates, maximum_filter
 from scipy.optimize import curve_fit, least_squares, minimize

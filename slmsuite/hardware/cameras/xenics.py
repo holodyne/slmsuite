@@ -6,8 +6,8 @@ there for additional documentation.
 """
 
 import ctypes
-from ctypes import Structure, byref, c_char, c_double, c_int, c_long, c_uint, c_ulong, c_ushort
 import time
+from ctypes import Structure, byref, c_char, c_double, c_int, c_long, c_uint, c_ulong, c_ushort
 
 import numpy as np
 

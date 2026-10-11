@@ -19,7 +19,6 @@ Consider loading these files via :meth:`.SLM.load_vendor_phase_correction()`
 """
 
 import ctypes
-import os
 import time
 import warnings
 

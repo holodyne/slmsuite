@@ -18,15 +18,20 @@ Automatic Features:
 - External packages logging: WARNING level and above only
 """
 
-from datetime import datetime
 import importlib
 import json
 import logging
 import os
-from pathlib import Path
 import sys
 import tempfile
 import zlib
+from datetime import datetime
+from pathlib import Path
+
+# Test against this checkout rather than an installed slmsuite.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# Test modules import the simulated-system builders below from this file.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -39,10 +44,6 @@ from slmsuite.hardware.cameraslms import FourierSLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography.algorithms import SpotHologram
 from slmsuite.holography.toolbox import format_2vectors, phase
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-# Test modules import the simulated-system builders below from this file.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Globals
 

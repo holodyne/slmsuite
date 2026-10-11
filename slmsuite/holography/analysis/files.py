@@ -481,8 +481,8 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
     # Check that imageio is there and write the data
     try:
         from imageio import imsave, mimsave
-    except Exception:
-        raise ValueError("imageio is required for save_image().") from None
+    except Exception as e:
+        raise ValueError("imageio is required for save_image().") from e
 
     if images.shape[0] == 1:
         imsave(file_path, images[0], **kwargs)

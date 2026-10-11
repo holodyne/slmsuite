@@ -11,7 +11,7 @@
 <a href="https://slmsuite.holodyne.com/en/latest"><img alt="Documentation Status" src="https://readthedocs.org/projects/slmsuite/badge/?version=latest"></a>
 <a href="https://pypi.org/project/slmsuite/"><img alt="PyPi Package" src="https://img.shields.io/pypi/v/slmsuite"></a>
 <a href="https://github.com/holodyne/slmsuite/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/holodyne/slmsuite?color=purple"></a>
-<a href="https://github.com/psf/black"><img alt="Code style: black" src="https://img.shields.io/badge/code%20style-black-000000.svg"></a>
+<a href="https://github.com/astral-sh/ruff"><img alt="Ruff" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
 </p>
 
 `slmsuite` combines GPU-accelerated beamforming algorithms with optimized hardware control, automated calibration, and user-friendly scripting to enable high-performance programmable optics with modern spatial light modulators.

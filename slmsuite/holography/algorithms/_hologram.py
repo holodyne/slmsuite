@@ -689,7 +689,6 @@ class Hologram(_HologramStats, _Loggable):
 
         See Also
         --------
-        ~~~~~~~~
         :class:`Hologram` for more information about the importance of padding.
 
         Note
@@ -1642,11 +1641,11 @@ class Hologram(_HologramStats, _Loggable):
                 test = cp.arange(10)
                 cp.multiply(test, test, _where=test > 5)
                 where_working = False
-            except Exception:
+            except Exception as e:
                 raise Exception(
                     "MRAF not supported on this system. Arithmetic `where=` is needed. "
                     "See https://github.com/cupy/cupy/pull/7281."
-                ) from None
+                ) from e
 
         return {
             "mraf_enabled": mraf_enabled,

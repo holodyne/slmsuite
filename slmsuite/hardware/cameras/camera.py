@@ -2,11 +2,11 @@
 Abstract camera functionality.
 """
 
-from abc import ABC, abstractmethod
 import logging
 import time
-from typing import ClassVar
 import warnings
+from abc import ABC, abstractmethod
+from typing import ClassVar
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,7 +18,7 @@ from slmsuite.holography import analysis
 from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
-from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.misc.math import INTEGER_TYPES
 from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_array
 
 

@@ -28,9 +28,9 @@ import warnings
 from slmsuite.hardware.cameras.camera import Camera
 
 try:
+    import instrumental.drivers.cameras as instrumental_cameras
     from instrumental import instrument, list_instruments, u
     from instrumental.drivers import ParamSet
-    import instrumental.drivers.cameras as instrumental_cameras
 except ImportError:
     instrument = None
     u = None

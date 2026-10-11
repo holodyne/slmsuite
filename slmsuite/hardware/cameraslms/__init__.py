@@ -4,8 +4,8 @@ Datastructures, methods, and calibrations for an SLM monitored by a camera.
 
 import copy
 import os
-from typing import ClassVar
 import warnings
+from typing import ClassVar
 
 import matplotlib.pyplot as plt
 import numpy as np

@@ -5,6 +5,10 @@ Unit tests for FourierSLM and the calibrations mixed into it.
 import logging
 import os
 
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
 from conftest import (
     SIMULATED_SYSTEM_CASES,
     SIMULATED_SYSTEM_DEFAULTS,
@@ -22,10 +26,6 @@ from conftest import (
     spot_size_ij,
     view_kxy_grid,
 )
-import cv2
-import matplotlib.pyplot as plt
-import numpy as np
-import pytest
 from scipy import ndimage
 
 from slmsuite.hardware.cameras.simulated import SimulatedCamera

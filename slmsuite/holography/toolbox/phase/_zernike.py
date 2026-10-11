@@ -2,13 +2,13 @@
 Zernike polynomials and related functions.
 """
 
-from collections import OrderedDict
 import copy
-from functools import cached_property, lru_cache
 import os
 import threading
 import warnings
 import weakref
+from collections import OrderedDict
+from functools import cached_property, lru_cache
 
 import numpy as np
 

@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import optimize
 
-from slmsuite import __version__, tqdm
+from slmsuite import tqdm
 from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.analysis import (
@@ -13,13 +13,16 @@ from slmsuite.holography.analysis import (
 )
 from slmsuite.holography.analysis.fitfunctions import (
     _sinc2d_centered as sinc2d_centered,
+)
+from slmsuite.holography.analysis.fitfunctions import (
     _sinc2d_centered_jacobian as sinc2d_centered_jacobian,
+)
+from slmsuite.holography.analysis.fitfunctions import (
     _sinc2d_nomod,
     cos,
 )
 from slmsuite.holography.toolbox import format_2vectors, imprint, smallest_distance
 from slmsuite.holography.toolbox.phase import blaze
-from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
 from slmsuite.misc.xp import as_numpy
 
 

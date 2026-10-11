@@ -75,15 +75,15 @@ The client connects to this hardware:
 """
 
 import base64
-from datetime import date, datetime, timedelta
 import json
 import re
 import socket
 import time
 import traceback
-from typing import Any
 import urllib.parse as urllib
 import zlib
+from datetime import date, datetime, timedelta
+from typing import Any
 
 import numpy as np
 
@@ -461,10 +461,10 @@ class _Client(_Picklable):
             t = time.perf_counter()
             pickled = self._com(command="pickle", kwargs={"attributes": False, "metadata": True})
             t = time.perf_counter() - t
-        except Exception:
+        except Exception as e:
             raise RuntimeError(
                 f"Could not connect to '{self.name}' at {self.host}:{self.port}. Options: {hardware}."
-            ) from None
+            ) from e
 
         self.latency_s = t
         self.server_attributes = pickled

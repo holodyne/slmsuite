@@ -3,14 +3,18 @@ import warnings
 
 import cv2
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # Import numpy and scipy dependencies.
 import numpy as np
 import scipy.fft as spfft
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.ndimage import (
     affine_transform as sp_affine_transform,
+)
+from scipy.ndimage import (
     gaussian_filter as sp_gaussian_filter,
+)
+from scipy.ndimage import (
     gaussian_filter1d as sp_gaussian_filter1d,
 )
 
@@ -22,11 +26,15 @@ from slmsuite.misc.xp import as_backend, as_numpy, get_array_module, is_gpu_arra
 # Try to import cupy, but revert to base numpy/scipy upon ImportError.
 try:
     import cupy as cp  # type: ignore[import-not-found]
-    from cupyx import zeros_pinned as cp_zeros_pinned  # type: ignore[import-not-found]
     import cupyx.scipy.fft as cpfft  # type: ignore[import-not-found]
+    from cupyx import zeros_pinned as cp_zeros_pinned  # type: ignore[import-not-found]
     from cupyx.scipy.ndimage import (
         affine_transform as cp_affine_transform,  # type: ignore[import-not-found]
+    )
+    from cupyx.scipy.ndimage import (
         gaussian_filter as cp_gaussian_filter,  # type: ignore[import-not-found]
+    )
+    from cupyx.scipy.ndimage import (
         gaussian_filter1d as cp_gaussian_filter1d,  # type: ignore[import-not-found]
     )
 except ImportError:

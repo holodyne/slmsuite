@@ -4,8 +4,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from PIL import Image
 import pytest
+from PIL import Image
 
 import slmsuite
 from slmsuite import _plotting

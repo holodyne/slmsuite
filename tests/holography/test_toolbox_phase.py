@@ -4,9 +4,9 @@ Unit tests for slmsuite.holography.toolbox.phase module.
 
 import gc
 import threading
-from typing import ClassVar
 import warnings
 import weakref
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -21,12 +21,14 @@ from slmsuite.holography.toolbox.phase import (
     _inverse_cantor_pairing,
     _parse_focal_length,
     _parse_out,
-    _zernike as Z,
     _zernike_build_order,
     _zernike_coefficients,
     _zernike_indices_parse,
     _zernike_populate_basis_map,
     clear_zernike_basis_cache,
+)
+from slmsuite.holography.toolbox.phase import (
+    _zernike as Z,
 )
 from slmsuite.misc.xp import as_numpy
 

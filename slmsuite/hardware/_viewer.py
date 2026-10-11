@@ -74,8 +74,8 @@ def _png(index, palette):
 def _ipython():
     """The running IPython kernel able to host widgets, or ``None``."""
     try:
+        import ipywidgets  # noqa: F401
         from IPython import get_ipython
-        import ipywidgets
     except ImportError:
         return None
     return get_ipython()
@@ -244,7 +244,7 @@ class _Viewable:
 
         if backend == "pyglet":
             try:
-                import pyglet
+                import pyglet  # noqa: F401
             except ImportError:
                 self.logger.warning("pyglet is not installed; falling back to ipython backend.")
                 backend = "ipython"

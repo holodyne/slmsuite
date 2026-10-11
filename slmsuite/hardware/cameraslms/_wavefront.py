@@ -6,9 +6,9 @@ import numpy as np
 from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware.cameraslms._wavefront_superpixel import _WavefrontCalibrationSuperpixel
 from slmsuite.hardware.cameraslms._wavefront_zernike import _WavefrontCalibrationZernike
-from slmsuite.holography import analysis, toolbox
-from slmsuite.holography.toolbox import convert_vector, fit_3pt, format_2vectors
-from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
+from slmsuite.holography import toolbox
+from slmsuite.holography.toolbox import fit_3pt, format_2vectors
+from slmsuite.misc.math import INTEGER_TYPES
 
 
 class _WavefrontCalibration(

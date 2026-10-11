@@ -1626,6 +1626,8 @@ def lloyds_points(grid, n_points, iterations=10, plot=False, seed=None):
         Number of iterations to apply Lloyd's Algorithm.
     plot : int OR bool
         Whether to plot each iteration of the algorithm, at ``1`` and above.
+    seed : int OR numpy.random.Generator OR None
+        Seed for the random initial points; see :func:`numpy.random.default_rng`.
 
     Returns
     -------

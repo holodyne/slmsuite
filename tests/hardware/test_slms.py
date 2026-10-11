@@ -3,19 +3,19 @@ Unit tests for the SLM base class and its subclasses.
 """
 
 import os
-from typing import ClassVar
 import warnings
+from typing import ClassVar
 
-from conftest import driver_classes
 import matplotlib.pyplot as plt
 import numpy as np
-from PIL import Image
 import pytest
+from conftest import driver_classes
+from PIL import Image
 
+import slmsuite.hardware.slms.slm as slm_module
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
 from slmsuite.hardware.slms.segmented import SegmentedSLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
-import slmsuite.hardware.slms.slm as slm_module
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.hardware.slms.texasinstruments import PLM
 from slmsuite.holography.toolbox import Aperture

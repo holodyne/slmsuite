@@ -1,16 +1,15 @@
 import copy
-import warnings
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy import optimize
 from scipy.interpolate import RBFInterpolator
 from scipy.spatial import Delaunay
 
 from slmsuite import tqdm
 from slmsuite._plotting import _slmsuite_plt_show
-from slmsuite.holography import analysis, toolbox
+from slmsuite.holography import analysis
 from slmsuite.holography.algorithms import CompressedSpotHologram
 from slmsuite.holography.toolbox import convert_vector, format_vectors, smallest_distance
 from slmsuite.holography.toolbox.phase import _zernike_indices_parse, zernike, zernike_sum

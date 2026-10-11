@@ -28,7 +28,8 @@ from packaging.version import Version
 try:
     import pyglet
     import pyglet.gl as gl
-    from pyglet.window import Window as __Window, key, mouse
+    from pyglet.window import Window as __Window
+    from pyglet.window import key, mouse
 
     # Helper to get display/canvas depending on pyglet version
     PYGLET_VERSION = Version(getattr(pyglet, "__version__", "0"))

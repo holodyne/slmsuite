@@ -1,10 +1,10 @@
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-import warnings
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from slmsuite._logging import _Loggable
 from slmsuite.hardware._viewer import _Viewable

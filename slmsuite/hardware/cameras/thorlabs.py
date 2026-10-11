@@ -139,14 +139,14 @@ class ThorCam(Camera):
             logger.debug("TLCameraSDK initializing...")
             try:
                 ThorCam.sdk = TLCameraSDK()
-            except Exception:
+            except Exception as e:
                 logger.error("TLCameraSDK initialization failed.")
                 raise RuntimeError(
                     "TLCameraSDK() open failed. "
                     "Is thorlabs_tsi_sdk installed? "
                     "Are the .dlls in the directory added by _configure_tlcam_dll_path? "
                     "Sometimes adding the .dlls to the working directory can help."
-                ) from None
+                ) from e
 
         logger.debug("Looking for cameras...")
         camera_list = ThorCam.sdk.discover_available_cameras()
@@ -218,13 +218,13 @@ class ThorCam(Camera):
         if ThorCam.sdk is None:
             try:
                 ThorCam.sdk = TLCameraSDK()
-            except Exception:
+            except Exception as e:
                 raise RuntimeError(
                     "TLCameraSDK() open failed. "
                     "Is thorlabs_tsi_sdk installed? "
                     "Are the .dlls in the directory added by _configure_tlcam_dll_path? "
                     "Sometimes adding the .dlls to the working directory can help."
-                ) from None
+                ) from e
             close_sdk = True
         else:
             close_sdk = False

@@ -32,10 +32,10 @@ Run with::
 
 import os
 
-from conftest import plot_image_dim
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from conftest import plot_image_dim
 
 from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware.cameras.simulated import SimulatedCamera

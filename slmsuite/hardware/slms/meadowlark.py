@@ -18,12 +18,11 @@ To choose otherwise, pass the path to the desired SDK.
 
 import ctypes
 import ctypes.wintypes
-from enum import IntEnum
 import os
+from enum import IntEnum
 from pathlib import Path
 from platform import system
-from typing import ClassVar, Optional, Union
-import warnings
+from typing import ClassVar
 
 import numpy as np
 

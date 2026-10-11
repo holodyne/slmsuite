@@ -6,39 +6,28 @@ See santec.py.
 """
 
 import ctypes
+import os
 from ctypes import (
     POINTER,
-    byref,
     c_char,
     c_char_p,
-    c_double,
     c_int,
     c_int32,
     c_short,
     c_ubyte,
-    c_uint,
-    c_uint8,
     c_uint32,
     c_ulonglong,
     c_ushort,
     c_void_p,
     c_wchar,
 )
-import os
 
 STRING = c_char_p
 from ctypes.wintypes import (  # noqa: E402
-    BOOL,
-    BOOLEAN,
-    BYTE,
     DWORD,
-    FILETIME,
-    HANDLE,
-    LONG,
     LPCSTR,
     LPCWSTR,
     LPSTR,
-    UINT,
     ULONG,
     WORD,
 )

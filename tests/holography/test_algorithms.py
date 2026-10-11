@@ -5,6 +5,9 @@ Unit tests for slmsuite.holography.algorithms module.
 import logging
 from types import SimpleNamespace
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
 from conftest import (
     ground_truth_kxy_to_ij,
     install_ground_truth_calibration,
@@ -12,9 +15,6 @@ from conftest import (
     spot_size_ij,
     view_kxy_grid,
 )
-import matplotlib.pyplot as plt
-import numpy as np
-import pytest
 from scipy import ndimage
 
 import slmsuite._plotting
@@ -29,9 +29,11 @@ from slmsuite.holography.algorithms import (
 )
 from slmsuite.holography.algorithms._header import (
     ALGORITHM_DEFAULTS,
-    cp as xp,
     cp_affine_transform,
     torch,
+)
+from slmsuite.holography.algorithms._header import (
+    cp as xp,
 )
 from slmsuite.holography.analysis import Affine
 from slmsuite.holography.analysis.files import load_h5

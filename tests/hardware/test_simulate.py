@@ -10,6 +10,8 @@ the geometry assertions be exact rather than approximate.
 
 import warnings
 
+import numpy as np
+import pytest
 from conftest import (
     build_simulated_system,
     in_view_kxy,
@@ -17,8 +19,6 @@ from conftest import (
     seed_for,
     view_kxy_grid,
 )
-import numpy as np
-import pytest
 
 from slmsuite.hardware.cameras.simulated import GaussianDetectorNoise, SimulatedCamera
 from slmsuite.hardware.cameraslms import FourierSLM

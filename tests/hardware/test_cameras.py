@@ -4,9 +4,9 @@ Unit tests for the Camera base class, exercised through SimulatedCamera.
 
 import logging
 
-from conftest import driver_classes
 import numpy as np
 import pytest
+from conftest import driver_classes
 
 from slmsuite.hardware.cameras import camera as camera_module
 from slmsuite.hardware.cameras.camera import Camera
@@ -334,7 +334,7 @@ class TestCamera:
             for averaging, binning in ((1000, (1, 1)), (1, (2, 2)), (4, (2, 2))):
                 dtype = camera.get_dtype(averaging=averaging, binning=binning)
                 largest = (2**camera.bitdepth - 1) * averaging * binning[0] * binning[1]
-                assert dtype is float or np.iinfo(dtype).max >= largest
+                assert np.dtype(dtype).kind == "f" or np.iinfo(dtype).max >= largest
 
         with subtests.test("hdr returns float whatever else is set"):
             assert camera.get_dtype(hdr=2) is float

@@ -3,8 +3,8 @@ Handles pickling of objects.
 """
 
 import datetime
-from typing import ClassVar
 import warnings
+from typing import ClassVar
 
 from slmsuite import __version__
 
