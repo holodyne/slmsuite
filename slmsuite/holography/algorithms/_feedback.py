@@ -119,7 +119,7 @@ class FeedbackHologram(Hologram):
         super().__init__(target=shape, amp=amp, **kwargs)
 
         self._updated_slm = False
-        # (key, matrix) memo; keyed on calibration contents, so recalibration invalidates it.
+        # (key, matrix, cell_ij) memo; keyed on calibration contents, so recalibration invalidates it.
         self._resampler_memo = None
         self.img_ij = None
         self.img_knm = None
@@ -172,33 +172,23 @@ class FeedbackHologram(Hologram):
                 )
 
     # Image transformation helper functions.
-    def _validate_roi(self, roi, src_shape):
+    def _validate_roi(self, roi):
         """
-        Normalize ``roi`` to ``(int, int)`` or ``None``, requiring that the
-        sub-image lies fully inside the camera frame. A sub-image that hangs
-        off the edge has samples no camera frame could supply, and would
-        silently mis-slice :attr:`img_ij` in :meth:`_update_stats`.
+        Normalize ``roi`` to ``(int, int)`` or ``None``. The sub-image is placed in
+        camera coordinates, which may extend past the current frame (a window of
+        interest): only a measurement needs the frame to contain it, and
+        :meth:`_roi_window` checks that.
         """
         if roi is None:
             return None
-
-        (y0, x0) = (int(roi[0]), int(roi[1]))
-        (h, w) = (int(src_shape[0]), int(src_shape[1]))
-        (ch, cw) = (int(self.cameraslm.cam.shape[0]), int(self.cameraslm.cam.shape[1]))
-
-        if y0 < 0 or x0 < 0 or y0 + h > ch or x0 + w > cw:
-            raise ValueError(
-                f"roi {(y0, x0)} with shape {(h, w)} does not fit inside the "
-                f"{(ch, cw)} camera frame."
-            )
-        return (y0, x0)
+        return (int(roi[0]), int(roi[1]))
 
     def _roi_window(self, img_ij):
         """
         The :attr:`target_ij_roi` window of a full camera frame, or the frame
         itself when no ROI is set. Every consumer that compares a measurement
         against :attr:`target_ij` must go through here, so the two stay on the
-        same grid.
+        same grid. Raises ``ValueError`` when the sub-image hangs off the frame.
 
         The result is a view, not a copy; callers that upload it let
         :mod:`cupy` handle the compaction, which still moves only the window.
@@ -208,9 +198,15 @@ class FeedbackHologram(Hologram):
 
         (y0, x0) = self.target_ij_roi
         (h, w) = np.shape(self.target_ij)
-        return img_ij[y0 : y0 + h, x0 : x0 + w]
+        (fh, fw) = np.shape(img_ij)[-2:]
+        if y0 < 0 or x0 < 0 or y0 + h > fh or x0 + w > fw:
+            raise ValueError(
+                f"roi {(y0, x0)} with shape {(h, w)} does not fit inside the "
+                f"{(fh, fw)} camera frame."
+            )
+        return img_ij[..., y0:y0 + h, x0:x0 + w]
 
-    def _ijcam_to_knmslm_resampler(self, src_shape, roi):
+    def _ijcam_to_knmslm_resampler(self, roi):
         """
         Return the (cached) composite ``"knm"`` -> ``"ij"`` transformation for
         this hologram's current geometry, as the augmented ``(2, 3)`` device
@@ -222,11 +218,6 @@ class FeedbackHologram(Hologram):
         call; folding the offset into the matrix keeps the call entirely
         on-device for a bit-identical result.
 
-        ``roi`` is validated here rather than by the caller because this is the
-        single point every resampler is built through. Note that validation
-        runs on every call, cache hit or not: it depends on ``src_shape``,
-        which the transformation does not.
-
         Returns
         -------
         cupy.ndarray
@@ -234,10 +225,10 @@ class FeedbackHologram(Hologram):
         """
         slm = self.cameraslm.slm
         affine = self.cameraslm.fourier_affine
-        roi = self._validate_roi(roi, src_shape)
+        roi = self._validate_roi(roi)
         roi_key = (0, 0) if roi is None else roi
 
-        # `order` and `src_shape` are absent: the geometry depends on neither.
+        # `order` is absent: the geometry does not depend on it.
         key = (
             tuple(np.ravel(self.shape).tolist()),
             tuple(np.ravel(affine.M).tolist()),
@@ -276,7 +267,9 @@ class FeedbackHologram(Hologram):
         b_roi = b_np - np.asarray(roi_key, dtype=float)
 
         matrix = cp.array(np.hstack([M_np, b_roi.reshape(2, 1)]))
-        self._resampler_memo = (key, matrix)
+        # Camera pixels spanned by one knm cell along each camera axis.
+        cell_ij = np.linalg.norm(M_np, axis=1)
+        self._resampler_memo = (key, matrix, cell_ij)
         return matrix
 
     def ijcam_to_knmslm(self, img, out=None, blur_ij=None, order=3, roi=None):
@@ -296,11 +289,17 @@ class FeedbackHologram(Hologram):
         img : numpy.ndarray OR cupy.ndarray
             Image to transform. This should be the same shape as images
             returned by the camera, unless ``roi`` is given (see below).
+            A stack of shape ``(image_count, h, w)`` is transformed image by image,
+            returning ``(image_count,) + shape``.
         out : numpy.ndarray OR cupy.ndarray OR None
             If ``out`` is not ``None``, this array will be used to write the memory in-place.
-        blur_ij : int OR None
-            Applies a ``blur_ij`` pixel-width Gaussian blur to ``img``.
-            If ``None``, defaults to the ``"blur_ij"`` flag if present; otherwise zero.
+        blur_ij : float OR None
+            Applies a Gaussian blur of this standard deviation, in camera pixels, to
+            ``img`` before resampling.
+            If ``None``, defaults to the ``"blur_ij"`` flag if present; otherwise the
+            blur anti-aliases the resampling: where one ``knm`` cell spans more than a
+            camera pixel, the image is low-passed to the cell size along that axis.
+            ``0`` disables blurring, as targets set by :meth:`set_target` do.
             With ``roi``, the blur is applied within the sub-image.
         order : int
             Order of interpolation used for transformation. Defaults to 3 (cubic).
@@ -330,53 +329,56 @@ class FeedbackHologram(Hologram):
         if "fourier" not in self.cameraslm.calibrations:
             raise RuntimeError("ijcam_to_knmslm requires a Fourier calibration.")
 
-        # See if the user wants to blur.
         if blur_ij is None:
-            if "blur_ij" in self.flags:
-                blur_ij = self.flags["blur_ij"]
-            else:
-                blur_ij = 0
-
-        # FUTURE: use cp_gaussian_filter (faster?); was having trouble with cp_gaussian_filter.
-        if blur_ij > 0:
-            # scipy's filter is host-only.
-            img = sp_gaussian_filter(as_numpy(img), (blur_ij, blur_ij), truncate=2)
+            blur_ij = self.flags.get("blur_ij", None)
 
         # The composite transformation is pure geometry, so it is derived once and
         # cached across the repeated calls made by set_target() and measure().
-        matrix = self._ijcam_to_knmslm_resampler(np.shape(img), roi)
+        stacked = np.ndim(img) == 3
+        matrix = self._ijcam_to_knmslm_resampler(roi)
 
         cp_img = cp.array(img, dtype=self.dtype)
         cp.abs(cp_img, out=cp_img)
+        lit = cp.any(cp_img > 0, axis=(-2, -1), keepdims=True)
+
+        # Anti-alias: the extra width that brings a camera pixel up to a knm cell.
+        if blur_ij is None:
+            cell_ij = self._resampler_memo[2]
+            sigma = 0.5 * np.sqrt(np.maximum(np.square(cell_ij) - 1, 0))
+        else:
+            sigma = np.full(2, float(blur_ij))
+        if np.any(sigma > 0):
+            if stacked:
+                sigma = np.concatenate([[0], sigma])
+            cp_img = cp_gaussian_filter(cp_img, sigma, truncate=2)
 
         # Perform affine. `matrix` is augmented, carrying the offset in its
         # last column; passing a separate `offset=` would synchronize. See
-        # _ijcam_to_knmslm_resampler.
+        # _ijcam_to_knmslm_resampler. A stack transforms along its trailing axes.
+        if stacked:
+            matrix = cp.vstack([cp.asarray([[1, 0, 0, 0]], dtype=matrix.dtype),
+                                cp.hstack([cp.zeros((2, 1), dtype=matrix.dtype), matrix])])
         target = cp_affine_transform(
             input=cp_img,
             matrix=matrix,
-            output_shape=self.shape,
+            output_shape=(np.shape(img)[0],) + tuple(self.shape) if stacked else self.shape,
             order=order,
             output=out,
             mode="constant",
             cval=np.nan,
         )
 
-        # Filter the image. FUTURE: fix.
-        # target = cp_gaussian_filter1d(target, blur, axis=0, output=target, truncate=2)
-        # target = cp_gaussian_filter1d(target, blur, axis=1, output=target, truncate=2)
-
         target = cp.abs(target, out=target)
-        norm = Hologram._norm(target)
+        norm = cp.sqrt(cp.nansum(cp.square(target), axis=(-2, -1), keepdims=True))
 
-        # A dark frame has no norm to divide by.
-        if float(norm) == 0:
+        # A dark frame has no norm to divide by; a dark member of a stack stays zero.
+        if float(cp.max(norm)) == 0:
             raise ValueError(
                 "No power in hologram. Either the camera saw no light, or target_ij is "
                 "out of range of knm space; check the beam and the transformations."
             )
 
-        target *= 1 / norm
+        target *= cp.where(lit & (norm > 0), 1 / norm, 0)
 
         return target
 
@@ -538,14 +540,16 @@ class FeedbackHologram(Hologram):
             Region of interest, as the ``(y, x)`` camera pixel that
             ``new_target_ij[0, 0]`` corresponds to. When given,
             ``new_target_ij`` is a sub-image of the camera frame and everything
-            outside it is undefined; see :meth:`ijcam_to_knmslm`. Must lie
-            fully inside the camera frame. Stored as :attr:`target_ij_roi`.
+            outside it is undefined; see :meth:`ijcam_to_knmslm`. Stored as
+            :attr:`target_ij_roi`.
         """
         self.target_ij = new_target_ij.astype(self.dtype)
         # Normalize roi once here; ijcam_to_knmslm validates it again.
-        self.target_ij_roi = self._validate_roi(roi, np.shape(new_target_ij))
-        # Transformation order of zero to prevent nan-blurring in MRAF cases.
-        self.ijcam_to_knmslm(new_target_ij, out=self.target, order=0, roi=self.target_ij_roi)
+        self.target_ij_roi = self._validate_roi(roi)
+        # Order zero and no blur, so NaN does not spread in MRAF cases.
+        self.ijcam_to_knmslm(
+            new_target_ij, out=self.target, blur_ij=0, order=0, roi=self.target_ij_roi
+        )
 
         # Set the null region.
         undefined = cp.isnan(self.target)

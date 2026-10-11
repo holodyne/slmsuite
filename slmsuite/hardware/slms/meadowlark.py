@@ -187,7 +187,7 @@ class Meadowlark(SLM):
         # Meadowlark._slm_lib[self.sdk_mode].SetPreRampSlope(20) # default is 7
         # Meadowlark._slm_lib[self.sdk_mode].SetPostRampSlope(24) # default is 24
 
-        # If using a legacy 512x512, the 'true frames' need to be set
+        # If using a legacy 512x512, the 'true frames' need to be set.
         if self.sdk_mode == _SDK_MODE.PCIE_LEGACY:
             Meadowlark._slm_lib[self.sdk_mode].Set_true_frames(ctypes.c_int(3))
 
@@ -215,9 +215,9 @@ class Meadowlark(SLM):
         )
 
         if self.bitdepth > 8:
-            logger.warning(
-                "Bitdepth of %s > 8 detected; this has not been tested and might fail.",
-                self.bitdepth,
+            self.logger.warning(
+                f"Bitdepth of {self.bitdepth} > 8 detected; "
+                "this has not been tested and might fail.",
                 stacklevel=2,
             )
 
@@ -585,7 +585,7 @@ class Meadowlark(SLM):
                 Meadowlark._slm_lib[self.sdk_mode].SetOutputPulse(slm_number, ctypes.c_bool(on))
             elif self.sdk_mode == _SDK_MODE.PCIE_MODERN_6:
                 if on_refresh is not None:
-                    logger.warning(
+                    self.logger.warning(
                         "on_refresh argument is ignored for this SDK version.",
                         stacklevel=2,
                     )

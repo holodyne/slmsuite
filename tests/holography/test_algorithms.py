@@ -1508,6 +1508,76 @@ class TestMultiplaneHologram:
             MultiplaneHologram(_multiplane(n=2).holograms, weights=weights)
             np.testing.assert_array_equal(weights, [1.0, 3.0])
 
+    def test_batch(self, subtests):
+        """Each of `batch` groups optimizes as its own multiplane hologram."""
+        amp = np.ones((64, 64), dtype=np.float32) / 64
+        spots = [[(12, 12), (20, 44)], [(44, 20), (30, 30)]]
+
+        def children(group):
+            return [Hologram(target=_spot_target((64, 64), spot), amp=amp) for spot in group]
+
+        kids = children(spots[0]) + children(spots[1])
+        first = _np(kids[2].phase).copy()
+        mph = MultiplaneHologram(kids, batch=2)
+
+        with subtests.test("a batch that does not divide the children raises"):
+            with pytest.raises(ValueError, match="divide"):
+                MultiplaneHologram(children(spots[0] + spots[1][:1]), batch=2)
+
+        with subtests.test("each group starts from its first child's phase"):
+            assert mph.phase.shape == (2, 64, 64)
+            np.testing.assert_array_equal(_np(mph.phase[1]), first)
+
+        with subtests.test("each child shares its group's phase"):
+            assert kids[1].phase.base is mph.phase and kids[3].phase.base is mph.phase
+            mph.reset()
+            np.testing.assert_array_equal(_np(kids[3].phase), _np(mph.phase[1]))
+            assert mph.nearfield.shape == (2, 64, 64)
+
+        with subtests.test("each group matches a separately built multiplane hologram"):
+            separate = [MultiplaneHologram(children(group)) for group in spots]
+            for (m, phase) in zip(separate, mph.phase):
+                m.reset_phase(custom_phase=phase)
+            for m in [mph] + separate:
+                m.optimize(method="GS", maxiter=5, verbose=False)
+            for (m, phase) in zip(separate, mph.phase):
+                np.testing.assert_allclose(_np(phase), _np(m.phase), atol=1e-4)
+
+        with subtests.test("paths that pool the groups raise"):
+            for call in (mph.get_farfield, lambda: mph._cg_loss(None),
+                         lambda: mph.reset_phase(quadratic_phase=True)):
+                with pytest.raises(NotImplementedError):
+                    call()
+
+    def test_set_targets(self, subtests):
+        """`set_targets` gives each child the target its own `set_target` would."""
+        rng = np.random.default_rng(3)
+        cameraslm = _StubCameraSLM(TestFeedbackHologram.CAM_SHAPE)
+        shape = TestFeedbackHologram.SHAPE
+        frames = rng.random((2,) + TestFeedbackHologram.CAM_SHAPE)
+        kids = [FeedbackHologram(shape, target_ij=frame, cameraslm=cameraslm) for frame in frames]
+        expected = [_np(h.target).copy() for h in kids]
+
+        mph = MultiplaneHologram(kids)
+        mph.set_targets(frames[::-1])
+
+        with subtests.test("each child's target matches its own set_target"):
+            np.testing.assert_allclose(_np(kids[0].target), expected[1], atol=1e-6)
+            np.testing.assert_allclose(_np(kids[1].target), expected[0], atol=1e-6)
+
+        with subtests.test("target_ij is a copy in the hologram dtype"):
+            assert kids[0].target_ij.dtype == kids[0].dtype
+            assert not np.shares_memory(_np(kids[0].target_ij), frames)
+
+        with subtests.test("children of different shapes raise"):
+            odd = MultiplaneHologram([
+                FeedbackHologram(shape, target_ij=frames[0], cameraslm=cameraslm),
+                FeedbackHologram((16, 16), target_ij=frames[0], cameraslm=cameraslm,
+                                 slm_shape=shape),
+            ])
+            with pytest.raises(ValueError, match="one shape"):
+                odd.set_targets(frames)
+
     def test_remove_vortices(self, subtests):
         """The meta hologram removes each child's vortices, as the child itself would."""
         (yy, xx) = np.mgrid[:64, :64]
@@ -1795,7 +1865,7 @@ class TestMultiplaneHologram:
         ids=["unpadded", "padded", "odd-pad"],
     )
     @pytest.mark.gpu
-    def test_farfield2nearfield_batched(self, shape, slm_shape, monkeypatch):
+    def test_farfield2nearfield_batched(self, shape, slm_shape):
         """The batched path fuses the propagation kernel into the nearfield build, so
         only non-trivial kernels against `Hologram._build_nearfield` can pin it."""
         rng = np.random.default_rng(5)
@@ -1809,9 +1879,8 @@ class TestMultiplaneHologram:
         amp /= np.sqrt(np.sum(amp**2))
 
         def run(force_unbatched):
-            if force_unbatched:
-                monkeypatch.setattr(MultiplaneHologram, "_can_batch", lambda self: False)
             mph = _multiplane(shape, slm_shape, n=3, amp=amp)
+            mph._batched = mph._batched and not force_unbatched
             mph.set_propagation_kernels(stack)
             mph.reset_phase(random_phase=0)
             mph.optimize(method="GS", maxiter=6, verbose=False)
@@ -1961,32 +2030,9 @@ class TestFeedbackHologram:
             h.set_target(canvas, null_region=null_region, null_region_radius_frac=0.5)
             assert not np.any(_np(null_region))
 
-    def test_validate_roi(self, subtests):
-        """A sub-image hanging off the frame has samples no camera could supply. The check
-        lives at the `_ijcam_to_knmslm_resampler` choke point, so every entry point sees it."""
-        (canvas, patch) = self._canvas_and_patch()
-        h = FeedbackHologram(self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE))
-
-        for roi in [(-1, 0), (0, -1), (52, 34), (24, 72)]:
-            with subtests.test(f"the constructor rejects {roi}"):
-                with pytest.raises(ValueError, match="camera frame"):
-                    FeedbackHologram(
-                        self.SHAPE,
-                        target_ij=patch,
-                        target_ij_roi=roi,
-                        cameraslm=_StubCameraSLM(self.CAM_SHAPE),
-                    )
-
-            with subtests.test(f"set_target rejects {roi}"):
-                with pytest.raises(ValueError, match="camera frame"):
-                    h.set_target(patch, roi=roi)
-
-            with subtests.test(f"ijcam_to_knmslm rejects {roi}"):
-                with pytest.raises(ValueError, match="camera frame"):
-                    h.ijcam_to_knmslm(patch, order=0, roi=roi)
-
     def test_roi_window(self, subtests):
-        """The window is the roi sub-image of a full frame, or the frame itself."""
+        """The window is the roi sub-image of a full frame, or the frame itself; a
+        sub-image hanging off the frame raises."""
         (full, sub, canvas, patch) = self._pair()
         frame = np.nan_to_num(canvas, nan=0.0).astype(np.float32)
 
@@ -1995,6 +2041,45 @@ class TestFeedbackHologram:
 
         with subtests.test("a roi cuts out exactly the sub-image"):
             assert np.array_equal(_np(sub._roi_window(frame)), patch)
+
+        for roi in [(-1, 0), (0, -1), (52, 34), (24, 72)]:
+            with subtests.test(f"a roi of {roi} off the frame raises"):
+                sub.target_ij_roi = roi
+                with pytest.raises(ValueError, match="camera frame"):
+                    sub._roi_window(frame)
+
+    def test_anti_alias(self, subtests):
+        """Camera images are low-passed to the knm cell size; targets are not blurred."""
+        (canvas, _) = self._canvas_and_patch()
+        frame = np.nan_to_num(canvas, nan=0.0)
+        canvas[26] = np.nan     # An undefined row through the knm footprint.
+        h = FeedbackHologram((8, 8), target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE))
+        assert np.all(h._resampler_memo[2] > 1), "expected knm cells wider than a camera pixel"
+
+        with subtests.test("a camera image is blurred by default"):
+            assert not np.allclose(_np(h.ijcam_to_knmslm(frame)),
+                                   _np(h.ijcam_to_knmslm(frame, blur_ij=0)))
+
+        with subtests.test("a target keeps the undefined region of an unblurred transform"):
+            unblurred = _np(h.ijcam_to_knmslm(canvas, blur_ij=0, order=0))
+            np.testing.assert_array_equal(np.isnan(_np(h.target)), np.isnan(unblurred))
+
+    def test_ijcam_to_knmslm_stack(self, subtests):
+        """A stack transforms image by image, and a dark member stays dark."""
+        (full, _, canvas, _) = self._pair()
+        frame = np.nan_to_num(canvas, nan=0.0)
+        stack = np.stack([frame, np.zeros_like(frame), frame[::-1, ::-1]])
+
+        for order in (0, 3):
+            result = _np(full.ijcam_to_knmslm(stack, order=order))
+
+            with subtests.test(f"each member matches its single-image transform at order {order}"):
+                for i in (0, 2):
+                    single = _np(full.ijcam_to_knmslm(stack[i], order=order))
+                    np.testing.assert_allclose(result[i], single, atol=1e-5)
+
+            with subtests.test(f"a dark member stays zero at order {order}"):
+                assert not np.any(result[1])
 
     def test_ijcam_to_knmslm(self, subtests):
         """The roi may only ever drop samples relative to the canvas, never invent them,
@@ -2031,7 +2116,7 @@ class TestFeedbackHologram:
         canvas = np.nan_to_num(canvas, nan=0.0)  # affine_transform cannot blur NaNs.
         h = FeedbackHologram(self.SHAPE, target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE))
 
-        matrix = h._ijcam_to_knmslm_resampler(np.shape(canvas), None)
+        matrix = h._ijcam_to_knmslm_resampler(None)
         assert matrix.shape == (2, 3)
 
         reference = cp_affine_transform(

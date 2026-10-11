@@ -129,9 +129,9 @@ class _PixelBuffer:
 
     Important
     ~~~~~~~~~
-    Construction and :meth:`release` require the ``OpenGL`` context, so they must run on the
-    window thread. :meth:`map` and :meth:`unmap` must instead run on the thread that writes
-    the data, which must hold the ``CUDA`` primary context.
+    Every method needs the window's ``OpenGL`` context current (``cuGraphicsMapResources``
+    included), so all of them run on the window thread; :meth:`map` also makes sure the
+    ``CUDA`` primary context is current there.
     """
 
     def __init__(self, shape, device):
@@ -184,7 +184,7 @@ class _PixelBuffer:
                 f"Frame is registered to device {self.device}, but cupy is on device {device}."
             )
 
-        # Registering happened on the window thread, so this one may hold no context yet.
+        # The window thread may hold no CUDA context before its first write.
         current = ctypes.c_void_p()
         _cu("cuCtxGetCurrent", ctypes.byref(current))
         if not current.value:
@@ -437,9 +437,9 @@ class _Window(__Window):
 
     Important
     ~~~~~~~~~
-    All methods on this class except :meth:`info`, :meth:`acquire` and :meth:`commit` must
-    be called from the thread that created the window. Use :class:`_WindowThread` to ensure
-    thread affinity.
+    All methods on this class except :meth:`info` must be called from the thread that
+    created the window (``acquire`` included: mapping the interop buffer needs its
+    ``OpenGL`` context). Use :class:`_WindowThread` to ensure thread affinity.
 
     Attributes
     ----------

@@ -514,9 +514,8 @@ class Hologram(_HologramStats, _Loggable):
         # Reset complex looping variables. Reuse the existing buffers when able.
         # (Note: reset() also runs from __init__, before these first exist.)
         self.nearfield = Hologram._fill_zeros(
-            getattr(self, "nearfield", None), self.shape, self.dtype_complex
-        )
-        if self.target is not None:
+            getattr(self, "nearfield", None), self.phase.shape[:-2] + tuple(self.shape), self.dtype_complex)
+        if not self.target is None:
             self.farfield = Hologram._fill_zeros(
                 getattr(self, "farfield", None), self.target.shape, self.dtype_complex
             )
@@ -582,10 +581,10 @@ class Hologram(_HologramStats, _Loggable):
         )
 
     def _get_random_phase(self):
-        if cp == np:  # numpy does not support `dtype=`
-            return np.random.uniform(-np.pi, np.pi, self.slm_shape).astype(self.dtype)
+        if cp == np:        # numpy does not support `dtype=`
+            return np.random.uniform(-np.pi, np.pi, self.phase.shape).astype(self.dtype)
         else:
-            return cp.random.uniform(-np.pi, np.pi, self.slm_shape, dtype=self.dtype)
+            return cp.random.uniform(-np.pi, np.pi, self.phase.shape, dtype=self.dtype)
 
     def reset_phase(self, custom_phase=None, random_phase=None, quadratic_phase=None):
         r"""
@@ -628,10 +627,8 @@ class Hologram(_HologramStats, _Loggable):
                 custom_phase, dtype=self.dtype, copy=(False if np.__version__[0] == "1" else None)
             )
 
-            if not np.all(np.array(self.slm_shape) == np.array(custom_phase.shape)):
-                raise ValueError(
-                    f"Reset phase of shape {custom_phase.shape} is not of slm_shape {self.slm_shape}"
-                )
+            if custom_phase.shape != self.phase.shape:
+                raise ValueError(f"Reset phase of shape {custom_phase.shape} is not of shape {self.phase.shape}")
 
             cp.copyto(self.phase, custom_phase)
         else:
@@ -1100,8 +1097,8 @@ class Hologram(_HologramStats, _Loggable):
         (i0, i1, i2, i3) = self._unpad_slice
 
         self.phase = cp.arctan2(
-            self.nearfield.imag[i0:i1, i2:i3],
-            self.nearfield.real[i0:i1, i2:i3],
+            self.nearfield.imag[..., i0:i1, i2:i3],
+            self.nearfield.real[..., i0:i1, i2:i3],
             out=self.phase,
         )
         if self.propagation_kernel is not None:

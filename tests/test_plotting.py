@@ -112,6 +112,17 @@ def test_configure_plotting(tmp_path, restore_handler, subtests):
         with pytest.raises(ValueError, match="Unknown mode"):
             slmsuite.configure_plotting(mode="bogus")
 
+    with subtests.test("returns the previous handler, which mode= takes back"):
+        slmsuite.configure_plotting(mode="show")
+        handler = lambda name=None, **kwargs: None
+        assert slmsuite.configure_plotting(mode=handler) is None
+        previous = slmsuite.configure_plotting(mode="suppress")
+        assert previous is handler
+        slmsuite.configure_plotting(mode=previous)
+        assert _plotting._current_handler is handler
+        slmsuite.configure_plotting(mode=None)
+        assert _plotting._current_handler is None
+
 
 def test_slmsuite_plt_show(restore_handler, monkeypatch, subtests):
     """Test _slmsuite_plt_show() routing to the active plot handler."""
