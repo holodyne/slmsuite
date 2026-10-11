@@ -108,6 +108,11 @@ class TestLoggable:
             dup_b = _Device(name="dup_init")
             assert dup_a._log_index == 1 and dup_b._log_index == 2
 
+        with subtests.test("log_uid is unique per instance and tags its records"):
+            a, b = _Device(name="uid_init"), _Device(name="uid_init")
+            assert isinstance(a.log_uid, int) and a.log_uid != b.log_uid
+            assert a.logger.extra["log_uid"] == a.log_uid
+
     def test_get_log(self, subtests, capsys):
         """Test _Loggable.get_log() instance-scoped record retrieval."""
         with subtests.test("returns this instance's own records"):

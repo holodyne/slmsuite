@@ -287,9 +287,10 @@ class ScreenMirrored(SLM):
         Writes phase data from `display` to the screen via the window's
         dedicated thread.
 
-        The expansion to RGBA happens on the main thread, then the ``OpenGL`` render is
-        submitted to the window thread. By default the main thread blocks until rendering
-        is complete.
+        The expansion to RGBA and the ``OpenGL`` render both run on the window thread,
+        which is the only thread holding the ``OpenGL`` context that mapping the frame
+        needs, so this may be called from any thread. By default the caller blocks until
+        rendering is complete.
 
         Parameters
         ----------
@@ -308,13 +309,23 @@ class ScreenMirrored(SLM):
         if not execute:
             return
 
-        frame = self.window.acquire()
-        try:
-            self._pack(display, frame)
-        finally:
-            self.window.commit()
+        # The window thread packs on its own stream, so wait for the caller's writes first.
+        ready = None
+        if cp is not None and isinstance(display, cp.ndarray):
+            ready = cp.cuda.Event()
+            ready.record()
 
-        self._window_thread_future = self._window_thread.submit(self.window.render)
+        def write():
+            if ready is not None:
+                ready.synchronize()
+            frame = self.window.acquire()
+            try:
+                self._pack(display, frame)
+            finally:
+                self.window.commit()
+            self.window.render()
+
+        self._window_thread_future = self._window_thread.submit(write)
 
         if block:
             self._wait()

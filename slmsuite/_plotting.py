@@ -34,10 +34,10 @@ def configure_plotting(
 
     Parameters
     ----------
-    mode : str or callable
+    mode : str or callable or None
         One of:
 
-        ``"show"``
+        ``"show"`` or ``None``
             Pass through to ``plt.show()`` (default).
         ``"suppress"``
             Close all figures silently.
@@ -63,7 +63,16 @@ def configure_plotting(
         Extra keyword arguments forwarded to ``Figure.savefig`` in ``"save"``
         mode, merged over the defaults ``{"dpi": 150, "bbox_inches": "tight"}``
         (user keys take precedence).  Ignored for other modes.
+
+    Returns
+    -------
+    callable or None
+        The handler that was active before this call, or ``None`` if plots were shown.
+        Pass it back as ``mode`` to restore the previous configuration.
     """
+    global _current_handler
+    previous = _current_handler
+
     import matplotlib
     if headless:
         try:
@@ -72,11 +81,10 @@ def configure_plotting(
         except Exception:
             matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
-    global _current_handler
 
     if headless:
         plt.ioff()
-    if mode == "show":
+    if mode == "show" or mode is None:
         _current_handler = None
 
     elif mode == "suppress":
@@ -110,3 +118,5 @@ def configure_plotting(
 
     else:
         raise ValueError(f"Unknown mode: {mode!r}")
+
+    return previous

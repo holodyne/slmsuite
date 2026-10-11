@@ -84,9 +84,10 @@ Package
 
 .. py:module:: slmsuite
 
-|slmsuite|_ reports its progress through the standard :mod:`logging` module and shows
-plots through :mod:`matplotlib`. Package-wide settings for both are provided at the
-top level:
+|slmsuite|_ reports its progress through the standard :mod:`logging` module and
+:mod:`tqdm` bars, and shows plots through :mod:`matplotlib`. Package-wide settings for
+all three are provided at the top level, including hooks that route progress and plots to
+a program instead of the terminal:
 
 .. currentmodule:: slmsuite
 .. autosummary::
@@ -96,6 +97,8 @@ top level:
    get_log
    make_logger
    configure_plotting
+   progress_to
+   ProgressCancelled
 
 With :mod:`cupy` installed, holograms and SLMs (unless ``gpu=False``) keep their arrays
 on the GPU; camera frames are returned in host memory unless requested with
