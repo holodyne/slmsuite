@@ -1,4 +1,5 @@
 """Tests for :mod:`slmsuite._progress`: the ``tqdm`` stand-in and :func:`progress_bar`."""
+
 import threading
 
 import pytest
@@ -25,7 +26,13 @@ def test_tqdm(subtests):
         events = []
         with progress_bar(lambda event: events.append(event) or False):
             assert list(slmsuite.tqdm(range(3), desc="settling")) == [0, 1, 2]
-        assert [event["kind"] for event in events] == ["start", "update", "update", "update", "close"]
+        assert [event["kind"] for event in events] == [
+            "start",
+            "update",
+            "update",
+            "update",
+            "close",
+        ]
         assert events[0]["desc"] == "settling"
         assert events[1]["total"] == 3
         assert events[-2]["n"] == 3
@@ -44,17 +51,16 @@ def test_tqdm(subtests):
         seen = []
         with progress_bar(lambda event: event["kind"] == "update" and event["n"] >= 2):
             with pytest.raises(KeyboardInterrupt):
-                for value in slmsuite.tqdm(range(100), desc="long"):
-                    seen.append(value)
+                seen.extend(slmsuite.tqdm(range(100), desc="long"))
         assert seen == [0, 1]
 
     with subtests.test("a loop left by break or an exception still reports a close"):
         events = []
         with progress_bar(lambda event: events.append(event) or False):
-            for value in slmsuite.tqdm(range(5)):
+            for _ in slmsuite.tqdm(range(5)):
                 break
             with pytest.raises(RuntimeError):
-                for value in slmsuite.tqdm(range(5)):
+                for _ in slmsuite.tqdm(range(5)):
                     raise RuntimeError
         assert [event["kind"] for event in events] == ["start", "close"] * 2
 

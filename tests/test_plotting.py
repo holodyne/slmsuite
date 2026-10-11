@@ -114,7 +114,10 @@ def test_configure_plotting(tmp_path, restore_handler, subtests):
 
     with subtests.test("returns the previous handler, which mode= takes back"):
         slmsuite.configure_plotting(mode="show")
-        handler = lambda name=None, **kwargs: None
+
+        def handler(name=None, **kwargs):
+            return None
+
         assert slmsuite.configure_plotting(mode=handler) is None
         previous = slmsuite.configure_plotting(mode="suppress")
         assert previous is handler

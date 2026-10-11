@@ -1465,9 +1465,7 @@ class SpotHologram(_AbstractSpotHologram):
         # Parse null_region after __init__
         if basis == "ij" and null_region is not None:
             # Order zero and no blur, so the null region does not dilate.
-            self.null_region_knm = (
-                self.ijcam_to_knmslm(null_region, blur_ij=0, order=0) != 0
-            )
+            self.null_region_knm = self.ijcam_to_knmslm(null_region, blur_ij=0, order=0) != 0
 
         # If we have an input for null_region_radius_frac, then force the null region to
         # exclude higher order k-vectors according to the desired exclusion fraction.

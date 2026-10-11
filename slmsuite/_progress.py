@@ -7,12 +7,13 @@ take each step as data: :func:`progress_bar` routes the steps on its thread to a
 and a truthy return raises :class:`KeyboardInterrupt` inside the loop. Other threads keep
 their bars.
 """
+
 import contextlib
 import os
 import threading
 
 if os.environ.get("SLMSUITE_TQDM_ASCII", "").lower() not in ("", "0"):
-    from tqdm import tqdm as _tqdm         # Plain-text bars, e.g. for docs-ready notebooks.
+    from tqdm import tqdm as _tqdm  # Plain-text bars, e.g. for docs-ready notebooks.
 else:
     from tqdm.auto import tqdm as _tqdm
 

@@ -1536,16 +1536,19 @@ class TestMultiplaneHologram:
 
         with subtests.test("each group matches a separately built multiplane hologram"):
             separate = [MultiplaneHologram(children(group)) for group in spots]
-            for (m, phase) in zip(separate, mph.phase):
+            for m, phase in zip(separate, mph.phase):
                 m.reset_phase(custom_phase=phase)
-            for m in [mph] + separate:
+            for m in [mph, *separate]:
                 m.optimize(method="GS", maxiter=5, verbose=False)
-            for (m, phase) in zip(separate, mph.phase):
+            for m, phase in zip(separate, mph.phase):
                 np.testing.assert_allclose(_np(phase), _np(m.phase), atol=1e-4)
 
         with subtests.test("paths that pool the groups raise"):
-            for call in (mph.get_farfield, lambda: mph._cg_loss(None),
-                         lambda: mph.reset_phase(quadratic_phase=True)):
+            for call in (
+                mph.get_farfield,
+                lambda: mph._cg_loss(None),
+                lambda: mph.reset_phase(quadratic_phase=True),
+            ):
                 with pytest.raises(NotImplementedError):
                     call()
 
@@ -1554,7 +1557,7 @@ class TestMultiplaneHologram:
         rng = np.random.default_rng(3)
         cameraslm = _StubCameraSLM(TestFeedbackHologram.CAM_SHAPE)
         shape = TestFeedbackHologram.SHAPE
-        frames = rng.random((2,) + TestFeedbackHologram.CAM_SHAPE)
+        frames = rng.random((2, *TestFeedbackHologram.CAM_SHAPE))
         kids = [FeedbackHologram(shape, target_ij=frame, cameraslm=cameraslm) for frame in frames]
         expected = [_np(h.target).copy() for h in kids]
 
@@ -1570,11 +1573,14 @@ class TestMultiplaneHologram:
             assert not np.shares_memory(_np(kids[0].target_ij), frames)
 
         with subtests.test("children of different shapes raise"):
-            odd = MultiplaneHologram([
-                FeedbackHologram(shape, target_ij=frames[0], cameraslm=cameraslm),
-                FeedbackHologram((16, 16), target_ij=frames[0], cameraslm=cameraslm,
-                                 slm_shape=shape),
-            ])
+            odd = MultiplaneHologram(
+                [
+                    FeedbackHologram(shape, target_ij=frames[0], cameraslm=cameraslm),
+                    FeedbackHologram(
+                        (16, 16), target_ij=frames[0], cameraslm=cameraslm, slm_shape=shape
+                    ),
+                ]
+            )
             with pytest.raises(ValueError, match="one shape"):
                 odd.set_targets(frames)
 
@@ -2052,13 +2058,14 @@ class TestFeedbackHologram:
         """Camera images are low-passed to the knm cell size; targets are not blurred."""
         (canvas, _) = self._canvas_and_patch()
         frame = np.nan_to_num(canvas, nan=0.0)
-        canvas[26] = np.nan     # An undefined row through the knm footprint.
+        canvas[26] = np.nan  # An undefined row through the knm footprint.
         h = FeedbackHologram((8, 8), target_ij=canvas, cameraslm=_StubCameraSLM(self.CAM_SHAPE))
         assert np.all(h._resampler_memo[2] > 1), "expected knm cells wider than a camera pixel"
 
         with subtests.test("a camera image is blurred by default"):
-            assert not np.allclose(_np(h.ijcam_to_knmslm(frame)),
-                                   _np(h.ijcam_to_knmslm(frame, blur_ij=0)))
+            assert not np.allclose(
+                _np(h.ijcam_to_knmslm(frame)), _np(h.ijcam_to_knmslm(frame, blur_ij=0))
+            )
 
         with subtests.test("a target keeps the undefined region of an unblurred transform"):
             unblurred = _np(h.ijcam_to_knmslm(canvas, blur_ij=0, order=0))

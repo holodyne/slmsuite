@@ -95,9 +95,9 @@ class MultiplaneHologram(Hologram):
 
         if self.batch > 1:
             self.phase = cp.stack(
-                [cp.asarray(h.phase, dtype=self.dtype) for h in holograms[::self._per_batch]]
+                [cp.asarray(h.phase, dtype=self.dtype) for h in holograms[:: self._per_batch]]
             )
-            self.nearfield = cp.zeros((self.batch,) + tuple(self.shape), dtype=self.dtype_complex)
+            self.nearfield = cp.zeros((self.batch, *self.shape), dtype=self.dtype_complex)
 
         # Force all the child holograms to point to the same data: their group's phase.
         for i, h in enumerate(self.holograms):
@@ -113,11 +113,16 @@ class MultiplaneHologram(Hologram):
 
         # Batched-FFT fast path, when the children share shape, dtype, and default transforms.
         h0 = self.holograms[0]
-        self._batched = cp is not np and len(self.holograms) > 1 and all(
-            (tuple(h.shape), tuple(h.slm_shape), h.dtype) == (tuple(h0.shape), tuple(h0.slm_shape), h0.dtype)
-            and type(h)._nearfield2farfield is Hologram._nearfield2farfield
-            and type(h)._farfield2nearfield is Hologram._farfield2nearfield
-            for h in self.holograms
+        self._batched = (
+            cp is not np
+            and len(self.holograms) > 1
+            and all(
+                (tuple(h.shape), tuple(h.slm_shape), h.dtype)
+                == (tuple(h0.shape), tuple(h0.slm_shape), h0.dtype)
+                and type(h)._nearfield2farfield is Hologram._nearfield2farfield
+                and type(h)._farfield2nearfield is Hologram._farfield2nearfield
+                for h in self.holograms
+            )
         )
         if self._batched:
             self._batched_setup()
@@ -229,11 +234,11 @@ class MultiplaneHologram(Hologram):
         """
         h0 = self.holograms[0]
         slm_shape = tuple(h0.slm_shape)
-        target_shape = (self.batch, self._per_batch) + slm_shape
+        target_shape = (self.batch, self._per_batch, *slm_shape)
 
         kernels = cp.ascontiguousarray(
             cp.broadcast_to(cp.asarray(kernels, dtype=h0.dtype), target_shape)
-        ).reshape((len(self.holograms),) + slm_shape)
+        ).reshape((len(self.holograms), *slm_shape))
 
         for i, h in enumerate(self.holograms):
             h.propagation_kernel = kernels[i]
@@ -462,7 +467,9 @@ class MultiplaneHologram(Hologram):
 
     def get_farfield(self, *args, **kwargs):
         if self.batch > 1:
-            raise NotImplementedError("get_farfield() is not supported with batch > 1; use a child.")
+            raise NotImplementedError(
+                "get_farfield() is not supported with batch > 1; use a child."
+            )
         return super().get_farfield(*args, **kwargs)
 
     def set_target(self, *args, **kwargs):
@@ -493,8 +500,10 @@ class MultiplaneHologram(Hologram):
                 f"got {np.shape(targets_ij)[0]}."
             )
         h0 = self.holograms[0]
-        if any(tuple(h.shape) != tuple(h0.shape) or getattr(h, "cameraslm", None) is not h0.cameraslm
-               for h in self.holograms):
+        if any(
+            tuple(h.shape) != tuple(h0.shape) or getattr(h, "cameraslm", None) is not h0.cameraslm
+            for h in self.holograms
+        ):
             raise ValueError("set_targets() requires children of one shape sharing one cameraslm.")
         targets = h0.ijcam_to_knmslm(targets_ij, blur_ij=0, order=0, roi=roi)
         roi = h0._validate_roi(roi)
@@ -547,9 +556,7 @@ class MultiplaneHologram(Hologram):
                 nearfield += w * h.nearfield[i0:i1, i2:i3]
             else:
                 # Remove the propagation kernel if necessary.
-                nearfield += (
-                    w * h.nearfield[i0:i1, i2:i3] * cp.exp(-1j * h.propagation_kernel)
-                )
+                nearfield += w * h.nearfield[i0:i1, i2:i3] * cp.exp(-1j * h.propagation_kernel)
             h.iter = self.iter
 
         # Get meta self phase.
@@ -591,9 +598,9 @@ class MultiplaneHologram(Hologram):
         grouped = (self.batch, -1)
         _nearfield_build(
             self.amp if np.ndim(self.amp) == 0 else self.amp[None, None, :, :],
-            self.phase.reshape((self.batch, 1) + tuple(h0.slm_shape)),
+            self.phase.reshape((self.batch, 1, *h0.slm_shape)),
             self._batched_kernel_phasor.reshape(grouped + tuple(h0.slm_shape)),
-            self._batched_nearfield[:, i0:i1, i2:i3].reshape(grouped + (i1 - i0, i3 - i2))
+            self._batched_nearfield[:, i0:i1, i2:i3].reshape((*grouped, i1 - i0, i3 - i2)),
         )
 
         # One batched FFT2 over the trailing axes.
@@ -650,7 +657,9 @@ class MultiplaneHologram(Hologram):
         if self.batch == 1:
             cp.sum(weighted, axis=0, out=self.nearfield)
         else:
-            cp.sum(weighted.reshape((self.batch, -1) + weighted.shape[1:]), axis=1, out=self.nearfield)
+            cp.sum(
+                weighted.reshape((self.batch, -1, *weighted.shape[1:])), axis=1, out=self.nearfield
+            )
 
         # Extract meta self.phase from self.nearfield.
         self._nearfield_extract()

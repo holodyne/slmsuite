@@ -1,6 +1,6 @@
 from slmsuite.holography.algorithms._header import *
 from slmsuite.holography.algorithms._hologram import Hologram
-from slmsuite.misc.xp import as_numpy, get_array_module, is_gpu_array
+from slmsuite.misc.xp import get_array_module, is_gpu_array
 
 
 class FeedbackHologram(Hologram):
@@ -204,7 +204,7 @@ class FeedbackHologram(Hologram):
                 f"roi {(y0, x0)} with shape {(h, w)} does not fit inside the "
                 f"{(fh, fw)} camera frame."
             )
-        return img_ij[..., y0:y0 + h, x0:x0 + w]
+        return img_ij[..., y0 : y0 + h, x0 : x0 + w]
 
     def _ijcam_to_knmslm_resampler(self, roi):
         """
@@ -356,12 +356,16 @@ class FeedbackHologram(Hologram):
         # last column; passing a separate `offset=` would synchronize. See
         # _ijcam_to_knmslm_resampler. A stack transforms along its trailing axes.
         if stacked:
-            matrix = cp.vstack([cp.asarray([[1, 0, 0, 0]], dtype=matrix.dtype),
-                                cp.hstack([cp.zeros((2, 1), dtype=matrix.dtype), matrix])])
+            matrix = cp.vstack(
+                [
+                    cp.asarray([[1, 0, 0, 0]], dtype=matrix.dtype),
+                    cp.hstack([cp.zeros((2, 1), dtype=matrix.dtype), matrix]),
+                ]
+            )
         target = cp_affine_transform(
             input=cp_img,
             matrix=matrix,
-            output_shape=(np.shape(img)[0],) + tuple(self.shape) if stacked else self.shape,
+            output_shape=(np.shape(img)[0], *self.shape) if stacked else self.shape,
             order=order,
             output=out,
             mode="constant",

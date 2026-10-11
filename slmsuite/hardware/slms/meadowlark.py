@@ -216,8 +216,8 @@ class Meadowlark(SLM):
 
         if self.bitdepth > 8:
             self.logger.warning(
-                f"Bitdepth of {self.bitdepth} > 8 detected; "
-                "this has not been tested and might fail.",
+                "Bitdepth of %s > 8 detected; this has not been tested and might fail.",
+                self.bitdepth,
                 stacklevel=2,
             )
 
