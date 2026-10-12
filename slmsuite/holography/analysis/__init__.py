@@ -267,11 +267,7 @@ def take_validate(images, vectors, size, centered=True):
     ----------
     images : array_like OR (int, int)
         2D image, stack of 2D images, or the shape ``(h, w)`` of one, as in :meth:`take`.
-    vectors : array_like of floats
-        See :meth:`take`.
-    size : int or (int, int)
-        See :meth:`take`.
-    centered : bool
+    vectors, size, centered
         See :meth:`take`.
 
     Returns

@@ -987,9 +987,7 @@ class TestSpotHologram:
 
         spots_kxy = view_kxy_grid(fs, count=2, frac=0.3)
         spots_ij = fs.kxyslm_to_ijcam(spots_kxy)
-        spots_knm = toolbox.convert_vector(
-            spots_kxy, "kxy", "knm", hardware=fs.slm, shape=fs.slm.shape
-        )
+        spots_knm = toolbox.convert_vector(spots_kxy, "kxy", fs.slm.shape, hardware=fs.slm)
         null_kxy = view_kxy_grid(fs, count=2, frac=0.6)
 
         with subtests.test("the kxy, ij and knm bases describe the same spots"):
@@ -1028,9 +1026,7 @@ class TestSpotHologram:
                 basis="ij",
                 cameraslm=fs,
                 null_vectors=fs.kxyslm_to_ijcam(null_kxy),
-                null_radius=toolbox.convert_radius(
-                    null_radius_kxy, "kxy", "ij", hardware=fs, shape=fs.slm.shape
-                ),
+                null_radius=toolbox.convert_radius(null_radius_kxy, "kxy", "ij", hardware=fs),
             )
 
             np.testing.assert_allclose(from_kxy.null_knm, from_ij.null_knm)
@@ -1332,7 +1328,7 @@ class TestCompressedSpotHologram:
     @classmethod
     def _against_fft(cls, fs, cuda):
         """A random-phase compressed hologram, its farfield, and the fft farfield at the spots."""
-        kxy = toolbox.convert_vector(cls.KNM, "knm", "kxy", hardware=fs.slm, shape=fs.slm.shape)
+        kxy = toolbox.convert_vector(cls.KNM, fs.slm.shape, "kxy", hardware=fs.slm)
         phase = np.random.default_rng(0).uniform(0, 2 * np.pi, fs.slm.shape)
 
         h = CompressedSpotHologram(kxy, basis="kxy", cameraslm=fs, cuda=cuda)

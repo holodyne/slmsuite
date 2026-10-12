@@ -115,6 +115,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         (potentially padded) SLM's Fourier transform.
         See :class:`~slmsuite.holography.algorithms.Hologram`.
         The ``"knm"`` basis is centered at ``shape/2``, unlike all of the other units.
+        ``"knm"`` alone is the grid of the SLM's own ``shape``; see ``from_units`` for others.
 
     -  ``"freq"``
         Pixel frequency of a grating producing the blaze.
@@ -214,8 +215,6 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     so an SLM should be passed to ``hardware``
     (otherwise returns an array of ``nan`` values).
     The unit ``"zernike"`` also requires an SLM.
-    The unit ``"knm"`` additionally requires the ``shape`` of the computational space.
-    If not included when ``hardware`` is passed, ``shape=slm.shape`` is assumed.
     The units ``"ij"``, ``"um"``, ``"mag_um"``, and related refer to distance on the
     camera and require calibration data stored in a
     :class:`~slmsuite.hardware.cameraslms.FourierSLM`,
@@ -232,8 +231,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         Vectors for which we want to convert units, from ``from_units`` to ``to_units``.
         Processed according to :meth:`format_2vectors()`.
         Can be shape ``(2, N)`` or ``(3, N)``.
-    from_units, to_units : str
+    from_units, to_units : str OR (int, int) OR object
         Units which we are converting between. See the listed units above for options.
+        A shape ``(h, w)``, or an object with a ``shape`` such as a
+        :class:`~slmsuite.holography.algorithms.Hologram`, is ``"knm"`` on a computational
+        space of that shape.
         Defaults to ``"norm"``.
     hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameras.camera.Camera` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Relevant hardware to pull calibration data from in the case of
@@ -243,30 +245,37 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         If a bare :class:`~slmsuite.hardware.cameras.camera.Camera`, conversions only
         between camera units (e.g. ``"ij"`` and ``"ijraw"``) are supported.
     shape : (int, int) OR None
-        Shape of the computational SLM space. Needed for ``"knm"``.
-        Defaults to ``slm.shape`` if ``hardware`` is not ``None``.
+        Deprecated. Pass the shape ``(h, w)`` as the unit in place of ``"knm"``.
 
     Returns
     -------
     vector_converted : numpy.ndarray
         Result of the unit conversion, in the cleaned format of :meth:`format_2vectors()`.
     """
-    # Parse units.
-    if from_units not in BLAZE_UNITS:
-        raise ValueError(
-            f"From unit '{from_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
+    # Parse units. A shape in place of a unit is "knm" on that grid.
+    if shape is not None:
+        warnings.warn(
+            "convert_vector(shape=) is deprecated; pass the shape (h, w) as the unit in place "
+            "of 'knm'."
         )
-    if to_units not in BLAZE_UNITS:
-        raise ValueError(
-            f"To unit '{to_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
-        )
+    units = []
+    for unit in (from_units, to_units):
+        if not isinstance(unit, str):
+            units.append(("knm", format_shape(unit)))
+        elif unit in BLAZE_UNITS:
+            units.append((unit, None if unit != "knm" or shape is None else format_shape(shape)))
+        else:
+            raise ValueError(
+                f"Unit '{unit}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
+            )
+    ((from_units, from_shape), (to_units, to_shape)) = units
 
     # Parse vectors.
     vector_parsed = format_vectors(vector, expected_dimension=2, handle_dimension="pass").astype(
         float
     )
 
-    if from_units == to_units:
+    if from_units == to_units and from_shape == to_shape:
         return vector_parsed
 
     vector_xy = vector_parsed[:2, :]
@@ -367,18 +376,12 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         else:
             pitch = format_2vectors(slm.pitch)
 
-        if shape is None:
-            if slm is None:
-                logger.warning("shape or slm is required for unit 'knm'")
-                shape = (np.nan, np.nan)
-            else:
-                shape = np.array(slm.shape, dtype=float)
-        else:
-            shape = np.array(format_shape(shape), dtype=float)
-
-        shape = format_2vectors(np.flip(np.squeeze(shape)))
-
-        knm_conv = pitch * shape
+        # Each side's grid as (w, h), the SLM's own unless a shape is given.
+        default = (np.nan, np.nan) if slm is None else slm.shape
+        (from_wh, to_wh) = (
+            format_2vectors(np.flip(np.array(default if s is None else s, dtype=float)))
+            for s in (from_shape, to_shape)
+        )
 
     if from_units == "zernike" or to_units == "zernike":
         if slm is None:
@@ -409,7 +412,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     elif from_units == "deg":
         rad = vector_xy * np.pi / 180
     elif from_units == "knm":
-        rad = (vector_xy - shape / 2.0) / knm_conv
+        rad = (vector_xy - from_wh / 2.0) / (pitch * from_wh)
     elif from_units == "freq":
         rad = vector_xy * wav_um / pitch_um
     elif from_units == "lpmm":
@@ -440,7 +443,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     elif to_units == "deg":
         vector_xy = rad * 180 / np.pi
     elif to_units == "knm":
-        vector_xy = rad * knm_conv + shape / 2.0
+        vector_xy = rad * (pitch * to_wh) + to_wh / 2.0
     elif to_units == "freq":
         vector_xy = rad * pitch_um / wav_um
     elif to_units == "lpmm":
@@ -538,12 +541,12 @@ def convert_radius(
     ----------
     radius : float OR (float, float)
         The radius to convert, isotropic or along ``(x, y)`` of ``from_units``.
-    from_units, to_units : str
+    from_units, to_units : str OR (int, int)
         Passed to :meth:`convert_vector`.
     hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Passed to :meth:`convert_vector`.
     shape : (int, int) OR None
-        Passed to :meth:`convert_vector`.
+        Deprecated; see :meth:`convert_vector`.
     form : {"scalar", "grid", "eigenvalue", "matrix"}
         -  ``"scalar"``
             The area-preserving radius :math:`\sqrt{|\det A|}`.
@@ -1893,8 +1896,10 @@ def format_shape(shape, expected_dimension=2):
 
     Parameters
     ----------
-    shape : (int, int) OR tuple of int
-        The shape to format.
+    shape : (int, int) OR tuple of int OR object
+        The shape to format. An object whose ``shape`` has ``expected_dimension`` entries,
+        such as an image or a :class:`~slmsuite.holography.algorithms.Hologram`, stands for
+        its shape.
     expected_dimension : int OR None
         The expected number of dimensions. Ignored if ``None``.
 
@@ -1903,6 +1908,8 @@ def format_shape(shape, expected_dimension=2):
     tuple
         The formatted shape.
     """
+    if expected_dimension is not None and len(getattr(shape, "shape", ())) == expected_dimension:
+        shape = shape.shape
     shape = tuple(np.squeeze(shape))
 
     if expected_dimension is not None and len(shape) != expected_dimension:

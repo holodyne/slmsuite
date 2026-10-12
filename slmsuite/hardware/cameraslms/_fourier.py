@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 
 from slmsuite.holography import analysis, toolbox
-from slmsuite.holography.algorithms import Hologram, SpotHologram
+from slmsuite.holography.algorithms import SpotHologram
 from slmsuite.holography.analysis import Affine
 from slmsuite.holography.toolbox import format_2vectors, format_shape, format_vectors
 from slmsuite.misc.math import REAL_TYPES
@@ -647,7 +647,7 @@ class _FourierCalibration:
         if slm_size is None:
             size_kxy = self.slm.get_spot_radius_kxy(form="grid")
         else:
-            size_kxy = 1 / np.ravel(slm_size).astype(float)
+            size_kxy = 1 / np.ravel(slm_size)
 
         return toolbox.convert_radius(size_kxy, "kxy", basis, self, form=form)
 
@@ -758,10 +758,9 @@ class _FourierCalibration:
         corners_ij = self.kxyslm_to_ijcam(
             toolbox.convert_vector(
                 corners_knm,
-                from_units="knm",
+                from_units=(1, 1),
                 to_units="kxy",
                 hardware=self,
-                shape=(1, 1),
             )
         )
 
@@ -769,9 +768,7 @@ class _FourierCalibration:
             # ``knm = A @ ij + b`` is affine, so a box of half-widths ``h`` about the
             # farfield center maps inside the unit square exactly when
             # ``abs(A) @ h <= 0.5`` --- worst case over the corners' sign choices.
-            abs_A = np.abs(
-                toolbox.convert_radius(1, "ij", "knm", self, shape=(1, 1), form="matrix")
-            )
+            abs_A = np.abs(toolbox.convert_radius(1, "ij", (1, 1), self, form="matrix"))
 
             # Scale the farfield's bounding box down by the largest feasible factor,
             # keeping its aspect ratio.
@@ -807,10 +804,11 @@ class _FourierCalibration:
 
         Parameters
         ----------
-        units : str OR (int, int) OR Hologram
-            Target coordinate system.  A string (e.g. ``"kxy"``, ``"knm"``) returns corners
-            in that basis.  A shape tuple or :class:`~slmsuite.holography.algorithms.Hologram`
-            returns corners in ``"knm"`` space for that grid (and supports mask output).
+        units : str OR (int, int) OR object
+            Target coordinate system, any unit of
+            :meth:`~slmsuite.holography.toolbox.convert_vector()`. A shape, or an object with
+            one such as a :class:`~slmsuite.holography.algorithms.Hologram`, is ``"knm"`` on
+            that grid (and supports mask output).
         return_mask : bool
             If ``False``, returns a ``(2, 5)`` array of camera corner coordinates in ``units``
             (closed polygon, first corner repeated).
@@ -832,35 +830,16 @@ class _FourierCalibration:
             toolbox.format_2vectors(np.vstack((ll, lr, ur, ul, ll)).T)
         )
 
+        corners = toolbox.convert_vector(corners_kxy, "kxy", units, hardware=self)
+
+        if not return_mask:
+            return corners
         if isinstance(units, str):
-            if return_mask:
-                raise ValueError("return_mask must be False if units is a string.")
-            return toolbox.convert_vector(
-                corners_kxy,
-                from_units="kxy",
-                to_units=units,
-                hardware=self,
-            )
-        else:  # Is the shape of the knm space
-            if isinstance(units, Hologram):
-                units = units.shape
+            raise ValueError("return_mask must be False if units is a string.")
 
-            units = format_shape(units)
+        # Fill the shadow of the camera on the knm canvas.
+        canvas = np.zeros(format_shape(units), dtype=np.uint8)
+        pts = np.rint(corners.T).astype(np.int32)  # (N, 2) required by cv2
+        cv2.fillConvexPoly(canvas, pts, 255, cv2.LINE_4)
 
-            corners_knm = toolbox.convert_vector(
-                corners_kxy,
-                from_units="kxy",
-                to_units="knm",
-                hardware=self,
-                shape=units,
-            )
-
-            if not return_mask:
-                return corners_knm
-            else:
-                # Fill the shadow of the camera on the knm canvas.
-                canvas = np.zeros(units, dtype=np.uint8)
-                pts = np.rint(corners_knm.T).astype(np.int32)  # (N, 2) required by cv2
-                cv2.fillConvexPoly(canvas, pts, 255, cv2.LINE_4)
-
-                return canvas > 128
+        return canvas > 128

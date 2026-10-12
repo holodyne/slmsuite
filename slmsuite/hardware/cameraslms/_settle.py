@@ -61,7 +61,6 @@ class _SettleCalibration:
         # Parse size.
         if size is None:
             size = 16 * self.get_farfield_spot_size(basis="ij")
-        size = tuple(int(s) for s in np.broadcast_to(np.ravel(size), (2,)))
 
         # Parse times.
         if times is None:

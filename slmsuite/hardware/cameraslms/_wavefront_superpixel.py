@@ -192,7 +192,7 @@ class _WavefrontCalibrationSuperpixel:
 
         # Next, we get the size of the window necessary to measure a spot
         # produced by the given superpixel size.
-        interference_window = self.wavefront_calibration_superpixel_window(superpixel_size).ravel()
+        interference_window = self.wavefront_calibration_superpixel_window(superpixel_size)
         interference_size = interference_window / self._wavefront_calibration_window_multiplier
 
         interference_window = analysis._odd_size(interference_window)
@@ -695,8 +695,8 @@ class _WavefrontCalibrationSuperpixel:
                 )
 
                 # Map pixels into the superpixel's farfield, where the sinc zeros are integers.
-                transform = format_2vectors(superpixel_size * self.slm.pitch) * np.linalg.inv(
-                    self.fourier_affine.M
+                transform = toolbox.convert_radius(
+                    1, "ij", (superpixel_size, superpixel_size), self, form="matrix"
                 )
                 xy = np.tensordot(transform, np.stack(xy), axes=1)
                 xyr = xy.reshape(2, -1)
@@ -1255,7 +1255,7 @@ class _WavefrontCalibrationSuperpixel:
             The size of the superpixel on the SLM.
         """
         interference_size = np.rint(
-            np.array(self.get_farfield_spot_size(superpixel_size * self.slm.pitch, basis="ij"))
+            self.get_farfield_spot_size(superpixel_size * self.slm.pitch, basis="ij")
         ).astype(int)
 
         return self._wavefront_calibration_window_multiplier * interference_size

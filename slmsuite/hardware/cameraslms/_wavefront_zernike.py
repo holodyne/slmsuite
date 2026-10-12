@@ -390,10 +390,11 @@ class _WavefrontCalibrationZernike:
         max_spot_integration_width_ij = int(
             2 * np.ceil(np.min((0.5 * max_window_size, 51)) / 2) + 1
         )
-        if spot_integration_width_ij is None:
-            spot_integration_width_ij = max_spot_integration_width_ij
         hologram.spot_integration_width_ij = np.minimum(
-            spot_integration_width_ij, max_spot_integration_width_ij
+            max_spot_integration_width_ij
+            if spot_integration_width_ij is None
+            else spot_integration_width_ij,
+            max_spot_integration_width_ij,
         )
         spot_integration_width_ij = hologram.spot_integration_width_ij
 

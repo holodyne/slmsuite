@@ -256,9 +256,8 @@ class _AbstractSpotHologram(FeedbackHologram):
                     self.spot_knm = toolbox.convert_vector(
                         self.spot_kxy,
                         from_units="kxy",
-                        to_units="knm",
+                        to_units=self.shape,
                         hardware=self.cameraslm.slm,
-                        shape=self.shape,
                     )
                     self.set_target(reset_weights=True)
                     shift_knm = self.spot_knm - before
@@ -274,7 +273,6 @@ class _AbstractSpotHologram(FeedbackHologram):
                         from_units="kxy",
                         to_units="zernike",
                         hardware=self.cameraslm.slm,
-                        shape=self.shape,
                     )
                     self.spot_zernike[self.zernike_basis_cartesian, :] = spot_zernike_xy
             elif basis == "ij":
@@ -583,24 +581,15 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
         psf_ij = np.nan_to_num(psf_ij)
 
-        # Use semi-arbitrary values to determine integration widths. The default width is:
-        #  - twice the psf,
-        #  - but then clipped to be:
-        #    + larger than 3 and
-        #    + smaller than the minimum inf-norm distance between spots divided by 1.5
-        #      (divided by 1 would correspond to the largest non-overlapping integration
-        #      regions; 1.5 gives comfortable padding)
-        #  - and finally forced to be an odd integer.
-        min_psf = 3
-
         if self.spot_ij is not None:
-            dist_ij = np.max([toolbox.smallest_distance(self.spot_ij) / 1.5, min_psf])
-            if np.any(psf_ij > dist_ij):
+            # Integrate twice the psf, clipped to leave padding between neighboring spots.
+            spacing = max(toolbox.smallest_distance(self.spot_ij) / 1.5, 3)
+            if np.any(psf_ij > spacing):
                 logger.warning(
                     "The expected camera spot point-spread-function is too large. "
                     "Clipping to a smaller integration width."
                 )
-            self._spot_integration_width_ij = analysis._odd_size(np.clip(2 * psf_ij, 3, dist_ij))
+            self._spot_integration_width_ij = analysis._odd_size(np.clip(2 * psf_ij, 3, spacing))
 
             self._check_spots_in_frame(cameraslm, raise_error=True)
         else:
@@ -702,7 +691,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         target = as_numpy(self.target).reshape(1, -1, 1)
 
         spot_knm_norm = toolbox.convert_vector(
-            self.spot_kxy, from_units="kxy", to_units="knm", hardware=self.cameraslm, shape=(1, 1)
+            self.spot_kxy, from_units="kxy", to_units=(1, 1), hardware=self.cameraslm
         )
         grid = (spot_knm_norm[0, :].reshape(-1, 1) - 0.5, spot_knm_norm[1, :].reshape(-1, 1) - 0.5)
 
@@ -1317,7 +1306,7 @@ class SpotHologram(_AbstractSpotHologram):
 
             if cameraslm is not None:
                 self.spot_kxy = toolbox.convert_vector(
-                    self.spot_knm, from_units="knm", to_units="kxy", hardware=cameraslm, shape=shape
+                    self.spot_knm, from_units=shape, to_units="kxy", hardware=cameraslm
                 )
 
                 if "fourier" in cameraslm.calibrations:
@@ -1345,7 +1334,7 @@ class SpotHologram(_AbstractSpotHologram):
                 self.spot_ij = cameraslm.kxyslm_to_ijcam(vectors)
 
             self.spot_knm = toolbox.convert_vector(
-                self.spot_kxy, from_units="kxy", to_units="knm", hardware=cameraslm, shape=shape
+                self.spot_kxy, from_units="kxy", to_units=shape, hardware=cameraslm
             )
         elif basis == "ij":  # Pixel on the camera.
             if cameraslm is None:
@@ -1360,7 +1349,7 @@ class SpotHologram(_AbstractSpotHologram):
             self.spot_ij = vectors
             self.spot_kxy = cameraslm.ijcam_to_kxyslm(vectors)
             self.spot_knm = toolbox.convert_vector(
-                vectors, from_units="ij", to_units="knm", hardware=cameraslm, shape=shape
+                vectors, from_units="ij", to_units=shape, hardware=cameraslm
             )
         else:
             raise ValueError(f"Unrecognized basis for spots '{basis}'.")
@@ -1370,7 +1359,7 @@ class SpotHologram(_AbstractSpotHologram):
             if null_vectors is not None:
                 # Convert the null vectors.
                 self.null_knm = toolbox.convert_vector(
-                    null_vectors, from_units=basis, to_units="knm", hardware=cameraslm, shape=shape
+                    null_vectors, from_units=basis, to_units=shape, hardware=cameraslm
                 )
 
                 # Convert the null radius.
@@ -1378,9 +1367,8 @@ class SpotHologram(_AbstractSpotHologram):
                     self.null_radius_knm = toolbox.convert_radius(
                         null_radius,
                         from_units=basis,
-                        to_units="knm",
+                        to_units=shape,
                         hardware=cameraslm,
-                        shape=shape,
                     )
                 else:
                     self.null_radius_knm = None
@@ -1395,37 +1383,22 @@ class SpotHologram(_AbstractSpotHologram):
 
         if cameraslm is not None:
             psf_kxy = cameraslm.slm.get_spot_radius_kxy(form="grid")
-            psf_knm = toolbox.convert_radius(
-                psf_kxy, "kxy", "knm", cameraslm.slm, shape, form="grid"
-            )
+            psf_knm = toolbox.convert_radius(psf_kxy, "kxy", shape, cameraslm.slm, form="grid")
 
             # The ij psf needs the camera located, which is what calibration produces.
             if "fourier" in cameraslm.calibrations:
-                psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm, shape, form="grid")
+                psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm, form="grid")
 
         (psf_knm, psf_ij) = (np.nan_to_num(psf_knm), np.nan_to_num(psf_ij))
 
-        # Use semi-arbitrary values to determine integration widths. The default width is:
-        #  - N times the psf,
-        #  - but then clipped to be:
-        #    + larger than 3 and
-        #    + smaller than the minimum inf-norm distance between spots divided by 1.5
-        #      (divided by 1 would correspond to the largest non-overlapping integration
-        #      regions; 1.5 gives comfortable padding)
-        #  - and finally forced to be an odd integer.
+        # Integrate N times the psf, clipped to leave padding between neighboring spots.
         N = 10  # Future: non-arbitrary
-        min_psf = 3
-
-        dist_knm = np.max([toolbox.smallest_distance(self.spot_knm) / 1.5, min_psf])
-        self.spot_integration_width_knm = analysis._odd_size(
-            np.clip(N * psf_knm, min_psf, dist_knm)
-        )
+        spacing = max(toolbox.smallest_distance(self.spot_knm) / 1.5, 3)
+        self.spot_integration_width_knm = analysis._odd_size(np.clip(N * psf_knm, 3, spacing))
 
         if self.spot_ij is not None:
-            dist_ij = np.max([toolbox.smallest_distance(self.spot_ij) / 1.5, min_psf])
-            self._spot_integration_width_ij = analysis._odd_size(
-                np.clip(N * psf_ij, min_psf, dist_ij)
-            )
+            spacing = max(toolbox.smallest_distance(self.spot_ij) / 1.5, 3)
+            self._spot_integration_width_ij = analysis._odd_size(np.clip(N * psf_ij, 3, spacing))
         else:
             self._spot_integration_width_ij = None
 
@@ -1603,10 +1576,9 @@ class SpotHologram(_AbstractSpotHologram):
         if self.cameraslm is not None:
             self.spot_kxy_rounded = toolbox.convert_vector(
                 self.spot_knm_rounded,
-                from_units="knm",
+                from_units=self.shape,
                 to_units="kxy",
                 hardware=self.cameraslm.slm,
-                shape=self.shape,
             )
 
             if "fourier" in self.cameraslm.calibrations:

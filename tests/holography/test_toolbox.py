@@ -26,7 +26,6 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
     vec = np.array([[0.1], [-0.2]])
     hw = {"hardware": slm}
     knm_shape = (256, 512)
-    knm_kw = {"hardware": slm, "shape": knm_shape}
     (height, width) = slm.shape
 
     with subtests.test("an unrecognized unit raises"):
@@ -76,11 +75,11 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
     with subtests.test("knm is the freq grating's DFT bin, offset to the shape's center"):
         freq = convert_vector(vec, "norm", "freq", **hw)
         np.testing.assert_allclose(
-            convert_vector(vec, "norm", "knm", **knm_kw), freq * shape_xy + shape_xy / 2
+            convert_vector(vec, "norm", knm_shape, **hw), freq * shape_xy + shape_xy / 2
         )
 
     with subtests.test("an unblazed beam sits at the knm origin, shape/2"):
-        np.testing.assert_allclose(convert_vector((0, 0), "norm", "knm", **knm_kw), shape_xy / 2)
+        np.testing.assert_allclose(convert_vector((0, 0), "norm", knm_shape, **hw), shape_xy / 2)
         np.testing.assert_allclose(
             convert_vector((0, 0), "norm", "knm", **hw), [[width / 2], [height / 2]]
         )
@@ -93,10 +92,33 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         np.testing.assert_allclose(as_numpy(tilt), ramp, rtol=1e-5, atol=1e-3)
 
     with subtests.test("every unit inverts back to norm"):
-        for unit in ["kxy", "rad", "mrad", "deg", "freq", "lpmm", "zernike", "knm"]:
-            kw = knm_kw if unit == "knm" else hw
-            roundtrip = convert_vector(convert_vector(vec, "norm", unit, **kw), unit, "norm", **kw)
-            np.testing.assert_allclose(roundtrip, vec, err_msg=unit)
+        for unit in ["kxy", "rad", "mrad", "deg", "freq", "lpmm", "zernike", "knm", knm_shape]:
+            roundtrip = convert_vector(convert_vector(vec, "norm", unit, **hw), unit, "norm", **hw)
+            np.testing.assert_allclose(roundtrip, vec, err_msg=str(unit))
+
+    with subtests.test("a shape in place of knm converts between two grids"):
+        other = (128, 1024)
+        other_xy = np.array([[other[1]], [other[0]]], dtype=float)
+        knm = convert_vector(vec, "norm", knm_shape, **hw)
+        np.testing.assert_allclose(
+            convert_vector(knm, knm_shape, other, **hw),
+            (knm - shape_xy / 2) / shape_xy * other_xy + other_xy / 2,
+        )
+        np.testing.assert_allclose(convert_vector(knm, knm_shape, knm_shape), knm)
+
+    with subtests.test("an object with a shape names its own grid; an array is the shape"):
+        from types import SimpleNamespace
+
+        expected = convert_vector(vec, "norm", knm_shape, **hw)
+        np.testing.assert_allclose(
+            convert_vector(vec, "norm", SimpleNamespace(shape=knm_shape), **hw), expected
+        )
+        np.testing.assert_allclose(convert_vector(vec, "norm", np.array(knm_shape), **hw), expected)
+
+    with subtests.test("shape= is deprecated but still names the knm grid"):
+        with pytest.warns(UserWarning, match="deprecated"):
+            knm = convert_vector(vec, "norm", "knm", shape=knm_shape, **hw)
+        np.testing.assert_allclose(knm, convert_vector(vec, "norm", knm_shape, **hw))
 
     with subtests.test("mag_um is the camera distance in um divided by the magnification"):
         fs = fourierslm_calibrated
@@ -214,7 +236,7 @@ def test_convert_radius(slm, subtests):
         rect = SimulatedSLM((64, 64), pitch_um=(8, 16), wav_um=1.0)
         expected = 1e-3 * np.array([8, 16]) * 64
         forms = {
-            form: convert_radius(1e-3, "kxy", "knm", rect, (64, 64), form=form)
+            form: convert_radius(1e-3, "kxy", (64, 64), rect, form=form)
             for form in ("scalar", "grid", "eigenvalue", "matrix")
         }
         assert forms["scalar"] == pytest.approx(np.sqrt(np.prod(expected)))
