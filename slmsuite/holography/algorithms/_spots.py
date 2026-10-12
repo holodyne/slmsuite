@@ -25,9 +25,10 @@ class _AbstractSpotHologram(FeedbackHologram):
     @property
     def spot_integration_width_ij(self):
         """
-        Width in camera pixels of the square region integrated around each spot for
+        Odd ``(w, h)`` in camera pixels of the region integrated around each spot for
         ``"experimental_spot"`` feedback. Integrating over many camera pixels gives better
-        SNR. ``None`` when the spots are not located on a camera.
+        SNR. ``None`` when the spots are not located on a camera. An integer sets a square,
+        and even widths are rounded up to odd.
 
         Setting this re-runs :meth:`_check_spots_in_frame()`, as a width assigned after
         construction (as
@@ -38,7 +39,7 @@ class _AbstractSpotHologram(FeedbackHologram):
 
     @spot_integration_width_ij.setter
     def spot_integration_width_ij(self, value):
-        self._spot_integration_width_ij = None if value is None else int(value)
+        self._spot_integration_width_ij = None if value is None else analysis._odd_size(value)
         self._check_spots_in_frame()
 
     def _check_spots_in_frame(self, cameraslm=None, raise_error=False):
@@ -74,14 +75,7 @@ class _AbstractSpotHologram(FeedbackHologram):
             return True
 
         cam_shape = cameraslm.cam.shape
-        half = width / 2
-
-        outside = (
-            (spot_ij[0] < half)
-            | (spot_ij[1] < half)
-            | (spot_ij[0] >= cam_shape[1] - half)
-            | (spot_ij[1] >= cam_shape[0] - half)
-        )
+        outside = ~analysis.take_validate(cam_shape, spot_ij, width)
 
         if not np.any(outside):
             return True
@@ -577,18 +571,17 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         (psf_ij, self.spot_ij) = (np.nan, None)
 
         if cameraslm is not None and hasattr(cameraslm, "slm"):
-            kmax = 1.0 / np.min(cameraslm.slm.pitch) / 2.0
-            if np.any(np.abs(self.spot_kxy[:2, :]) > 1.1 * kmax):
+            # Nyquist along each axis, with 10% slack.
+            kmax = 1.1 / (2 * cameraslm.slm.pitch[:, np.newaxis])
+            if np.any(np.abs(self.spot_kxy[:2, :]) > kmax):
                 raise ValueError("Spots laterally outside the bounds of the farfield")
 
             # Generate ij point spread function (psf), which needs the camera located.
             if "fourier" in cameraslm.calibrations:
-                psf_kxy = np.mean(cameraslm.slm.get_spot_radius_kxy())
                 self.spot_ij = cameraslm.kxyslm_to_ijcam(self.spot_kxy)
-                psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm)
+                psf_ij = cameraslm.get_farfield_spot_size(basis="ij")
 
-        if np.isnan(psf_ij):
-            psf_ij = 0
+        psf_ij = np.nan_to_num(psf_ij)
 
         # Use semi-arbitrary values to determine integration widths. The default width is:
         #  - twice the psf,
@@ -602,13 +595,12 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
         if self.spot_ij is not None:
             dist_ij = np.max([toolbox.smallest_distance(self.spot_ij) / 1.5, min_psf])
-            if psf_ij > dist_ij:
+            if np.any(psf_ij > dist_ij):
                 logger.warning(
                     "The expected camera spot point-spread-function is too large. "
                     "Clipping to a smaller integration width."
                 )
-            width = np.clip(2 * psf_ij, 3, dist_ij)
-            self._spot_integration_width_ij = int(2 * np.floor(width / 2) + 1)
+            self._spot_integration_width_ij = analysis._odd_size(np.clip(2 * psf_ij, 3, dist_ij))
 
             self._check_spots_in_frame(cameraslm, raise_error=True)
         else:
@@ -1212,10 +1204,10 @@ class SpotHologram(_AbstractSpotHologram):
         attribute. For iterative feedback, have the ``callback()`` function set
         :attr:`external_spot_amp` dynamically. By default, this variable is set to a
         copy of :attr:`spot_amp`.
-    spot_integration_width_knm : int
+    spot_integration_width_knm : (int, int)
         For spot-specific feedback methods, better SNR is achieved when integrating over
-        many farfield pixels. This variable stores the width of the integration region
-        in ``"knm"`` (farfield) space.
+        many farfield pixels. This variable stores the odd ``(w, h)`` of the integration
+        region in ``"knm"`` (farfield) space.
     null_knm : array_like of float OR None
         In addition to points where power is desired, :class:`SpotHologram` is equipped
         with quality of life features to select points where power is undesired. These
@@ -1402,17 +1394,16 @@ class SpotHologram(_AbstractSpotHologram):
         (psf_knm, psf_ij) = (0, np.nan)
 
         if cameraslm is not None:
-            psf_kxy = np.mean(cameraslm.slm.get_spot_radius_kxy())
-            psf_knm = toolbox.convert_radius(psf_kxy, "kxy", "knm", cameraslm.slm, shape)
+            psf_kxy = cameraslm.slm.get_spot_radius_kxy(form="grid")
+            psf_knm = toolbox.convert_radius(
+                psf_kxy, "kxy", "knm", cameraslm.slm, shape, form="grid"
+            )
 
             # The ij psf needs the camera located, which is what calibration produces.
             if "fourier" in cameraslm.calibrations:
-                psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm, shape)
+                psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm, shape, form="grid")
 
-        if np.isnan(psf_knm):
-            psf_knm = 0
-        if np.isnan(psf_ij):
-            psf_ij = 0
+        (psf_knm, psf_ij) = (np.nan_to_num(psf_knm), np.nan_to_num(psf_ij))
 
         # Use semi-arbitrary values to determine integration widths. The default width is:
         #  - N times the psf,
@@ -1426,25 +1417,20 @@ class SpotHologram(_AbstractSpotHologram):
         min_psf = 3
 
         dist_knm = np.max([toolbox.smallest_distance(self.spot_knm) / 1.5, min_psf])
-        self.spot_integration_width_knm = np.clip(N * psf_knm, min_psf, dist_knm)
-        self.spot_integration_width_knm = int(2 * np.floor(self.spot_integration_width_knm / 2) + 1)
+        self.spot_integration_width_knm = analysis._odd_size(
+            np.clip(N * psf_knm, min_psf, dist_knm)
+        )
 
         if self.spot_ij is not None:
             dist_ij = np.max([toolbox.smallest_distance(self.spot_ij) / 1.5, min_psf])
-            width = np.clip(N * psf_ij, min_psf, dist_ij)
-            self._spot_integration_width_ij = int(2 * np.floor(width / 2) + 1)
+            self._spot_integration_width_ij = analysis._odd_size(
+                np.clip(N * psf_ij, min_psf, dist_ij)
+            )
         else:
             self._spot_integration_width_ij = None
 
-        # Check to make sure spots are within relevant camera and SLM shapes.
-        knm = np.rint(self.spot_knm)
-        if (
-            # np.any(self.spot_knm[0] < self.spot_integration_width_knm / 2)
-            # or np.any(self.spot_knm[1] < self.spot_integration_width_knm / 2)
-            # or np.any(self.spot_knm[0] >= shape[1] - self.spot_integration_width_knm / 2)
-            # or np.any(self.spot_knm[1] >= shape[0] - self.spot_integration_width_knm / 2)
-            np.any(knm < 0) or np.any(knm[0] >= shape[1]) or np.any(knm[1] >= shape[0])
-        ):
+        # Spots are placed at their nearest knm pixel, which must lie in the computational space.
+        if not np.all(analysis.take_validate(shape, np.rint(self.spot_knm[:2]), 1)):
             raise ValueError(
                 f"Spots outside SLM computational space bounds!\nSpots:\n{self.spot_knm}\nBounds: {shape}"
             )

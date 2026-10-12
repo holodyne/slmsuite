@@ -189,11 +189,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     -  ``"ij"``
         True cartesian distance relative to the **camera plane** in camera pixels.
-        Cameras with rectangular (anisotropic) pixels average the pixel dimensions.
+        Rectangular pixels use the geometric mean of the pitch, with a warning.
 
     -  ``"ijraw"``
         True cartesian distance relative to the **camera plane** in raw (unbinned) sensor
-        pixels. This differs from ``"ij"`` by the isotropic binning scale.
+        pixels. This differs from ``"ij"`` by the geometric mean of the binning.
 
     -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
         True cartesian distance relative to the **camera plane** in metric units.
@@ -330,6 +330,18 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
                 return np.full_like(vector_parsed, np.nan)
         else:
             cam_pitch_um = format_2vectors(cam_pitch_um)
+            # Depth in camera units is in geometric-mean pixels, ambiguous for rectangular ones.
+            cam_depth_pitch_um = float(np.sqrt(np.prod(cam_pitch_um)))
+            pixel = cam._pitch_um if "ijraw" in (from_units, to_units) else cam.pitch_um
+            if (
+                vector_z is not None
+                and not set(CAMERA_PIXEL_UNITS).isdisjoint((from_units, to_units))
+                and not np.isclose(pixel[0], pixel[1])
+            ):
+                warnings.warn(
+                    "Depth in camera pixels on rectangular pixels "
+                    f"{tuple(float(p) for p in pixel)} um uses the geometric-mean pixel."
+                )
 
     # Generate conversion factors for various units.
     if from_units == "freq" or to_units == "freq":
@@ -373,12 +385,19 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
             logger.warning("slm is required for unit 'zernike'")
             zernike_scale = np.nan
         else:
-            zernike_scale = 2 * np.pi * np.reciprocal(slm.aperture._isotropic_scale())
+            zernike_scale = format_2vectors(2 * np.pi * np.reciprocal(slm.aperture.scale))
+            if vector_z is not None and not slm.aperture.is_isotropic:
+                warnings.warn(
+                    "The zernike focus term on an elliptical aperture is astigmatic; depth "
+                    f"uses the geometric mean of the aperture scale {tuple(slm.aperture.scale)}."
+                )
+        # Focus scales with the square of the aperture; the geometric mean for an ellipse.
+        zernike_depth_scale = float(np.prod(zernike_scale))
 
     if "ijraw" in (from_units, to_units):
-        # Camera affine for "ijraw" xy; depth uses the arithmetic mean of the binning.
+        # Camera affine for "ijraw" xy; depth uses the geometric mean of the binning.
         ijcam_to_ijraw = cam._get_ijcam_to_ijraw()
-        ijraw_z_scale = np.mean(cam.binning)
+        ijraw_z_scale = float(np.sqrt(np.prod(cam.binning)))
 
     # XY
 
@@ -448,11 +467,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
             z_ij = vector_z / ijraw_z_scale
         elif from_units in CAMERA_UNITS:
             unit = from_units.split("_")[-1]
-            z_ij = vector_z * LENGTH_FACTORS[unit] / np.mean(cam_pitch_um)
+            z_ij = vector_z * LENGTH_FACTORS[unit] / cam_depth_pitch_um
             if "mag_" in from_units:
                 z_ij = z_ij * cameraslm.mag**2
         elif from_units == "zernike":
-            focal_power = vector_z * ((8 * np.pi) / (zernike_scale * zernike_scale))
+            focal_power = vector_z * ((8 * np.pi) / zernike_depth_scale)
         else:
             focal_power = vector_z
 
@@ -469,11 +488,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
             vector_z = z_ij * ijraw_z_scale
         elif to_units in CAMERA_UNITS:
             unit = to_units.split("_")[-1]
-            vector_z = z_ij * np.mean(cam_pitch_um) / LENGTH_FACTORS[unit]
+            vector_z = z_ij * cam_depth_pitch_um / LENGTH_FACTORS[unit]
             if "mag_" in to_units:
                 vector_z = vector_z / cameraslm.mag**2
         elif to_units == "zernike":
-            vector_z = focal_power * ((zernike_scale * zernike_scale) / (8 * np.pi))
+            vector_z = focal_power * (zernike_depth_scale / (8 * np.pi))
         else:
             vector_z = focal_power
 
@@ -503,43 +522,72 @@ def print_blaze_conversions(vector, from_units="norm", **kwargs):
         print(f"'{unit}' : {result.T[0, :]}")
 
 
-def convert_radius(radius, from_units="norm", to_units="norm", hardware=None, shape=None):
-    """
-    Helper function for scalar unit conversions.
-    Uses :meth:`convert_vector` to deduce the (average, in the case of an
-    anisotropic transformation) scalar radius when going between sets of units.
+def convert_radius(
+    radius, from_units="norm", to_units="norm", hardware=None, shape=None, form="scalar"
+):
+    r"""
+    Converts a radius between units, accounting for anisotropic conversions.
 
-    Tip
-    ~~~
-    In the future, we might create a similar function to handle anisotropic
-    conversions better by converting a 2x2 matrix representing a sheared parallelogram.
+    The radius is treated as the ellipse :math:`A = M \, \mathrm{diag}(r_x, r_y)`,
+    where :math:`M` is the linear part of the affine map :meth:`convert_vector` applies
+    between the two units, as in :class:`~slmsuite.holography.analysis.Affine`.
+    Rectangular pixels or a rotated or sheared Fourier calibration make :math:`A`
+    anisotropic; ``form`` selects how it is reported.
 
     Parameters
     ----------
-    radius : float
-        The scalar radius to convert.
+    radius : float OR (float, float)
+        The radius to convert, isotropic or along ``(x, y)`` of ``from_units``.
     from_units, to_units : str
         Passed to :meth:`convert_vector`.
     hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Passed to :meth:`convert_vector`.
     shape : (int, int) OR None
         Passed to :meth:`convert_vector`.
+    form : {"scalar", "grid", "eigenvalue", "matrix"}
+        -  ``"scalar"``
+            The area-preserving radius :math:`\sqrt{|\det A|}`.
+
+        -  ``"grid"``
+            The ``(x, y)`` extent along the axes of ``to_units``: the row norms of
+            :math:`A`, which are both the half-widths of the ellipse's bounding box and
+            its marginal radii.
+
+        -  ``"eigenvalue"``
+            The principal radii: the singular values of :math:`A`, in descending order
+            rather than axis order.
+
+        -  ``"matrix"``
+            The ``(2, 2)`` matrix :math:`A`.
 
     Returns
     -------
-    radius : float
-        New scalar radius.
+    float OR numpy.ndarray
+        A float for ``"scalar"``, shape ``(2,)`` for ``"grid"`` and ``"eigenvalue"``,
+        and ``(2, 2)`` for ``"matrix"``. ``nan`` when the conversion is unavailable.
     """
-    v0 = convert_vector(
-        (0, 0), from_units=from_units, to_units=to_units, hardware=hardware, shape=shape
+    # Every conversion is affine, so differencing unit vectors recovers its M exactly.
+    probe = convert_vector(
+        np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        from_units=from_units,
+        to_units=to_units,
+        hardware=hardware,
+        shape=shape,
     )
-    vx = convert_vector(
-        (radius, 0), from_units=from_units, to_units=to_units, hardware=hardware, shape=shape
+    matrix = (probe[:2, 1:] - probe[:2, [0]]) * np.ravel(radius)
+    finite = np.all(np.isfinite(matrix))
+
+    if form == "scalar":
+        return float(np.sqrt(np.abs(np.linalg.det(matrix)))) if finite else np.nan
+    elif form == "grid":
+        return np.linalg.norm(matrix, axis=1)
+    elif form == "eigenvalue":
+        return np.linalg.svd(matrix, compute_uv=False) if finite else np.full(2, np.nan)
+    elif form == "matrix":
+        return matrix
+    raise ValueError(
+        f"form '{form}' not recognized; use 'scalar', 'grid', 'eigenvalue', or 'matrix'."
     )
-    vy = convert_vector(
-        (0, radius), from_units=from_units, to_units=to_units, hardware=hardware, shape=shape
-    )
-    return np.mean([np.linalg.norm(vx - v0), np.linalg.norm(vy - v0)])
 
 
 # Windows creation functions. Windows are views into 2D arrays.

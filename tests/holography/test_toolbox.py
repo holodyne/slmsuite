@@ -208,6 +208,29 @@ def test_convert_radius(slm, subtests):
             radius = convert_radius(0.05, "norm", unit, hardware=slm)
             assert convert_radius(radius, unit, "norm", hardware=slm) == pytest.approx(0.05), unit
 
+    with subtests.test("rectangular pixels: each form of an anisotropic conversion"):
+        from slmsuite.hardware.slms.simulated import SimulatedSLM
+
+        rect = SimulatedSLM((64, 64), pitch_um=(8, 16), wav_um=1.0)
+        expected = 1e-3 * np.array([8, 16]) * 64
+        forms = {
+            form: convert_radius(1e-3, "kxy", "knm", rect, (64, 64), form=form)
+            for form in ("scalar", "grid", "eigenvalue", "matrix")
+        }
+        assert forms["scalar"] == pytest.approx(np.sqrt(np.prod(expected)))
+        np.testing.assert_allclose(forms["grid"], expected)
+        np.testing.assert_allclose(forms["eigenvalue"], expected[::-1])
+        np.testing.assert_allclose(forms["matrix"], np.diag(expected))
+
+    with subtests.test("an (x, y) radius scales each axis"):
+        np.testing.assert_allclose(
+            convert_radius((0.1, 0.2), "norm", "mrad", form="grid"), (100.0, 200.0)
+        )
+
+    with subtests.test("an unknown form raises"):
+        with pytest.raises(ValueError, match="form"):
+            convert_radius(0.1, "norm", "mrad", form="nonsense")
+
     with subtests.test("the convert_blaze_radius alias names the renamed convert_radius"):
         with pytest.warns(UserWarning) as record:
             convert_blaze_radius(0.1, "norm", "mrad", slm=slm)
@@ -963,14 +986,9 @@ class TestAperture:
                 assert Aperture(grid, spec).scale == pytest.approx(expected, rel=1e-6)
 
     def test_is_isotropic(self, normalized_grid, subtests):
-        with subtests.test("is_isotropic / _isotropic_scale honor or reject anisotropy"):
-            circ = Aperture(normalized_grid, "circular")
-            assert circ.is_isotropic
-            assert circ._isotropic_scale() == pytest.approx(circ.scale[0])
-            ell = Aperture(normalized_grid, (0.01, 0.02))
-            assert not ell.is_isotropic
-            with pytest.raises(ValueError, match="isotropic"):
-                ell._isotropic_scale()
+        with subtests.test("is_isotropic tells circles from ellipses"):
+            assert Aperture(normalized_grid, "circular").is_isotropic
+            assert not Aperture(normalized_grid, (0.01, 0.02)).is_isotropic
 
     def test_crops(self, subtests):
         """Test Aperture.crops, the cheap precursor of Aperture.mask."""

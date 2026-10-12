@@ -750,18 +750,15 @@ class Hologram(_HologramStats, _Loggable):
         if np.isfinite(precision) and cameraslm is not None:
             if precision <= 0:
                 raise ValueError("Precision passed to get_padded_shape() must be positive.")
-            dpixel = np.amin(cameraslm.slm.pitch)
-            fs = 1 / dpixel  # Sampling frequency
-
+            # One knm pixel along each SLM axis spans 1 / (pitch * N) in kxy.
             if precision_basis == "ij":
-                slm_range = np.amax(cameraslm.kxyslm_to_ijcam([fs, fs]))
-                pixels = slm_range / precision
+                step = np.max(np.abs(cameraslm.fourier_affine.M), axis=0)
             elif precision_basis == "kxy":
-                pixels = fs / precision
+                step = 1
+            pixels = np.flip(step / (cameraslm.slm.pitch * precision))
 
             # Raise to the nearest greater power of 2.
-            pixels = np.power(2, int(np.ceil(np.log2(pixels))))
-            precision_shape = (pixels, pixels)
+            precision_shape = tuple(np.power(2, np.ceil(np.log2(pixels))).astype(int))
         elif np.isfinite(precision):
             raise ValueError(
                 "Must pass a CameraSLM object under slm_shape "

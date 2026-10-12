@@ -195,8 +195,8 @@ class _WavefrontCalibrationSuperpixel:
         interference_window = self.wavefront_calibration_superpixel_window(superpixel_size).ravel()
         interference_size = interference_window / self._wavefront_calibration_window_multiplier
 
-        interference_window = (interference_window // 2) * 2 + 1
-        interference_size = (interference_size // 2) * 2 + 1
+        interference_window = analysis._odd_size(interference_window)
+        interference_size = analysis._odd_size(interference_size)
 
         # Now that we have the supershape, we label each of the pixels with an index.
         # It's sometimes useful to map that index to the xy coordinates of the pixel,
@@ -240,8 +240,8 @@ class _WavefrontCalibrationSuperpixel:
         # Parse calibration_points.
         calibration_points = self._wavefront_calibration_points_parse(
             calibration_points,
-            pitch=1.5 * np.max(interference_window),
-            field_exclusion=np.max(interference_window),
+            pitch=1.5 * interference_window,
+            field_exclusion=interference_window,
             field_point=field_point,
             field_point_units=field_point_units,
             plot=plot,
@@ -425,7 +425,7 @@ class _WavefrontCalibrationSuperpixel:
             if order_distance_this < order_distance:
                 order_distance = order_distance_this
 
-        if np.mean(interference_window) > order_distance:
+        if np.max(interference_window) > order_distance:
             self.logger.warning(
                 "The requested calibration point(s) are close to the expected positions of "
                 "the field diffractive orders. Consider moving calibration regions further away."
@@ -443,7 +443,7 @@ class _WavefrontCalibrationSuperpixel:
             "euclidean",
         )
 
-        if np.mean(interference_window) / 2 > reflection_distance:
+        if np.max(interference_window) / 2 > reflection_distance:
             self.logger.warning(
                 "The requested calibration points are close to the expected positions of "
                 "the -1th orders of calibration points. Consider shifting the calibration regions "

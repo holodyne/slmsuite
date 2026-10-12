@@ -344,17 +344,15 @@ class SLM(_Common, ABC):
     @property
     def source_radius(self):
         r"""
-        The :math:`1/e` field-amplitude source radius in normalized units, for structured
-        beams such as :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian`. Set
-        independently of the pupil by :meth:`fit_aperture` or by
+        The ``(x, y)`` :math:`1/e` field-amplitude source radius in normalized units, for
+        structured beams such as :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian`.
+        Set independently of the pupil by :meth:`fit_aperture` or by
         :meth:`set_aperture` ``(radius=...)``. Otherwise, it is derived from the
-        :attr:`aperture` scaling as :math:`1 / (2\,s)`, where :math:`s` is the (isotropic)
-        lateral scale, which raises :class:`ValueError` for an anisotropic (elliptical)
-        aperture that a single radius cannot describe.
+        :attr:`aperture` scaling :math:`s` as :math:`1 / (2\,s)` along each axis.
         """
         if self._source_radius is not None:
             return self._source_radius
-        return float(1.0 / (2.0 * self.aperture._isotropic_scale()))
+        return 1.0 / (2.0 * np.array(self.aperture.scale))
 
     def _unpickle(self, data):
         """
@@ -388,7 +386,7 @@ class SLM(_Common, ABC):
         # A None radius (derived from the aperture) is written to .h5 as a bool.
         source_radius = data.get("_source_radius", None)
         if source_radius is not None and not isinstance(source_radius, (bool, np.bool_)):
-            self._source_radius = float(source_radius)
+            self._source_radius = np.full(2, source_radius, dtype=float)
 
         # Last, as this renders through everything set above. The stored phase is
         # already corrected, so it must not be corrected a second time.
@@ -1492,8 +1490,8 @@ class SLM(_Common, ABC):
 
     def _fit_source_radius(self, power, method):
         """
-        The ``(x, y)`` pixel center and the :math:`1/e` field-amplitude radius, in the grid's
-        normalized units, of a source ``power`` distribution. Analyzed by moment calculations
+        The ``(x, y)`` pixel center and the ``(x, y)`` :math:`1/e` field-amplitude radius, in
+        the grid's normalized units, of a source ``power`` distribution. Analyzed by moment calculations
         (``"moments"``, faster) or by a least-squares Gaussian ``"fit"`` (more accurate).
         """
         if method == "fit":
@@ -1513,11 +1511,12 @@ class SLM(_Common, ABC):
         # same convention to recover absolute pixels.
         center_pix = np.squeeze(center) + (np.flip(self.shape) - 1) / 2.0
 
-        return (center_pix, float(np.mean(self.pitch * np.squeeze(radius))))
+        return (center_pix, self.pitch * np.squeeze(radius))
 
     def _length_to_norm(self, length, units):
         """
-        Convert a scalar ``length`` in ``units`` to the grid's normalized units.
+        Convert a ``length`` or ``(x, y)`` pair in ``units`` to the grid's normalized units,
+        per axis for ``"pix"``.
         ``units`` is one of ``"norm"``, ``"frac"``, ``"pix"``, or a key of
         :attr:`~slmsuite.holography.toolbox.LENGTH_FACTORS`.
         """
@@ -1533,12 +1532,12 @@ class SLM(_Common, ABC):
                 float(xp.nanmax(self._grid_base[1])),
             )
         elif units == "pix":
-            factor = float(np.mean(self.pitch))
+            factor = self.pitch
         elif units in toolbox.LENGTH_FACTORS:
             factor = toolbox.LENGTH_FACTORS[units] / self.wav_um
         else:
             raise RuntimeError(f"Did not recognize units '{units}'")
-        return length * factor
+        return np.asarray(length, dtype=float) * factor
 
     def set_aperture(self, spec=None, *, radius=None, center=None, units="norm"):
         r"""
@@ -1561,8 +1560,9 @@ class SLM(_Common, ABC):
             ``(float, float)`` / an :class:`~slmsuite.holography.toolbox.Aperture`).
             Mutually exclusive with ``radius``. If both ``spec`` and ``radius`` are
             ``None``, the current aperture's spec is kept.
-        radius : float OR None
-            Shorthand for a circular aperture of the given source (:math:`1/e`) radius,
+        radius : float OR (float, float) OR None
+            Shorthand for a circular aperture of the given source (:math:`1/e`) radius, or
+            an elliptical one for an ``(x, y)`` pair or for ``"pix"`` on rectangular pixels,
             interpreted in ``units`` and stored as :attr:`source_radius`. The
             aperture/pupil itself extends to twice this radius (the lateral scaling is
             :math:`1 / (2\,r)`). Passing a new ``spec`` instead drops any stored source
@@ -1586,8 +1586,9 @@ class SLM(_Common, ABC):
         if radius is not None:
             if spec is not None:
                 raise ValueError("Provide either spec or radius, not both.")
-            source_radius = float(self._length_to_norm(radius, units))
+            source_radius = np.full(2, np.ravel(self._length_to_norm(radius, units)))
             spec = 1.0 / (2.0 * source_radius)
+            spec = float(spec[0]) if spec[0] == spec[1] else tuple(spec)
 
         # An Aperture may be passed directly; take its spec, and its (already
         # normalized) center unless an explicit pixel ``center`` overrides it.
@@ -1659,34 +1660,38 @@ class SLM(_Common, ABC):
 
         if "amplitude" not in self.source:
             # No measured amplitude: guess a circular aperture from the grid extent.
-            radius_norm = 0.25 * float(np.min(np.flip(self.shape) * self.pitch))
-            (center_norm, pupil_norm) = (None, 2.0 * radius_norm)
+            radius_norm = np.full(2, 0.25 * float(np.min(np.flip(self.shape) * self.pitch)))
+            (center_norm, pupil_norm) = (None, 2.0 * radius_norm[0])
         else:
             power = np.square(np.abs(as_numpy(self.source["amplitude"])), dtype=float)
             (center_pix, radius_norm) = self._fit_source_radius(power, method)
 
             # Fit the pupil to the rolloff of the source power, not its centroid, which
             # bright regions inside the aperture pull off center.
-            rolloff = analysis.image_aperture_fit(power, edge_level=edge_level)
+            rolloff = analysis.image_aperture_fit(
+                power,
+                edge_level=edge_level,
+                aspect=self.pitch[1] / self.pitch[0],
+            )
 
             if rolloff is None:
                 # With no edge, place the pupil where a Gaussian's power falls to edge_level.
                 center_norm = self._center_pix_to_norm(center_pix)
-                pupil_norm = float(np.sqrt(np.log(1 / edge_level) / 2) * radius_norm)
+                pupil_norm = float(np.sqrt(np.log(1 / edge_level) / 2 * np.prod(radius_norm)))
             else:
                 (edge_center, edge_radius) = rolloff
                 center_norm = self._center_pix_to_norm(edge_center)
-                pupil_norm = float(edge_radius * np.mean(self.pitch))
+                pupil_norm = float(edge_radius * self.pitch[0])
 
         for name, radius in (("source", radius_norm), ("aperture", pupil_norm)):
-            if not np.isfinite(radius) or radius <= 0:
+            if not np.all(np.isfinite(radius)) or np.any(radius <= 0):
                 raise RuntimeError(
                     f"fit_aperture found a degenerate {name} radius ({radius}); the "
                     "measured source amplitude carries no usable signal."
                 )
 
         self.aperture = toolbox.Aperture(self._grid_base, 1.0 / pupil_norm, center=center_norm)
-        self._source_radius = float(radius_norm)
+        self._source_radius = radius_norm
         self._grid = None
         return self.aperture
 
@@ -1864,30 +1869,23 @@ class SLM(_Common, ABC):
 
         return farfield
 
-    def get_spot_radius_kxy(self):
+    def get_spot_radius_kxy(self, form="scalar"):
         r"""
         Approximates the :math:`1/e` amplitude (:math:`1/e^2` power) radius of farfield
-        spots in the ``"kxy"`` basis: :math:`1 / (\pi w)` for a Gaussian source of
-        :math:`1/e` amplitude radius :math:`w =` :attr:`source_radius`.
+        spots in the ``"kxy"`` basis: :math:`1 / (\pi w)` along each axis for a Gaussian
+        source of :math:`1/e` amplitude radius :math:`w =` :attr:`source_radius`.
+
+        Parameters
+        ----------
+        form : {"scalar", "grid", "eigenvalue", "matrix"}
+            See :meth:`~slmsuite.holography.toolbox.convert_radius()`.
 
         Returns
         -------
-        float
-            Radius of the farfield spot.
+        float OR numpy.ndarray
+            Radius of the farfield spot, of the shape ``form`` returns.
         """
-        rad_norm = self.source_radius
-        rad_pix = rad_norm / np.mean(self.pitch)
-        rad_freq = np.reciprocal(np.pi * rad_pix)
-
-        psf_kxy = toolbox.convert_vector(
-            [rad_freq, rad_freq],
-            from_units="freq",
-            to_units="kxy",
-            hardware=self,
-            shape=self.shape,
-        )
-
-        return np.mean(psf_kxy)
+        return toolbox.convert_radius(1 / (np.pi * self.source_radius), "kxy", "kxy", form=form)
 
     # Self-test method to test everything above.
 

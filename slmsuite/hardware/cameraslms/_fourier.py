@@ -389,22 +389,16 @@ class _FourierCalibration:
     ### Fourier Calibration User Results ###
 
     def _kxyslm_to_ijcam_depth(self, kxy_depth):
-        """Helper function for handling depth conversion."""
-        f_eff = np.mean(self.get_effective_focal_length("norm"))
+        """Camera depth, in geometric-mean pixels, of a normalized focal power."""
         if self.cam.pitch_um is None:
-            cam_pitch_um = np.nan
-        else:
-            cam_pitch_um = np.mean(self.cam.pitch_um)
-        return kxy_depth * (self.slm.wav_um * f_eff * f_eff / cam_pitch_um)
+            return np.full_like(kxy_depth, np.nan, dtype=float)
+        f_um = self.get_effective_focal_length("um")
+        depth_pitch_um = float(np.sqrt(np.prod(self.cam.pitch_um)))
+        return kxy_depth * (f_um * f_um / (self.slm.wav_um * depth_pitch_um))
 
     def _ijcam_to_kxyslm_depth(self, ij_depth):
-        """Helper function for handling depth conversion."""
-        f_eff = np.mean(self.get_effective_focal_length("norm"))
-        if self.cam.pitch_um is None:
-            cam_pitch_um = np.nan
-        else:
-            cam_pitch_um = np.mean(self.cam.pitch_um)
-        return ij_depth * (cam_pitch_um / (self.slm.wav_um * f_eff * f_eff))
+        """Normalized focal power of a camera depth in geometric-mean pixels."""
+        return ij_depth / self._kxyslm_to_ijcam_depth(1.0)
 
     def kxyslm_to_ijcam(self, kxy):
         r"""
@@ -615,7 +609,7 @@ class _FourierCalibration:
 
     # Conversion functions to extract useful information from the Fourier calibration.
 
-    def get_farfield_spot_size(self, slm_size=None, basis="kxy"):
+    def get_farfield_spot_size(self, slm_size=None, basis="kxy", form="grid"):
         """
         Calculates the size of a spot produced by blazed patch of size ``slm_size`` on the SLM.
         If this patch is the size of the SLM, then we will find in the farfield (camera)
@@ -634,47 +628,33 @@ class _FourierCalibration:
             A scalar is interpreted as the width and height of a square.
             If ``None``, defaults to the size whose spot matches the source's, of radius
             :meth:`~slmsuite.hardware.slms.slm.SLM.get_spot_radius_kxy()`.
-        basis : {"kxy", "ij"}
-            Basis of the returned size;
-            ``"kxy"`` for SLM :math:`k`-space, ``"ij"`` for camera size.
+        basis : str
+            Units of the returned size, any unit of
+            :meth:`~slmsuite.holography.toolbox.convert_vector()`;
+            ``"kxy"`` for SLM :math:`k`-space, ``"ij"`` for camera pixels.
+        form : {"grid", "scalar", "eigenvalue", "matrix"}
+            See :meth:`~slmsuite.holography.toolbox.convert_radius()`. ``"grid"`` gives
+            the size along the axes of ``basis``.
 
         Returns
         -------
-        (float, float)
-            Size in x and y of the spot in the desired ``basis``.
-
-        Raises
-        ------
-        ValueError
-            If the basis argument was malformed.
+        numpy.ndarray OR float
+            Size of the spot in ``basis``, of the shape ``form`` returns.
         """
-        # Default to effective SLM aperture size (based on amplitude profile if measured)
+        if basis in toolbox.CAMERA_UNITS and "fourier" not in self.calibrations:
+            raise RuntimeError("Fourier calibration must exist to be used.")
+
         if slm_size is None:
-            psf_kxy = self.slm.get_spot_radius_kxy()
-            slm_size = (1 / psf_kxy, 1 / psf_kxy)
-        # Float input -> square region
-        elif isinstance(slm_size, REAL_TYPES):
-            slm_size = (slm_size, slm_size)
-
-        if basis == "kxy":
-            return (1 / slm_size[0], 1 / slm_size[1])
-        elif basis == "ij":
-            # Use the WOI/binning/orientation-aware affine
-            # so the de-rotation lives in the same coordinate frame as kxyslm_to_ijcam below.
-            M = self.fourier_affine.M
-            # Compensate for spot rotation s.t. spot size is along camera axes
-            size_kxy = np.linalg.inv(M / np.sqrt(np.abs(np.linalg.det(M)))) @ np.array(
-                (1 / slm_size[0], 1 / slm_size[1])
-            )
-            return np.abs(self.kxyslm_to_ijcam([0, 0]) - self.kxyslm_to_ijcam(size_kxy)).flatten()
+            size_kxy = self.slm.get_spot_radius_kxy(form="grid")
         else:
-            raise ValueError(f'Unrecognized basis "{basis}".')
+            size_kxy = 1 / np.ravel(slm_size).astype(float)
 
-    def get_effective_focal_length(self, units="norm"):
+        return toolbox.convert_radius(size_kxy, "kxy", basis, self, form=form)
+
+    def get_effective_focal_length(self, units="norm", form="scalar"):
         """
-        Uses the Fourier calibration to estimate the scalar effective focal length of the
+        Uses the Fourier calibration to estimate the effective focal length of the
         optical train separating the Fourier-domain SLM from the camera.
-        This currently assumes an isotropic imaging train without cylindrical optics.
 
         Tip
         ~~~
@@ -694,34 +674,34 @@ class _FourierCalibration:
 
             -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
                 Focal length in metric units.
+        form : {"scalar", "grid", "eigenvalue", "matrix"}
+            See :meth:`~slmsuite.holography.toolbox.convert_radius()`. ``"scalar"`` is the
+            geometric mean, and warns when the principal focal lengths (``"eigenvalue"``)
+            differ by more than 1%, as for cylindrical optics or a sheared calibration.
 
         Returns
         -------
-        f_eff : float
-            Effective focal length.
+        float OR numpy.ndarray
+            Effective focal length, of the shape ``form`` returns.
         """
         if "fourier" not in self.calibrations:
             raise RuntimeError("Fourier calibration must exist to be used.")
 
-        # Gather f_eff in pix/rad. This is WOI-invariant (WOI only shifts the affine
-        # offset, not M) and binning-invariant in metric units (the 1/bin factor in
-        # fourier_affine cancels the *bin factor in cam.pitch_um).
-        f_eff = np.sqrt(np.abs(self.fourier_affine.det()))
-
-        # Gather other conversions.
-        if units != "ij" and self.cam.pitch_um is None:
-            self.logger.warning("cam.pitch_um must be set to use units '%s'", units)
-            return np.nan
-
-        # Convert.
-        if units == "ij":
-            pass
-        elif units == "norm":
-            f_eff *= np.array(self.cam.pitch_um) / self.slm.wav_um
-        elif units in toolbox.LENGTH_FACTORS:
-            f_eff *= np.array(self.cam.pitch_um) / toolbox.LENGTH_FACTORS[units]
-        else:
+        (to_units, factor) = ("um", 1 / self.slm.wav_um) if units == "norm" else (units, 1)
+        if to_units != "ij" and to_units not in toolbox.LENGTH_FACTORS:
             raise ValueError(f"Unit '{units}' not recognized as a length.")
+
+        f_eff = toolbox.convert_radius(factor, "kxy", to_units, self, form=form)
+
+        if form == "scalar":
+            # Compare in microns, so that rectangular camera pixels are not mistaken for optics.
+            physical = to_units if self.cam.pitch_um is None else "um"
+            (f_max, f_min) = toolbox.convert_radius(1, "kxy", physical, self, form="eigenvalue")
+            if f_max > 1.01 * f_min:
+                warnings.warn(
+                    f"The principal focal lengths differ by {100 * (f_max / f_min - 1):.1f}%; "
+                    "the scalar is their geometric mean."
+                )
 
         return f_eff
 
@@ -789,22 +769,15 @@ class _FourierCalibration:
             # ``knm = A @ ij + b`` is affine, so a box of half-widths ``h`` about the
             # farfield center maps inside the unit square exactly when
             # ``abs(A) @ h <= 0.5`` --- worst case over the corners' sign choices.
-            # Recover ``abs(A)`` by mapping the origin and the two unit vectors together,
-            # then differencing.
-            probe_knm = toolbox.convert_vector(
-                np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
-                from_units="ij",
-                to_units="knm",
-                hardware=self,
-                shape=[1, 1],
-            )[:2]
-            jacobian = np.abs(probe_knm[:, 1:] - probe_knm[:, [0]])
+            abs_A = np.abs(
+                toolbox.convert_radius(1, "ij", "knm", self, shape=(1, 1), form="matrix")
+            )
 
             # Scale the farfield's bounding box down by the largest feasible factor,
             # keeping its aspect ratio.
             center = np.mean(corners_ij[:, :4], axis=1, keepdims=True)
             half = np.ptp(corners_ij, axis=1).reshape(2, 1) / 2.0
-            half = half * np.min(0.5 / np.maximum(jacobian @ half, 1e-12))
+            half = half * np.min(0.5 / np.maximum(abs_A @ half, 1e-12))
 
             margin = np.broadcast_to(np.reshape(margin, (-1, 1)), (2, 1)).astype(float)
             (low, high) = (center - half + margin, center + half - margin)
