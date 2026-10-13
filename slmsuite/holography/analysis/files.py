@@ -11,7 +11,6 @@ This uses the :mod:`h5py` `module <https://h5py.org>`_.
 
 import os
 import re
-import warnings
 
 import cv2
 import h5py
@@ -492,6 +491,6 @@ def save_image(file_path, images, cmap=False, lut=None, normalize=True, border=N
 
             optimize(file_path)
         except ImportError:
-            warnings.warn("pip install pygifsicle to optimize .gif file size.")
+            logger.info("pip install pygifsicle to optimize .gif file size.")
         except Exception as e:
             logger.warning("pygifsicle optimization failed: %s", e)
