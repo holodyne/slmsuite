@@ -192,11 +192,11 @@ class _WavefrontCalibrationSuperpixel:
 
         # Next, we get the size of the window necessary to measure a spot
         # produced by the given superpixel size.
-        interference_window = self.wavefront_calibration_superpixel_window(superpixel_size).ravel()
+        interference_window = self.wavefront_calibration_superpixel_window(superpixel_size)
         interference_size = interference_window / self._wavefront_calibration_window_multiplier
 
-        interference_window = (interference_window // 2) * 2 + 1
-        interference_size = (interference_size // 2) * 2 + 1
+        interference_window = analysis._odd_size(interference_window)
+        interference_size = analysis._odd_size(interference_size)
 
         # Now that we have the supershape, we label each of the pixels with an index.
         # It's sometimes useful to map that index to the xy coordinates of the pixel,
@@ -240,8 +240,8 @@ class _WavefrontCalibrationSuperpixel:
         # Parse calibration_points.
         calibration_points = self._wavefront_calibration_points_parse(
             calibration_points,
-            pitch=1.5 * np.max(interference_window),
-            field_exclusion=np.max(interference_window),
+            pitch=1.5 * interference_window,
+            field_exclusion=interference_window,
             field_point=field_point,
             field_point_units=field_point_units,
             plot=plot,
@@ -425,7 +425,7 @@ class _WavefrontCalibrationSuperpixel:
             if order_distance_this < order_distance:
                 order_distance = order_distance_this
 
-        if np.mean(interference_window) > order_distance:
+        if np.max(interference_window) > order_distance:
             self.logger.warning(
                 "The requested calibration point(s) are close to the expected positions of "
                 "the field diffractive orders. Consider moving calibration regions further away."
@@ -443,7 +443,7 @@ class _WavefrontCalibrationSuperpixel:
             "euclidean",
         )
 
-        if np.mean(interference_window) / 2 > reflection_distance:
+        if np.max(interference_window) / 2 > reflection_distance:
             self.logger.warning(
                 "The requested calibration points are close to the expected positions of "
                 "the -1th orders of calibration points. Consider shifting the calibration regions "
@@ -695,8 +695,8 @@ class _WavefrontCalibrationSuperpixel:
                 )
 
                 # Map pixels into the superpixel's farfield, where the sinc zeros are integers.
-                transform = format_2vectors(superpixel_size * self.slm.pitch) * np.linalg.inv(
-                    self.fourier_affine.M
+                transform = toolbox.convert_radius(
+                    1, "ij", (superpixel_size, superpixel_size), self, form="matrix"
                 )
                 xy = np.tensordot(transform, np.stack(xy), axes=1)
                 xyr = xy.reshape(2, -1)
@@ -1255,7 +1255,7 @@ class _WavefrontCalibrationSuperpixel:
             The size of the superpixel on the SLM.
         """
         interference_size = np.rint(
-            np.array(self.get_farfield_spot_size(superpixel_size * self.slm.pitch, basis="ij"))
+            self.get_farfield_spot_size(superpixel_size * self.slm.pitch, basis="ij")
         ).astype(int)
 
         return self._wavefront_calibration_window_multiplier * interference_size

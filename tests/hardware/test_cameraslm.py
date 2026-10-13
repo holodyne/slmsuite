@@ -4,6 +4,7 @@ Unit tests for FourierSLM and the calibrations mixed into it.
 
 import logging
 import os
+import warnings
 
 import cv2
 import matplotlib.pyplot as plt
@@ -223,6 +224,14 @@ def _run_calibration(fs, case, source, results, plot):
     return (error, tolerance, note, failure)
 
 
+def rectangular_camera_system():
+    """A 100 mm Fourier system imaged onto 5 x 10 um camera pixels."""
+    slm = SimulatedSLM((128, 128), pitch_um=8, wav_um=1.0)
+    fs = FourierSLM(SimulatedCamera(slm, resolution=(256, 256), pitch_um=(5, 10)), slm)
+    fs.fourier_calibrate_analytic(*fs.fourier_calibration_build(100, units="mm"))
+    return fs
+
+
 class TestFourierSLM:
     """Tests for public methods on FourierSLM."""
 
@@ -389,10 +398,9 @@ class TestFourierSLM:
             assert np.allclose(size_ij, np.abs(ground_truth_affine(fs)[0]) @ size_kxy)
 
         with subtests.test("ij spot size is measured in the frame the user sees"):
-            # The de-rotation reduces algebraically to
-            #   size_ij == sqrt(|det(fourier_affine.M)|) * (1/Wx, 1/Wy)
-            # for any WOI, binning, or orientation. An anisotropic aperture plus a
-            # non-trivial orientation is what distinguishes this from the raw affine.
+            # The spot is the kxy ellipse mapped by the affine of the frame the user sees,
+            # whose row norms are its extent along the camera axes. An anisotropic aperture
+            # plus a non-trivial orientation is what distinguishes this from the raw affine.
             (Wx, Wy) = (1.0, 2.0)
             try:
                 for rot, binning, woi in [
@@ -406,7 +414,7 @@ class TestFourierSLM:
                     fs.cam.set_woi(woi)
 
                     size = fs.get_farfield_spot_size((Wx, Wy), basis="ij")
-                    expected = np.sqrt(np.abs(fs.fourier_affine.det())) * np.array([1 / Wx, 1 / Wy])
+                    expected = np.linalg.norm(fs.fourier_affine.M / (Wx, Wy), axis=1)
                     assert np.allclose(size, expected), (
                         f"rot={rot} binning={binning} woi={woi}: {size} != {expected}"
                     )
@@ -415,8 +423,32 @@ class TestFourierSLM:
                 fs.cam.set_binning(1)
                 fs.cam.set_woi(None)
 
+        with subtests.test("rectangular camera pixels give a per-axis spot size"):
+            # A 1000-wavelength patch blazes 1e-3 rad, 100 um at f = 100 mm.
+            np.testing.assert_allclose(
+                rectangular_camera_system().get_farfield_spot_size(1000, basis="ij"), (20, 10)
+            )
+
+        with subtests.test("the forms differ on a rotated calibration"):
+            rotated = simulated_system_factory("rotated")
+            install_ground_truth_calibration(rotated)
+            matrix = rotated.get_farfield_spot_size((1000, 500), basis="ij", form="matrix")
+            np.testing.assert_allclose(
+                rotated.get_farfield_spot_size((1000, 500), basis="ij"),
+                np.linalg.norm(matrix, axis=1),
+            )
+            np.testing.assert_allclose(
+                rotated.get_farfield_spot_size((1000, 500), basis="ij", form="eigenvalue"),
+                np.linalg.svd(matrix, compute_uv=False),
+            )
+            # Rotation mixes the axes: the bounding extent is not the principal radii.
+            assert not np.allclose(
+                np.sort(rotated.get_farfield_spot_size((1000, 500), basis="ij")),
+                np.sort(np.linalg.svd(matrix, compute_uv=False)),
+            )
+
         with subtests.test("bad basis raises"):
-            with pytest.raises(ValueError, match="Unrecognized basis"):
+            with pytest.raises(ValueError, match="not recognized"):
                 fs.get_farfield_spot_size(slm_size=1.0, basis="badvalue")
 
     def test_get_effective_focal_length(self, simulated_system_factory, subtests):
@@ -442,6 +474,35 @@ class TestFourierSLM:
         with subtests.test("raises without a calibration"):
             with pytest.raises(RuntimeError):
                 simulated_system_factory("matched").get_effective_focal_length()
+
+        with subtests.test("rectangular camera pixels recover the physical focal length"):
+            fs = rectangular_camera_system()
+            assert fs.get_effective_focal_length("mm") == pytest.approx(100)
+            assert fs.get_effective_focal_length("norm") == pytest.approx(100e3 / fs.slm.wav_um)
+            np.testing.assert_allclose(fs.get_effective_focal_length("mm", "eigenvalue"), 100)
+            # Depth in microns is f^2 times the focal power over the wavelength.
+            depth = convert_vector([0, 0, 1e-4], "kxy", "um", fs)[2, 0]
+            assert depth == pytest.approx(1e-4 * 100e3**2 / fs.slm.wav_um)
+
+        with subtests.test("depth in camera pixels warns on rectangular pixels and round-trips"):
+            fs = rectangular_camera_system()
+            with pytest.warns(UserWarning, match="geometric-mean pixel"):
+                ij = convert_vector([0, 0, 1e-4], "kxy", "ij", fs)
+            np.testing.assert_allclose(convert_vector(ij, "ij", "kxy", fs)[2], 1e-4)
+
+        with subtests.test("rectangular pixels alone do not warn"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                rectangular_camera_system().get_effective_focal_length("ij")
+
+        with subtests.test("principal focal lengths that differ warn on the scalar"):
+            fs = simulated_system_factory("sheared")
+            install_ground_truth_calibration(fs)
+            with pytest.warns(UserWarning, match="principal focal lengths differ"):
+                f_eff = fs.get_effective_focal_length("ij")
+            assert f_eff == pytest.approx(
+                np.sqrt(np.prod(fs.get_effective_focal_length("ij", form="eigenvalue")))
+            )
 
     @pytest.mark.parametrize("name", GEOMETRY_CASES)
     def test_get_farfield_extent(self, simulated_system_factory, name, subtests):

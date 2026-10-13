@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from conftest import (
+    f_eff_from_ratio,
     ground_truth_kxy_to_ij,
     install_ground_truth_calibration,
     seed_for,
@@ -210,7 +211,7 @@ class TestHologram:
         h.reset_weights()
         assert np.allclose(_np(h.weights), np.nan_to_num(target, nan=0.0))
 
-    def test_get_padded_shape(self, subtests):
+    def test_get_padded_shape(self, simulated_system_factory, subtests):
         with subtests.test("padding_order raises each dimension to that power of two"):
             # The worked example from the docstring.
             for order, expected in ((0, (720, 1280)), (1, (1024, 2048)), (2, (2048, 4096))):
@@ -229,6 +230,25 @@ class TestHologram:
 
         with subtests.test("square padding takes the larger dimension"):
             assert Hologram.get_padded_shape((128, 256)) == (256, 256)
+
+        with subtests.test("precision pads each axis by its own pitch"):
+            fs = simulated_system_factory("matched", slm_pitch_um=(8.0, 16.0))
+            install_ground_truth_calibration(fs)
+            precision = 1e-4
+            (h, w) = Hologram.get_padded_shape(fs, precision=precision, square_padding=False)
+            expected = 2 ** np.ceil(np.log2(1 / (fs.slm.pitch * precision)))
+            assert (w, h) == tuple(expected.astype(int))
+            (h, w) = Hologram.get_padded_shape(
+                fs, precision=1, precision_basis="ij", square_padding=False
+            )
+            step = np.max(np.abs(fs.fourier_affine.M), axis=0) / fs.slm.pitch
+            assert (w, h) == tuple((2 ** np.ceil(np.log2(step))).astype(int))
+
+        with subtests.test("camera precision needs a fourier calibration"):
+            with pytest.raises(RuntimeError):
+                Hologram.get_padded_shape(
+                    simulated_system_factory("matched"), precision=1, precision_basis="ij"
+                )
 
     def test_set_target(self, subtests):
         with subtests.test("the constructor L2 normalizes"):
@@ -967,9 +987,7 @@ class TestSpotHologram:
 
         spots_kxy = view_kxy_grid(fs, count=2, frac=0.3)
         spots_ij = fs.kxyslm_to_ijcam(spots_kxy)
-        spots_knm = toolbox.convert_vector(
-            spots_kxy, "kxy", "knm", hardware=fs.slm, shape=fs.slm.shape
-        )
+        spots_knm = toolbox.convert_vector(spots_kxy, "kxy", fs.slm.shape, hardware=fs.slm)
         null_kxy = view_kxy_grid(fs, count=2, frac=0.6)
 
         with subtests.test("the kxy, ij and knm bases describe the same spots"):
@@ -1008,9 +1026,7 @@ class TestSpotHologram:
                 basis="ij",
                 cameraslm=fs,
                 null_vectors=fs.kxyslm_to_ijcam(null_kxy),
-                null_radius=toolbox.convert_radius(
-                    null_radius_kxy, "kxy", "ij", hardware=fs, shape=fs.slm.shape
-                ),
+                null_radius=toolbox.convert_radius(null_radius_kxy, "kxy", "ij", hardware=fs),
             )
 
             np.testing.assert_allclose(from_kxy.null_knm, from_ij.null_knm)
@@ -1312,7 +1328,7 @@ class TestCompressedSpotHologram:
     @classmethod
     def _against_fft(cls, fs, cuda):
         """A random-phase compressed hologram, its farfield, and the fft farfield at the spots."""
-        kxy = toolbox.convert_vector(cls.KNM, "knm", "kxy", hardware=fs.slm, shape=fs.slm.shape)
+        kxy = toolbox.convert_vector(cls.KNM, fs.slm.shape, "kxy", hardware=fs.slm)
         phase = np.random.default_rng(0).uniform(0, 2 * np.pi, fs.slm.shape)
 
         h = CompressedSpotHologram(kxy, basis="kxy", cameraslm=fs, cuda=cuda)
@@ -1383,6 +1399,25 @@ class TestCompressedSpotHologram:
             assert efficiency == pytest.approx(fraction(), rel=1e-4)
             assert efficiency > 0.5
 
+    def test_rectangular_pitch(self, simulated_system_factory, subtests):
+        """Spots on an SLM with rectangular pixels and an elliptical aperture."""
+        fs = simulated_system_factory("matched", slm_pitch_um=(8.0, 16.0))
+        install_ground_truth_calibration(fs)
+        nyquist = 1 / (2 * fs.slm.pitch)
+
+        with subtests.test("the farfield bound is the Nyquist limit of each axis"):
+            for vector in ([0, 1.15 * nyquist[1]], [1.15 * nyquist[0], 0]):
+                with pytest.raises(ValueError, match="farfield"):
+                    CompressedSpotHologram(np.c_[vector], basis="kxy", cameraslm=fs, cuda=False)
+
+        with subtests.test("an elliptical aperture scales the zernike tilt per axis"):
+            fs.slm.set_aperture((0.002, 0.004))
+            h = CompressedSpotHologram(np.c_[[0.005, 0.005]], basis="kxy", cameraslm=fs, cuda=False)
+            np.testing.assert_allclose(
+                h.spot_zernike[:2, 0], 2 * np.pi * np.array([0.005 / 0.002, 0.005 / 0.004])
+            )
+            assert h.spot_integration_width_ij[0] != h.spot_integration_width_ij[1]
+
     def test_spot_integration_width_ij(self, simulated_system_factory, subtests, caplog):
         """A width widened after construction warns when the regions leave the frame."""
         fs = simulated_system_factory("matched")
@@ -1396,7 +1431,7 @@ class TestCompressedSpotHologram:
             with caplog.at_level(logging.WARNING):
                 caplog.clear()
                 h.spot_integration_width_ij = 5
-            assert h.spot_integration_width_ij == 5
+            np.testing.assert_array_equal(h.spot_integration_width_ij, (5, 5))
             assert "outside camera bounds" not in caplog.text.lower()
 
         with subtests.test("a width that overruns the frame warns"):
@@ -1486,6 +1521,25 @@ class TestCompressedSpotHologram:
 
 
 class TestMultiplaneHologram:
+    def test_get_multiplane_defocus_blur(self, simulated_system_factory):
+        """The blur of a point is that of a Gaussian beam defocused by f^2 P / wav microns."""
+        import cv2
+
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+        (pitch, wav) = (fs.cam.pitch_um[0], fs.slm.wav_um)
+        f_um = wav * f_eff_from_ratio(1.0, fs.cam.shape[1], pitch, fs.slm.pitch_um[0], wav)
+        w0_um = f_um * fs.slm.get_spot_radius_kxy()
+        zr = np.pi * w0_um**2 / wav
+
+        # Defocus by sqrt(15) Rayleigh ranges widens the beam to four times its waist.
+        depth = np.sqrt(15) * zr * wav / f_um**2
+        target = np.zeros((1, 64, 64))
+        target[0, 32, 32] = 1
+        blur = MultiplaneHologram.get_multiplane_defocus_blur(fs, target, [depth], [0])
+        width = 2 * int(3 * w0_um / pitch) + 1
+        np.testing.assert_allclose(blur[0], cv2.GaussianBlur(target[0], (width, width), 0))
+
     def test_init(self, subtests):
         mph = _multiplane(n=2)
 

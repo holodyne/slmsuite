@@ -553,7 +553,8 @@ class TestSLM:
             assert slm.source_radius == pytest.approx(np.sqrt(2) * w)
             assert np.allclose(as_numpy(slm.aperture.center), 0)
             # A Gaussian has no rolloff edge, so the pupil sits where its power falls to edge_level.
-            pupil = 1 / slm.aperture._isotropic_scale()
+            assert slm.aperture.is_isotropic
+            pupil = 1 / slm.aperture.scale[0]
             assert pupil == pytest.approx(np.sqrt(2) * w * np.sqrt(np.log(1 / 0.1) / 2), rel=2e-2)
 
         with subtests.test("a flat-top source gets a pupil at its edge, not twice its radius"):
@@ -564,7 +565,7 @@ class TestSLM:
             # edge_level=0.5 places the pupil at the middle of the rolloff, the geometric edge.
             slm.fit_aperture(method="moments", edge_level=0.5)
             assert slm.source_radius == pytest.approx(a, rel=2e-2)
-            assert 1 / slm.aperture._isotropic_scale() == pytest.approx(a, rel=2e-2)
+            assert 1 / slm.aperture.scale[0] == pytest.approx(a, rel=2e-2)
 
         with subtests.test("a clipped, unevenly lit source is fit at its edge, not its centroid"):
             slm.set_aperture("cropped")
@@ -585,17 +586,17 @@ class TestSLM:
 
             slm.fit_aperture()
             np.testing.assert_allclose(as_numpy(slm.aperture.center), (cx, cy), atol=0.01 * a)
-            assert 1 / slm.aperture._isotropic_scale() == pytest.approx(a, rel=2e-2)
+            assert 1 / slm.aperture.scale[0] == pytest.approx(a, rel=2e-2)
 
         with subtests.test("a lower edge_level widens the pupil about the same center"):
             slm.fit_aperture(edge_level=0.5)
             (center, pupil) = (
                 as_numpy(slm.aperture.center).copy(),
-                1 / slm.aperture._isotropic_scale(),
+                1 / slm.aperture.scale[0],
             )
             slm.fit_aperture(edge_level=0.01)
             np.testing.assert_allclose(as_numpy(slm.aperture.center), center)
-            assert 1 / slm.aperture._isotropic_scale() > pupil
+            assert 1 / slm.aperture.scale[0] > pupil
 
         with subtests.test("edge_level outside (0, 1) raises"):
             with pytest.raises(ValueError, match="edge_level"):
@@ -614,7 +615,7 @@ class TestSLM:
             (grid, radius) = ([g.copy() for g in slm.grid], slm.source_radius)
             slm.fit_aperture()
             assert all(np.array_equal(a, b) for (a, b) in zip(grid, slm.grid))
-            assert slm.source_radius == radius
+            assert np.array_equal(slm.source_radius, radius)
 
         with subtests.test("an unknown method raises"):
             with pytest.raises(ValueError, match="method"):
@@ -658,10 +659,18 @@ class TestSLM:
             with pytest.raises(ValueError, match="not both"):
                 slm.set_aperture("circular", radius=0.3)
 
-        with subtests.test("source_radius rejects an anisotropic aperture"):
+        with subtests.test("an old scalar source radius loads as a pair"):
+            data = slm.pickle(attributes=True, metadata=False)
+            data["_source_radius"] = 0.5
+            slm._unpickle(data)
+            np.testing.assert_array_equal(slm.source_radius, (0.5, 0.5))
+
+        with subtests.test("an elliptical aperture has a per-axis source radius"):
             slm.set_aperture((0.01, 0.02))
-            with pytest.raises(ValueError, match="isotropic"):
-                _ = slm.source_radius
+            np.testing.assert_allclose(slm.source_radius, (50, 25))
+            slm.set_aperture(radius=np.array([[0.3], [0.6]]))
+            np.testing.assert_allclose(slm.source_radius, (0.3, 0.6))
+            assert slm.aperture.scale == pytest.approx((1 / 0.6, 1 / 1.2))
 
         with subtests.test("zernike_sum masks a centered aperture consistently"):
             slm.set_aperture(radius=0.3, units="frac", center=(cx, cy))
@@ -816,6 +825,15 @@ class TestSLM:
 
         with subtests.test("exp(-r^2/w^2) transforms to exp(-pi^2 w^2 k^2), so it is 1/(pi w)"):
             assert radius == pytest.approx(1 / (np.pi * w), rel=1e-6)
+
+        with subtests.test("rectangular pixels and an elliptical source, per axis"):
+            rect = SimulatedSLM((64, 64), pitch_um=(8, 16), wav_um=1.0)
+            rect.set_aperture(radius=200)
+            assert rect.get_spot_radius_kxy() == pytest.approx(1 / (np.pi * 200))
+            rect.set_aperture(radius=(100, 300))
+            np.testing.assert_allclose(
+                rect.get_spot_radius_kxy(form="grid"), 1 / (np.pi * np.array([100, 300]))
+            )
 
         with subtests.test("it is the 1/e radius of the point spread function"):
             (x, y) = [as_numpy(g) for g in slm_small.grid]

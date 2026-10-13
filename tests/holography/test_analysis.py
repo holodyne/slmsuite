@@ -205,6 +205,29 @@ def test_take(subtests, benchmark):
             analysis.take(image, vectors=[50, 40], size=10, centered=True, integrate=True),
         )
 
+    with subtests.test("take_validate floors the anchor, then fits the window inside"):
+        x = np.array([1.0, 1.9, 2.0, 2.4, 7.5, 7.9, 8.0, np.nan])
+        vectors = np.vstack((x, np.full_like(x, 5)))
+        # Centered windows of width 5 span [-2, 2] and of width 4 span [-2, 1].
+        for size, expected in (
+            (5, [0, 0, 1, 1, 1, 1, 0, 0]),
+            (4, [0, 0, 1, 1, 1, 1, 1, 0]),
+            (np.array([[1], [1]]), [1, 1, 1, 1, 1, 1, 1, 0]),
+        ):
+            np.testing.assert_array_equal(
+                analysis.take_validate((10, 10), vectors, size), np.array(expected, dtype=bool)
+            )
+
+    with subtests.test("take_validate takes an image or a stack in place of a shape"):
+        vectors = [[2.0, 8.0], [5.0, 5.0]]
+        expected = analysis.take_validate((10, 12), vectors, 5)
+        for images in (np.zeros((10, 12)), np.zeros((3, 10, 12))):
+            np.testing.assert_array_equal(analysis.take_validate(images, vectors, 5), expected)
+
+    with subtests.test("a non-finite vector is blanked by clip=True"):
+        result = analysis.take(np.ones((10, 10)), [[np.nan], [5]], 3, integrate=True, clip=True)
+        assert result[0] == 0
+
     with subtests.test("more than three image dimensions raises"):
         with pytest.raises(RuntimeError):
             analysis.take(np.zeros((2, 3, 50, 50)), vectors=[25, 25], size=10)
@@ -767,6 +790,14 @@ def test_image_aperture_fit(subtests):
         np.testing.assert_array_equal(center, center_half)
         # The edge, blurred by the default 1.5 pixel smoothing, falls to 10% ndtri(0.9) widths out.
         assert radius == pytest.approx(100 + np.hypot(3.0, 1.5) * ndtri(0.9), abs=0.5)
+
+    with subtests.test("an aspect fits a circle on rectangular pixels"):
+        ellipse = ((xx - 250.5) / 120) ** 2 + ((yy - 140.5) / 60) ** 2 <= 1
+        (center, radius) = analysis.image_aperture_fit(
+            ellipse.astype(float), aspect=2, edge_level=0.5
+        )
+        np.testing.assert_allclose(center, (250.5, 140.5), atol=0.2)
+        assert radius == pytest.approx(120, abs=0.5)
 
     with subtests.test("edge_level outside (0, 1) raises"):
         with pytest.raises(ValueError, match="edge_level"):
