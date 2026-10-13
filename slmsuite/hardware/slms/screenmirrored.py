@@ -8,7 +8,6 @@ thread via a thread-safe queue.
 """
 
 import time
-import warnings
 
 from slmsuite._logging import make_logger
 from slmsuite.hardware._pyglet import _Window, _WindowManager, _WindowThread, get_pyglet_display
@@ -20,7 +19,7 @@ try:
     import pyglet
 except ImportError:
     pyglet = None
-    warnings.warn("pyglet not installed. Install to use ScreenMirrored SLMs.")
+    logger.warning("pyglet not installed. Install to use ScreenMirrored SLMs.")
 
 try:
     import cupy as cp

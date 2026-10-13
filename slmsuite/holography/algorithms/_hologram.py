@@ -400,7 +400,7 @@ class Hologram(_HologramStats, _Loggable):
             if target is None:
                 target = []
         else:  # Other cases
-            if len(target) == 2:  # (int, int) was passed.
+            if np.ndim(target) == 1 and len(target) == 2:  # (int, int) was passed.
                 self.shape = target
                 target = None
             elif len(np.shape(target)) == 2:  # array_like (true target) passed.
@@ -925,8 +925,9 @@ class Hologram(_HologramStats, _Loggable):
             :attr:`propagation_kernel` if one is present. Otherwise, no kernel is
             applied. Zeroing can force no kernel to be applied and yield the raw DFT.
         affine : dict
-            Affine transformation to apply to farfield data (in the form of a dictionary
-            with keys ``"M"`` and ``"b"``).
+            Affine transformation as a dictionary with keys ``"M"`` and ``"b"``: output
+            pixel :math:`o` samples the farfield at :math:`M o + b`, in (row, column) index
+            order, as in :func:`scipy.ndimage.affine_transform`.
             If ``None``, no transformation is applied.
         get : bool
             Whether or not to convert the cupy array to a numpy array if cupy is used.
@@ -963,32 +964,18 @@ class Hologram(_HologramStats, _Loggable):
             self.phase_ff = cp.arctan2(farfield.imag, farfield.real, out=self.phase_ff)
 
         # Transform as desired. Note that this will likely break normalization.
-        if cp != np:
-            if affine is not None:
-                cp_affine_transform(
-                    input=farfield,
-                    matrix=affine["M"],
-                    offset=affine["b"],
-                    output_shape=shape,
-                    order=3,
-                    output=farfield,
-                    mode="constant",
-                    cval=0,
-                )
-            return farfield.get() if get else farfield
-        else:
-            if affine is not None:
-                sp_affine_transform(
-                    input=farfield,
-                    matrix=affine["M"],
-                    offset=affine["b"],
-                    output_shape=shape,
-                    order=3,
-                    output=farfield,
-                    mode="constant",
-                    cval=0,
-                )
-            return farfield
+        if affine is not None:
+            cp_affine_transform(
+                input=farfield,
+                matrix=as_backend(affine["M"], cp),
+                offset=np.squeeze(as_numpy(affine["b"])),
+                output_shape=shape,
+                order=3,
+                output=farfield,
+                mode="constant",
+                cval=0,
+            )
+        return as_numpy(farfield) if get else farfield
 
     # Propagation: nearfield-farfield helper functions.
     def _populate_results(self):
@@ -1627,7 +1614,7 @@ class Hologram(_HologramStats, _Loggable):
         # We test whether it is available https://github.com/cupy/cupy/pull/7281
         try:
             test = cp.arange(10)
-            cp.multiply(test, test, where=test > 5)
+            cp.multiply(test, test, out=test, where=test > 5)
             where_working = True
         except Exception:
             try:
@@ -1921,11 +1908,12 @@ class Hologram(_HologramStats, _Loggable):
             feedback_corrected *= -1
             feedback_corrected += target_amp
         else:  # Multiplicative
-            xp.divide(
-                feedback_corrected,
-                xp.array(target_amp, copy=(False if np.__version__[0] == "1" else None)),
-                out=feedback_corrected,
-            )
+            with np.errstate(divide="ignore", invalid="ignore"):  # Zero targets are reset below.
+                xp.divide(
+                    feedback_corrected,
+                    xp.array(target_amp, copy=(False if np.__version__[0] == "1" else None)),
+                    out=feedback_corrected,
+                )
 
             if nan_checks:
                 feedback_corrected[feedback_corrected == xp.inf] = 1

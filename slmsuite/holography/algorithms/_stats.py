@@ -49,7 +49,7 @@ class _HologramStats:
 
         # If total is provided, calculate efficiency before normalization.
         if total is not None:
-            efficiency = xp.nansum(feedback_pwr) / total
+            efficiency = xp.nansum(feedback_pwr) / total if total > 0 else np.nan
             # self._stats_pinned[0]
 
         # Normalize. Guard against an all-zero feedback/target (e.g. a blank target or a
@@ -270,8 +270,35 @@ class _HologramStats:
                 # is_gpu_array, not hasattr(value, "get"): dicts have a .get() too.
                 to_save[key] = as_numpy(value) if is_gpu_array(value) else value
 
-        # Save stats.
-        to_save["stats"] = self.stats
+        # Save stats. Iterations without raw stats hold a scalar NaN beside the arrays.
+        def fill(values):
+            first = next((np.asarray(v) for v in values if np.ndim(v) > 0), None)
+            if first is None:
+                return values
+            dtype = np.result_type(first.dtype, np.float32)
+            return [np.full(first.shape, np.nan, dtype) if np.ndim(v) == 0 else v for v in values]
+
+        stats = dict(self.stats)
+        stats["stats"] = {
+            group: {key: fill(values) for key, values in group_stats.items()}
+            for group, group_stats in self.stats["stats"].items()
+        }
+        if "raw_farfield" in stats:
+            stats["raw_farfield"] = fill(stats["raw_farfield"])
+
+        # A flag holding a list, such as stat_groups, is padded with "" to one length.
+        def pad(values):
+            lists = [v for v in values if isinstance(v, (list, tuple))]
+            if not lists:
+                return values
+            width = max(len(v) for v in lists)
+            return [
+                list(v) + [""] * (width - len(v)) if isinstance(v, (list, tuple)) else [""] * width
+                for v in values
+            ]
+
+        stats["flags"] = {flag: pad(values) for flag, values in self.stats["flags"].items()}
+        to_save["stats"] = stats
 
         save_h5(file_path, to_save)
 
@@ -321,7 +348,10 @@ class _HologramStats:
 
         stats["method"] = np.asarray(stats["method"]).tolist()
         for key, value in stats["flags"].items():
-            stats["flags"][key] = np.asarray(value).tolist()
+            stats["flags"][key] = [
+                [s for s in v if s != ""] if isinstance(v, list) else v
+                for v in np.asarray(value).tolist()
+            ]
         for group in stats["stats"].values():
             # Only the outer axis is a list; raw stats hold an array per iteration.
             for key, value in group.items():

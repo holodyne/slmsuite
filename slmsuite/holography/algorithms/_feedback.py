@@ -382,7 +382,7 @@ class FeedbackHologram(Hologram):
                 "out of range of knm space; check the beam and the transformations."
             )
 
-        target *= cp.where(lit & (norm > 0), 1 / norm, 0)
+        target *= cp.where(lit & (norm > 0), 1 / cp.where(norm > 0, norm, 1), 0)
 
         return target
 

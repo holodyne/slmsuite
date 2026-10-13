@@ -329,6 +329,33 @@ def fourierslm_calibrated(fourierslm):
     return fourierslm
 
 
+class SensorCamera(SimulatedCamera):
+    """A SimulatedCamera that windows and bins in hardware, as every shipped driver does.
+
+    The window snaps to multiples of ``snap`` binned pixels, and binning is realized square.
+    """
+
+    snap = 1
+
+    def _set_woi_hw(self, woi):
+        self._hw_woi = tuple(self.snap * (int(v) // self.snap) for v in woi)
+
+    def _get_woi_hw(self):
+        return getattr(self, "_hw_woi", (0, self._shape[1], 0, self._shape[0]))
+
+    def _set_binning_hw(self, binning):
+        self._hw_binning = (min(binning), min(binning))
+
+    def _get_binning_hw(self):
+        return getattr(self, "_hw_binning", (1, 1))
+
+    def _get_image_hw(self, timeout_s=0, quantize=True):
+        frame = super()._get_image_hw(timeout_s, quantize)
+        ((x, w, y, h), (bx, by)) = (self._get_woi_hw(), self._get_binning_hw())
+        crop = frame[y * by : (y + h) * by, x * bx : (x + w) * bx]
+        return crop.reshape(h, by, w, bx).sum(axis=(1, 3), dtype=crop.dtype)
+
+
 # Simulated SLM-camera systems spanning geometry corner cases: camera FOV much
 # larger/smaller than the SLM farfield, rotation, shear, offset 0th order, noise,
 # apertures, anisotropy, source illumination and wavefront aberration.

@@ -231,6 +231,18 @@ def test_load_image(temp_dir, subtests):
         result = _load_image(img_path, (100, 100))
         assert result.max() == pytest.approx(np.sqrt(30), rel=1e-3)
 
+    with subtests.test("angle rotates the image counterclockwise, in degrees"):
+        img = np.zeros((40, 60), dtype=np.uint8)
+        img[5:12, 8:30] = 200
+        img[20:35, 40:45] = 90
+        cv2.imwrite(os.path.join(temp_dir, "upright.png"), img)
+        for angle in (90, -90):
+            cv2.imwrite(os.path.join(temp_dir, "turned.png"), np.rot90(img, angle // 90).copy())
+            np.testing.assert_array_equal(
+                _load_image(os.path.join(temp_dir, "upright.png"), (100, 100), angle=angle),
+                _load_image(os.path.join(temp_dir, "turned.png"), (100, 100)),
+            )
+
 
 def test_gray2rgb(subtests):
     """Test _gray2rgb() conversion of grayscale images to RGBA."""
@@ -275,27 +287,23 @@ def test_gray2rgb(subtests):
             if kwargs.get("cmap") is not False:
                 assert result.shape[-1] == 4
 
-    with subtests.test("colormap objects are accepted with or without a .colors attribute"):
+    with subtests.test("a colormap object renders as its name does, at any lut"):
+        import matplotlib as mpl
         import matplotlib.pyplot as plt
 
-        class NoColorsCmap:
-            """Colormap-like object exposing N and __call__ but no .colors."""
-
-            N = 10
-
-            def __call__(self, x):
-                x = np.asarray(x, dtype=float)
-                rgba = np.zeros((*x.shape, 4))
-                rgba[..., 0] = x / self.N
-                rgba[..., 3] = 1.0
-                return rgba
-
-        cases = [
-            (plt.get_cmap("viridis", 64), 64, np.array([[[0, 10], [20, 63]]], dtype=np.uint8)),
-            (NoColorsCmap(), 10, np.array([[[0, 2], [4, 9]]], dtype=np.int32)),
-        ]
-        for cmap, lut, img in cases:
-            assert _gray2rgb(img, cmap=cmap, lut=lut).shape[-1] == 4
+        img = np.array([[[0, 10], [20, 63]]], dtype=np.uint8)
+        ramp = mpl.colors.LinearSegmentedColormap.from_list("ramp", ["black", "red"])
+        mpl.colormaps.register(ramp)
+        try:
+            for name in ("viridis", "ramp"):
+                for lut in (None, 16, 64, 1000):
+                    np.testing.assert_array_equal(
+                        _gray2rgb(img, cmap=plt.get_cmap(name), lut=lut),
+                        _gray2rgb(img, cmap=name, lut=lut),
+                        err_msg=f"{name} lut {lut}",
+                    )
+        finally:
+            mpl.colormaps.unregister("ramp")
 
     with subtests.test("NaN pixels become fully transparent"):
         img = np.full((1, 10, 10), 0.5)
@@ -315,6 +323,30 @@ def test_gray2rgb(subtests):
         result = _gray2rgb(img, cmap="viridis", border=[255, 128])
         assert result[0, 0, 0, 0] == 255
         assert result[0, 0, 0, 1] == 128
+
+    with subtests.test("a grayscale border paints only the outermost pixels"):
+        result = _gray2rgb(np.full((1, 4, 5), 100, dtype=np.uint8), normalize=False, border=7)
+        expected = np.full((4, 5), 7)
+        expected[1:-1, 1:-1] = 100
+        np.testing.assert_array_equal(result[0], expected)
+
+    integers = np.array([[[0, 50], [100, 200]]], dtype=np.uint8)
+
+    with subtests.test("normalized grayscale maps zero to 0 and the image maximum to 255"):
+        for images in (integers, 0.01 * integers):
+            result = _gray2rgb(images)
+            assert (result.min(), result.max()) == (0, 255)
+
+    with subtests.test("a colormapped image maximum takes the colormap's top color"):
+        top = (255 * np.asarray(plt.get_cmap("viridis")(1.0))).astype(np.uint8)
+        for images, normalize in ((integers, True), (integers, False), (integers / 200.0, False)):
+            result = _gray2rgb(images, cmap="viridis", normalize=normalize)
+            np.testing.assert_array_equal(result[0, 1, 1], top, err_msg=str(normalize))
+
+    with subtests.test("unnormalized grayscale keeps integers and maps a float 1 to 255"):
+        np.testing.assert_array_equal(_gray2rgb(integers, normalize=False), integers)
+        floats = integers / 200.0
+        np.testing.assert_array_equal(_gray2rgb(floats, normalize=False), _gray2rgb(floats))
 
 
 @pytest.mark.gpu

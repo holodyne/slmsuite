@@ -20,7 +20,6 @@ Consider loading these files via :meth:`.SLM.load_vendor_phase_correction()`
 
 import ctypes
 import time
-import warnings
 
 import cv2
 import numpy as np
@@ -34,13 +33,14 @@ logger = make_logger(__name__)
 try:  # Load Santec's header file.
     from . import _slm_win as slm_funcs
 except BaseException as e:  # Provide an informative error should something go wrong.
-    warnings.warn(
+    logger.warning(
         "Santec DLLs not installed. Install these to use Santec SLMs."
         "  Dynamically linked libraries from Santec (usually provided via USB) "
         "must be present in the runtime directory:\n"
         "  - SLMFunc.dll\n  - FTD3XX.dll\n"
         "  Check that these files are present and are error-free.\n"
-        f"Original error: {e}"
+        "Original error: %s",
+        e,
     )
     slm_funcs = None
 

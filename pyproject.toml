@@ -143,6 +143,9 @@ include = [
     "slmsuite/misc/*.py",
 ]
 
+[tool.coverage.report]
+fail_under = 87
+
 [tool.ruff]
 required-version = "==0.17.*"  # keep in sync with the dev extra and CI
 line-length = 100

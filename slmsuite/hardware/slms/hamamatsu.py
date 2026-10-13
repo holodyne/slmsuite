@@ -59,11 +59,12 @@ try:
         os.environ["PATH"] = _libpath + os.pathsep + os.environ["PATH"]
         Lcoslib = ctypes.windll.LoadLibrary(_libname)
 except Exception as e:
-    warnings.warn(
+    logger.warning(
         "Hamamatsu DLLs not installed; must be present in the runtime directory:\n"
         "  - hpkSLMdaLV.dll\n  - hpkSLMda.dll\n"
         "Install to use Hamamatsu SLMs.\n"
-        f"Original error: {e}"
+        "Original error: %s",
+        e,
     )
     Lcoslib = None
 

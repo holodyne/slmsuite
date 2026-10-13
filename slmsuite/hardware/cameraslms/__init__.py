@@ -840,7 +840,7 @@ class FourierSLM(
             "The backwards-compatible alias FourierSLM.read_calibration will be deprecated "
             "in favor of FourierSLM.load_calibration in a future release."
         )
-        self.load_calibration(calibration_type, file_path)
+        return self.load_calibration(calibration_type, file_path)
 
     def load_calibration(self, calibration_type, file_path=None):
         """

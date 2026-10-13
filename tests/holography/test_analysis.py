@@ -9,6 +9,7 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from scipy.optimize import OptimizeWarning
 
 from slmsuite.holography import analysis
 from slmsuite.holography.analysis.fitfunctions import gaussian2d
@@ -401,6 +402,11 @@ def test_image_moment(subtests, benchmark):
         moment = analysis.image_moment(image, (0, 0), normalize=False, nansum=True)
         assert moment[0] == pytest.approx(30 * 30 - 5 * 5)
 
+    with subtests.test("a grid that is not 1D, 2D, or per-image raises"):
+        grid = np.zeros((1, 1, 101, 101))
+        with pytest.raises(ValueError, match="Could not parse grid"):
+            analysis.image_moment(points, (1, 0), grid=(grid, grid))
+
 
 def test_image_normalization(subtests):
     """Test image_normalization(), the zeroth moment of each image."""
@@ -706,6 +712,21 @@ def test_image_fit(subtests, benchmark, caplog):
         np.testing.assert_array_equal(result[0, 1:8], guess[0])
         assert np.all(np.isnan(result[0, 8:]))
 
+    with subtests.test("a featureless image fits its level and no spot"):
+        with pytest.warns(OptimizeWarning, match="Covariance") as record:
+            result = analysis.image_fit(np.full((1, 50, 50), 3.0), grid=grid)
+        assert all(isinstance(w.message, OptimizeWarning) for w in record)
+        assert np.isnan(result[0, 0])
+        np.testing.assert_allclose(result[0, 3:5], [0.0, 3.0], atol=1e-9)
+
+    with subtests.test("a single lit pixel fits as a point source on that pixel"):
+        lit = np.zeros((1, 50, 50))
+        lit[0, 20, 30] = 7.0
+        result = analysis.image_fit(lit, grid=grid)
+        np.testing.assert_allclose(result[0, 1:5], [x[30], x[20], 7.0, 0.0], atol=1e-6)
+        assert result[0, 0] > 0.999
+        assert np.all(np.isfinite(result[0, 8:]))
+
     with subtests.test("plot renders one figure per image, with or without a guess"):
         with _shows() as shown:
             analysis.image_fit(image, grid=grid, function=gaussian2d, plot=True)
@@ -871,6 +892,12 @@ def test_image_zernike_fit(subtests):
             coeffs = analysis.image_zernike_fit(phase_image, basis)
         np.testing.assert_allclose(coeffs[:, 0], [0.2, -0.3], atol=1e-6)
 
+    with subtests.test("an order list holding piston warns and fits without it"):
+        phase_image = analysis.zernike_sum(grid_small, [1, 2], [0.3, -0.4])
+        with pytest.warns(UserWarning, match="Piston"):
+            coeffs = analysis.image_zernike_fit(phase_image, grid_small, order=[0, 1, 2])
+        np.testing.assert_allclose(coeffs[:, 0], [0.3, -0.4], atol=1e-6)
+
     with subtests.test("a stack of images is fitted at once"):
         indices = [1, 2, 4]
         basis = analysis.ZernikeBasis(grid_small, indices)
@@ -994,6 +1021,15 @@ def test_image_remove_blaze(subtests):
     with subtests.test("a stack of phase images is rejected"):
         with pytest.raises(ValueError, match="too small to calculate a numerical gradient"):
             analysis.image_remove_blaze(ramp[np.newaxis])
+        with pytest.raises(ValueError, match="single 2D phase image"):
+            analysis.image_remove_blaze(np.stack((ramp, ramp)))
+
+    with subtests.test("image_blaze_remove is a deprecated alias"):
+        with pytest.warns(DeprecationWarning, match="image_remove_blaze"):
+            result = analysis.image_blaze_remove(ramp, mask=np.ones_like(ramp))
+        np.testing.assert_array_equal(
+            result, analysis.image_remove_blaze(ramp, mask=np.ones_like(ramp))
+        )
 
     with subtests.test("plot renders the phase, both gradients, and the result"):
         with _shows() as shown:
@@ -1108,8 +1144,46 @@ def test_fit_affine(subtests):
         assert shown == ["fit_affine"]
 
 
-def _spot_array(lattice, count=(9, 9), shape=(160, 160), center=None, spot=1.2):
-    """Render a spot array with the given (2, 2) lattice for lattice-detection tests."""
+def test_blob_detect(subtests):
+    """Test blob_detect() spot detection and its single-blob filters."""
+    shape = (120, 160)
+    # The brightest peak, the spot nearest the center (80, 60), and the most power all differ.
+    image = (
+        _sampled_gaussian(shape, 30, 40, 2, 2)
+        + 0.8 * _sampled_gaussian(shape, 85, 55, 2, 2)
+        + 0.6 * _sampled_gaussian(shape, 130, 90, 4, 4)
+    )
+
+    with subtests.test("every spot is found at its center"):
+        (blobs, _) = analysis.blob_detect(image)
+        np.testing.assert_allclose(
+            sorted(blob.pt for blob in blobs), [(30, 40), (85, 55), (130, 90)], atol=0.05
+        )
+
+    with subtests.test("dist_to_center keeps only the spot nearest the image center"):
+        (blobs, _) = analysis.blob_detect(image, filter="dist_to_center")
+        assert len(blobs) == 1
+        np.testing.assert_allclose(blobs[0].pt, (85, 55), atol=0.05)
+
+    with subtests.test("max_amp keeps the spot collecting the most power, not the brightest"):
+        (blobs, _) = analysis.blob_detect(image, filter="max_amp")
+        assert len(blobs) == 1
+        np.testing.assert_allclose(blobs[0].pt, (130, 90), atol=0.05)
+
+    with subtests.test("keyword arguments configure the detector"):
+        # Only the broad spot spans 150 pixels above the lowest threshold.
+        (blobs, _) = analysis.blob_detect(image, filterByArea=True, minArea=150)
+        assert len(blobs) == 1
+        np.testing.assert_allclose(blobs[0].pt, (130, 90), atol=0.05)
+
+    with subtests.test("an image without a spot has no blobs, whatever the filter"):
+        for kind in (None, "dist_to_center", "max_amp"):
+            (blobs, _) = analysis.blob_detect(np.zeros((50, 50)), filter=kind)
+            assert len(blobs) == 0, kind
+
+
+def _spot_array(lattice, count=(9, 9), shape=(160, 160), center=None, spot=1.2, withhold=False):
+    """A spot array on the (2, 2) ``lattice``; ``withhold`` drops its two fiducial spots."""
     if center is None:
         center = (shape[1] / 2, shape[0] / 2)
     (gx, gy) = np.meshgrid(
@@ -1117,12 +1191,14 @@ def _spot_array(lattice, count=(9, 9), shape=(160, 160), center=None, spot=1.2):
         np.arange(count[1]) - (count[1] - 1) / 2,
     )
     points = np.array(lattice) @ np.vstack((gx.ravel(), gy.ravel()))
+    if withhold:
+        points = points[:, :-2]
 
-    (yy, xx) = np.indices(shape)
-    image = np.zeros(shape)
-    for px, py in zip(points[0] + center[0], points[1] + center[1]):
-        image += np.exp(-((xx - px) ** 2 + (yy - py) ** 2) / (2 * spot**2))
-    return image
+    # Each Gaussian spot is separable: a column profile times a row profile.
+    (x, y) = (points[0] + center[0], points[1] + center[1])
+    rows = np.exp(-((np.arange(shape[1]) - x[:, np.newaxis]) ** 2) / (2 * spot**2))
+    columns = np.exp(-((np.arange(shape[0]) - y[:, np.newaxis]) ** 2) / (2 * spot**2))
+    return columns.T @ rows
 
 
 def test_image_lattice_detect(subtests):
@@ -1187,6 +1263,16 @@ def test_image_lattice_detect(subtests):
         with subtests.test(f"blank image raises ({method})"):
             with pytest.raises(RuntimeError):
                 analysis.image_lattice_detect(np.zeros((160, 160)), method=method)
+
+    with subtests.test("a stack of images raises"):
+        with pytest.raises(RuntimeError, match="Cannot interpret image"):
+            analysis.image_lattice_detect(np.zeros((2, 160, 160)))
+
+    with subtests.test("an image too small for the Fourier method's 0th order filter raises"):
+        with pytest.raises(ValueError, match="too small"):
+            analysis.image_lattice_detect(
+                _spot_array(lattices["square"], shape=(64, 64)), "fourier"
+            )
 
     with subtests.test("single row of spots raises"):
         # The autocorrelation refuses rather than inventing a second lattice vector.
@@ -1288,6 +1374,117 @@ def test_score_array_orientation(subtests):
             render(codes[0], blank=blank), M, b, array_shape, 5
         )
         assert best is not None and best[0] in (codes[0], analysis.OrientationTransform.D_4.FLIP)
+
+    with subtests.test("an array out of view, or wholly dark, cannot be scored"):
+        far = np.array([[1000.0], [1000.0]])
+        assert analysis._score_array_orientation(render(codes[0]), M, far, array_shape, 5) is None
+        assert analysis._score_array_orientation(np.zeros((300, 300)), M, b, array_shape, 5) is None
+
+
+def test_blob_array_detect(subtests, caplog):
+    """Test blob_array_detect()'s recovery of the affine placing a spot array in an image."""
+    OT = analysis.OrientationTransform
+    shape = (240, 320)
+    lattice = np.array([[20.0, 3.0], [-2.0, 18.0]])
+    b = np.array([[161.3], [118.7]])
+
+    def image(M, count=(7, 7), withhold=True):
+        return _spot_array(M, count, shape, b.ravel(), spot=1.5, withhold=withhold)
+
+    def detect(*args, **kwargs):
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
+            return analysis.blob_array_detect(*args, **kwargs)
+
+    def warned(text):
+        return any(text in record.getMessage() for record in caplog.records)
+
+    for count in ((7, 7), (7, 5)):
+        with subtests.test(f"a {count} array is recovered exactly in every orientation"):
+            for code in OT.D_4:
+                M = lattice @ OT.from_code(code).M()
+                result = detect(image(M, count), count)
+                np.testing.assert_allclose(result["M"], M, atol=1e-4, err_msg=code.name)
+                np.testing.assert_allclose(result["b"], b, atol=1e-4, err_msg=code.name)
+                assert result["residual"] < 1e-3, code.name
+                assert not caplog.records, code.name
+
+    with subtests.test("a scalar array_shape is a square array"):
+        np.testing.assert_equal(detect(image(lattice), 7), detect(image(lattice), (7, 7)))
+
+    with subtests.test("a guess is refined onto the array, its rotation fixed by the fiducials"):
+        guess = {"M": lattice @ OT.from_code(OT.D_4.ROT90).M(), "b": b + 2}
+        result = detect(image(lattice), (7, 7), orientation=guess)
+        np.testing.assert_allclose(result["M"], lattice, atol=1e-4)
+        np.testing.assert_allclose(result["b"], b, atol=1e-4)
+
+    with subtests.test("an array half a pitch from any edge is placed exactly"):
+        for count in ((7, 7), (6, 5)):
+            sites = analysis._array_indices(count)[:, :-2]
+            for code in OT.D_4:
+                M = lattice @ OT.from_code(code).M()
+                reach = M @ sites
+                for axis, near in itertools.product((0, 1), (True, False)):
+                    center = b.ravel().copy()
+                    center[axis] = (
+                        10 - reach[axis].min() if near else shape[1 - axis] - 11 - reach[axis].max()
+                    )
+                    spots = _spot_array(M, count, shape, center, spot=1.5, withhold=True)
+                    result = detect(spots, count)
+                    label = f"{count} {code.name} axis {axis} {'near' if near else 'far'}"
+                    np.testing.assert_allclose(result["M"], M, atol=1e-4, err_msg=label)
+                    np.testing.assert_allclose(
+                        result["b"].ravel(), center, atol=1e-4, err_msg=label
+                    )
+                    assert not warned("orientation was not verified"), label
+
+    with subtests.test("a guess a pixel off an array at the edge is refined onto it"):
+        center = np.array([10 - (lattice @ analysis._array_indices((7, 7)))[0].min(), b[1, 0]])
+        spots = _spot_array(lattice, (7, 7), shape, center, spot=1.5, withhold=True)
+        result = detect(spots, (7, 7), orientation={"M": lattice, "b": center[:, np.newaxis] + 1})
+        np.testing.assert_allclose(result["M"], lattice, atol=1e-4)
+        np.testing.assert_allclose(result["b"].ravel(), center, atol=1e-4)
+
+    with subtests.test("a guess a whole pitch off is moved back onto the array"):
+        center = np.array([160.0, 120.0])
+        for code in OT.D_4:
+            M = lattice @ OT.from_code(code).M()
+            spots = _spot_array(M, (7, 7), shape, center, spot=1.5, withhold=True)
+            for step in (M[:, 0], -M[:, 0], M[:, 1], -M[:, 1]):
+                guess = {"M": M, "b": (center + step)[:, np.newaxis]}
+                result = detect(spots, (7, 7), orientation=guess)
+                label = f"{code.name} step {step}"
+                np.testing.assert_allclose(result["b"].ravel(), center, atol=1e-4, err_msg=label)
+
+    with subtests.test("an array whose kernel outgrows the frame is placed exactly"):
+        # The kernel reaches 1.5 pitches past the outermost spots.
+        result = detect(image(lattice, (13, 9)), (13, 9))
+        np.testing.assert_allclose(result["M"], lattice, atol=1e-4)
+        np.testing.assert_allclose(result["b"], b, atol=1e-4)
+
+    with subtests.test("the Fourier lattice method places the same array"):
+        # The Fourier method resolves only pitches below about 10 pixels.
+        fine = np.array([[9.0, 1.0], [-1.0, 8.5]])
+        result = detect(image(fine, (9, 9)), (9, 9), method="fourier")
+        np.testing.assert_allclose(result["M"], fine, atol=0.01)
+        np.testing.assert_allclose(result["b"], b, atol=0.1)
+
+    with subtests.test("without withheld fiducials the lattice is found but its orientation warns"):
+        result = detect(image(lattice, withhold=False), (7, 7))
+        assert warned("orientation was not verified")
+        recombination = np.linalg.solve(lattice, result["M"])
+        assert any(np.allclose(recombination, OT.from_code(c).M(), atol=1e-4) for c in OT.D_4)
+        np.testing.assert_allclose(result["b"], b, atol=1e-4)
+
+    with subtests.test("orientation_check=False skips the parity check silently"):
+        detect(image(lattice, withhold=False), (7, 7), orientation_check=False)
+        assert not warned("orientation was not verified")
+
+    with subtests.test("an all-zero image or a stack of images raises"):
+        with pytest.raises(RuntimeError, match="all zeros"):
+            analysis.blob_array_detect(np.zeros(shape), (7, 7))
+        with pytest.raises(RuntimeError, match="Cannot interpret image"):
+            analysis.blob_array_detect(np.zeros((2, *shape)), (7, 7))
 
 
 def test_get_orientation_transformation(subtests):
@@ -1447,6 +1644,65 @@ class TestOrientationTransform:
             with subtests.test(f"{code.name} is undone by its inverse"):
                 np.testing.assert_array_equal(transform.inverse(transform(image)), image)
 
+    def test_transform_woi(self, subtests):
+        """transform_woi() carries a window of interest through the transform."""
+        OT = analysis.OrientationTransform
+        (h, w) = (6, 10)  # Non-square, to expose an axis swap.
+        image = np.arange(h * w).reshape(h, w)
+        woi = (2, 5, 1, 3)
+        crop = image[woi[2] : woi[2] + woi[3], woi[0] : woi[0] + woi[1]]
+
+        for code in OT.D_4:
+            transform = OT.from_code(code)
+            with subtests.test(f"{code.name} carries a crop onto its transformed window"):
+                (x, width, y, height) = transform.transform_woi(woi, (h, w))
+                np.testing.assert_array_equal(
+                    transform(image)[y : y + height, x : x + width], transform(crop)
+                )
+
+        rot90 = OT.from_code(OT.D_4.ROT90)
+        native = rot90.transform_woi((2, 4, 0, 2), (6, 10))
+
+        with subtests.test("binning_in and binning_out scale between pixel spaces"):
+            assert rot90.transform_woi((1, 2, 0, 1), (3, 5), binning_in=2) == native
+            binned = rot90.transform_woi((2, 4, 0, 2), (6, 10), binning_out=2)
+            assert tuple(2 * v for v in binned) == native
+
+        with subtests.test("x and y binning each scale their own axis of either space"):
+            # Columns 2-5 rotate onto rows 4-7, and rows 0-5 onto columns 0-5.
+            assert rot90.transform_woi((2, 4, 0, 6), (6, 10)) == (0, 6, 4, 4)
+            binned = rot90.transform_woi(
+                (2, 4, 0, 3), (3, 10), binning_in=(1, 2), binning_out=(3, 1)
+            )
+            assert binned == (0, 2, 4, 4)
+
+        with subtests.test("a float window keeps its fractional pixels"):
+            result = rot90.transform_woi((1.0, 2, 0, 1), (3, 5), binning_in=2, binning_out=3)
+            assert all(isinstance(v, float) for v in result)
+            np.testing.assert_allclose(result, np.array(native) / 3)
+
+    def test_inverse_woi(self, subtests):
+        """inverse_woi() undoes transform_woi()."""
+        OT = analysis.OrientationTransform
+        native = (6, 10)
+        for code in OT.D_4:
+            transform = OT.from_code(code)
+            with subtests.test(f"{code.name} round-trips a window, binned on either side"):
+                for woi, binning_in, binning_out in (
+                    ((2, 5, 1, 3), 1, 1),
+                    ((1, 2, 0, 1), 2, 1),
+                    ((2, 4, 0, 2), 1, 2),
+                ):
+                    shape = tuple(n // binning_in for n in native)
+                    transformed = tuple(n // binning_out for n in transform.transform_shape(native))
+                    there = transform.transform_woi(woi, shape, binning_in, binning_out)
+                    assert transform.inverse_woi(there, transformed, binning_in, binning_out) == woi
+
+        with subtests.test("x and y binning each scale their own axis on the way back"):
+            rot90 = OT.from_code(OT.D_4.ROT90)
+            back = rot90.inverse_woi((0, 2, 4, 4), (10, 2), binning_in=(1, 2), binning_out=(3, 1))
+            assert back == (2, 4, 0, 3)
+
     def test_eq(self, subtests):
         """Transforms compare and hash by the group element they are."""
         image = np.arange(12).reshape(3, 4)
@@ -1461,6 +1717,11 @@ class TestOrientationTransform:
 
         with subtests.test("equal transforms hash alike, so a set holds each element once"):
             assert len(set(transforms + copies)) == len(transforms)
+
+        with subtests.test("a transform does not equal its own integer code"):
+            for transform in transforms:
+                assert transform != transform.code
+                assert transform != int(transform.code)
 
 
 @pytest.mark.gpu
@@ -1513,3 +1774,9 @@ def test_take_gpu(benchmark, has_cupy, subtests):
                 )
                 assert isinstance(result, cp.ndarray) and result.dtype == expected.dtype
                 np.testing.assert_array_equal(result.get(), expected)
+
+    with subtests.test("xp=numpy takes a device image on the host"):
+        host = rng.random((64, 80)).astype(np.float32)
+        result = analysis.take(cp.asarray(host), edge, 9, clip=True, xp=np)
+        assert isinstance(result, np.ndarray)
+        np.testing.assert_array_equal(result, analysis.take(host, edge, 9, clip=True))

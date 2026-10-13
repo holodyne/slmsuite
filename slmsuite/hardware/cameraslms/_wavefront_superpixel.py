@@ -1,3 +1,5 @@
+import warnings
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -625,7 +627,10 @@ class _WavefrontCalibrationSuperpixel:
                 ]
 
                 try:
-                    popt, _ = optimize.curve_fit(cos, phases, intensities, p0=guess)
+                    with warnings.catch_warnings():
+                        # A dark superpixel has no fringe; its covariance is unused.
+                        warnings.simplefilter("ignore", optimize.OptimizeWarning)
+                        popt, _ = optimize.curve_fit(cos, phases, intensities, p0=guess)
                 except Exception:
                     self.logger.warning(
                         "Curve fitting failed; nulling response from this superpixel."
@@ -635,12 +640,13 @@ class _WavefrontCalibrationSuperpixel:
                 # Extract phase and amplitude from fit.
                 best_phase = popt[0]
                 amp = popt[1]
-                contrast = popt[1] / (popt[1] + popt[2])
+                peak = popt[1] + popt[2]
+                contrast = np.nan if peak == 0 else popt[1] / peak
 
                 # Residual and total sum of squares, producing the R^2 metric.
                 ss_res = np.sum((intensities - cos(phases, *popt)) ** 2)
                 ss_tot = np.sum((intensities - np.mean(intensities)) ** 2)
-                r2 = 1 - (ss_res / ss_tot)
+                r2 = np.nan if ss_tot == 0 else 1 - (ss_res / ss_tot)
 
                 if plot_fits:
                     plt.scatter(phases / np.pi, intensities, color="k", label="Data")
@@ -1327,10 +1333,7 @@ class _WavefrontCalibrationSuperpixel:
         if len(data) == 0:
             raise RuntimeError("No raw wavefront data to process. Either load data or calibrate.")
 
-        if "__version__" not in data:
-            data["__version__"] = "0.0.1"
-
-        if data["__version__"] == "0.0.1":
+        if data.get("__version__", "0.0.1") == "0.0.1":
             return self._wavefront_calibration_superpixel_process_r001(
                 data,
                 smooth=smooth,
@@ -1489,9 +1492,7 @@ class _WavefrontCalibrationSuperpixel:
                 pwr_min = np.min(pwr_below_r2)
                 norm_ave = np.nanmean(norm)
                 norm_min = np.nanmin(norm)
-                if (np.median(pwr_below_r2) - pwr_min) / np.nanstd(
-                    pwr
-                ) < 0.5 and pwr_min < norm_min:
+                if np.median(pwr_below_r2) - pwr_min < 0.5 * np.nanstd(pwr) and pwr_min < norm_min:
                     self.logger.warning(
                         "remove_background is enabled and a noise floor was detected; "
                         "removing this background (%.1f%% of the average normalization).",

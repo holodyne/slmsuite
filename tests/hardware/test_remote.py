@@ -13,13 +13,22 @@ import socket
 import threading
 import time
 import warnings
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pytest
+from conftest import SensorCamera
 
 from slmsuite.hardware.cameras.remote import RemoteCamera
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
-from slmsuite.hardware.remote import Server, _Client, _delim, _NpEncoder, _recurse_decompress
+from slmsuite.hardware.remote import (
+    Server,
+    _Client,
+    _delim,
+    _NpEncoder,
+    _recurse_decompress,
+    _recv,
+)
 from slmsuite.hardware.slms.remote import RemoteSLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography.toolbox.phase import blaze
@@ -52,6 +61,15 @@ def hardware():
     yield (slm, cam)
     cam.close()
     slm.close()
+
+
+@pytest.fixture
+def speckle(hardware):
+    """The hardware with a speckle phase displayed, so no frame is blank."""
+    (slm, cam) = hardware
+    slm.set_phase(np.random.default_rng(0).uniform(0, 2 * np.pi, slm.shape))
+    cam.gain = 30
+    return hardware
 
 
 @pytest.fixture
@@ -101,6 +119,48 @@ def test_recurse_decompress(subtests):
     with subtests.test("a request can name a dtype by its numpy scalar type"):
         encoded = json.dumps({"dtype": np.float64}, cls=_NpEncoder)
         assert _recurse_decompress(json.loads(encoded)) == {"dtype": np.dtype(np.float64)}
+
+
+def test_recv(subtests):
+    """A message cut off by a hang-up or by silence is reported, never decoded."""
+    for label, hang_up, reason in (
+        ("a peer that hangs up mid-message is reported as closed", True, "Connection closed"),
+        ("a peer that falls silent mid-message is reported as a timeout", False, "Timeout"),
+    ):
+        with subtests.test(label):
+            (near, far) = socket.socketpair()
+            try:
+                near.settimeout(7)
+                far.sendall(b"partial")
+                if hang_up:
+                    far.close()
+                (success, message) = _recv(near, timeout=0.2)
+                assert success is False
+                assert message.startswith(reason) and "7 bytes" in message
+                assert near.gettimeout() == 7, "the socket's own timeout is restored"
+            finally:
+                near.close()
+                far.close()
+
+
+class TestNpEncoder:
+    def test_default(self, subtests):
+        """numpy scalars and dates become JSON."""
+
+        def encode(value):
+            return json.loads(json.dumps(value, cls=_NpEncoder))
+
+        with subtests.test("numpy scalars become Python scalars of the same value"):
+            encoded = encode([np.bool_(True), np.float32(0.5), np.int8(-3)])
+            assert encoded == [True, 0.5, -3]
+            assert [type(v) for v in encoded] == [bool, float, int]
+
+        with subtests.test("dates are ISO 8601 and durations are H:MM:SS"):
+            assert encode([date(2026, 10, 11), datetime(2026, 10, 11, 12, 30)]) == [
+                "2026-10-11",
+                "2026-10-11T12:30:00",
+            ]
+            assert encode(timedelta(seconds=90)) == "0:01:30"
 
 
 class TestServer:
@@ -216,6 +276,13 @@ class TestServer:
                 sock.recv(4096)
 
             assert _Client.info(host=HOST, port=port, verbose=False)["test_slm"] == "slm"
+
+        with subtests.test("a request cut off mid-message is answered with the reason"):
+            with socket.create_connection((HOST, port), timeout=10) as sock:
+                sock.sendall(b"partial")
+                sock.shutdown(socket.SHUT_WR)
+                reply = _recv(sock, timeout=10)
+            assert reply == [False, "Connection closed by peer after 7 bytes received."]
 
         with subtests.test("a client outside the allowlist is turned away"):
             blocked = serve(hardware, allowlist=["10.0.0.1"])
@@ -342,10 +409,11 @@ class TestRemoteSLM:
 
 
 class TestRemoteCamera:
-    def test_init(self, hardware, serve, subtests):
+    def test_init(self, hardware, serve, caplog, subtests):
         """The client reads its sensor from the server it connects to."""
         (_, cam) = hardware
         port = serve(hardware)
+        pickle = cam.pickle
 
         with subtests.test("the client mirrors the server's sensor"):
             remote = RemoteCamera(name="test_camera", host=HOST, port=port)
@@ -356,6 +424,27 @@ class TestRemoteCamera:
         with subtests.test("a name that is not a camera is refused"):
             with pytest.raises(ValueError, match="not a camera"):
                 RemoteCamera(name="test_slm", host=HOST, port=port)
+
+        for label, served, message in (
+            ("another version", lambda **kw: {**pickle(**kw), "__version__": "0.0"}, "0.0"),
+            (
+                "no version",
+                lambda **kw: {"__meta__": pickle(attributes=False, metadata=False)},
+                "did not provide version",
+            ),
+        ):
+            with subtests.test(f"a server reporting {label} is connected to, with a warning"):
+                cam.pickle = served
+                caplog.clear()
+                with caplog.at_level(logging.WARNING, logger="slmsuite.hardware.remote"):
+                    remote = RemoteCamera(name="test_camera", host=HOST, port=port)
+                assert remote.shape == cam.shape
+                assert message in caplog.text
+
+        with subtests.test("a server that cannot describe its camera is not connected to"):
+            cam.pickle = lambda **kw: 1 / 0
+            with pytest.raises(RuntimeError, match="Could not connect"):
+                RemoteCamera(name="test_camera", host=HOST, port=port)
 
     def test_get_image_hw(self, hardware, serve):
         """The image the server renders is the image the client receives, dtype included."""
@@ -375,3 +464,62 @@ class TestRemoteCamera:
         remote.set_exposure(0.25)
         assert remote.get_exposure() == 0.25
         assert cam.get_exposure() == 0.25
+
+    def test_get_images_hw(self, speckle, serve, caplog, subtests):
+        """A stack fetched from the server is the stack the server captures."""
+        (_, cam) = speckle
+        remote = RemoteCamera(name="test_camera", host=HOST, port=serve(speckle))
+        expected = cam.get_images(3)
+        assert np.ptp(expected) > 0
+
+        with subtests.test("the stack arrives with its dtype and shape"):
+            stack = remote.get_images(3)
+            assert stack.dtype == expected.dtype
+            np.testing.assert_array_equal(stack, expected)
+
+        with subtests.test("averaging sums a stack fetched in one request"):
+            np.testing.assert_array_equal(remote.get_image(averaging=3), np.sum(expected, axis=0))
+
+        with subtests.test("a buffer is filled, though the transfer cannot be in place"):
+            out = np.zeros_like(expected)
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                assert remote.get_images(3, out=out) is out
+            np.testing.assert_array_equal(out, expected)
+            assert "in-place" in caplog.text
+
+    def test_get_woi_hw(self, speckle, serve, subtests):
+        """A server that windows and bins in software leaves both to the client."""
+        (_, cam) = speckle
+        remote = RemoteCamera(name="test_camera", host=HOST, port=serve(speckle))
+        assert remote._software_woi and remote._software_binning
+
+        for c in (remote, cam):
+            c.set_woi((2, 12, 2, 8))
+            c.set_binning(2)
+
+        with subtests.test("the client crops and bins the full frame as the server would"):
+            assert remote.shape == cam.shape == (4, 6)
+            np.testing.assert_array_equal(remote.get_image(), cam.get_image())
+
+        with subtests.test("the window and binning read back from the client"):
+            assert remote.get_woi() == (2, 12, 2, 8) and remote.get_binning() == (2, 2)
+
+    def test_set_woi_hw(self, speckle, serve, subtests):
+        """A server that windows in hardware is handed the window, and returns the crop."""
+        (slm, cam) = speckle
+        windowed = SensorCamera(slm, (16, 12), pitch_um=(4, 4), gain=cam.gain, name="win")
+        windowed.snap = 2
+        remote = RemoteCamera(name="win", host=HOST, port=serve([slm, cam, windowed]))
+        assert not remote._software_woi
+
+        remote.set_woi((5, 8, 3, 6))
+        cam.set_woi((4, 8, 2, 6))
+
+        with subtests.test("the window is set on the server's hardware and read back from it"):
+            assert windowed._get_woi_hw() == (4, 8, 2, 6)
+            assert remote.woi == (4, 8, 2, 6) == remote.get_woi()
+
+        with subtests.test("the frame is the hardware crop, the software crop's equal"):
+            assert remote.shape == (6, 8)
+            np.testing.assert_array_equal(remote.get_image(), cam.get_image())

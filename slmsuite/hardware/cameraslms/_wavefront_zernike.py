@@ -1,4 +1,5 @@
 import copy
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -52,8 +53,9 @@ class _WavefrontCalibrationZernike:
             If ``None``, defaults to 100 points, unless a calibration is already saved
             in :attr:`calibrations` under the ``"wavefront_zernike"`` key, in which case
             the ``"corrected_spots"`` from the calibration are used as the baseline.
-            This allows the user to iterate on previous calibrations. Note that
-            ``zernike_indices`` is also overwritten in this case.
+            This allows the user to iterate on previous calibrations. In this case,
+            ``zernike_indices=None`` reuses the stored basis, an ``int`` extends it to that
+            many terms, and a list must begin with the stored terms.
 
             Important
             ~~~~~~~~~
@@ -209,14 +211,17 @@ class _WavefrontCalibrationZernike:
             for i in range(result.shape[1]):
                 guess = (x0[i], a0[i], c0[i])
                 try:
-                    popt, pcov = optimize.curve_fit(
-                        parabola,
-                        sweep,
-                        result[:, i],
-                        ftol=1e-5,
-                        p0=guess,
-                        bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, np.inf]),
-                    )
+                    with warnings.catch_warnings():
+                        # An undefined covariance (e.g. three sweep points) only makes dx infinite.
+                        warnings.simplefilter("ignore", optimize.OptimizeWarning)
+                        popt, pcov = optimize.curve_fit(
+                            parabola,
+                            sweep,
+                            result[:, i],
+                            ftol=1e-5,
+                            p0=guess,
+                            bounds=([-np.inf, 0, -np.inf], [np.inf, np.inf, np.inf]),
+                        )
                     perr = np.sqrt(
                         np.diag(pcov)
                     )  # Single sigma error, which can be multiplied later.
@@ -309,15 +314,7 @@ class _WavefrontCalibrationZernike:
 
                     stored_zi = np.copy(dat["zernike_indices"])
 
-                    if len(zernike_indices) >= len(stored_zi):
-                        if np.all(zernike_indices[: len(stored_zi)] == stored_zi):
-                            pass  # Extend zernike indices.
-                        else:
-                            raise ValueError(
-                                f"Requested indices {zernike_indices} "
-                                f"is not compatible with stored indices {stored_zi}."
-                            )
-                    else:
+                    if not np.array_equal(zernike_indices[: len(stored_zi)], stored_zi):
                         raise ValueError(
                             f"Requested indices {zernike_indices} "
                             f"is not compatible with stored indices {stored_zi}."
@@ -467,7 +464,7 @@ class _WavefrontCalibrationZernike:
                 "WGS-Kim",
                 feedback="experimental_spot",
                 maxiter=maxiter,
-                verbose=True,
+                verbose=plot >= 0,
                 name="optimize_weights",
                 stat_groups=[
                     "computational_spot",
@@ -874,10 +871,10 @@ class _WavefrontCalibrationZernike:
             If ``vector`` is ``None``, a function mapping ``"kxy"`` coordinates of shape
             ``(2, M)`` to these coefficients.
         """
+        interpolator = self._wavefront_calibrate_zernike_get_interpolator_2d()
+
         data = self.calibrations["wavefront_zernike"]
         zernike_indices = data["zernike_indices"]
-
-        interpolator = self._wavefront_calibrate_zernike_get_interpolator_2d()
 
         if vector is not None:
             vectors_kxy = convert_vector(

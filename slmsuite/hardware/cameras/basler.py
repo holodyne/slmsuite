@@ -5,19 +5,16 @@ Consider also installing Basler software for testing cameras outside of python
 Install :mod:`pypylon` by following the `provided instructions <https://github.com/basler/pypylon>`_.
 """
 
-import warnings
-
+from slmsuite._logging import make_logger
 from slmsuite.hardware.cameras.camera import Camera
+
+logger = make_logger(__name__)
 
 try:
     from pypylon import pylon
 except ImportError:
     pylon = None
-    warnings.warn("pypylon not installed. Install to use Basler cameras.")
-
-from slmsuite._logging import make_logger
-
-logger = make_logger(__name__)
+    logger.warning("pypylon not installed. Install to use Basler cameras.")
 
 
 class Basler(Camera):

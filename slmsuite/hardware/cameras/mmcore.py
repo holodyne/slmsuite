@@ -6,19 +6,17 @@ for installation instructions.
 """
 
 import os
-import warnings
 
+from slmsuite._logging import make_logger
 from slmsuite.hardware.cameras.camera import Camera
+
+logger = make_logger(__name__)
 
 try:
     import pymmcore
 except ImportError:
     pymmcore = None
-    warnings.warn("pymmcore not installed. Install to use Micro-Manager cameras.")
-
-from slmsuite._logging import make_logger
-
-logger = make_logger(__name__)
+    logger.warning("pymmcore not installed. Install to use Micro-Manager cameras.")
 
 
 class MMCore(Camera):

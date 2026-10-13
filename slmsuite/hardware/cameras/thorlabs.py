@@ -29,7 +29,6 @@ Color cameras reduce each frame to a single channel selected by the base-class
 import os
 import sys
 import time
-import warnings
 
 import numpy as np
 
@@ -65,7 +64,7 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
             dll_path += "32_lib"
 
     if not os.path.exists(dll_path) or not os.path.isdir(dll_path):
-        warnings.warn(f"Thorlabs camera DLL path does not exist.\n'{dll_path}'")
+        logger.warning("Thorlabs camera DLL path does not exist.\n'%s'", dll_path)
 
     # Win11 seems to break if path is not set as well as add_dll_directory.
     os.environ["PATH"] = dll_path + os.pathsep + os.environ["PATH"]
@@ -75,9 +74,10 @@ def _configure_tlcam_dll_path(dll_path=DEFAULT_DLL_PATH):
             os.add_dll_directory(dll_path)
         except Exception:
             if dll_path == DEFAULT_DLL_PATH:
-                warnings.warn(
+                logger.warning(
                     "thorlabs_tsi_sdk DLLs not found at default path. "
-                    f"Resolve to use Thorlabs cameras.\nDefault path: '{DEFAULT_DLL_PATH}'"
+                    "Resolve to use Thorlabs cameras.\nDefault path: '%s'",
+                    DEFAULT_DLL_PATH,
                 )
 
 
@@ -87,7 +87,7 @@ try:
     from thorlabs_tsi_sdk.tl_camera import ROI, TLCameraSDK
 except ImportError:
     TLCameraSDK = None
-    warnings.warn("thorlabs_tsi_sdk not installed. Install to use Thorlabs cameras.")
+    logger.warning("thorlabs_tsi_sdk not installed. Install to use Thorlabs cameras.")
 
 
 class ThorCam(Camera):

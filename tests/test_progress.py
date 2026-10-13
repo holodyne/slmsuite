@@ -47,6 +47,25 @@ def test_tqdm(subtests):
         assert [event["n"] for event in events] == [0, 1, 2, 2]
         assert events[-1]["kind"] == "close"
 
+    with subtests.test("an iterable without a length reports an unknown total"):
+        events = []
+        with progress_bar(lambda event: events.append(event) or False):
+            assert list(slmsuite.tqdm(iter(range(2)))) == [0, 1]
+        assert {event["total"] for event in events} == {None}
+        assert events[-1]["n"] == 2
+
+    with subtests.test("set_description reports the new description"):
+        events = []
+        with progress_bar(lambda event: events.append(event) or False):
+            bar = slmsuite.tqdm(total=1, desc="old")
+            bar.set_description("new")
+            bar.close()
+        assert [(event["kind"], event["desc"]) for event in events] == [
+            ("start", "old"),
+            ("update", "new"),
+            ("close", "new"),
+        ]
+
     with subtests.test("a truthy return cancels the loop where it stands"):
         seen = []
         with progress_bar(lambda event: event["kind"] == "update" and event["n"] >= 2):

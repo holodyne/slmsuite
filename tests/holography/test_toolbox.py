@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from scipy.spatial import distance
 
+from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.holography import toolbox
 from slmsuite.holography.toolbox import *
 from slmsuite.holography.toolbox import phase
@@ -92,6 +93,15 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         )
         np.testing.assert_allclose(as_numpy(tilt), ramp, rtol=1e-5, atol=1e-3)
 
+    with subtests.test("zernike depth is the focus weight that rebuilds the lens, up to piston"):
+        power = 1e-4
+        weight = convert_vector((0, 0, power), "norm", "zernike", **hw)[2, 0]
+        focus = phase.zernike_sum(slm, indices=(4,), weights=(weight,), use_mask=False)
+        # Z4 = 2 r^2 - 1, so the focus term carries a piston of -weight.
+        np.testing.assert_allclose(
+            as_numpy(focus) - as_numpy(phase.lens(slm, 1 / power)), -weight, rtol=1e-5
+        )
+
     with subtests.test("every unit inverts back to norm"):
         for unit in ["kxy", "rad", "mrad", "deg", "freq", "lpmm", "zernike", "knm"]:
             kw = knm_kw if unit == "knm" else hw
@@ -125,6 +135,24 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         finally:
             fs.mag = mag
 
+    v_3d = np.array([[0.01], [-0.02], [1e-4]])
+
+    with subtests.test("every unit inverts back to norm through a FourierSLM, depth included"):
+        fs = fourierslm_calibrated
+        for unit in toolbox.BLAZE_UNITS:
+            there = convert_vector(v_3d, "norm", unit, hardware=fs)
+            np.testing.assert_allclose(
+                convert_vector(there, unit, "norm", hardware=fs), v_3d, rtol=1e-9, err_msg=unit
+            )
+
+    with subtests.test("um is ij scaled by the camera pixel pitch, depth by its mean"):
+        fs = fourierslm_calibrated
+        ij_3d = convert_vector(v_3d, "norm", "ij", hardware=fs)
+        um_3d = convert_vector(v_3d, "norm", "um", hardware=fs)
+        pitch = toolbox.format_2vectors(fs.cam.pitch_um)
+        np.testing.assert_allclose(um_3d[:2], ij_3d[:2] * pitch)
+        np.testing.assert_allclose(um_3d[2], ij_3d[2] * np.mean(pitch))
+
     with subtests.test("the z component carries focal power, untouched by the xy scaling"):
         vec_3d = np.array([[0.1], [-0.2], [0.5]])
         np.testing.assert_allclose(
@@ -147,6 +175,25 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
                 result = convert_vector(vec, from_units=unit, to_units="norm")
             assert any("CameraSLM" in r.getMessage() for r in caplog.records), unit
             assert np.all(np.isnan(result)), unit
+
+    with subtests.test("a mag unit warns and returns nan from a bare Camera"):
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
+            result = convert_vector(vec, "ij", "mag_um", hardware=camera)
+        assert any("mag_" in r.getMessage() for r in caplog.records)
+        assert np.all(np.isnan(result))
+
+    with subtests.test("a camera without pitch_um converts pixel units but not lengths"):
+        unpitched = SimulatedCamera(slm, resolution=(512, 512), pitch_um=None)
+        with caplog.at_level(logging.WARNING, logger="slmsuite"):
+            caplog.clear()
+            result = convert_vector(vec, "ij", "um", hardware=unpitched)
+        assert any("pitch_um" in r.getMessage() for r in caplog.records)
+        assert np.all(np.isnan(result))
+        np.testing.assert_allclose(
+            convert_vector(vec, "ij", "ijraw", hardware=unpitched),
+            unpitched._get_ijcam_to_ijraw() @ vec,
+        )
 
     camera.set_binning(2)
     camera.set_woi((10, 100, 20, 80))
@@ -183,6 +230,12 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         with pytest.warns(UserWarning, match="convert_blaze_vector"):
             result = toolbox.convert_blaze_vector((0.1, -0.2))
         np.testing.assert_allclose(result, [[0.1], [-0.2]])
+
+    with subtests.test("the convert_blaze_vector alias passes slm= on as hardware="):
+        with pytest.warns(UserWarning) as record:
+            result = toolbox.convert_blaze_vector(vec, "norm", "freq", slm=slm)
+        assert any("convert_vector(slm=)" in str(w.message) for w in record)
+        np.testing.assert_allclose(result, convert_vector(vec, "norm", "freq", **hw))
 
 
 def test_convert_radius(slm, subtests):
@@ -447,7 +500,7 @@ def test_fit_3pt(subtests):
         )
 
     with subtests.test("a non-positive N returns the affine instead of a lattice"):
-        for n in (0, -1, None):
+        for n in (0, -1, None, (0, 3), (3, -1)):
             assert set(fit_3pt((0, 0), (1, 0), (0, 1), N=n)) == {"M", "b"}
 
     with subtests.test("orientation_check drops the last two lattice points"):
@@ -462,6 +515,11 @@ def test_fit_3pt(subtests):
     with subtests.test("colinear indices raise despite floating point roundoff"):
         with pytest.raises(ValueError, match="colinear"):
             fit_3pt((0, 0), (1, 2), (3, 4), x0=(0, 0), x1=(0.1, 0.2), x2=(0.3, 0.6))
+
+    with subtests.test("an N that is neither an integer, a pair of them, nor an array raises"):
+        for n in (2.5, (3, 2.5), "3"):
+            with pytest.raises(ValueError, match="not recognized"):
+                fit_3pt((0, 0), (1, 0), (0, 1), N=n)
 
 
 def test_smallest_distance(subtests):
@@ -533,6 +591,10 @@ def test_smallest_distance(subtests):
             assert smallest_distance(vectors, metric=metric) == pytest.approx(
                 distance.pdist(vectors.T, metric=metric).min(), rel=1e-9, abs=1e-15
             ), metric
+
+    with subtests.test("a metric name scipy does not know raises"):
+        with pytest.raises(RuntimeError, match="not recognized by scipy"):
+            smallest_distance(pair, metric="bogus")
 
     with subtests.test("a closest pair straddling the split line is still found"):
         for trial in range(80):
@@ -606,6 +668,12 @@ def test_lloyds_points(subtests):
     with subtests.test("a lone point relaxes onto the center of the grid"):
         result = lloyds_points(shape, 1, iterations=50, seed=22)
         np.testing.assert_allclose(result.ravel(), [50, 50], atol=1)
+
+    with subtests.test("a coordinate grid gets its points back in its own coordinates"):
+        xs = 0.1 * np.arange(100) - 5
+        ys = 0.2 * np.arange(80) + 1
+        result = lloyds_points(np.meshgrid(xs, ys), 1, iterations=50, seed=22)
+        np.testing.assert_allclose(result.ravel(), [0, 9], atol=0.2)
 
 
 def test_assign_vectors(subtests):
@@ -750,6 +818,10 @@ def test_window_slice(subtests):
         expected[[0, 0, 4, 4], [0, 4, 0, 4]] = 0
         np.testing.assert_array_equal(mat, expected)
 
+    with subtests.test("a window in no recognized format raises"):
+        with pytest.raises(ValueError, match="Unrecognized format"):
+            window_slice([1, 2, 3])
+
 
 def test_window_extent(subtests):
     """Test window_extent's bounding rectangle around a window."""
@@ -794,6 +866,15 @@ def test_window_extent(subtests):
         recovered = np.zeros_like(mask)
         recovered[window_slice(window_extent(mask))] = True
         np.testing.assert_array_equal(recovered, mask)
+
+    with subtests.test("a (y_ind, x_ind) pair gives the bounding box of its pixels"):
+        assert window_extent((np.array([2, 4, 3]), np.array([5, 1, 7]))) == (1, 7, 2, 3)
+        # A circular window drops its corners but keeps the midpoints of every edge.
+        assert window_extent(window_slice([3, 5, 2, 7], circular=True)) == (3, 5, 2, 7)
+
+    with subtests.test("a window in no recognized format raises"):
+        with pytest.raises(ValueError, match="Unrecognized format"):
+            window_extent([1, 2, 3])
 
 
 def test_transform_grid(subtests):
@@ -844,6 +925,18 @@ def test_transform_grid(subtests):
         np.testing.assert_allclose(x_out, x_grid, atol=1e-13)
         np.testing.assert_allclose(y_out, y_grid, atol=1e-13)
 
+    with subtests.test("rev undoes a pure shift"):
+        forward = transform_grid(grid, shift=(0.5, -0.3))
+        (x_out, y_out) = transform_grid(forward, shift=(0.5, -0.3), direction="rev")
+        np.testing.assert_allclose(x_out, x_grid, atol=1e-15)
+        np.testing.assert_allclose(y_out, y_grid, atol=1e-15)
+
+    with subtests.test("an unknown direction or a transform that is not 2x2 raises"):
+        with pytest.raises(ValueError, match="direction"):
+            transform_grid(grid, direction="up")
+        with pytest.raises(ValueError, match="2x2"):
+            transform_grid(grid, transform=np.eye(3))
+
 
 def test_voronoi_windows(subtests):
     """Test voronoi_windows' partition of a grid into cells around each vector."""
@@ -882,6 +975,14 @@ def test_voronoi_windows(subtests):
     with subtests.test("a shape of numpy integers is a shape"):
         numpy_shape = (np.int64(shape[0]), np.int64(shape[1]))
         for window, expected in zip(voronoi_windows(numpy_shape, vectors), windows):
+            np.testing.assert_array_equal(window, expected)
+
+    with subtests.test("a coordinate grid takes vectors in its own units, not pixels"):
+        (x_axis, y_axis) = (0.5 * np.arange(shape[1]) - 3, 0.25 * np.arange(shape[0]) + 2)
+        coordinates = np.vstack((0.5 * vectors[0] - 3, 0.25 * vectors[1] + 2))
+        for window, expected in zip(
+            voronoi_windows(np.meshgrid(x_axis, y_axis), coordinates), windows
+        ):
             np.testing.assert_array_equal(window, expected)
 
 
