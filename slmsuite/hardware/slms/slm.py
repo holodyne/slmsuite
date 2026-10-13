@@ -846,8 +846,12 @@ class SLM(_Common, ABC):
 
     def _gray2phase(self, gray):
         r"""
-        The inverse of :meth:`_phase2gray`: the phase, in :math:`[0, 2\pi)`, that
-        :meth:`_phase2gray` maps onto each grayscale level in ``gray``.
+        The phase, in :math:`[0, 2\pi)`, which :meth:`_phase2gray` maps onto each
+        grayscale level: the center of the level's bin on the linear path, the level's
+        measured phase with a :attr:`lut`.
+
+        With :attr:`phase_scaling` below one, levels about ``phase_scaling * bitresolution``
+        apart realize nearly the same phase, and :meth:`_phase2gray` maps it onto one of them.
 
         Parameters
         ----------
@@ -861,15 +865,15 @@ class SLM(_Common, ABC):
         """
         xp = self.xp
         if self.lut is not None:
-            level_phase = self._gamma_sign * 2 * np.pi * xp.asarray(self.gamma, dtype=xp.float32)
-            return xp.mod(level_phase, 2 * np.pi)[gray]
+            level_phase = self._gamma_sign * 2 * np.pi * xp.asarray(self.gamma)
+            return xp.mod(level_phase, 2 * np.pi)[gray].astype(xp.float32)
 
         gray = xp.asarray(gray).astype(xp.float32)
         if self.phase_scaling == 1:
             # _phase2gray shifts by one level so that phase zero lands on the top level.
             realized = (gray + 1) * (self._gamma_sign * 2 * np.pi / self.bitresolution)
         else:
-            realized = (gray - (self.bitresolution - 1)) * (
+            realized = (gray - (self.bitresolution - 1) + 0.5) * (
                 -2 * np.pi / (self.bitresolution * self.phase_scaling)
             )
         return xp.mod(realized, 2 * np.pi).astype(xp.float32)
@@ -1054,8 +1058,8 @@ class SLM(_Common, ABC):
             under ``phase`` is stored in the attribute :attr:`phase`. When
             :attr:`phase_scaling` is one and no :attr:`lut` is set, this copy is
             rounded to a whole number of levels. If the data was cropped, then the
-            cropped data is stored, etc. If integer data was passed, the equivalent
-            floating point phase is computed and stored in the attribute :attr:`phase`.
+            cropped data is stored, etc. If integer data was passed, the phase which
+            :meth:`_phase2gray` maps onto it is stored in :attr:`phase`.
         phase_correct : bool OR None
             Whether to add wavefront correction to the pattern. This correction
             is stored in
@@ -1157,13 +1161,7 @@ class SLM(_Common, ABC):
             self.display = self._gray2display(phase)
 
             # Update the phase variable with the integer data that we displayed.
-            if self.gamma is None:
-                realized = phase * (
-                    self._gamma_sign * 2 * np.pi / self.phase_scaling / self.bitresolution
-                )
-            else:
-                realized = self._gamma_sign * 2 * np.pi * self.gamma[phase]
-            xp.copyto(self.phase, xp.mod(realized, 2 * np.pi))
+            xp.copyto(self.phase, self._gray2phase(phase))
         else:
             # If float data was passed (or the None case).
             # Unpad if necessary.

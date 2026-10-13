@@ -6,7 +6,7 @@ import logging
 
 import numpy as np
 import pytest
-from conftest import driver_classes
+from conftest import SensorCamera, driver_classes
 
 from slmsuite.hardware.cameras import camera as camera_module
 from slmsuite.hardware.cameras.camera import Camera
@@ -38,13 +38,17 @@ class _FlakyCamera(SimulatedCamera):
     failures = 0
     frame = None
 
-    def _get_image_hw(self, timeout_s=0, quantize=True):
+    def _flaky(self, capture, *args):
         if self.failures > 0:
             self.failures -= 1
             raise RuntimeError(f"{self.failures} failures left")
-        if self.frame is not None:
-            return self.frame
-        return super()._get_image_hw(timeout_s, quantize)
+        return capture(*args) if self.frame is None else self.frame
+
+    def _get_image_hw(self, timeout_s=0, quantize=True):
+        return self._flaky(super()._get_image_hw, timeout_s, quantize)
+
+    def _get_images_hw(self, image_count, timeout_s, out=None):
+        return self._flaky(super()._get_images_hw, image_count, timeout_s, out)
 
 
 class TestCamera:
@@ -87,6 +91,10 @@ class TestCamera:
             cam24 = SimulatedCamera(slm=slm, resolution=(256, 256), bitdepth=24)
             assert cam24.dtype == np.dtype(np.uint32)
 
+        with subtests.test("a non-positive capture_attempts raises"):
+            with pytest.raises(ValueError, match="capture_attempts"):
+                SimulatedCamera(slm=slm, resolution=(64, 48), capture_attempts=0)
+
     def test_bitresolution(self, camera, subtests):
         """bitresolution is 2**bitdepth, times the number of frames summed into a capture."""
         with subtests.test("bitresolution is exactly 2**bitdepth"):
@@ -124,6 +132,16 @@ class TestCamera:
             rotated.binning = (4, 2)
             assert tuple(rotated.binning) == (4, 2) == rotated.get_binning()
 
+        with subtests.test("hardware binning reports what the hardware realized, and warns"):
+            sensor = SensorCamera(slm, resolution=WIDE)
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                sensor.set_binning((2, 4))
+            assert tuple(sensor.binning) == (2, 2) == tuple(sensor.get_binning())
+            assert sensor.shape == (50, 100)
+            assert sensor.woi == (0, 200, 0, 100)
+            assert "Attempted to set binning" in caplog.text
+
     def test_get_binning(self, slm, subtests):
         """get_binning() reports the binning in transformed coordinates."""
         cam = SimulatedCamera(slm, resolution=WIDE)
@@ -140,7 +158,7 @@ class TestCamera:
             rotated._binning = (2, 4)  # raw sensor axes, bypassing the transform in set_binning()
             assert rotated.get_binning() == (4, 2) == rotated.binning
 
-    def test_set_woi(self, camera, slm, subtests):
+    def test_set_woi(self, camera, slm, caplog, subtests):
         """A window stays on the sensor, sets the shape, and carries into every capture."""
         try:
             camera.set_woi()
@@ -209,6 +227,44 @@ class TestCamera:
                 cam.set_woi((150, 100, 60, 80))
             assert cam.woi == (150, 50, 60, 40)
 
+        with subtests.test("a window of any other length or type raises"):
+            with pytest.raises(ValueError, match="Expected WOI"):
+                cam.set_woi((1, 2, 3))
+            with pytest.raises(TypeError, match="Cannot interpret"):
+                cam.set_woi("full")
+
+        with subtests.test("a window the hardware snaps is reported where it landed, and warns"):
+            sensor = SensorCamera(slm, resolution=WIDE)
+            sensor.snap = 4
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                assert sensor.set_woi((10, 82, 5, 41)) == (8, 80, 4, 40)
+            assert sensor.shape == (40, 80) == sensor.get_image().shape
+            assert "Attempted to set WOI" in caplog.text
+
+        # Speckle fills every window, so no comparison below is between blank frames.
+        phase = np.random.default_rng(0).uniform(0, 2 * np.pi, slm.shape)
+        slm.set_phase(phase, phase_correct=False)
+
+        # The window maps to even raw pixels in every orientation, so binning by two drops none.
+        for label, kwargs, _ in ORIENTATIONS:
+            with subtests.test(f"{label} hardware window and binning deliver the software frame"):
+                (sensor, software) = (
+                    cls(slm, resolution=WIDE, bitdepth=12, **kwargs)
+                    for cls in (SensorCamera, SimulatedCamera)
+                )
+                # About a quarter of the 12-bit range per pixel, so few pixels saturate.
+                gain = 1000 / float(np.mean(software.render()))
+                for c in (sensor, software):
+                    c.gain = gain
+                    c.set_binning(2)
+                    c.set_woi((20, 40, 20, 60))
+                assert np.ptp(software.get_image()) > 0
+                assert not (sensor._software_woi or sensor._software_binning)
+                assert sensor.woi == software.woi and sensor.shape == software.shape
+                np.testing.assert_array_equal(sensor.get_image(), software.get_image())
+                np.testing.assert_array_equal(sensor.get_images(2), software.get_images(2))
+
     def test_get_woi(self, slm, subtests):
         """get_woi() reports transformed, unbinned coordinates that set_woi() accepts back."""
         cam = SimulatedCamera(slm, resolution=WIDE)
@@ -238,6 +294,16 @@ class TestCamera:
 
                 rotated.set_woi(None)
                 assert rotated.shape == (full_h, full_w)
+
+        with subtests.test("a hardware window is read back from the hardware, unbinned"):
+            sensor = SensorCamera(slm, resolution=WIDE)
+            sensor._hw_woi = (8, 40, 4, 20)  # raw, as the hardware itself reports it
+            assert sensor.get_woi() == (8, 40, 4, 20) == sensor.woi
+            sensor._hw_binning = (2, 2)
+            sensor._hw_woi = (4, 20, 2, 10)
+            assert sensor.get_binning() == (2, 2)
+            assert sensor.get_woi() == (8, 40, 4, 20)
+            assert sensor.shape == (10, 20)
 
     def test_woi_survives_a_pickle_round_trip(self, slm):
         """pickle() records the window and the binning, so a reload delivers the same frame."""
@@ -316,7 +382,7 @@ class TestCamera:
             with pytest.raises(ValueError, match="averaging must be positive"):
                 camera._parse_averaging(-1)
 
-    def test_get_dtype(self, camera, subtests):
+    def test_get_dtype(self, camera, slm, subtests):
         """get_dtype() reports a type wide enough for whatever get_image() sums into it."""
         with subtests.test("a single unbinned frame keeps the hardware dtype"):
             assert camera.get_dtype(averaging=1) == camera.dtype
@@ -344,6 +410,18 @@ class TestCamera:
             with pytest.raises(ValueError, match="averaging must be positive"):
                 camera.get_dtype(averaging=-1)
 
+        sensor = SensorCamera(slm, resolution=WIDE, bitdepth=8)
+        sensor.set_binning(2)
+
+        with subtests.test("hardware binning does not widen the dtype, software binning does"):
+            assert sensor.get_dtype() == np.uint8
+            assert sensor.get_dtype(binning=2) is float
+
+        with subtests.test("a non-numeric type raises"):
+            sensor.dtype = np.dtype(bool)
+            with pytest.raises(ValueError, match="does not make sense"):
+                sensor.get_dtype()
+
     def test__get_dtype(self, camera, subtests):
         """_get_dtype() adopts the hardware's dtype, or infers one from the bitdepth."""
         (orig_dtype, orig_bitdepth) = (camera.dtype, camera.bitdepth)
@@ -370,7 +448,18 @@ class TestCamera:
                 with pytest.warns(UserWarning, match="does not conform"):
                     camera._get_dtype()
 
-            for bitdepth, inferred in ((8, np.uint8), (12, np.uint16)):
+            with subtests.test("a non-positive bitdepth raises"):
+                camera._get_image_hw = lambda timeout_s: None
+                camera.bitdepth = 0
+                with pytest.raises(ValueError, match="Non-positive bitdepth"):
+                    camera._get_dtype()
+
+            for bitdepth, inferred in (
+                (8, np.uint8),
+                (12, np.uint16),
+                (40, np.uint64),
+                (70, np.float64),
+            ):
                 camera.bitdepth = bitdepth
 
                 with subtests.test(
@@ -405,6 +494,16 @@ class TestCamera:
 
         with subtests.test("a tuple sets count and base"):
             assert camera._parse_hdr((4, 3)) == (4, 3)
+
+        with subtests.test("None falls back to the attribute, or to a single exposure"):
+            camera.hdr = (4, 3)
+            assert camera._parse_hdr(None) == (4, 3)
+            camera.hdr = None
+            assert camera._parse_hdr(None) == (1, 0)
+
+        with subtests.test("a fractional base is truncated, with a warning"):
+            with pytest.warns(UserWarning, match="not an integer"):
+                assert camera._parse_hdr((3, 2.5)) == (3, 2)
 
     def test_crop_to_woi(self, slm, subtests):
         """Software WOI and binning crop and block-sum the raw frame without overflowing it."""
@@ -453,6 +552,20 @@ class TestCamera:
                 assert cam.get_exposure() == bound
                 assert "out of bounds" in caplog.text
 
+        with subtests.test("the exposure_s setter clips as set_exposure() does"):
+            cam.exposure_s = 10.0
+            assert cam.exposure_s == 1.0 == cam.get_exposure()
+
+        with subtests.test("the realized exposure is returned, and warned past one percent"):
+            # Hardware with a one millisecond exposure clock.
+            cam._set_exposure_hw = lambda e: setattr(cam, "_exposure_s", round(e, 3))
+            for request, realized, warns in ((0.0123, 0.012, True), (0.9996, 1.0, False)):
+                caplog.clear()
+                with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                    assert cam.set_exposure(request) == realized
+                assert cam.exposure_s == realized
+                assert ("but realized" in caplog.text) is warns
+
     def test_get_image(self, camera, slm, subtests):
         """get_image() returns one transformed frame of camera.shape, optionally summed."""
         img = camera.get_image()
@@ -492,6 +605,16 @@ class TestCamera:
             assert rotated.get_image(hdr=2, transform=False).shape == (100, 200)
             assert rotated.get_image(hdr=2).shape == rotated.shape == (200, 100)
 
+        with subtests.test("averaging frame by frame for get=False sums what the batch sums"):
+            small = SimulatedSLM((64, 48), gpu=False)
+            small.set_phase(np.random.default_rng(0).uniform(0, 2 * np.pi, small.shape))
+            # The speckle renders near one per pixel; this puts it near 30 counts.
+            cam = SimulatedCamera(small, gain=30)
+            batch = cam.get_image(averaging=3)
+            assert np.ptp(batch) > 0
+            np.testing.assert_array_equal(as_numpy(cam.get_image(averaging=3, get=False)), batch)
+            small.close()
+
     def test_get_images(self, camera, subtests):
         """get_images() stacks raw frames, applying neither averaging nor HDR."""
         count = 3
@@ -512,6 +635,14 @@ class TestCamera:
             camera.averaging = 4
             camera.hdr = 3
             assert camera.get_images(count).dtype == dtype
+
+        with subtests.test("a buffer of the wrong shape or dtype raises"):
+            for out in (
+                np.empty((count + 1, *camera.shape), dtype=dtype),
+                np.empty((count, *camera.shape), dtype=np.complex64),
+            ):
+                with pytest.raises(ValueError, match="Expected out"):
+                    camera.get_images(count, out=out)
 
         with subtests.test("binning does widen it, and still fills a buffer in place"):
             camera.set_binning(2)
@@ -537,10 +668,45 @@ class TestCamera:
             with pytest.raises(RuntimeError, match="0 failures left"):
                 cam._get_image_hw_tolerant(0)
 
+        cam.frame = np.stack([np.full(cam.shape, c, dtype=np.uint8) for c in (10, 20, 30)], -1)
+
+        with subtests.test("a color frame is reduced to color_channel, channel 0 by default"):
+            assert np.all(cam._get_image_hw_tolerant(0) == 10)
+            cam.color_channel = 2
+            assert np.all(cam.get_image() == 30)
+            assert cam.get_image().shape == cam.shape
+
+        with subtests.test("a weighted or unrecognized color_channel raises"):
+            for channel, error in (([0.2, 0.7, 0.1], NotImplementedError), ("green", ValueError)):
+                cam.color_channel = channel
+                with pytest.raises(error):
+                    cam._get_image_hw_tolerant(0)
+
         with subtests.test("a frame of more than three dimensions raises"):
             cam.frame = np.zeros((2, 48, 64, 3))
             with pytest.raises(ValueError, match="2D or 3D"):
                 cam._get_image_hw_tolerant(0)
+
+    def test_get_images_hw_tolerant(self, slm, caplog, subtests):
+        """A failed stack is retried up to capture_attempts times; a color stack loses its color."""
+        cam = _FlakyCamera(slm, resolution=(64, 48), capture_attempts=3, color_channel=1)
+        cam.frame = np.arange(2 * 48 * 64 * 3, dtype=np.uint16).reshape(2, 48, 64, 3)
+
+        with subtests.test("a color stack is reduced to color_channel"):
+            np.testing.assert_array_equal(cam._get_images_hw_tolerant(2, 0), cam.frame[..., 1])
+
+        with subtests.test("fewer failures than attempts return the stack, with a warning"):
+            cam.failures = 2
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="slmsuite"):
+                stack = cam._get_images_hw_tolerant(2, 0)
+            np.testing.assert_array_equal(stack, cam.frame[..., 1])
+            assert "failed 2 times" in caplog.text
+
+        with subtests.test("as many failures as attempts re-raise the last error"):
+            cam.failures = 3
+            with pytest.raises(RuntimeError, match="0 failures left"):
+                cam._get_images_hw_tolerant(2, 0)
 
     def test_get_image_hdr_analysis(self, subtests):
         """get_image_hdr_analysis() recovers the base exposure from a stack of doublings."""
@@ -732,6 +898,23 @@ class TestCamera:
                 )
                 assert 1e-3 <= min(written) and max(written) <= 1e-2, bounds
 
+        with subtests.test("a non-positive set_fraction or tol raises"):
+            with pytest.raises(ValueError, match="set_fraction"):
+                camera.autoexpose(set_fraction=0, verbose=False)
+            with pytest.raises(ValueError, match="tol"):
+                camera.autoexpose(tol=-0.1, verbose=False)
+
+        with subtests.test("the metric sees only the window, and set_fraction=True is half"):
+            seen = []
+
+            def on_target(image):
+                seen.append(image.shape)
+                return camera.bitresolution / 2
+
+            start = camera.set_exposure(5e-3)
+            assert camera.autoexpose(True, window=(4, 20, 8, 12), metric=on_target) == start
+            assert seen == [(12, 20)]
+
     def test_autofocus(self, camera, slm, monkeypatch, subtests):
         """autofocus() recovers a known Zernike defocus and leaves the caller's sweep alone."""
         slm.set_source_analytic()
@@ -749,7 +932,7 @@ class TestCamera:
             with pytest.raises(ValueError, match="set_z must be"):
                 camera.autofocus(set_z="not_callable")
 
-        for range_z in ([-1.0, -0.5, 0.0, 0.5, 1.0], np.array([-1, 0, 1])):
+        for range_z in ([-1.0, -0.5, 0.0, 0.5, 1.0], np.arange(-2, 3)):
             with subtests.test(f"a {type(range_z).__name__} range_z is not mutated"):
                 before = np.copy(range_z)
                 camera.autofocus(set_z=slm, get_z=0.5, range_z=range_z, verbose=False)
@@ -806,3 +989,44 @@ class TestCamera:
             f"{driver.__module__}.{driver.__name__} leaves "
             f"{sorted(driver.__abstractmethods__)} abstract, so it cannot be instantiated."
         )
+
+
+class TestSimulatedCamera:
+    """Tests for the methods SimulatedCamera adds to the Camera interface."""
+
+    def test_render(self, slm, subtests):
+        """render() is the frame get_image() reads out, before exposure, gain and clipping."""
+        slm.set_phase(np.random.default_rng(0).uniform(0, 2 * np.pi, slm.shape))
+
+        for label, kwargs, _ in ORIENTATIONS:
+            with subtests.test(f"{label} windowed render reads out as the captured frame"):
+                cam = SimulatedCamera(slm, resolution=WIDE, **kwargs)
+                cam.set_woi((20, 40, 20, 60))
+                cam.set_exposure(2)
+                # The brightest percent of the speckle saturates.
+                cam.gain = 2**cam.bitdepth / float(np.percentile(cam.render(), 99)) / cam.exposure_s
+
+                render = cam.render()
+                assert render.shape == cam.shape
+                expected = np.clip(render * (cam.exposure_s * cam.gain), 0, 2**cam.bitdepth - 1)
+                assert np.any(expected == 2**cam.bitdepth - 1) and np.any(expected < 1)
+                np.testing.assert_array_equal(cam.get_image(), expected.astype(cam.dtype))
+
+    def test_apply_response(self, slm, subtests):
+        """A noise dictionary adds dark counts per second of exposure and read counts per frame."""
+        cam = SimulatedCamera(slm, resolution=(64, 48), gain=0)
+        cam.noise = {"dark": lambda full: 0.1 * full, "read": lambda full: 0.05 * full}
+
+        for exposure_s in (1, 2):
+            with subtests.test(f"a dark frame at {exposure_s} s holds dark and read counts"):
+                cam.set_exposure(exposure_s)
+                np.testing.assert_allclose(
+                    as_numpy(cam._get_image_hw(0, quantize=False)),
+                    (0.1 * exposure_s + 0.05) * 2**cam.bitdepth,
+                    rtol=1e-6,
+                )
+
+        with subtests.test("an unknown noise source raises"):
+            cam.noise = {"shot": lambda full: full}
+            with pytest.raises(RuntimeError, match="Unknown noise source"):
+                cam._get_image_hw(0)

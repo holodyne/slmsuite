@@ -10,21 +10,19 @@ Please either install tisgrabber.py or have it in your current working directory
 """
 
 import ctypes
-import warnings
 
 import numpy as np
 
+from slmsuite._logging import make_logger
 from slmsuite.hardware.cameras.camera import Camera
+
+logger = make_logger(__name__)
 
 try:
     import tisgrabber as tis
 except Exception:
     tis = None
-    warnings.warn("tisgrabber not installed. Install to use ImagingSource cameras.")
-
-from slmsuite._logging import make_logger
-
-logger = make_logger(__name__)
+    logger.warning("tisgrabber not installed. Install to use ImagingSource cameras.")
 
 
 # Change this DLL path if necessary

@@ -172,11 +172,12 @@ class _SettleCalibration:
         times = self.calibrations["settle"]["times"]
         results = np.ravel(self.calibrations["settle"]["data"])
 
+        if not 0 < np.max(results) < np.inf:
+            raise RuntimeError("Settle calibration measured no signal.")
+
         # Estimate the step location and pre-step footer from the data.
         plateau = np.median(results[results > 0.5 * np.max(results)])
         on = np.flatnonzero(results > 0.05 * plateau)
-        if len(on) == 0:
-            raise RuntimeError("Settle calibration measured no signal.")
         x0_guess = times[on[0] - 1] if on[0] > 0 else times[0]
         before = times < x0_guess
         footer_guess = np.median(results[before]) if np.any(before) else 0

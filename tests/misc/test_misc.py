@@ -2,12 +2,15 @@
 Unit tests for slmsuite.misc modules.
 """
 
+from typing import ClassVar
+
 import numpy as np
 import pytest
 
 from slmsuite.holography.analysis import image_variances
 from slmsuite.misc.fitfunctions import *
 from slmsuite.misc.math import *
+from slmsuite.misc.xp import as_backend, is_gpu_array
 
 # slmsuite.misc.math
 
@@ -291,3 +294,29 @@ def test_sinc2d_centered_jacobian(subtests):
                 _sinc2d_centered(xy, *(params + shift)) - _sinc2d_centered(xy, *(params - shift))
             ) / (2 * step)
             np.testing.assert_allclose(jacobian[:, index], difference, atol=1e-7, err_msg=index)
+
+
+# slmsuite.misc.xp
+
+
+@pytest.mark.gpu
+def test_is_gpu_array_gpu(has_cupy):
+    """GPU variant of is_gpu_array(): cupy arrays and CUDA array interfaces are on the device."""
+    import cupy as cp
+
+    class Interface:
+        """Stand-in for a non-cupy device array, such as a torch CUDA tensor."""
+
+        __cuda_array_interface__: ClassVar[dict] = {}
+
+    assert is_gpu_array(cp.zeros(3))
+    assert is_gpu_array(Interface())
+
+
+@pytest.mark.gpu
+def test_as_backend_gpu(has_cupy):
+    """GPU variant of as_backend(): a device array already on cupy is left alone."""
+    import cupy as cp
+
+    device = cp.zeros(3)
+    assert as_backend(device, cp) is device

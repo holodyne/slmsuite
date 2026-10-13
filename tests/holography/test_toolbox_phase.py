@@ -694,6 +694,28 @@ def test_zernike_sum(normalized_grid, subtests, benchmark):
         with pytest.raises(ValueError, match="derivative"):
             phase.zernike_sum(basis, None, np.ones(len(indices)), derivative=(1, 0))
 
+    with subtests.test("a ZernikeBasis checks the weights against its own modes"):
+        for weights, match in (
+            ([1.0], "common dimension"),
+            (np.ones((3, 2)), "common dimension"),
+            (np.ones((2, 2, 2)), "1D or 2D"),
+        ):
+            with pytest.raises(ValueError, match=match):
+                phase.zernike_sum(basis[:2], None, weights)
+
+    with subtests.test("a scalar weight scales a one-mode ZernikeBasis"):
+        np.testing.assert_allclose(
+            phase.zernike_sum(basis[:1], None, 2.0),
+            2.0 * phase.zernike(normalized_grid, indices[0]),
+            atol=1e-12,
+        )
+
+    with subtests.test("an integer out buffer raises rather than truncating the phase"):
+        with pytest.raises(ValueError, match="floating-point"):
+            phase.zernike_sum(
+                basis, None, np.ones(len(indices)), out=np.zeros(normalized_grid[0].shape, int)
+            )
+
     for kwargs, match in (
         ({"indices": [0], "weights": [1], "derivative": (1,)}, "Expected derivative"),
         ({"indices": [0, 1, 2], "weights": np.ones((3, 2, 2))}, "1D or 2D"),
@@ -741,6 +763,18 @@ class TestZernikeBasis:
             )
             np.testing.assert_allclose(phase.zernike_sum(sub, None, weights[2:]), direct, atol=1e-9)
 
+    def test_grad_gram_inv(self, normalized_grid, subtests):
+        """grad_gram_inv inverts the gradient Gram matrix, which piston makes singular."""
+        with subtests.test("the inverse times the gradient Gram matrix is the identity"):
+            basis = ZernikeBasis(normalized_grid, self.indices)
+            np.testing.assert_allclose(
+                basis.grad_gram_inv @ basis.grad_gram, np.eye(len(self.indices)), atol=1e-9
+            )
+
+        with subtests.test("a basis holding piston raises instead of inverting"):
+            with pytest.raises(ValueError, match="piston"):
+                _ = ZernikeBasis(normalized_grid, [0, *self.indices]).grad_gram_inv
+
 
 def test_zernike_get_basis(normalized_grid, subtests):
     """Test _zernike_get_basis(), the cache behind zernike_sum and image_zernike_fit."""
@@ -760,6 +794,26 @@ def test_zernike_get_basis(normalized_grid, subtests):
         phase.zernike_sum(grid_b, indices, weights)
         phase.zernike_sum(normalized_grid, indices, weights, aperture="circular")
         assert len(Z._ZERNIKE_BASIS_CACHE) == 3
+
+    with subtests.test("numeric and centered apertures key to distinct entries, each correct"):
+        clear_zernike_basis_cache()
+        apertures = (
+            0.003,
+            0.004,
+            (0.003, 0.004),
+            np.array([0.003, 0.005]),
+            Aperture(normalized_grid, 0.003, center=(100.0, 0.0)),
+        )
+        for aperture in apertures:
+            np.testing.assert_allclose(
+                phase.zernike_sum(normalized_grid, [4, 5], [1.0, 0.5], aperture=aperture),
+                Z._zernike_sum_direct(
+                    normalized_grid, [4, 5], [1.0, 0.5], aperture, True, (0, 0), None
+                ),
+                atol=1e-12,
+                err_msg=repr(aperture),
+            )
+        assert len(Z._ZERNIKE_BASIS_CACHE) == len(apertures)
 
     with subtests.test("grids sharing only their x array key to distinct entries"):
         clear_zernike_basis_cache()
@@ -1334,6 +1388,8 @@ def test_zernike_order_number():
     assert [phase.zernike_order_number(n) for n in range(6)] == [1, 3, 6, 10, 15, 21]
 
 
+# The last subtest asserts the precision warning; the others reach order 40 on purpose.
+@pytest.mark.filterwarnings("ignore:Zernike radial order:UserWarning")
 def test_zernike_coefficients(subtests):
     """Test the monomial coefficients of the Zernike polynomials and the caches feeding them."""
     with subtests.test("the polynomials are orthogonal, with norm pi (1 + d_m0) / (2n + 2)"):

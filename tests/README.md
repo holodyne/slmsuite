@@ -91,7 +91,8 @@ All from `conftest.py`, except `subtests`, which comes from the pytest-subtests 
 | `temp_dir`, `mpl_test`, `test_output_dir` | scratch directory, figure cleanup at the end of the test, this run's output directory |
 
 `conftest.py` also exports helpers to import directly rather than request: `seed_for`,
-`driver_classes`, and the simulated-system ground truth (`ground_truth_affine` and friends).
+`driver_classes`, `SensorCamera` (a `SimulatedCamera` that windows and bins in hardware), and
+the simulated-system ground truth (`ground_truth_affine` and friends).
 Coordinate grids are file-local fixtures, since what counts as a useful grid differs per
 module. Note `mpl_test` only cleans up when the test ends; a test comparing several figures
 must close them itself, because `_Common._plot()` draws into `plt.gcf()` whenever one is open.

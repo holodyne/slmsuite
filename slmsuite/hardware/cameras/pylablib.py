@@ -29,21 +29,18 @@ Color cameras reduce each frame to a single channel selected by the base-class
 single-frame and batch/averaging acquisition.
 """
 
-import warnings
-
 import numpy as np
 
+from slmsuite._logging import make_logger
 from slmsuite.hardware.cameras.camera import Camera
+
+logger = make_logger(__name__)
 
 try:
     from pylablib.devices.interface.camera import ICamera
 except Exception:
     ICamera = None
-    warnings.warn("pylablib not installed. Install to use PyLabLib cameras.")
-
-from slmsuite._logging import make_logger
-
-logger = make_logger(__name__)
+    logger.warning("pylablib not installed. Install to use PyLabLib cameras.")
 
 
 class PyLabLib(Camera):

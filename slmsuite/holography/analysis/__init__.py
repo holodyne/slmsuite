@@ -1102,11 +1102,13 @@ def image_fit(images, grid=None, function=gaussian2d, guess=None, plot=0):
                 images_normalized, centers=centers, grid=grid, normalize=False, nansum=True
             )
 
+            # A width guess is at least a tenth of a pixel; a zero width divides by zero.
+            floor = [0.1 * np.ptp(g) / max(n - 1, 1) for (g, n) in ((grid[0], w_x), (grid[1], w_y))]
+            widths = np.fmax(np.sqrt(variances[:2, :]), np.reshape(floor, (2, 1)))
+
             maxs = np.nanmax(images, axis=(1, 2))
             mins = np.nanmin(images, axis=(1, 2))
-            guess = np.vstack(
-                (centers, maxs - mins, mins, np.sqrt(variances[:2, :]), variances[2, :])
-            ).T
+            guess = np.vstack((centers, maxs - mins, mins, widths, variances[2, :])).T
         else:
             message = f"Default guess for function {function!s} not implemented."
             if guess is True:
@@ -1635,15 +1637,9 @@ def image_zernike_fit(
         # Project the gradient onto the gradient basis.
         b = basis.grad_basis_flat @ stacked  # (D, image_count)
 
-        if leastsquares:
-            # Exact least-squares fit: solve via the precomputed inverse of the Gram matrix.
-            # Avoids xp.linalg.solve (cuSOLVER) kernel launch overhead on GPU.
-            vectors_zernike = basis.grad_gram_inv @ b
-        else:
-            # Cheaper per-mode projection (the gradient basis is not orthonormal).
-            vectors_zernike = b / basis.grad_norm[:, np.newaxis]
-
-        return vectors_zernike
+        # Exact least-squares fit: solve via the precomputed inverse of the Gram matrix.
+        # Avoids xp.linalg.solve (cuSOLVER) kernel launch overhead on GPU.
+        return basis.grad_gram_inv @ b
 
     # Flatten to match the basis.
     phase_flat = phase_images.reshape(image_count, -1)  # (image_count, h*w)
@@ -2945,10 +2941,15 @@ def blob_array_detect(
             candidates.append(format_2vectors(orientation["b"]).astype(float))
 
         try:
-            res = cv2.matchTemplate(image_8bit, mask, cv2.TM_CCOEFF)
+            # The pad lets the kernel overhang the edge; its zero-mean template scores the pad as dark.
+            pad = np.array(mask.shape) // 2
+            padded = cv2.copyMakeBorder(
+                image_8bit, pad[0], pad[0], pad[1], pad[1], cv2.BORDER_CONSTANT, value=0
+            )
+            res = cv2.matchTemplate(padded, mask, cv2.TM_CCOEFF)
             _, _, _, max_loc = cv2.minMaxLoc(res)
             candidates.append(
-                np.array(max_loc, dtype=float)[:, np.newaxis]
+                (np.array(max_loc, dtype=float) - np.flip(pad))[:, np.newaxis]
                 + np.flip(mask.shape)[:, np.newaxis] / 2
             )
         except Exception:
@@ -2957,20 +2958,19 @@ def blob_array_detect(
         if len(candidates) == 0:
             candidates.append(np.flip(mask.shape)[:, np.newaxis] / 2.0)
 
-        def spot_power(b, M_trial=M_trial):
-            """Typical power collected where this position would place the spots."""
-            return float(
-                np.nanmedian(
-                    take(
-                        image_8bit,
-                        np.matmul(M_trial, centers) + b,
-                        3,
-                        centered=True,
-                        integrate=True,
-                        clip=True,
-                    )
-                )
+        window = 2 * np.max([1, int(0.2 * max_pitch)]) + 1
+
+        def spot_power(b, M_trial=M_trial, window=window):
+            """Power collected at the predicted spots, each capped at the median."""
+            power = take(
+                image_8bit,
+                np.matmul(M_trial, centers) + b,
+                window,
+                centered=True,
+                integrate=True,
+                clip=True,
             )
+            return float(np.nansum(np.minimum(power, np.nanmedian(power))))
 
         scores = [spot_power(b) for b in candidates]
         b_fixed = candidates[int(np.argmax(scores))]
@@ -2983,8 +2983,8 @@ def blob_array_detect(
                 # Parity is decided by the fiducials, so a cropped array cannot
                 # decide it; the position is the one chosen above, not the template
                 # match, which may have lost to the guess.
-                corner = np.rint(np.squeeze(b_fixed) - np.flip(mask.shape) / 2).astype(int)
-                if np.any(corner < 0) or np.any(np.flip(corner) + mask.shape > image_8bit.shape):
+                spots = np.matmul(M_trial, centers) + b_fixed
+                if np.any(spots < 0) or np.any(spots >= np.flip(image_8bit.shape)[:, np.newaxis]):
                     raise IndexError("Array is not wholly within the image.")
 
                 best = _score_array_orientation(
@@ -2992,7 +2992,7 @@ def blob_array_detect(
                     M_trial,
                     b_fixed,
                     array_shape,
-                    2 * np.max([1, int(0.2 * max_pitch)]) + 1,
+                    window,
                 )
                 if best is None:
                     raise IndexError("The orientation scorer found no candidate.")
@@ -3089,7 +3089,7 @@ def blob_array_detect(
     ):
         logger.warning(
             "The fitted spot array approaches or exceeds the camera FOV; "
-            "calibration results may be improperly centered as a result."
+            "spots near the edge may be truncated."
         )
     # Warn if the array does not match the received pattern on the camera.
     if region_fraction < 0.5:

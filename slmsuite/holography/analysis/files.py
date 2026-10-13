@@ -389,30 +389,26 @@ def _gray2rgb(images, cmap=False, lut=None, normalize=True, border=None):
         images = np.array(images)
         images[nanmask] = 0
 
-    # Convert images to integers scaled to the lut size.
-    if normalize:
-        images = np.rint(images * ((float(lut) - 1) / np.max(images))).astype(int)
-    elif isfloat:
-        images = np.rint(images * (float(lut) - 1)).astype(int)
-
-    # An out-of-range value would wrap in the final cast rather than saturate. The
-    # colormap is built with lut+1 entries; grayscale is bounded by its uint8 cast.
+    # Sample the colormap at lut+1 evenly spaced colors.
     colormapped = isinstance(cmap, str) or hasattr(cmap, "N")
-    images = np.clip(images, 0, int(lut) if colormapped else 255)
+    if colormapped:
+        cm = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
+        if hasattr(cm, "resampled"):
+            cm = cm.resampled(int(lut) + 1)
+        c = (255 * np.asarray(cm(np.linspace(0, 1, int(lut) + 1)))).astype(np.uint8)
+
+    # Convert images to integers scaled onto the top colormap entry, or onto lut - 1 in grayscale.
+    top = len(c) - 1 if colormapped else lut - 1
+    if normalize:
+        images = np.rint(images * (float(top) / np.max(images))).astype(int)
+    elif isfloat:
+        images = np.rint(images * float(top)).astype(int)
+
+    # An out-of-range value would wrap in the final cast rather than saturate.
+    images = np.clip(images, 0, top if colormapped else 255)
 
     # Convert images to RGB.
-    if isinstance(cmap, str) or hasattr(cmap, "N"):
-        if isinstance(cmap, str):
-            cm = plt.get_cmap(cmap, int(lut) + 1)
-        else:
-            cm = cmap
-
-        if hasattr(cm, "colors"):
-            c = np.asarray(cm.colors)
-        else:
-            c = cm(np.arange(0, cm.N))
-        c = (255 * c).astype(np.uint8)
-
+    if colormapped:
         images = c[images]
         if hasnan:
             images[nanmask, 3] = 0

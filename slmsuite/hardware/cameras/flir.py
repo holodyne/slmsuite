@@ -9,8 +9,6 @@ details on alternative approaches using the full Spinnaker API.
 
 """
 
-import warnings
-
 import numpy as np
 
 from slmsuite._logging import make_logger
@@ -22,7 +20,7 @@ try:
     import PySpin
 except ImportError:
     PySpin = None
-    warnings.warn("PySpin not installed. Install to use FLIR cameras.")
+    logger.warning("PySpin not installed. Install to use FLIR cameras.")
 
 
 class FLIR(Camera):

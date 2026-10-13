@@ -64,7 +64,8 @@ def test_configure_plotting(tmp_path, restore_handler, subtests):
         slmsuite.configure_plotting(mode="save", save_dir=d, savefig_kwargs={"dpi": 72})
         _draw()
         _plotting._slmsuite_plt_show(name="demo")
-        assert Image.open(d / "demo_00000.png").info["dpi"][0] == pytest.approx(72, abs=1)
+        with Image.open(d / "demo_00000.png") as image:
+            assert image.info["dpi"][0] == pytest.approx(72, abs=1)
 
     with subtests.test("mode='save' closes figures after writing"):
         d = tmp_path / "closes"
@@ -107,6 +108,15 @@ def test_configure_plotting(tmp_path, restore_handler, subtests):
 
         slmsuite.configure_plotting(mode=handler)
         assert _plotting._current_handler is handler
+
+    with subtests.test("headless turns interactive mode off"):
+        interactive = plt.isinteractive()
+        plt.ion()
+        try:
+            slmsuite.configure_plotting(mode="show", headless=True)
+            assert not plt.isinteractive()
+        finally:
+            plt.interactive(interactive)
 
     with subtests.test("an unrecognized mode raises ValueError"):
         with pytest.raises(ValueError, match="Unknown mode"):

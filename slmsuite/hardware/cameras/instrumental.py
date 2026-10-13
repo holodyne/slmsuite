@@ -24,9 +24,10 @@ Note
 Color camera functionality is not currently implemented, and will lead to undefined behavior.
 """
 
-import warnings
-
+from slmsuite._logging import make_logger
 from slmsuite.hardware.cameras.camera import Camera
+
+logger = make_logger(__name__)
 
 try:
     import instrumental.drivers.cameras as instrumental_cameras
@@ -35,11 +36,7 @@ try:
 except ImportError:
     instrument = None
     u = None
-    warnings.warn("instrumental-lib not installed. Install to use Instrumental cameras.")
-
-from slmsuite._logging import make_logger
-
-logger = make_logger(__name__)
+    logger.warning("instrumental-lib not installed. Install to use Instrumental cameras.")
 
 
 class Instrumental(Camera):

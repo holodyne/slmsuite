@@ -9,8 +9,6 @@ The python header can also be found in the `dddomodossola/nastroprint
 GitHub package.
 """
 
-import warnings
-
 import numpy as np
 
 from slmsuite._logging import make_logger
@@ -23,7 +21,7 @@ try:
     import mvsdk as _mvsdk
 except Exception:
     _mvsdk = None
-    warnings.warn("mvsdk not installed.")
+    logger.warning("mvsdk not installed.")
 
 
 class MindVision(Camera):

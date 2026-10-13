@@ -40,7 +40,7 @@ try:
     from hedslib import heds_types
 except ImportError:
     HEDS = None
-    warnings.warn("Holoeye SDK HEDS not installed. Install to use Holoeye SLMs.")
+    logger.warning("Holoeye SDK HEDS not installed. Install to use Holoeye SLMs.")
 
 
 class Holoeye(SLM):

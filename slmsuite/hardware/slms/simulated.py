@@ -124,6 +124,9 @@ class SimulatedSLM(SLM):
         """
         Converts integer display array to floating-point phase realizing the simulated
         phase response (gamma_sim) or ideal linear response.
+
+        Its zero phase is level 0, a uniform offset from the top level where
+        :meth:`_phase2gray` puts it, which no intensity sees.
         """
         xp = get_array_module(display)
         if self.gamma_sim is None:

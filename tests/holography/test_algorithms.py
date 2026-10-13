@@ -3,6 +3,7 @@ Unit tests for slmsuite.holography.algorithms module.
 """
 
 import logging
+import warnings
 from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
@@ -91,10 +92,17 @@ def _random_hologram(shape, slm_shape, seed):
     return h
 
 
+# Odd shapes are deliberate where they appear; test_init asserts the warning itself.
+NOT_POWER_OF_2 = pytest.mark.filterwarnings("ignore:Hologram target shape:UserWarning")
+
 # An odd shape is where fftshift and ifftshift differ.
 TRANSFORM_SHAPES = pytest.mark.parametrize(
     ("shape", "slm_shape"),
-    [((64, 64), (64, 64)), ((64, 64), (40, 48)), ((65, 63), (65, 63))],
+    [
+        ((64, 64), (64, 64)),
+        ((64, 64), (40, 48)),
+        pytest.param((65, 63), (65, 63), marks=NOT_POWER_OF_2),
+    ],
     ids=["unpadded", "padded", "odd"],
 )
 
@@ -115,7 +123,7 @@ def _multiplane(shape=(64, 64), slm_shape=None, n=2, amp=None):
 
 
 class TestHologram:
-    def test_init(self, subtests):
+    def test_init(self, simulated_system_factory, subtests):
         with subtests.test("dtype fixes the matching complex precision"):
             h = Hologram(target=np.zeros((64, 64), dtype=np.float32))
             assert h.dtype == np.float32 and h.dtype_complex == np.complex64
@@ -136,29 +144,62 @@ class TestHologram:
             h = Hologram(target=np.zeros((64, 128)))
             assert h.slm_shape == (64, 128) and h.shape == (64, 128)
 
+        with subtests.test("a two-row target is a target, not a shape"):
+            h = Hologram(target=np.ones((2, 64)))
+            assert h.shape == (2, 64)
+            np.testing.assert_allclose(_np(h.target), 1 / np.sqrt(128))
+
         with subtests.test("slm_shape can differ from the computational shape"):
             h = Hologram(target=np.zeros((64, 64)), slm_shape=(32, 32))
             assert h.slm_shape == (32, 32) and h.shape == (64, 64)
 
         with subtests.test("a uniform nearfield costs a scalar, not an slm_shape array"):
             for amp in (None, 1.0):
-                h = Hologram((64, 48), amp=amp)
+                h = Hologram((64, 32), amp=amp)
                 assert np.ndim(h.amp) == 0
                 assert h.amp.dtype == h.dtype
-                assert h.amp == pytest.approx(1 / np.sqrt(64 * 48))
+                assert h.amp == pytest.approx(1 / np.sqrt(64 * 32))
+
+        with subtests.test("a shape that is not a power of 2 warns"):
+            with pytest.warns(UserWarning, match=r"\(64, 48\) is not a power of 2"):
+                Hologram((64, 48))
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                Hologram((64, 32))
 
         with subtests.test("a hologram's own amp is a valid amp"):
             h = Hologram((64, 64))
             assert Hologram((64, 64), amp=h.amp).amp == h.amp
 
         with subtests.test("an array amp is kept and normalized"):
-            h = Hologram((64, 48), amp=np.ones((64, 48)))
-            assert h.amp.shape == (64, 48)
+            h = Hologram((64, 32), amp=np.ones((64, 32)))
+            assert h.amp.shape == (64, 32)
             assert h.amp.dtype == h.dtype
 
         with subtests.test("an amp that does not match slm_shape raises"):
             with pytest.raises(ValueError, match="The shape of amplitude"):
                 Hologram(target=np.zeros((64, 64)), phase=np.zeros((64, 64)), amp=np.ones((32, 32)))
+
+        with subtests.test("a target that is neither a shape nor a 2D array raises"):
+            with pytest.raises(ValueError, match="Unexpected target"):
+                Hologram(np.zeros((4, 8, 8)))
+
+        with subtests.test("a phase that does not match slm_shape raises"):
+            with pytest.raises(ValueError, match="shape of the initial phase"):
+                Hologram((64, 64), phase=np.zeros((16, 16)), slm_shape=(32, 32))
+
+        with subtests.test("an SLM or FourierSLM as slm_shape supplies the shape and source"):
+            fs = simulated_system_factory("matched")
+            source = _np(fs.slm._get_source_amplitude())
+            for hardware in (fs, fs.slm):
+                h = Hologram((256, 256), slm_shape=hardware)
+                assert h.slm_shape == fs.slm.shape
+                np.testing.assert_allclose(_np(h.amp), source / np.linalg.norm(source), rtol=1e-5)
+
+        with subtests.test("a propagation kernel must match slm_shape, unless it is a scalar"):
+            with pytest.raises(ValueError, match="propagation kernel"):
+                Hologram((64, 64), slm_shape=(32, 32), propagation_kernel=np.zeros((64, 64)))
+            assert Hologram((64, 64), propagation_kernel=0.5).propagation_kernel == 0.5
 
     def test_reset(self, subtests):
         with subtests.test("clears iter and stats"):
@@ -187,6 +228,11 @@ class TestHologram:
             assert h.farfield is not farfield
             assert h.farfield.shape == (32, 32)
 
+        with subtests.test("reset_flags drops the flags passed at construction"):
+            h = Hologram((32, 32), feedback_exponent=0.5)
+            h.reset(reset_flags=True)
+            assert h.flags == {"method": ""}
+
     def test_reset_phase(self, subtests):
         h = Hologram(target=np.zeros((64, 64)))
 
@@ -200,6 +246,25 @@ class TestHologram:
             h.reset_phase()
             assert not np.allclose(before, h.get_phase())
 
+        with subtests.test("a custom phase of another shape raises"):
+            with pytest.raises(ValueError, match="is not of shape"):
+                h.reset_phase(np.zeros((32, 32)))
+
+        with subtests.test("a zero random_phase flag leaves the phase flat"):
+            np.testing.assert_array_equal(_np(Hologram((32, 32), random_phase=0).phase), 0)
+
+        with subtests.test("quadratic_phase centers the farfield on the target, without a draw"):
+            (yy, xx) = np.mgrid[:128, :128]
+            disk = (np.hypot(yy - 40, xx - 90) < 8).astype(np.float32)
+            (h, again) = [Hologram(disk, slm_shape=(64, 64), quadratic_phase=True) for _ in "ab"]
+            np.testing.assert_array_equal(_np(h.phase), _np(again.phase))
+
+            farfield = np.abs(h.get_farfield()) ** 2
+            # A pixel: the analytic guess lands with a sub-pixel bias.
+            np.testing.assert_allclose(
+                analysis.image_positions(farfield), analysis.image_positions(disk), atol=1
+            )
+
     def test_reset_weights(self):
         """Weights copy the target, with MRAF's NaN noise region zeroed."""
         target = np.ones((32, 32), dtype=np.float32)
@@ -210,7 +275,7 @@ class TestHologram:
         h.reset_weights()
         assert np.allclose(_np(h.weights), np.nan_to_num(target, nan=0.0))
 
-    def test_get_padded_shape(self, subtests):
+    def test_get_padded_shape(self, simulated_system_factory, subtests):
         with subtests.test("padding_order raises each dimension to that power of two"):
             # The worked example from the docstring.
             for order, expected in ((0, (720, 1280)), (1, (1024, 2048)), (2, (2048, 4096))):
@@ -229,6 +294,36 @@ class TestHologram:
 
         with subtests.test("square padding takes the larger dimension"):
             assert Hologram.get_padded_shape((128, 256)) == (256, 256)
+
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+
+        with subtests.test("an SLM or FourierSLM pads its own shape"):
+            for hardware in (fs, fs.slm):
+                assert Hologram.get_padded_shape(hardware, padding_order=2) == (256, 256)
+
+        with subtests.test("kxy precision gives the coarsest power of two resolving it"):
+
+            def resolution(shape):
+                return np.ravel(
+                    toolbox.convert_vector((1, 1), "knm", "kxy", hardware=fs.slm, shape=shape)
+                    - toolbox.convert_vector((0, 0), "knm", "kxy", hardware=fs.slm, shape=shape)
+                )
+
+            for precision in (1e-4, 3e-5):
+                shape = Hologram.get_padded_shape(
+                    fs, padding_order=0, precision=precision, precision_basis="kxy"
+                )
+                assert np.all(resolution(shape) <= precision)
+                assert np.all(resolution(tuple(n // 2 for n in shape)) > precision)
+
+        with subtests.test("precision needs hardware, a camera for ij, and a positive value"):
+            with pytest.raises(ValueError, match="Must pass a CameraSLM"):
+                Hologram.get_padded_shape((128, 128), precision=1e-3)
+            with pytest.raises(ValueError, match="'ij' precision_basis"):
+                Hologram.get_padded_shape(fs.slm, precision=1, precision_basis="ij")
+            with pytest.raises(ValueError, match="must be positive"):
+                Hologram.get_padded_shape(fs, precision=0)
 
     def test_set_target(self, subtests):
         with subtests.test("the constructor L2 normalizes"):
@@ -251,10 +346,25 @@ class TestHologram:
             Hologram(target=target).set_target(target)
             assert np.all(_np(target) == -5.0)
 
-    def test_get_phase(self):
-        """Phase comes back at ``slm_shape``, not the padded computational shape."""
+    def test_get_phase(self, subtests):
         h = Hologram(target=np.zeros((64, 64)), slm_shape=(32, 32))
-        assert h.get_phase().shape == (32, 32)
+
+        with subtests.test("phase comes back at slm_shape, not the padded shape"):
+            assert h.get_phase().shape == (32, 32)
+
+        with subtests.test("include_propagation adds the propagation kernel"):
+            kernel = np.random.default_rng(4).uniform(0, 2 * np.pi, (32, 32))
+            h = Hologram((64, 64), slm_shape=(32, 32), propagation_kernel=kernel)
+            np.testing.assert_allclose(
+                h.get_phase(include_propagation=True) - h.get_phase(), kernel, atol=1e-5
+            )
+
+    def test_get_amp(self):
+        """An array amp comes back as a normalized host array."""
+        amp = np.arange(1, 17, dtype=np.float32).reshape(4, 4)
+        out = Hologram((16, 16), amp=amp).get_amp()
+        assert isinstance(out, np.ndarray)
+        np.testing.assert_allclose(out, amp / np.linalg.norm(amp), rtol=1e-6)
 
     def test_set_weights(self, subtests):
         h = Hologram(target=_spot_target((32, 32), (5, 5), (20, 9)))
@@ -278,6 +388,27 @@ class TestHologram:
             for shape in ((64, 64), (128, 96)):
                 power = float(np.sum(np.abs(h.get_farfield(shape=shape)) ** 2))
                 assert power == pytest.approx(1, rel=1e-5), shape
+
+        with subtests.test("a zero kernel gives the raw transform of a kernel-free hologram"):
+            h = _random_hologram((64, 64), (64, 64), seed=5)
+            raw = Hologram((64, 64), amp=h.amp)
+            raw.reset_phase(h.phase)
+            np.testing.assert_allclose(
+                h.get_farfield(propagation_kernel=0), raw.get_farfield(), atol=1e-6
+            )
+
+        with subtests.test("an integer affine offset shifts the farfield by that offset"):
+            h = _random_hologram((64, 64), (64, 64), seed=6)
+            for affine, source in (
+                ({"M": xp.eye(2), "b": xp.asarray([3.0, -2.0])}, np.s_[13:53, 8:48]),
+                ({"M": np.eye(2), "b": (3.0, -2.0)}, np.s_[13:53, 8:48]),
+                ({"M": np.eye(2), "b": np.array([[3.0], [-2.0]])}, np.s_[13:53, 8:48]),
+                ({"M": np.eye(2), "b": 3.0}, np.s_[13:53, 13:53]),
+            ):
+                shifted = h.get_farfield(affine=affine)
+                np.testing.assert_allclose(
+                    shifted[10:50, 10:50], h.get_farfield()[source], atol=1e-6
+                )
 
     @TRANSFORM_SHAPES
     def test_nearfield2farfield(self, shape, slm_shape):
@@ -332,6 +463,23 @@ class TestHologram:
                     method="GS", maxiter=1, verbose=False, stat_groups=["INVALID_GROUP"]
                 )
 
+        with subtests.test("feedback this class cannot weight against raises"):
+            for feedback in ("experimental", "computational_spot"):
+                with pytest.raises(ValueError, match="not supported by Hologram"):
+                    Hologram((32, 32)).optimize(maxiter=1, verbose=False, feedback=feedback)
+
+        with subtests.test("a callback returning True stops before that iteration counts"):
+            h = Hologram(target=_spot_target((32, 32), (8, 8)))
+            seen = []
+
+            def stop_on_third(holo):
+                seen.append(holo.iter)
+                return len(seen) == 3
+
+            h.optimize(maxiter=10, verbose=False, callback=stop_on_third)
+            assert seen == [0, 1, 2]
+            assert h.iter == 2
+
         with subtests.test("an MRAF target leaves no NaN in the phase"):
             target = np.full((64, 64), np.nan, dtype=np.float32)
             target[20, 20] = target[40, 40] = 1.0
@@ -361,6 +509,26 @@ class TestHologram:
             h.optimize(method="GS", maxiter=2, verbose=False, zero_factor=0)
             assert not np.any(np.isnan(h.get_phase()))
 
+        start = np.random.default_rng(1).uniform(0, 2 * np.pi, (32, 32))
+
+        def solve(target, **flags):
+            h = Hologram(target=target)
+            h.reset_phase(start)
+            h.optimize(method="GS", maxiter=5, verbose=False, **flags)
+            return _np(h.phase)
+
+        plain = solve(np.nan_to_num(mraf))
+
+        with subtests.test("mraf=False and mraf_factor=0 each reduce to GS on the zeroed target"):
+            for flags in ({"mraf": False}, {"mraf_factor": 0}):
+                np.testing.assert_allclose(solve(mraf, **flags), plain, atol=1e-5, err_msg=flags)
+            assert not np.allclose(solve(mraf), plain, atol=1e-2), "the noise region is free"
+
+        with subtests.test("a negative mraf_factor raises"):
+            with pytest.raises(ValueError, match="should not be negative"):
+                solve(mraf, mraf_factor=-0.1)
+
+    @NOT_POWER_OF_2
     def test_optimize_gs(self, subtests):
         with subtests.test("a single spot reaches better than 90% efficiency"):
             h = Hologram(target=_spot_target((64, 64), (16, 48)))
@@ -542,6 +710,11 @@ class TestHologram:
             assert weights[2, 3] < weights[8, 8] < weights[12, 5]
             assert np.count_nonzero(weights) == 3
 
+        with subtests.test("a method that does not weight raises"):
+            h._update_flags("GS", None, [])
+            with pytest.raises(ValueError, match="only for WGS"):
+                h._update_weights_generic(h.target.copy(), h.target.copy(), h.target)
+
     @pytest.mark.gpu
     @pytest.mark.parametrize("method", WGS_METHODS)
     def test_update_weights_generic_gpu(self, method, has_cupy):
@@ -587,6 +760,12 @@ class TestHologram:
             clean = Hologram._calculate_stats(amp, amp, xp=np)
             dirty = Hologram._calculate_stats(np.append(amp, np.nan), np.append(amp, np.nan), xp=np)
             assert dirty["efficiency"] == pytest.approx(clean["efficiency"])
+
+        with subtests.test("an all-zero target has no overlap and undefined derived stats"):
+            stats = Hologram._calculate_stats(np.ones(4), np.zeros(4), xp=np)
+            assert stats["efficiency"] == 0
+            for key in ("uniformity", "pkpk_err", "std_err"):
+                assert np.isnan(stats[key]), key
 
     @pytest.mark.gpu
     def test_calculate_stats_gpu(self, has_cupy, subtests):
@@ -658,6 +837,23 @@ class TestHologram:
             efficiency = h.stats["stats"]["computational"]["efficiency"][-1]
             assert efficiency == pytest.approx(fraction(), rel=1e-4)
 
+        with subtests.test("raw_stats records each iteration's farfield and per-pixel power"):
+            target = _spot_target((32, 32), (8, 8), (20, 24))
+            h = Hologram(target=target)
+            h.reset_phase(np.random.default_rng(2).uniform(0, 2 * np.pi, h.slm_shape))
+            initial = h.get_farfield()
+            h.optimize(maxiter=3, verbose=False, stat_groups=["computational"], raw_stats=True)
+
+            raw = h.stats["raw_farfield"]
+            assert len(raw) == 3
+            np.testing.assert_allclose(raw[0], initial, atol=1e-6)
+            assert not np.allclose(raw[0], raw[1]), "each entry is a copy, not the live farfield"
+
+            comp = h.stats["stats"]["computational"]
+            for pwr, ratio in zip(comp["raw_pwr"], comp["raw_pwr_ratio"]):
+                assert float(np.sum(pwr)) == pytest.approx(1, rel=1e-5)
+                np.testing.assert_array_equal(np.isnan(ratio), target == 0)
+
     def test_update_flags(self, monkeypatch, subtests):
         h = Hologram(target=np.zeros((32, 32)))
 
@@ -721,6 +917,43 @@ class TestHologram:
             bare = Hologram(target=np.zeros((16, 16), dtype=np.float32))
             bare.load_stats(bare_path, include_state=False)
             np.testing.assert_equal(bare.stats, h.stats)
+
+        with subtests.test("raw stats come back as one array per iteration"):
+            h = Hologram(target=_spot_target((32, 32), (8, 8), (20, 24)))
+            h.optimize(maxiter=2, verbose=False, stat_groups=["computational"], raw_stats=True)
+            raw_path = str(tmp_path / "raw.h5")
+            h.save_stats(raw_path)
+            loaded = Hologram(target=np.zeros((16, 16), dtype=np.float32))
+            loaded.load_stats(raw_path)
+
+            np.testing.assert_equal(loaded.stats, h.stats)
+            assert isinstance(loaded.stats["raw_farfield"], list)
+
+        with subtests.test("stat_groups changed between runs survive the round trip"):
+            h = Hologram(target=_spot_target((32, 32), (8, 8), (20, 24)))
+            h.optimize(maxiter=2, verbose=False, stat_groups=["computational"])
+            h.optimize(maxiter=2, verbose=False, stat_groups=[])
+            groups_path = str(tmp_path / "groups.h5")
+            h.save_stats(groups_path)
+            loaded = Hologram(target=np.zeros((16, 16), dtype=np.float32))
+            loaded.load_stats(groups_path)
+
+            assert loaded.stats["flags"]["stat_groups"] == h.stats["flags"]["stat_groups"]
+            assert loaded.stats["flags"]["stat_groups"][-1] == []
+
+        with subtests.test("raw stats enabled mid-run read back NaN for the iterations before"):
+            h = Hologram(target=_spot_target((32, 32), (8, 8), (20, 24)))
+            h.optimize(maxiter=2, verbose=False, stat_groups=["computational"])
+            h.optimize(maxiter=2, verbose=False, stat_groups=["computational"], raw_stats=True)
+            raw_path = str(tmp_path / "raw_late.h5")
+            h.save_stats(raw_path)
+            loaded = Hologram(target=np.zeros((16, 16), dtype=np.float32))
+            loaded.load_stats(raw_path)
+
+            farfields = loaded.stats["raw_farfield"]
+            assert [np.isnan(f).all() for f in farfields] == [True, True, False, False]
+            assert {np.asarray(f).dtype for f in farfields} == {h.stats["raw_farfield"][2].dtype}
+            np.testing.assert_equal(farfields[2:], h.stats["raw_farfield"][2:])
 
     def test_compute_limits(self, subtests):
         """The zoom box: it contains every lit pixel and never leaves the frame."""
@@ -1033,7 +1266,58 @@ class TestSpotHologram:
                     spot_amp=np.ones(3),
                 )
 
-    def test_make_rectangular_array(self, subtests):
+        knm = np.array([[16.0, 48.0], [16.0, 40.0]])
+        nulls = np.array([[32.0], [10.0]])
+        free = _np(SpotHologram((64, 64), knm, basis="knm", null_vectors=nulls).target)
+        undefined = np.isnan(free)
+        region = np.zeros((64, 64), dtype=bool)
+        region[50:, :] = True
+
+        with subtests.test("null_region_radius_frac nulls only the free target beyond it"):
+            radius = np.hypot(*np.meshgrid(np.linspace(-1, 1, 64), np.linspace(-1, 1, 64)))
+            assert np.any(undefined & (radius < 0.5)) and np.any(undefined & (radius > 0.5))
+
+            caller = xp.zeros((64, 64), dtype=bool)
+            for null_region in (None, caller):
+                h = SpotHologram(
+                    (64, 64),
+                    knm,
+                    basis="knm",
+                    null_vectors=nulls,
+                    null_region=null_region,
+                    null_region_radius_frac=0.5,
+                )
+                target = _np(h.target)
+                np.testing.assert_array_equal(np.isnan(target), undefined & (radius <= 0.5))
+                np.testing.assert_array_equal(target[undefined & (radius > 0.5)], 0)
+                np.testing.assert_array_equal(target[~undefined], free[~undefined])
+            assert not np.any(_np(caller)), "the caller's null_region is not written"
+
+        with subtests.test("a null_region zeros its free pixels"):
+            h = SpotHologram((64, 64), knm, basis="knm", null_vectors=nulls, null_region=region)
+            target = _np(h.target)
+            np.testing.assert_array_equal(np.isnan(target), undefined & ~region)
+            np.testing.assert_array_equal(target[region & undefined], 0)
+
+        with subtests.test("a null_region without null_vectors warns and is ignored"):
+            with pytest.warns(UserWarning, match="'null_region' was provided"):
+                h = SpotHologram((64, 64), knm, basis="knm", null_region=region)
+            assert not np.any(np.isnan(_np(h.target)))
+
+        with subtests.test("an uncalibrated cameraslm locates knm spots in kxy only"):
+            bare = simulated_system_factory("matched")
+            h = SpotHologram(bare.slm.shape, spots_knm, basis="knm", cameraslm=bare)
+            np.testing.assert_allclose(h.spot_kxy, spots_kxy)
+            assert h.spot_ij is None and h.spot_ij_rounded is None
+            assert h.spot_integration_width_ij is None
+
+        with subtests.test("a spot whose camera window leaves the frame raises"):
+            # The matched camera images the farfield one knm pixel per camera pixel.
+            edge = np.array([[1.0, 64.0], [64.0, 64.0]])
+            with pytest.raises(ValueError, match="outside camera bounds"):
+                SpotHologram(fs.slm.shape, edge, basis="knm", cameraslm=fs)
+
+    def test_make_rectangular_array(self, simulated_system_factory, subtests):
         with subtests.test("the grid holds array_shape spots at array_pitch about array_center"):
             h = SpotHologram.make_rectangular_array(
                 (64, 64), (3, 2), (10, 8), array_center=(30, 20), basis="knm"
@@ -1060,6 +1344,27 @@ class TestSpotHologram:
             )
             np.testing.assert_array_equal(h.spot_knm, [[20, 30, 40, 20], [16, 16, 16, 24]])
             np.testing.assert_array_equal(h.spot_amp, [1, 2, 3, 4])
+
+        fs = simulated_system_factory("matched")
+
+        with subtests.test("an ij grid needs a Fourier-calibrated cameraslm"):
+            with pytest.raises(ValueError, match="need a cameraslm"):
+                SpotHologram.make_rectangular_array((64, 64), 2, 10, basis="ij")
+            with pytest.raises(ValueError, match="fourier-calibrated"):
+                SpotHologram.make_rectangular_array(fs.slm.shape, 2, 10, basis="ij", cameraslm=fs)
+
+        install_ground_truth_calibration(fs)
+
+        with subtests.test("kxy and ij grids center on the zeroth order of their basis"):
+            h = SpotHologram.make_rectangular_array(
+                fs.slm.shape, 2, 0.01, basis="kxy", cameraslm=fs
+            )
+            np.testing.assert_allclose(np.mean(h.spot_kxy, axis=1), 0, atol=1e-15)
+
+            h = SpotHologram.make_rectangular_array(fs.slm.shape, 2, 20, basis="ij", cameraslm=fs)
+            np.testing.assert_allclose(
+                np.mean(h.spot_ij, axis=1), np.ravel(fs.kxyslm_to_ijcam((0, 0)))
+            )
 
     def test_optimize(self):
         """GS concentrates most of the power onto two well-separated spots."""
@@ -1214,6 +1519,11 @@ class TestSpotHologram:
             with pytest.raises(Exception, match=r"[Uu]nrecognized basis"):
                 h.refine_offset(img=img, basis="nonsense")
 
+        with subtests.test("a hologram without camera windows cannot refine"):
+            bare = SpotHologram((64, 64), np.array([[16.0, 48.0], [16.0, 40.0]]), basis="knm")
+            with pytest.raises(ValueError, match="spot_integration_width_ij must be set"):
+                bare.refine_offset()
+
 
 class TestCompressedSpotHologram:
     def test_init(self, simulated_system_factory, monkeypatch, subtests):
@@ -1265,14 +1575,44 @@ class TestCompressedSpotHologram:
             )
             np.testing.assert_array_equal(_np(again.phase), phase)  # deterministic, not random
 
+        zernike = toolbox.convert_vector(spots, "kxy", "zernike", hardware=fs)
+
         with subtests.test("zernike vectors are copied, not aliased"):
-            zernike = toolbox.convert_vector(spots, "kxy", "zernike", hardware=fs)
             h = CompressedSpotHologram(zernike, basis=[2, 1], cameraslm=fs, cuda=False)
             assert not np.shares_memory(h.spot_zernike, zernike)
 
         with subtests.test("padding is not implemented"):
             with pytest.raises(NotImplementedError):
                 h.get_padded_shape()
+
+        with subtests.test("a cameraslm is required"):
+            with pytest.raises(ValueError, match="cameraslm must be passed"):
+                CompressedSpotHologram(spots, basis="kxy")
+
+        with subtests.test("a custom basis must match the spot dimension and hold both tilts"):
+            with pytest.raises(ValueError, match="same dimension"):
+                CompressedSpotHologram(spots, basis=[2, 1, 4], cameraslm=fs, cuda=False)
+            with pytest.raises(ValueError, match="must include x, y"):
+                CompressedSpotHologram(spots, basis=[2, 4], cameraslm=fs, cuda=False)
+
+        with subtests.test("zernike spots of dimension D take the documented default basis"):
+            for default in ([2, 1], [2, 1, 4], [2, 1, 4, 3, 5]):
+                vectors = np.zeros((len(default), spots.shape[1]))
+                vectors[:2] = zernike
+                h = CompressedSpotHologram(vectors, basis="zernike", cameraslm=fs, cuda=False)
+                np.testing.assert_array_equal(h.zernike_basis, default)
+                np.testing.assert_allclose(h.spot_kxy[:2], spots)
+
+        with subtests.test("spots past the farfield raise"):
+            with pytest.raises(ValueError, match="outside the bounds of the farfield"):
+                CompressedSpotHologram([[1.0], [0.0]], basis="kxy", cameraslm=fs, cuda=False)
+
+        with subtests.test("an uncalibrated cameraslm leaves the spots off the camera"):
+            bare = simulated_system_factory("matched")
+            h = CompressedSpotHologram(spots, basis="kxy", cameraslm=bare, cuda=False)
+            assert h.spot_ij is None and h.spot_integration_width_ij is None
+            with pytest.raises(ValueError, match="spot_integration_width_ij must be set"):
+                h.refine_offset()
 
     def test_set_target(self, simulated_system_factory, subtests):
         fs = simulated_system_factory("matched")
@@ -1293,6 +1633,11 @@ class TestCompressedSpotHologram:
         with subtests.test("a target of another length is rejected"):
             with pytest.raises(ValueError, match="shape"):
                 h.set_target(np.ones(3))
+
+        with subtests.test("None rebuilds the target from spot_amp"):
+            h.spot_amp = np.array([4.0, 3.0, 0.0, 0.0])
+            h.set_target()
+            np.testing.assert_allclose(_np(h.target), [0.8, 0.6, 0, 0], rtol=1e-6)
 
     def test_optimize(self, simulated_system_factory):
         """The ``cuda=False`` path, which builds its kernel through ``zernike_sum``."""
@@ -1450,6 +1795,23 @@ class TestCompressedSpotHologram:
             assert np.issubdtype(h.spot_ij.dtype, np.floating)
             assert np.any(h.spot_ij[[0, 1]] != np.rint(h.spot_ij[[0, 1]]))
 
+        with subtests.test("basis='kxy' re-steers the Zernike spots the transform is built on"):
+            h = CompressedSpotHologram(
+                view_kxy_grid(fs, count=2, frac=0.4), basis="kxy", cameraslm=fs, cuda=False
+            )
+            (zernike, spot_ij) = (h.spot_zernike.copy(), h.spot_ij.copy())
+            h._nearfield2farfield()
+            farfield = _np(h.farfield).copy()
+
+            h.refine_offset(img=img, basis="kxy")
+            rebuilt = CompressedSpotHologram(h.spot_kxy, basis="kxy", cameraslm=fs, cuda=False)
+            np.testing.assert_allclose(h.spot_zernike, rebuilt.spot_zernike)
+            assert np.any(h.spot_zernike != zernike)
+            np.testing.assert_array_equal(h.spot_ij, spot_ij)
+
+            h._nearfield2farfield()
+            assert not np.allclose(_np(h.farfield), farfield), "the cached kernel follows"
+
     def test_update_weights(self, simulated_system_factory, subtests):
         """The ``"external_spot"`` feedback branch, as in `SpotHologram`."""
         fs = simulated_system_factory("matched")
@@ -1491,6 +1853,10 @@ class TestMultiplaneHologram:
 
         with subtests.test("len is the number of children"):
             assert len(mph) == 2
+
+        with subtests.test("a batch below one raises"):
+            with pytest.raises(ValueError, match="must divide"):
+                MultiplaneHologram(_multiplane(n=2).holograms, batch=0)
 
         with subtests.test("the children share one phase array"):
             assert mph.holograms[0].phase is mph.holograms[1].phase
@@ -1571,6 +1937,10 @@ class TestMultiplaneHologram:
         with subtests.test("target_ij is a copy in the hologram dtype"):
             assert kids[0].target_ij.dtype == kids[0].dtype
             assert not np.shares_memory(_np(kids[0].target_ij), frames)
+
+        with subtests.test("a stack of the wrong length raises"):
+            with pytest.raises(ValueError, match="one target per child"):
+                mph.set_targets(frames[:1])
 
         with subtests.test("children of different shapes raise"):
             odd = MultiplaneHologram(
@@ -1667,6 +2037,58 @@ class TestMultiplaneHologram:
         with subtests.test("one distinct frame per iteration, shared by both children"):
             assert len({round(total, 3) for total in grabs}) == 3
 
+    def test_get_multiplane_defocus_blur(self, simulated_system_factory, subtests):
+        """Each plane sums every target, blurred by its distance in depth from that plane."""
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+        blur = MultiplaneHologram.get_multiplane_defocus_blur
+
+        # The two squares sit in opposite quadrants, beyond the reach of each other's blur.
+        targets = np.zeros((2, 64, 64))
+        targets[0, 20:24, 20:24] = 1
+        targets[1, 40:44, 36:40] = 1
+        planes = blur(fs, targets, [0.0, 2e-4])
+
+        with subtests.test("a target is sharp at its own depth"):
+            np.testing.assert_array_equal(planes[0][:32, :32], targets[0][:32, :32])
+            np.testing.assert_array_equal(planes[1][32:, 32:], targets[1][32:, 32:])
+
+        with subtests.test("a target away from its depth is spread, its power kept"):
+            assert planes[1][:32, :32].max() < 1
+            for plane in planes:
+                assert plane.sum() == pytest.approx(targets.sum())
+
+        with subtests.test("the blur depends only on the distance in depth"):
+            forward = blur(fs, targets[:1], [0.0], return_depths=[2e-4])
+            backward = blur(fs, targets[:1], [2e-4], return_depths=[0.0])
+            np.testing.assert_array_equal(forward, backward)
+            np.testing.assert_array_equal(forward[0], planes[1] - targets[1])
+
+        with subtests.test("malformed targets or a camera without a pitch raise"):
+            with pytest.raises(ValueError, match="3D stack"):
+                blur(fs, targets[0], [0.0])
+            with pytest.raises(ValueError, match="same number of images"):
+                blur(fs, targets, [0.0])
+            fs.cam.pitch_um = None
+            with pytest.raises(ValueError, match="pitch_um is necessary"):
+                blur(fs, targets, [0.0, 2e-4])
+
+    def test_reset_phase(self, subtests):
+        """The quadratic phase aims at the children's targets, weighted by power."""
+        spots = [(50, 40), (66, 72)]
+        centers = [analysis.image_positions(_spot_target((128, 128), spot)) for spot in spots]
+
+        def children():
+            # Padded, so the defocused farfield clears the edges of the grid.
+            return [Hologram(_spot_target((128, 128), spot), slm_shape=(64, 64)) for spot in spots]
+
+        for weights, center in [(None, np.mean(centers, axis=0)), ([1, 0], centers[0])]:
+            with subtests.test("quadratic_phase centers on the weighted targets", weights=weights):
+                mph = MultiplaneHologram(children(), weights=weights)
+                mph.reset_phase(quadratic_phase=True, random_phase=0)
+                farfield = np.abs(mph.get_farfield(shape=(128, 128))) ** 2
+                np.testing.assert_allclose(analysis.image_positions(farfield), center, atol=1)
+
     def test_set_target(self):
         """The meta hologram holds no target; the children's targets are the interface."""
         with pytest.raises(RuntimeError):
@@ -1726,6 +2148,23 @@ class TestMultiplaneHologram:
             for child in plain.holograms:
                 assert np.ndim(child.amp) == 0
                 assert child.amp == pytest.approx(uniform)
+
+        with subtests.test("a zero-weight child leaves the composite to the other's own GS"):
+            # Matching shapes take the batched transforms; a padded child the per-child loop.
+            start = np.random.default_rng(7).uniform(0, 2 * np.pi, (64, 64))
+            for shape in ((64, 64), (128, 128)):
+                lone = Hologram(_spot_target((64, 64), (12, 20), (40, 30)))
+                mph = MultiplaneHologram(
+                    [
+                        Hologram(_spot_target((64, 64), (12, 20), (40, 30))),
+                        Hologram(_spot_target(shape, (50, 50)), slm_shape=(64, 64)),
+                    ],
+                    weights=[1, 0],
+                )
+                for h in (lone, mph):
+                    h.reset_phase(start)
+                    h.optimize(method="GS", maxiter=5, verbose=False)
+                np.testing.assert_allclose(_np(mph.phase), _np(lone.phase), atol=1e-5)
 
     @pytest.mark.gpu
     def test_can_batch_routines(self, subtests):
@@ -1867,7 +2306,11 @@ class TestMultiplaneHologram:
     # "odd-pad": an odd shape difference makes `unpad` return a 0-based slice that under-covers.
     @pytest.mark.parametrize(
         ("shape", "slm_shape"),
-        [((64, 64), (64, 64)), ((64, 64), (32, 32)), ((65, 65), (64, 64))],
+        [
+            ((64, 64), (64, 64)),
+            ((64, 64), (32, 32)),
+            pytest.param((65, 65), (64, 64), marks=NOT_POWER_OF_2),
+        ],
         ids=["unpadded", "padded", "odd-pad"],
     )
     @pytest.mark.gpu
@@ -2002,6 +2445,17 @@ class TestFeedbackHologram:
                     cameraslm=_StubCameraSLM(self.CAM_SHAPE, calibrated=False),
                 )
 
+        with subtests.test("an SLM as cameraslm supplies the geometry but no camera"):
+            slm = _StubSLM(shape=(16, 32))
+            h = FeedbackHologram(self.SHAPE, cameraslm=slm)
+            assert h.cameraslm is None
+            assert h.slm_shape == (16, 32)
+            np.testing.assert_allclose(_np(h.amp), slm._get_source_amplitude(), rtol=1e-6)
+
+        with subtests.test("anything else as cameraslm raises"):
+            with pytest.raises(ValueError, match="Expected a CameraSLM or SLM"):
+                FeedbackHologram(self.SHAPE, cameraslm=object())
+
     def test_set_target(self, subtests):
         (full, sub, _, _) = self._pair()
         (canvas2, patch2) = self._canvas_and_patch(seed=11)
@@ -2077,15 +2531,16 @@ class TestFeedbackHologram:
         frame = np.nan_to_num(canvas, nan=0.0)
         stack = np.stack([frame, np.zeros_like(frame), frame[::-1, ::-1]])
 
-        for order in (0, 3):
-            result = _np(full.ijcam_to_knmslm(stack, order=order))
+        for order, blur_ij in ((0, None), (3, None), (3, 1.5)):
+            result = _np(full.ijcam_to_knmslm(stack, order=order, blur_ij=blur_ij))
+            case = f"at order {order}, blur {blur_ij}"
 
-            with subtests.test(f"each member matches its single-image transform at order {order}"):
+            with subtests.test(f"each member matches its single-image transform {case}"):
                 for i in (0, 2):
-                    single = _np(full.ijcam_to_knmslm(stack[i], order=order))
+                    single = _np(full.ijcam_to_knmslm(stack[i], order=order, blur_ij=blur_ij))
                     np.testing.assert_allclose(result[i], single, atol=1e-5)
 
-            with subtests.test(f"a dark member stays zero at order {order}"):
+            with subtests.test(f"a dark member stays zero {case}"):
                 assert not np.any(result[1])
 
     def test_ijcam_to_knmslm(self, subtests):
@@ -2114,6 +2569,14 @@ class TestFeedbackHologram:
             for _ in range(2):  # The second call runs against a warmed resampler cache.
                 with pytest.raises(ValueError, match="No power in hologram"):
                     full.ijcam_to_knmslm(dark)
+
+        with subtests.test("no cameraslm, or one without a Fourier calibration, cannot map"):
+            frame = _np(full.target_ij)
+            with pytest.raises(RuntimeError, match="without the calibrations"):
+                FeedbackHologram(self.SHAPE).ijcam_to_knmslm(frame)
+            uncalibrated = _StubCameraSLM(self.CAM_SHAPE, calibrated=False)
+            with pytest.raises(RuntimeError, match="requires a Fourier calibration"):
+                FeedbackHologram(self.SHAPE, cameraslm=uncalibrated).ijcam_to_knmslm(frame)
 
     @pytest.mark.parametrize("order", [0, 3])
     def test_ijcam_to_knmslm_resampler(self, order, subtests):
@@ -2205,7 +2668,7 @@ class TestFeedbackHologram:
             )
 
     def test_measure_freshness(self, simulated_system_factory, subtests):
-        """A changed phase drops the cached frame, and the projection policy still rules."""
+        """The cached frame: what it holds, when it is dropped, and the projection policy."""
         fs = simulated_system_factory("matched")
         install_ground_truth_calibration(fs)
         h = SpotHologram.make_rectangular_array(
@@ -2246,6 +2709,110 @@ class TestFeedbackHologram:
                 assert counts["grab"] == 2
         finally:
             (fs.slm.set_phase, fs.cam.get_image) = (set_phase, get_image)
+
+        with subtests.test("the cache holds the amplitude, the root of the frame"):
+            h.img_ij = None
+            h.measure(basis="ij")
+            np.testing.assert_allclose(np.square(_np(h.img_ij)), fs.cam.get_image(), rtol=1e-5)
+
+        with subtests.test("knm maps the cached frame, matching the fresh capture it came from"):
+            h.img_ij = None
+            h.measure(basis="knm")
+            fresh = _np(h.img_knm).copy()
+            assert np.nansum(fresh) > 0
+            # A capture from here on would see this speckle, not the cached frame.
+            fs.slm.set_phase(np.random.default_rng(0).uniform(0, 2 * np.pi, fs.slm.shape))
+            h.img_knm = None
+            h.measure(basis="knm")
+            np.testing.assert_allclose(_np(h.img_knm), fresh, rtol=1e-5, atol=1e-7)
+
+        with subtests.test("a frame that cannot be windowed leaves no intensity cached"):
+            patch = np.ones((10, 10), dtype=np.float32)
+            roi = FeedbackHologram(
+                fs.slm.shape, target_ij=patch, target_ij_roi=(60, 60), cameraslm=fs
+            )
+            roi.target_ij_roi = (-1, 60)
+            with pytest.raises(ValueError, match="camera frame"):
+                roi.measure(basis="knm")
+            assert roi.img_ij is None and roi.img_knm is None
+
+        with subtests.test("with neither a cameraslm nor a cached frame, measure raises"):
+            with pytest.raises(RuntimeError, match="requires a cameraslm"):
+                FeedbackHologram((32, 32)).measure()
+
+    # Target spots in camera pixels, which the matched camera images pixel for pixel.
+    SPOTS_IJ = ((40, 40), (40, 88), (88, 40), (88, 88))
+
+    def test_update_weights(self, simulated_system_factory, subtests):
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+        target_ij = _spot_target(fs.cam.shape, *self.SPOTS_IJ)
+
+        def hologram(seed):
+            h = FeedbackHologram(fs.slm.shape, target_ij=target_ij, cameraslm=fs)
+            h.reset_phase(np.random.default_rng(seed).uniform(0, 2 * np.pi, h.slm_shape))
+            return h
+
+        with subtests.test("computational feedback weights as a plain Hologram does"):
+            h = hologram(0)
+            plain = Hologram(target=_np(h.target), amp=h.amp)
+            plain.reset_phase(h.phase)
+            for holo in (h, plain):
+                holo.optimize(method="WGS-Leonardo", maxiter=4, verbose=False)
+            np.testing.assert_allclose(_np(h.phase), _np(plain.phase), atol=1e-5)
+
+        with subtests.test("experimental feedback weights against the frame, not the farfield"):
+            frame = target_ij.copy()
+            frame[self.SPOTS_IJ[0]] = 0.5  # One spot reads at half its amplitude.
+
+            def weighted(seed):
+                h = hologram(seed)
+                assert all(_np(h.target)[spot] > 0 for spot in self.SPOTS_IJ)
+
+                def read(holo):
+                    holo.img_ij = xp.asarray(frame)  # The camera's amplitude reading.
+
+                h.optimize(
+                    method="WGS-Leonardo",
+                    feedback="experimental",
+                    maxiter=2,
+                    verbose=False,
+                    callback=read,
+                )
+                return _np(h.weights)
+
+            (weights, other) = (weighted(1), weighted(2))
+            np.testing.assert_array_equal(weights, other)
+
+            at_spots = [weights[spot] for spot in self.SPOTS_IJ]
+            assert at_spots[0] > at_spots[1]
+            np.testing.assert_allclose(at_spots[1:], at_spots[1], rtol=1e-5)
+
+    def test_update_stats(self, simulated_system_factory, subtests):
+        """The experimental groups, which score the camera frame against the target."""
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+        target_ij = _spot_target(fs.cam.shape, *self.SPOTS_IJ)
+
+        with subtests.test("a frame reading exactly the target scores perfectly"):
+            h = FeedbackHologram(fs.slm.shape, target_ij=target_ij, cameraslm=fs)
+            h.optimize(
+                maxiter=3,
+                verbose=False,
+                stat_groups=["experimental_ij", "experimental_knm"],
+                callback=lambda holo: setattr(holo, "img_ij", xp.asarray(target_ij)),
+            )
+            for group in ("experimental_ij", "experimental_knm"):
+                for key in ("efficiency", "uniformity"):
+                    series = h.stats["stats"][group][key]
+                    assert series == pytest.approx([1] * 3, abs=1e-5), (group, key)
+
+        with subtests.test("experimental_ij needs a camera-referenced target"):
+            h = SpotHologram(
+                fs.slm.shape, view_kxy_grid(fs, count=2, frac=0.3), basis="kxy", cameraslm=fs
+            )
+            with pytest.raises(ValueError, match="camera-referenced target"):
+                h.optimize(maxiter=1, verbose=False, stat_groups=["experimental_ij"])
 
     def test_optimize_cg(self, simulated_system_factory, subtests):
         """Experimental feedback refines a computational solution from the camera frames."""

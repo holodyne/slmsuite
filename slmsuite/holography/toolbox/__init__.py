@@ -1032,11 +1032,9 @@ def format_vectors(vectors, expected_dimension=2, handle_dimension="pass"):
     # Convert to np.array and squeeze
     vectors = np.squeeze(vectors)
 
-    # Handle the singleton cases.
+    # Handle the singleton case.
     if len(vectors.shape) == 1:
         vectors = vectors[:, np.newaxis]
-    elif len(vectors.shape) == 2 and vectors.shape[0] == 1:
-        vectors = vectors.T
 
     # Make sure that we are an array of N M-vectors.
     if len(vectors.shape) != 2:
@@ -1048,12 +1046,7 @@ def format_vectors(vectors, expected_dimension=2, handle_dimension="pass"):
         if handle_dimension == "pass":
             pass
         elif handle_dimension == "crop":
-            if vectors.shape[0] > expected_dimension:
-                vectors = vectors[:expected_dimension, :]
-            else:
-                raise ValueError(
-                    f"{vectors.shape[0]}-vectors too small to crop to {expected_dimension}-vectors."
-                )
+            vectors = vectors[:expected_dimension, :]
         elif handle_dimension == "error":
             raise ValueError(
                 f"Expected {expected_dimension}-vectors. Found {vectors.shape[0]}-vectors."
@@ -1632,13 +1625,15 @@ def lloyds_points(grid, n_points, iterations=10, plot=False, seed=None):
     Returns
     -------
     numpy.ndarray
-        The result of Lloyd's Algorithm.
+        The result of Lloyd's Algorithm, in pixels for an ``(int, int)`` shape and in the
+        grid's own coordinates otherwise.
     """
-    if (
+    pixels = (
         isinstance(grid, (list, tuple))
         and isinstance(grid[0], INTEGER_TYPES)
         and isinstance(grid[1], INTEGER_TYPES)
-    ):
+    )
+    if pixels:
         shape = grid
     else:
         (x_grid, y_grid) = _process_grid(grid)
@@ -1665,7 +1660,7 @@ def lloyds_points(grid, n_points, iterations=10, plot=False, seed=None):
 
     result = lloyds_algorithm(grid2, vectors, iterations, plot)
 
-    if isinstance(grid, (list, tuple)):
+    if pixels:
         return result
     else:
         result = np.rint(result).astype(int)

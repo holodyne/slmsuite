@@ -260,7 +260,9 @@ def gaussian2d(xy, x0, y0, a, c, wx, wy, wxy=0):
     except np.linalg.LinAlgError:
         M = np.array([[1 / wx / wx, 0], [0, 1 / wy / wy]])
 
+    # The form is positive semidefinite; rounding near the clamp can make it negative.
     argument = np.square(x) * M[0, 0] + np.square(y) * M[1, 1] + 2 * x * y * M[1, 0]
+    argument = np.maximum(argument, 0)
 
     return c + a * np.exp(-0.5 * argument)
 

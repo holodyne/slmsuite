@@ -214,10 +214,10 @@ def zernike_convert_index(indices, from_index="ansi", to_index="ansi"):
     # Error check n,l
     if np.any((n + l) % 2):
         raise ValueError(f"Invalid Zernike index n,l. n+l must be even. n={n}, l={l}.")
-    if np.any(np.abs(l) > n):
-        raise ValueError(f"Invalid Zernike index n,l. |l| cannot be larger than n. n={n}, l={l}.")
     if np.any(n < 0):
         raise ValueError(f"Invalid Zernike index n,l. n must be non-negative. n={n}, l={l}.")
+    if np.any(np.abs(l) > n):
+        raise ValueError(f"Invalid Zernike index n,l. |l| cannot be larger than n. n={n}, l={l}.")
 
     # Convert to the desired indices.
     if to_index == "radial":
@@ -587,11 +587,6 @@ class ZernikeBasis:
     def grad_gram(self):
         """Gradient Gram matrix ``grad_basis_flat @ grad_basis_flat.T``, shape ``(D, D)``."""
         return self.grad_basis_flat @ self.grad_basis_flat.T
-
-    @cached_property
-    def grad_norm(self):
-        """Per-mode gradient self-overlap, shape ``(D,)``."""
-        return self._xp.einsum("dp,dp->d", self.grad_basis_flat, self.grad_basis_flat)
 
     @cached_property
     def grad_gram_inv(self):
