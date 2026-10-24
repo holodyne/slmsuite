@@ -2,6 +2,8 @@
 Unit tests for the SLM base class and its subclasses.
 """
 
+import ctypes
+import itertools
 import os
 import warnings
 from typing import ClassVar
@@ -12,7 +14,9 @@ import pytest
 from conftest import driver_classes
 from PIL import Image
 
+import slmsuite.hardware.slms._plm as _plm
 import slmsuite.hardware.slms.slm as slm_module
+import slmsuite.hardware.slms.vialux as vialux
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
 from slmsuite.hardware.slms.segmented import SegmentedSLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
@@ -1132,3 +1136,339 @@ class TestPLM:
         packed = PLM.bitpack([cp.asarray(b) for b in bitmaps])
         assert isinstance(packed, np.ndarray)
         assert np.array_equal(packed, PLM.bitpack(bitmaps))
+
+
+class _FakeALP:
+    """
+    Stand-in for ViALUX's ``alp51.dll`` with V-9903Ps that stay busy for ``busy_polls``
+    ``ALP_PROJ_STATE`` inquiries after each start, as for a picture, and refuse uploads,
+    timing and projection settings while busy.
+    """
+
+    ACTIVE = vialux.ALP_PROJ_IDLE - 1
+
+    def __init__(self, devices=1, busy_polls=2):
+        self.devices = devices
+        self.busy_polls = busy_polls
+        self.allocated = 0
+        self.alloc_error = None
+        self.dev = {
+            vialux.ALPControl.DEVICE_NUMBER: 4242,
+            vialux.ALPControl.DEV_DMDTYPE: 14,
+            vialux.ALPControl.DEV_DISPLAY_WIDTH: 2048,
+            vialux.ALPControl.DEV_DISPLAY_HEIGHT: 1088,
+            vialux.ALPControl.PLM_BIAS_VOLTAGE: 1000,
+            vialux.ALPControl.PLM_MIN_BIAS_VOLTAGE: -500,
+            vialux.ALPControl.PLM_MAX_BIAS_VOLTAGE: 2500,
+            vialux.ALPControl.DEV_DMD_MODE: vialux.DMDMode.RESUME,
+        }
+        self.proj = {vialux.ALPControl.PROJ_MODE: vialux.ALP_MASTER}
+        self.seqs = {}
+        self.running = self.waiting = None
+        self.busy = 0
+        self.displayed = None
+        self.halts = 0
+        self.starts = []
+
+    @staticmethod
+    def _id(x):
+        return x.value if hasattr(x, "value") else int(x)
+
+    @staticmethod
+    def _put(ref, value):
+        ref._obj.value = value
+        return vialux._ALPReturn.OK
+
+    def _busy(self, sequence=None):
+        if sequence is None:
+            return self.running is not None
+        return sequence in (self.running, self.waiting)
+
+    def _run(self, sequence):
+        self.running, self.busy = sequence, self.busy_polls
+        self.displayed = self.seqs[sequence]["frame"]
+
+    def AlpDevAlloc(self, number, flag, ref):
+        if self.alloc_error is not None:
+            return self.alloc_error
+        if self.allocated >= self.devices:
+            return vialux._ALPReturn.NOT_ONLINE
+        self.allocated += 1
+        return self._put(ref, 100 + self.allocated)
+
+    def AlpDevFree(self, device):
+        self.allocated -= 1
+        return vialux._ALPReturn.OK
+
+    def AlpDevHalt(self, device):
+        self.running = self.waiting = self.displayed = None
+        self.halts += 1
+        return vialux._ALPReturn.OK
+
+    def AlpDevControl(self, device, control, value):
+        if control == vialux.ALPControl.SYNCH_POLARITY and self._busy():
+            return vialux._ALPReturn.NOT_IDLE
+        self.dev[control] = value
+        return vialux._ALPReturn.OK
+
+    def AlpDevInquire(self, device, inquire, ref):
+        return self._put(ref, int(self.dev.get(inquire, 0)))
+
+    def AlpSeqAlloc(self, device, bitplanes, pictures, ref):
+        sequence = 200 + len(self.seqs)
+        self.seqs[sequence] = {"controls": {}, "timing": None, "frame": None}
+        return self._put(ref, sequence)
+
+    def AlpSeqFree(self, device, sequence):
+        del self.seqs[self._id(sequence)]
+        return vialux._ALPReturn.OK
+
+    def AlpSeqControl(self, device, sequence, control, value):
+        self.seqs[self._id(sequence)]["controls"][control] = value
+        return vialux._ALPReturn.OK
+
+    def AlpSeqTiming(self, device, sequence, illuminate, picture, delay, width, trigger_delay):
+        if self._busy(self._id(sequence)):
+            return vialux._ALPReturn.SEQ_IN_USE
+        if width > picture:
+            return vialux._ALPReturn.PARM_INVALID
+        self.seqs[self._id(sequence)]["timing"] = (picture, delay, width)
+        return vialux._ALPReturn.OK
+
+    def AlpSeqInquire(self, device, sequence, inquire, ref):
+        return self._put(ref, 150 if inquire == vialux.ALPControl.MIN_PICTURE_TIME else 0)
+
+    def AlpSeqPut(self, device, sequence, offset, load, pointer):
+        if self._busy(self._id(sequence)):
+            return vialux._ALPReturn.SEQ_IN_USE
+        frame = np.frombuffer(ctypes.string_at(pointer, 1088 * 2048), dtype=np.uint8)
+        self.seqs[self._id(sequence)]["frame"] = frame.reshape(1088, 2048).copy()
+        return vialux._ALPReturn.OK
+
+    def AlpProjStart(self, device, sequence):
+        self.starts.append(self._id(sequence))
+        if self.running is None:
+            self._run(self._id(sequence))
+        else:
+            self.waiting = self._id(sequence)
+        return vialux._ALPReturn.OK
+
+    def AlpProjControl(self, device, control, value):
+        if self._busy():
+            return vialux._ALPReturn.NOT_IDLE
+        self.proj[control] = value
+        return vialux._ALPReturn.OK
+
+    def AlpProjInquire(self, device, inquire, ref):
+        if self.running is not None:
+            self.busy -= 1
+            if self.busy <= 0:
+                self.running = None
+                if self.waiting is not None:
+                    (waiting, self.waiting) = (self.waiting, None)
+                    self._run(waiting)
+        return self._put(ref, vialux.ALP_PROJ_IDLE if self.running is None else self.ACTIVE)
+
+
+class TestVialuxPLM:
+    """Tests for the ViALUX PLM driver against a fake ALP library."""
+
+    @pytest.fixture
+    def alp(self, monkeypatch):
+        fake = _FakeALP()
+        monkeypatch.setitem(vialux._alp_libs, vialux._DEFAULT_ALP_PATH, fake)
+        return fake
+
+    @staticmethod
+    def _phase(seed):
+        return np.random.default_rng(seed).uniform(0, 2 * np.pi, (1088, 2048))
+
+    def test_open_close(self, alp, subtests):
+        """Opening configures the double buffer and shows a blank; closing releases all."""
+        plm = vialux.PLM(wav_um=0.488, bias_voltage_mv=530)
+
+        with subtests.test("model and settings"):
+            assert plm.shape == (1088, 2048) and plm.bitdepth == 4
+            assert plm.picture_time_us == 150 and plm.settle_time_s == 0
+            assert alp.dev[vialux.ALPControl.PLM_BIAS_VOLTAGE] == 530
+
+        with subtests.test("two sequences of LSB-aligned levels, timed"):
+            assert len(alp.seqs) == 2
+            for seq in alp.seqs.values():
+                assert seq["controls"][vialux.ALPControl.DATA_FORMAT] == vialux.ALP_DATA_LSB_ALIGN
+                assert seq["timing"][0] == 150
+
+        with subtests.test("a blank pattern is displayed and held"):
+            assert alp.displayed is not None and np.all(alp.displayed == alp.displayed[0, 0])
+            assert alp.running is None
+
+        plm.close()
+        plm.close()
+        with subtests.test("close frees the sequences and the device, once"):
+            assert alp.seqs == {} and alp.allocated == 0
+
+    def test_open_writes_the_bias(self, alp):
+        """Opening writes the reported bias, which the PLM otherwise keeps from before."""
+        alp.dev[vialux.ALPControl.PLM_BIAS_VOLTAGE] = 1200
+        writes = []
+        control = alp.AlpDevControl
+        alp.AlpDevControl = lambda *args: writes.append(args[1:]) or control(*args)
+
+        vialux.PLM(wav_um=0.488).close()
+
+        assert (vialux.ALPControl.PLM_BIAS_VOLTAGE, 1200) in writes
+
+    def test_failed_open_frees(self, alp):
+        """A device whose shape mismatches the model is released."""
+        alp.dev[vialux.ALPControl.DEV_DISPLAY_WIDTH] = 1024
+        with pytest.raises(ValueError, match="shape"):
+            vialux.PLM(wav_um=0.488)
+        assert alp.allocated == 0
+
+    def test_model(self, alp, subtests):
+        """The model is the chip of the reported DMD type, unless given."""
+        with subtests.test("from the DMD type"):
+            plm = vialux.PLM(wav_um=0.488)
+            assert plm.name == "p99_4242" and plm.model_config is not None
+            plm.close()
+
+        alp.dev[vialux.ALPControl.DEV_DMDTYPE] = 99
+        with subtests.test("an unknown DMD type raises"):
+            with pytest.raises(ValueError, match="DMD type 99"):
+                vialux.PLM(wav_um=0.488)
+            assert alp.allocated == 0
+
+        with subtests.test("a given model opens it regardless"):
+            vialux.PLM(wav_um=0.488, model_name="p99").close()
+
+    def test_writes(self, alp, subtests):
+        """Each write displays its levels as one picture, alternating buffers."""
+        plm = vialux.PLM(wav_um=0.488)
+        starts = len(alp.starts)
+
+        with subtests.test("blocking writes are displayed when they return"):
+            for seed in range(3):
+                plm.set_phase(self._phase(seed))
+                assert alp.running is None
+                assert np.array_equal(alp.displayed, as_numpy(plm.display))
+
+        with subtests.test("the buffers alternate"):
+            used = alp.starts[starts:]
+            assert len(set(used)) == 2 and all(a != b for a, b in itertools.pairwise(used))
+
+        with subtests.test("non-blocking writes never upload into a busy sequence"):
+            for seed in range(3, 7):
+                plm.set_phase(self._phase(seed), block=False)
+            plm._wait_for_idle()
+            assert np.array_equal(alp.displayed, as_numpy(plm.display))
+
+        plm.close()
+
+    def test_settings_keep_the_pattern(self, alp, subtests):
+        """Timing and synch settings apply while idle, without clearing the held pattern."""
+        plm = vialux.PLM(wav_um=0.488)
+        plm.set_phase(self._phase(0))
+        held, halts = alp.displayed, alp.halts
+
+        with subtests.test("picture time"):
+            plm.picture_time_us = 300
+            assert all(seq["timing"][0] == 300 for seq in alp.seqs.values())
+
+        with subtests.test("output trigger"):
+            plm.set_output_trigger(True, polarity="low", delay_us=10, pulse_width_us=100)
+            assert all(seq["timing"][1:] == (10, 100) for seq in alp.seqs.values())
+
+        with subtests.test("no halt, pattern held"):
+            assert alp.halts == halts and alp.displayed is held
+
+        with subtests.test("a rejected output trigger leaves the timing and polarity unchanged"):
+            with pytest.raises(RuntimeError):
+                plm.set_output_trigger(True, pulse_width_us=1000)
+            assert (plm._synch_delay_us, plm._synch_pulse_width_us) == (10, 100)
+            assert alp.dev[vialux.ALPControl.SYNCH_POLARITY] == vialux.ALP_LEVEL_LOW
+
+        with subtests.test("reset_interface halts and redisplays"):
+            plm.reset_interface()
+            plm._wait_for_idle()
+            assert alp.halts == halts + 1 and np.array_equal(alp.displayed, held)
+
+        plm.close()
+
+    def test_bias_and_gamma(self, alp, subtests):
+        """The bias is range-checked, and clearing the lookup table restores the model's."""
+        plm = vialux.PLM(wav_um=0.488)
+
+        with subtests.test("bias"):
+            plm.set_bias_voltage(600)
+            assert plm.get_bias_voltage() == 600
+            with pytest.raises(ValueError, match="outside"):
+                plm.set_bias_voltage(3000)
+
+        with subtests.test("set_gamma(None) restores the model's table"):
+            plm.set_gamma(np.linspace(0, 0.9, 16))
+            plm.set_gamma(None)
+            table = np.array(plm.model_config["displacement_ratios"]) * 15 / 16
+            assert np.allclose(as_numpy(plm.gamma), table)
+
+        plm.close()
+
+    def test_info(self, monkeypatch, subtests):
+        """Discovery lists every free device, releases them, and raises real errors."""
+        fake = _FakeALP(devices=2)
+        monkeypatch.setitem(vialux._alp_libs, vialux._DEFAULT_ALP_PATH, fake)
+
+        with subtests.test("lists and releases"):
+            assert vialux.PLM.info(verbose=False) == [(4242, 14), (4242, 14)]
+            assert fake.allocated == 0
+
+        with subtests.test("raises other errors"):
+            fake.alloc_error = vialux._ALPReturn.FIRMWARE_VERSION
+            with pytest.raises(RuntimeError, match="FIRMWARE_VERSION"):
+                vialux.PLM.info(verbose=False)
+
+
+class TestPLMModel:
+    """Tests for the Texas Instruments PLM chip database shared by the PLM drivers."""
+
+    class _Sim(_plm._PLMModel, SimulatedSLM):
+        def __init__(self, model_name):
+            self.model_config = self.load_model_config(model_name)
+            super().__init__(tuple(self.model_config["shape"][::-1]), bitdepth=self._model_bitdepth)
+            self.set_gamma()
+
+    def test_model_table(self, subtests):
+        """The bitdepth and the default lookup table follow the model's displacement ratios."""
+        slm = self._Sim("test_small")
+        table = np.array(slm.model_config["displacement_ratios"]) * 15 / 16
+
+        with subtests.test("bitdepth and table"):
+            assert slm.bitdepth == 4 and slm.shape == (16, 16)
+            assert np.allclose(as_numpy(slm.gamma), table)
+
+        with subtests.test("set_gamma(None) restores the table"):
+            slm.set_gamma(np.linspace(0, 0.9, 16))
+            slm.set_gamma(None)
+            assert np.allclose(as_numpy(slm.gamma), table)
+
+    def test_database(self, subtests):
+        """Every model has a 16-entry displacement table; only EVM models have electrode data."""
+        models = _plm._PLMModel.get_model_list()
+        assert {"p47", "p67", "p99"} <= set(models)
+
+        for model in models:
+            config = _plm._PLMModel.load_model_config(model)
+            with subtests.test(model):
+                ratios = config["displacement_ratios"]
+                assert len(ratios) == 16 and ratios[0] == 0 and ratios[-1] == 1
+                assert len(config["shape"]) == len(config["pitch"]) == 2
+                evm = {"memory_lut", "electrode_layout", "data_flip"}
+                assert evm <= set(config) or not evm & set(config)
+
+        with subtests.test("unknown model"):
+            with pytest.raises(ValueError, match="not found"):
+                _plm._PLMModel.load_model_config("p00")
+
+    def test_texasinstruments_needs_electrode_layout(self):
+        """A chip without DLPC900 electrode data cannot be opened as a display."""
+        with pytest.raises(ValueError, match="electrode layout"):
+            PLM("p99", display_number=0)

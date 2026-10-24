@@ -17,6 +17,10 @@ class _PixelCalibration:
 
     # Phase range, in cycles, that a gamma sweep ought to resolve.
     _PIXEL_CAL_EXPECTED_CYCLES = 4
+    # Residual phase range, in cycles, at which a set_range search stops.
+    _PIXEL_CAL_RANGE_TOLERANCE = 0.01
+    # Most sweeps that a set_range search takes.
+    _PIXEL_CAL_RANGE_STEPS = 6
 
     def pixel_calibrate(
         self,
@@ -29,6 +33,8 @@ class _PixelCalibration:
         field_period=10,
         autoexpose=False,
         plot=0,
+        set_range=None,
+        range_bounds=None,
     ):
         r"""
         Measure the phase response (gamma) and pixel crosstalk (blurring) of the SLM.
@@ -64,6 +70,15 @@ class _PixelCalibration:
         Note
         ~~~~
         A Fourier calibration must be loaded.
+
+        Note
+        ~~~~
+        With ``set_range``, the phase range is chosen to minimize the rms phase error of
+        :attr:`~slmsuite.hardware.slms.slm.SLM.lut`, which maps each phase onto the
+        nearest level. For levels separated in phase by gaps :math:`g_i` which the control
+        scales alike, the gap from the top level around to the bottom level is then
+        :math:`\sqrt{\sum g_i^3 / \sum g_i}`, so evenly spaced levels put the top level one
+        step short of :math:`2\pi`.
 
         Caution
         ~~~~~~~
@@ -116,16 +131,25 @@ class _PixelCalibration:
             If ``window`` is not ``None``, then the field is deflected away in an
             orthogonal direction with a grating of the given period.
         autoexpose : bool OR float
-            If ``True``, then the camera exposure is automatically
-            adjusted at the start of the sweep, or adjusted to not overexpose the given test indices.
-            ``autoexpose=True`` and ``test_index=True`` is recommended to autoexpose the sweep.
-            A ``float`` is passed as the ``set_fraction`` of
-            :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexpose()`.
+            If ``True``, then before the sweep the camera is autoexposed on each grating that
+            ``test_index=True`` projects, which together span every level, and left at the
+            shortest exposure. With ``test_index``, the given test indices are exposed
+            instead, and their exposures returned. A ``float`` is passed as the
+            ``set_fraction`` of :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexpose()`.
         plot : int OR bool
             If ``0``, then no plots are made.
             If ``>= 1``, then the camera image is plotted at the first measurement,
             or for every test index measurement, if test indices are given.
             If ``>= 2``, then the order integration masks are additionally plotted.
+            With ``set_range``, these apply to the first sweep, and ``>= 1`` also plots
+            the phase response measured at each value of the control.
+        set_range : function OR None
+            Sets a hardware control which scales the phase range of the SLM, such as the
+            bias voltage of a PLM, to a given ``float``. If given, the sweep repeats as the
+            control is searched within ``range_bounds`` for the optimal range (see Note),
+            and the control is left at the best value, stored as ``"range_value"``.
+        range_bounds : (float, float)
+            Lowest and highest values of the control to try. The search never leaves them.
 
         Returns
         -------
@@ -134,6 +158,101 @@ class _PixelCalibration:
             or, if ``test_index`` is set, ``{"indices", "results"}`` with the integrated
             orders (or the exposures, if ``autoexpose``) of each test index.
         """
+        kwargs = {
+            "levels": levels,
+            "periods": periods,
+            "orders": orders,
+            "directions": directions,
+            "window": window,
+            "field_period": field_period,
+            "autoexpose": autoexpose,
+            "plot": plot,
+        }
+        testing = test_index is not None and test_index is not False
+
+        if set_range is not None:
+            if testing:
+                raise ValueError("test_index runs a single sweep; omit set_range to test.")
+            if range_bounds is None or len(range_bounds) != 2:
+                raise ValueError(f"set_range needs range_bounds (low, high); got {range_bounds}.")
+
+        # Expose for the brightest grating of the first row, which spans every level.
+        if autoexpose and not testing:
+            self._pixel_calibrate_single(test_index=True, **{**kwargs, "plot": 0})
+            kwargs["autoexpose"] = False
+
+        if set_range is None:
+            return self._pixel_calibrate_single(test_index=test_index, **kwargs)
+
+        # Bracket the optimum with the bounds, then interpolate the residual to zero.
+        values, residuals, calibrations = [], [], []
+        while len(values) < self._PIXEL_CAL_RANGE_STEPS:
+            if len(values) < 2:
+                value = float(range_bounds[len(values)])
+            else:
+                order = np.argsort(residuals)
+                value = float(np.interp(0, np.take(residuals, order), np.take(values, order)))
+                if value in values:  # Clamped at a bound already measured.
+                    self.logger.warning(
+                        "The optimal phase range lies outside range_bounds %s.", range_bounds
+                    )
+                    break
+
+            set_range(value)
+            self._pixel_calibrate_single(test_index=None, **kwargs)
+            kwargs["plot"] = 0
+            cal = self.calibrations["pixel"]
+            gamma = self.pixel_calibration_process(apply=False)
+
+            # Under range is positive: the wrap gap exceeds the rms-optimal one.
+            gaps = np.diff(np.sort(self.slm._interpolate_gamma(gamma, cal["levels"])))
+            residual = 1 - np.sum(gaps) - np.sqrt(np.sum(gaps**3) / np.sum(gaps))
+            self.logger.debug("Phase range residual %+.4f cycles at %s.", residual, value)
+
+            values.append(value)
+            residuals.append(residual)
+            calibrations.append(cal)
+            if abs(residual) < self._PIXEL_CAL_RANGE_TOLERANCE:
+                break
+
+        best = int(np.argmin(np.abs(residuals)))
+        set_range(values[best])
+        self.calibrations["pixel"] = calibrations[best]
+        self.calibrations["pixel"]["range_value"] = values[best]
+        self.logger.info(
+            "Set the phase range control to %s (residual %+.4f cycles, %s sweeps).",
+            values[best],
+            residuals[best],
+            len(values),
+        )
+
+        if plot >= 1:
+            _fig, ax = plt.subplots(1, 1)
+            for value, cal in zip(values, calibrations):
+                self.slm.plot_gamma(
+                    self.slm._interpolate_gamma(cal["gamma"], cal["levels"]),
+                    ax=ax,
+                    label=f"{value:g}",
+                )
+            ax.set_title("Pixel Calibration Phase Range")
+            ax.legend(title="set_range")
+            _slmsuite_plt_show(name="pixel_calibrate_range")
+
+        return self.calibrations["pixel"]
+
+    def _pixel_calibrate_single(
+        self,
+        levels,
+        periods,
+        orders,
+        directions,
+        test_index,
+        window,
+        field_period,
+        autoexpose,
+        plot,
+    ):
+        """One sweep of :meth:`pixel_calibrate`, at the current phase range."""
         # Parse levels by forcing range and datatype.
         if np.isscalar(levels):
             if levels < 1:
@@ -377,6 +496,7 @@ class _PixelCalibration:
             test_index = np.arange(len(levels)) if test_index else None
 
         show_tqdm = test_index is None
+        autoexposure_results = []
 
         if test_index is not None:
             # Force a sorted list of unique in-range integers.
@@ -391,7 +511,6 @@ class _PixelCalibration:
                 plot = 0
 
             results = []
-            autoexposure_results = []
 
         if show_tqdm:
             iterations = tqdm(range(length))
@@ -451,12 +570,7 @@ class _PixelCalibration:
                                 window=mask,
                                 verbose=True,
                             )
-
-                            if test_index is None:
-                                # Only autoexpose for the first test index, if autoexpose is enabled.
-                                autoexpose = False
-                            else:
-                                autoexposure_results.append(self.cam.get_exposure())
+                            autoexposure_results.append(self.cam.get_exposure())
 
                         # (2b) Integrate over the order regions to get the data for this point.
                         regions = analysis.take(
@@ -723,21 +837,30 @@ class _PixelCalibration:
             )
 
         if plot >= 2:
-            fig, axs = plt.subplots(1, 3, figsize=(12, 4))
-            data_fit = model(None, *popt).reshape(data_summed.shape)
-            data_resid = data_summed - data_fit
-            M = np.max(np.abs(data_resid))
-            axs[0].imshow(data_summed)
-            axs[1].imshow(data_fit)
-            axs[2].imshow(data_resid, cmap="bwr", vmin=-M, vmax=M)
+            fig, axs = plt.subplots(1, 3, figsize=(14, 4))
 
-            for ax, title in zip(axs, ["Data", "Fit", "Residuals"]):
+            # Normalize to the brightest measurement, so the residuals read as a fraction of it.
+            scale = np.max(data_summed)
+            data_norm = data_summed / scale
+            data_fit = model(None, *popt).reshape(data_summed.shape) / scale
+            data_resid = data_norm - data_fit
+            M = np.max(np.abs(data_resid))
+            images = [
+                axs[0].imshow(data_norm, vmin=0, vmax=1),
+                axs[1].imshow(data_fit, vmin=0, vmax=1),
+                axs[2].imshow(data_resid, cmap="bwr", vmin=-M, vmax=M),
+            ]
+
+            for ax, im, title in zip(axs, images, ["Data", "Fit", "Residuals"]):
+                fig.colorbar(im, ax=ax)
                 ax.set_title(title)
                 if title == "Data":
                     ax.set_ylabel("SLM Level $a$")
                 ax.set_xlabel("SLM Level $b$")
 
-            fig.suptitle("Diffraction Order Intensity versus Binary Grating Levels ($a$, $b$)")
+            fig.suptitle(
+                "Normalized Diffraction Order Intensity versus Binary Grating Levels ($a$, $b$)"
+            )
             plt.tight_layout()
 
             _slmsuite_plt_show(name="pixel_calibration_process_residuals")

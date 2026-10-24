@@ -846,6 +846,35 @@ class TestFourierSLM:
             f"(measurement, writer, reader, superpixel) hijacks: {conflicts}\n{scheduling}"
         )
 
+    def test_wavefront_calibrate_superpixel_autoexpose(self, simulated_system_factory):
+        """An underexposed camera is autoexposed so that the interference is bright and unclipped."""
+        fs = simulated_system_factory(
+            "matched", slm_resolution=(128, 128), cam_resolution=(256, 256)
+        )
+        install_ground_truth_calibration(fs)
+        point = np.array([[190], [170]])
+        window = fs.wavefront_calibration_superpixel_window(16).ravel()
+        fs.cam.set_exposure(1e-3 * fs.cam.get_exposure())
+
+        peaks = []
+        get_image = fs.cam.get_image
+
+        def record(*args, **kwargs):
+            img = get_image(*args, **kwargs)
+            peaks.append(analysis.take(img, point, window, integrate=False).max())
+            return img
+
+        fs.cam.get_image = record
+        fs.wavefront_calibrate_superpixel(
+            calibration_points=point,
+            superpixel_size=16,
+            test_index=0,
+            autoexpose=0.5,
+            plot=-1,
+        )
+
+        assert 0.1 * fs.cam.bitresolution < max(peaks[-3:]) < fs.cam.bitresolution - 1
+
     def test_wavefront_calibration_superpixel_process(self, simulated_system_factory, subtests):
         """
         Superpixels below the r2 threshold are filled in from their neighbors, so a pure
@@ -1383,6 +1412,75 @@ class TestFourierSLM:
             )
             stored = fs.calibrations["pixel"]["levels"]
             np.testing.assert_array_equal(stored, np.sort(stored))
+
+    def test_pixel_calibrate_autoexpose(self, simulated_system_factory):
+        """A full sweep autoexposes over its first row, as a test of that row does."""
+        fs = simulated_system_factory("fov_much_smaller")
+        install_ground_truth_calibration(fs)
+        kwargs = {"levels": 4, "periods": 1, "orders": [1], "directions": "x", "plot": False}
+
+        fs.cam.set_exposure(0.1)
+        fs.pixel_calibrate(test_index=True, autoexpose=True, **kwargs)
+        tested = fs.cam.get_exposure()
+
+        fs.cam.set_exposure(0.1)
+        cal = fs.pixel_calibrate(autoexpose=True, **kwargs)
+        assert fs.cam.get_exposure() == tested
+        assert "data" in cal
+
+    def test_pixel_calibrate_range(self, simulated_system_factory, caplog, subtests):
+        """set_range searches a control that scales the phase range for the rms-optimal range."""
+        fs = simulated_system_factory("fov_much_smaller", slm_bitdepth=4)
+        install_ground_truth_calibration(fs)
+
+        # Uneven levels, like a PLM's, spanning one cycle when the control is one.
+        B = fs.slm.bitresolution
+        base = np.square(np.arange(B) / (B - 1))
+        calls = []
+
+        def set_range(scale):
+            calls.append(scale)
+            fs.slm.gamma_sim = base * scale
+
+        gaps = np.diff(base)
+        optimum = 1 / (np.sum(gaps) + np.sqrt(np.sum(gaps**3) / np.sum(gaps)))
+        kwargs = {"levels": 16, "periods": 2, "orders": 1, "directions": "x", "plot": False}
+        cal = fs.pixel_calibrate(set_range=set_range, range_bounds=(0.7, 1.3), **kwargs)
+
+        with subtests.test("finds the rms-optimal range"):
+            assert abs(cal["range_value"] - optimum) < 0.01
+            assert abs(optimum - (B - 1) / B) > 0.02  # The test distinguishes it from a full span.
+
+        with subtests.test("never leaves range_bounds"):
+            assert all(0.7 <= c <= 1.3 for c in calls)
+
+        with subtests.test("keeps the calibration measured at the control's final value"):
+            assert calls[-1] == cal["range_value"]
+            assert fs.calibrations["pixel"] is cal
+            gamma = fs.pixel_calibration_process(plot=False)
+            expected = base[cal["levels"].astype(int)] * cal["range_value"]
+            assert np.allclose(gamma, expected - np.min(expected), atol=0.02)
+
+        with subtests.test("bounds short of the optimum warn and keep the nearer end"):
+            calls.clear()
+            with caplog.at_level(logging.WARNING):
+                cal = fs.pixel_calibrate(
+                    set_range=set_range, range_bounds=(1.0, 1.3), **{**kwargs, "plot": 1}
+                )
+            assert "outside range_bounds" in caplog.text
+            assert cal["range_value"] == calls[-1] == 1.0
+
+        with subtests.test("a test sweep cannot search"):
+            with pytest.raises(ValueError, match="single sweep"):
+                fs.pixel_calibrate(
+                    set_range=set_range, range_bounds=(0.7, 1.3), test_index=True, **kwargs
+                )
+
+        with subtests.test("the search needs bounds"):
+            calls.clear()
+            with pytest.raises(ValueError, match="range_bounds"):
+                fs.pixel_calibrate(set_range=set_range, **kwargs)
+            assert calls == []
 
     def test_pixel_kernel(self, subtests):
         """The pixel kernel is normalized, peaked, and shaped by its two sides."""

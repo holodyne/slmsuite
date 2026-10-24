@@ -239,6 +239,37 @@ class TestCamera:
                 rotated.set_woi(None)
                 assert rotated.shape == (full_h, full_w)
 
+    def test_set_woi_center(self, slm, subtests):
+        """A window centered on a point of the current image puts that point at its center."""
+        cases = (
+            ("on a pixel", (10, 60, 20, 40), (17.0, 9.0)),
+            ("between pixels", (10, 60, 20, 40), (17.3, 8.6)),
+            ("outside the window", (60, 40, 30, 20), (-20.0, 10.0)),
+        )
+        for label, kwargs, _ in ORIENTATIONS:
+            for binning in (1, 2):
+                for case, start, point in cases:
+                    with subtests.test(f"{label}, binning {binning}, {case}"):
+                        cam = SimulatedCamera(slm, resolution=WIDE, **kwargs)
+                        cam.set_binning(binning)
+                        cam.set_woi(start)
+                        raw = cam._get_ijcam_to_ijraw() @ np.reshape(point, (2, 1))
+
+                        cam.set_woi((30, 20), center=point)
+                        assert cam.woi[1::2] == (30, 20)
+                        # A binned pixel sits at its block's corner, on a side set by the orientation.
+                        np.testing.assert_allclose(
+                            cam._get_ijraw_to_ijcam() @ raw,
+                            [[15 / binning], [10 / binning]],
+                            atol=binning / 2,
+                        )
+
+        with subtests.test("center needs a window to place"):
+            cam = SimulatedCamera(slm, resolution=WIDE)
+            for woi in (None, (0, 10, 0, 10)):
+                with pytest.raises(ValueError, match="center"):
+                    cam.set_woi(woi, center=(17.0, 9.0))
+
     def test_woi_survives_a_pickle_round_trip(self, slm):
         """pickle() records the window and the binning, so a reload delivers the same frame."""
         cam = SimulatedCamera(slm, resolution=WIDE, pitch_um=(5, 5))
@@ -806,3 +837,19 @@ class TestCamera:
             f"{driver.__module__}.{driver.__name__} leaves "
             f"{sorted(driver.__abstractmethods__)} abstract, so it cannot be instantiated."
         )
+
+    @pytest.mark.parametrize("software", [True, False])
+    def test_flir_flush(self, software):
+        """A software-triggered FLIR has no frames to flush; an externally triggered one does."""
+        from slmsuite.hardware.cameras.flir import FLIR
+
+        cam = FLIR.__new__(FLIR)
+        cam._trigger_is_software = software
+        cam._flush_iterations = 2
+        cam._exposure_s = 0.0
+        grabs = []
+        cam._get_image_hw_tolerant = lambda timeout_s: grabs.append(timeout_s)
+
+        cam.flush()
+
+        assert len(grabs) == (0 if software else 2)

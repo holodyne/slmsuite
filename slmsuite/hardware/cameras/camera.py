@@ -15,7 +15,7 @@ from scipy.optimize import curve_fit
 from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
-from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
+from slmsuite.holography.toolbox import BLAZE_LABELS, format_2vectors, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
 from slmsuite.misc.math import INTEGER_TYPES
@@ -434,7 +434,7 @@ class Camera(_Common, ABC):
         """
         raise NotImplementedError(f"Camera {self.name} has not implemented WOI")
 
-    def set_woi(self, woi=None):
+    def set_woi(self, woi=None, center=None):
         """
         Set the window of interest (WOI) for the camera.
 
@@ -454,11 +454,20 @@ class Camera(_Common, ABC):
             Caution
             ~~~~~~~
             The explicit form is in full-sensor coordinates (like :attr:`sensor_shape`).
+        center : array_like OR None
+            Point ``(x, y)`` in the current image (``"ij"``) to center an ``int`` or
+            ``(w, h)`` window on, in place of the center of the sensor. For instance,
+            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.zeroth_order_ij`.
 
         Returns
         -------
         (int, int, int, int)
             :attr:`~slmsuite.hardware.cameras.camera.Camera.woi` after the update.
+
+        Raises
+        ------
+        ValueError
+            If ``center`` is given with ``None`` or an explicit window.
         """
         old_woi = self.woi
         old_shape = self.shape
@@ -466,6 +475,9 @@ class Camera(_Common, ABC):
         binx, biny = self._binning[0], self._binning[1]
         transformed_shape = self.sensor_shape
         H, W = transformed_shape
+
+        if center is not None and (woi is None or np.size(woi) == 4):
+            raise ValueError(f"center places an int or (w, h) window; got woi={woi}.")
 
         if woi is None:
             # Full sensor in untransformed, unbinned coordinates.
@@ -491,8 +503,12 @@ class Camera(_Common, ABC):
             else:
                 raise TypeError(f"Cannot interpret WOI of type {type(woi).__name__}.")
 
-            if w is not None:  # Center the (w, h) window on the sensor.
+            if w is not None and center is None:  # Center the (w, h) window on the sensor.
                 woi = (max(0, (W - w) // 2), w, max(0, (H - h) // 2), h)
+            elif w is not None:  # Center it on the point, in transformed, unbinned coordinates.
+                raw = self._get_ijcam_to_ijraw() @ format_2vectors(center)
+                (x, y) = (int(v) for v in np.rint(self.transform.affine(self._shape) @ raw).ravel())
+                woi = (x - w // 2, w, y - h // 2, h)
 
             # Get the WOI in raw camera coordinates.
             woi_unt = self.transform.inverse_woi(woi, transformed_shape)
