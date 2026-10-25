@@ -143,9 +143,8 @@ class FeedbackHologram(Hologram):
             self._cam_points = toolbox.convert_vector(
                 points_kxy,
                 from_units="kxy",
-                to_units="knm",
+                to_units=("knm", self.shape),
                 hardware=self.cameraslm.slm,
-                shape=self.shape,
             )
 
             # Transform the target, if it is provided.
@@ -242,13 +241,8 @@ class FeedbackHologram(Hologram):
         if memo is not None and memo[0] == key:
             return memo[1]
 
-        # First transformation. FUTURE: make convert_basis to output a matrix
-        # like here?
-        conversion = toolbox.convert_vector(
-            (1, 1), "knm", "kxy", hardware=slm, shape=self.shape
-        ) - toolbox.convert_vector((0, 0), "knm", "kxy", hardware=slm, shape=self.shape)
-        M1 = np.diag(np.squeeze(conversion))
-        b1 = np.matmul(M1, -toolbox.format_2vectors(np.flip(np.squeeze(self.shape)) / 2))
+        # First transformation, knm -> kxy.
+        (M1, b1) = toolbox.convert_affine(("knm", self.shape), "kxy", slm)
 
         # Composite transformation (along with xy -> yx).
         M_np = np.flip(np.flip(np.matmul(affine.M, M1), axis=0), axis=1)

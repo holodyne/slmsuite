@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 
 from slmsuite.holography import analysis, toolbox
-from slmsuite.holography.algorithms import Hologram, SpotHologram
+from slmsuite.holography.algorithms import SpotHologram
 from slmsuite.holography.analysis import Affine
 from slmsuite.holography.toolbox import format_2vectors, format_shape, format_vectors
 from slmsuite.misc.math import REAL_TYPES
@@ -200,6 +200,7 @@ class _FourierCalibration:
             "autofocus": autofocus,
         }
         self.calibrations["fourier"].update(self._get_calibration_metadata())
+        self._check_fourier_anisotropy()
 
         return self.calibrations["fourier"]
 
@@ -329,6 +330,7 @@ class _FourierCalibration:
         kxyslm_to_ijraw = self.cam._get_ijcam_to_ijraw() @ Affine(M, b, a)
         self.calibrations["fourier"] = kxyslm_to_ijraw.to_dict()
         self.calibrations["fourier"].update(self._get_calibration_metadata())
+        self._check_fourier_anisotropy()
 
         # Set the camera's virtual calibration if it is not already set. A simulated
         # camera renders its full raw sensor, so its affine is the raw one.
@@ -388,23 +390,34 @@ class _FourierCalibration:
 
     ### Fourier Calibration User Results ###
 
-    def _kxyslm_to_ijcam_depth(self, kxy_depth):
-        """Helper function for handling depth conversion."""
-        f_eff = np.mean(self.get_effective_focal_length("norm"))
+    # Principal focal lengths may differ by this fraction before a calibration is logged
+    # as anisotropic; a few percent is ordinary rotation and shear, more is cylindrical optics.
+    _fourier_anisotropy_tolerance = 0.05
+
+    def _check_fourier_anisotropy(self):
+        """Logs a calibration whose principal focal lengths differ by more than the tolerance."""
         if self.cam.pitch_um is None:
-            cam_pitch_um = np.nan
-        else:
-            cam_pitch_um = np.mean(self.cam.pitch_um)
-        return kxy_depth * (self.slm.wav_um * f_eff * f_eff / cam_pitch_um)
+            return
+        (M, _) = toolbox.convert_affine("kxy", "um", self)
+        (f_max, f_min) = np.linalg.svd(M, compute_uv=False)
+        if f_max > (1 + self._fourier_anisotropy_tolerance) * f_min:
+            self.logger.warning(
+                "The principal focal lengths differ by %.1f%%; scalar conversions use their "
+                "geometric mean.",
+                100 * (f_max / f_min - 1),
+            )
+
+    def _kxyslm_to_ijcam_depth(self, kxy_depth):
+        """Camera depth, in geometric-mean pixels, of a normalized focal power."""
+        if self.cam.pitch_um is None:
+            return np.full_like(kxy_depth, np.nan, dtype=float)
+        f_um = self.get_effective_focal_length("um")
+        depth_pitch_um = float(np.sqrt(np.prod(self.cam.pitch_um)))
+        return kxy_depth * (f_um * f_um / (self.slm.wav_um * depth_pitch_um))
 
     def _ijcam_to_kxyslm_depth(self, ij_depth):
-        """Helper function for handling depth conversion."""
-        f_eff = np.mean(self.get_effective_focal_length("norm"))
-        if self.cam.pitch_um is None:
-            cam_pitch_um = np.nan
-        else:
-            cam_pitch_um = np.mean(self.cam.pitch_um)
-        return ij_depth * (cam_pitch_um / (self.slm.wav_um * f_eff * f_eff))
+        """Normalized focal power of a camera depth in geometric-mean pixels."""
+        return ij_depth / self._kxyslm_to_ijcam_depth(1.0)
 
     def kxyslm_to_ijcam(self, kxy):
         r"""
@@ -634,47 +647,39 @@ class _FourierCalibration:
             A scalar is interpreted as the width and height of a square.
             If ``None``, defaults to the size whose spot matches the source's, of radius
             :meth:`~slmsuite.hardware.slms.slm.SLM.get_spot_radius_kxy()`.
-        basis : {"kxy", "ij"}
-            Basis of the returned size;
-            ``"kxy"`` for SLM :math:`k`-space, ``"ij"`` for camera size.
+        basis : str OR ("knm", (int, int)) OR (int, int)
+            Units of the returned size, any unit of
+            :meth:`~slmsuite.holography.toolbox.convert_vector()`;
+            ``"kxy"`` for SLM :math:`k`-space, ``"ij"`` for camera pixels.
 
         Returns
         -------
-        (float, float)
-            Size in x and y of the spot in the desired ``basis``.
+        numpy.ndarray
+            ``(x, y)`` size of the spot along the axes of ``basis``.
 
         Raises
         ------
+        RuntimeError
+            If ``basis`` is a camera unit and there is no Fourier calibration.
         ValueError
-            If the basis argument was malformed.
+            If ``basis`` or ``form`` is not recognized.
         """
-        # Default to effective SLM aperture size (based on amplitude profile if measured)
-        if slm_size is None:
-            psf_kxy = self.slm.get_spot_radius_kxy()
-            slm_size = (1 / psf_kxy, 1 / psf_kxy)
-        # Float input -> square region
-        elif isinstance(slm_size, REAL_TYPES):
-            slm_size = (slm_size, slm_size)
+        if basis in toolbox.CAMERA_UNITS and "fourier" not in self.calibrations:
+            raise RuntimeError("Fourier calibration must exist to be used.")
 
-        if basis == "kxy":
-            return (1 / slm_size[0], 1 / slm_size[1])
-        elif basis == "ij":
-            # Use the WOI/binning/orientation-aware affine
-            # so the de-rotation lives in the same coordinate frame as kxyslm_to_ijcam below.
-            M = self.fourier_affine.M
-            # Compensate for spot rotation s.t. spot size is along camera axes
-            size_kxy = np.linalg.inv(M / np.sqrt(np.abs(np.linalg.det(M)))) @ np.array(
-                (1 / slm_size[0], 1 / slm_size[1])
-            )
-            return np.abs(self.kxyslm_to_ijcam([0, 0]) - self.kxyslm_to_ijcam(size_kxy)).flatten()
+        if slm_size is None:
+            size_kxy = self.slm.get_spot_radius_kxy()
         else:
-            raise ValueError(f'Unrecognized basis "{basis}".')
+            size_kxy = 1 / np.ravel(slm_size)
+
+        return toolbox.convert_radius(size_kxy, "kxy", basis, self, form="grid")
 
     def get_effective_focal_length(self, units="norm"):
         """
-        Uses the Fourier calibration to estimate the scalar effective focal length of the
-        optical train separating the Fourier-domain SLM from the camera.
-        This currently assumes an isotropic imaging train without cylindrical optics.
+        Uses the Fourier calibration to estimate the effective focal length of the
+        optical train separating the Fourier-domain SLM from the camera. For an
+        anisotropic calibration, as with cylindrical optics or shear, this is the
+        geometric mean of the principal focal lengths.
 
         Tip
         ~~~
@@ -697,33 +702,17 @@ class _FourierCalibration:
 
         Returns
         -------
-        f_eff : float
+        float
             Effective focal length.
         """
         if "fourier" not in self.calibrations:
             raise RuntimeError("Fourier calibration must exist to be used.")
 
-        # Gather f_eff in pix/rad. This is WOI-invariant (WOI only shifts the affine
-        # offset, not M) and binning-invariant in metric units (the 1/bin factor in
-        # fourier_affine cancels the *bin factor in cam.pitch_um).
-        f_eff = np.sqrt(np.abs(self.fourier_affine.det()))
-
-        # Gather other conversions.
-        if units != "ij" and self.cam.pitch_um is None:
-            self.logger.warning("cam.pitch_um must be set to use units '%s'", units)
-            return np.nan
-
-        # Convert.
-        if units == "ij":
-            pass
-        elif units == "norm":
-            f_eff *= np.array(self.cam.pitch_um) / self.slm.wav_um
-        elif units in toolbox.LENGTH_FACTORS:
-            f_eff *= np.array(self.cam.pitch_um) / toolbox.LENGTH_FACTORS[units]
-        else:
+        (to_units, factor) = ("um", 1 / self.slm.wav_um) if units == "norm" else (units, 1)
+        if to_units != "ij" and to_units not in toolbox.LENGTH_FACTORS:
             raise ValueError(f"Unit '{units}' not recognized as a length.")
 
-        return f_eff
+        return toolbox.convert_radius(factor, "kxy", to_units, self)
 
     # Helper functions to plot the rectangles of the camera and SLM farfield onto each other.
 
@@ -778,10 +767,9 @@ class _FourierCalibration:
         corners_ij = self.kxyslm_to_ijcam(
             toolbox.convert_vector(
                 corners_knm,
-                from_units="knm",
+                from_units=("knm", (1, 1)),
                 to_units="kxy",
                 hardware=self,
-                shape=(1, 1),
             )
         )
 
@@ -789,22 +777,13 @@ class _FourierCalibration:
             # ``knm = A @ ij + b`` is affine, so a box of half-widths ``h`` about the
             # farfield center maps inside the unit square exactly when
             # ``abs(A) @ h <= 0.5`` --- worst case over the corners' sign choices.
-            # Recover ``abs(A)`` by mapping the origin and the two unit vectors together,
-            # then differencing.
-            probe_knm = toolbox.convert_vector(
-                np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
-                from_units="ij",
-                to_units="knm",
-                hardware=self,
-                shape=[1, 1],
-            )[:2]
-            jacobian = np.abs(probe_knm[:, 1:] - probe_knm[:, [0]])
+            abs_A = np.abs(toolbox.convert_affine("ij", ("knm", (1, 1)), self)[0])
 
             # Scale the farfield's bounding box down by the largest feasible factor,
             # keeping its aspect ratio.
             center = np.mean(corners_ij[:, :4], axis=1, keepdims=True)
             half = np.ptp(corners_ij, axis=1).reshape(2, 1) / 2.0
-            half = half * np.min(0.5 / np.maximum(jacobian @ half, 1e-12))
+            half = half * np.min(0.5 / np.maximum(abs_A @ half, 1e-12))
 
             margin = np.broadcast_to(np.reshape(margin, (-1, 1)), (2, 1)).astype(float)
             (low, high) = (center - half + margin, center + half - margin)
@@ -834,10 +813,10 @@ class _FourierCalibration:
 
         Parameters
         ----------
-        units : str OR (int, int) OR Hologram
-            Target coordinate system.  A string (e.g. ``"kxy"``, ``"knm"``) returns corners
-            in that basis.  A shape tuple or :class:`~slmsuite.holography.algorithms.Hologram`
-            returns corners in ``"knm"`` space for that grid (and supports mask output).
+        units : str OR ("knm", (int, int)) OR (int, int)
+            Target coordinate system, any unit of
+            :meth:`~slmsuite.holography.toolbox.convert_vector()`. ``("knm", shape)``, or
+            the bare shape, is ``"knm"`` on that grid (and supports mask output).
         return_mask : bool
             If ``False``, returns a ``(2, 5)`` array of camera corner coordinates in ``units``
             (closed polygon, first corner repeated).
@@ -859,35 +838,17 @@ class _FourierCalibration:
             toolbox.format_2vectors(np.vstack((ll, lr, ur, ul, ll)).T)
         )
 
+        corners = toolbox.convert_vector(corners_kxy, "kxy", units, hardware=self)
+
+        if not return_mask:
+            return corners
         if isinstance(units, str):
-            if return_mask:
-                raise ValueError("return_mask must be False if units is a string.")
-            return toolbox.convert_vector(
-                corners_kxy,
-                from_units="kxy",
-                to_units=units,
-                hardware=self,
-            )
-        else:  # Is the shape of the knm space
-            if isinstance(units, Hologram):
-                units = units.shape
+            raise ValueError("return_mask must be False if units is a string.")
 
-            units = format_shape(units)
+        # Fill the shadow of the camera on the knm canvas.
+        shape = format_shape(units[1] if isinstance(units[0], str) else units)
+        canvas = np.zeros(shape, dtype=np.uint8)
+        pts = np.rint(corners.T).astype(np.int32)  # (N, 2) required by cv2
+        cv2.fillConvexPoly(canvas, pts, 255, cv2.LINE_4)
 
-            corners_knm = toolbox.convert_vector(
-                corners_kxy,
-                from_units="kxy",
-                to_units="knm",
-                hardware=self,
-                shape=units,
-            )
-
-            if not return_mask:
-                return corners_knm
-            else:
-                # Fill the shadow of the camera on the knm canvas.
-                canvas = np.zeros(units, dtype=np.uint8)
-                pts = np.rint(corners_knm.T).astype(np.int32)  # (N, 2) required by cv2
-                cv2.fillConvexPoly(canvas, pts, 255, cv2.LINE_4)
-
-                return canvas > 128
+        return canvas > 128

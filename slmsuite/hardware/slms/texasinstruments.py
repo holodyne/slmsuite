@@ -188,8 +188,8 @@ class PLM(ScreenMirrored):
         Parameters
         ----------
         model_name : str
-            Model identifier from ``texasinstruments.yaml`` (e.g., ``"p47"``, ``"p67"``).
-            Available models can be queried with :meth:`get_model_list()`.
+            Model identifier from ``texasinstruments.yaml`` (e.g., ``"p47"``, ``"p67"``,
+            ``"p67nir"``). Available models can be queried with :meth:`get_model_list()`.
         display_number : int OR None
             Monitor number for display.
             Use :func:`ScreenMirrored.info()` to list available displays and their numbers.
@@ -296,16 +296,20 @@ class PLM(ScreenMirrored):
             **kwargs,
         )
 
-        # Calculate display shape after electrode mapping
+        # The electrode image sits centered on the display, inside any even zero margin.
         elec_shape = self._electrode_layout_raw.shape
-        display_shape = (model_shape[0] * elec_shape[0], model_shape[1] * elec_shape[1])
+        electrode_shape = (model_shape[0] * elec_shape[0], model_shape[1] * elec_shape[1])
+        margin = np.subtract(self.display_shape, electrode_shape)
 
-        if display_shape != self.display_shape:
+        if np.any(margin < 0) or np.any(margin % 2):
             raise ValueError(
-                f"Calculated display shape {display_shape} does not match "
+                f"Electrode-mapped shape {electrode_shape} does not fit centered in the "
                 f"ScreenMirrored display shape {self.display_shape}. "
                 f"Check model configuration for consistency."
             )
+        self._display_slice = tuple(
+            slice(m // 2, m // 2 + s) for (m, s) in zip(margin, electrode_shape)
+        )
 
         # Update window shape and recreate buffers for electrode-mapped output.
         # Must run on the window thread to satisfy OpenGL context thread affinity.
@@ -866,10 +870,11 @@ class PLM(ScreenMirrored):
 
         # Write into self.display in-place to avoid per-frame allocations
         # (mirrors how _phase2gray writes to self.display in slm.py).
+        display = self.display[(..., *self._display_slice)]
         if replicate_bits:
-            xp.multiply(result, 255, out=self.display, casting="unsafe")
+            xp.multiply(result, 255, out=display, casting="unsafe")
         else:
-            xp.copyto(self.display, result, casting="unsafe")
+            xp.copyto(display, result, casting="unsafe")
 
         return self.display
 

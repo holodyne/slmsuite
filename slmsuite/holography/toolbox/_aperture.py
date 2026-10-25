@@ -145,21 +145,6 @@ class Aperture:
         (x_scale, y_scale) = self.scale
         return bool(np.isclose(x_scale, y_scale))
 
-    def _isotropic_scale(self):
-        """
-        The single lateral scale of an isotropic aperture. Raises :class:`ValueError` for
-        a genuinely anisotropic (elliptical) aperture, which a lone scalar cannot
-        represent; use :attr:`scale` for the full ``(x_scale, y_scale)`` ellipse instead.
-        """
-        if not self.is_isotropic:
-            (x_scale, y_scale) = self.scale
-            raise ValueError(
-                "This operation requires an isotropic (circular) aperture, but the "
-                "scaling is anisotropic: (x_scale, y_scale) = "
-                f"({x_scale}, {y_scale}). Use Aperture.scale for the full ellipse."
-            )
-        return float(self.scale[0])
-
     @property
     def crops(self):
         """

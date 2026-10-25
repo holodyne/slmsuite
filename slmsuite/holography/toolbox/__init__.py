@@ -110,11 +110,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         **This is the default** :mod:`slmsuite` **unit.**
 
     -  ``"knm"``
-        Computational blaze units for a given Fourier domain ``shape``.
-        This corresponds to integer points on the grid of this
-        (potentially padded) SLM's Fourier transform.
-        See :class:`~slmsuite.holography.algorithms.Hologram`.
-        The ``"knm"`` basis is centered at ``shape/2``, unlike all of the other units.
+        Computational blaze units: integer points on the grid of a (potentially padded)
+        Fourier transform of the SLM, centered at ``shape/2`` unlike all of the other
+        units. See :class:`~slmsuite.holography.algorithms.Hologram`.
+        The grid is named with the unit as ``("knm", shape)``, or by the bare ``shape`` as
+        shorthand; ``"knm"`` alone is the SLM's own ``shape``.
 
     -  ``"freq"``
         Pixel frequency of a grating producing the blaze.
@@ -185,15 +185,19 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
 
     -  ``"zernike"``
         The phase coefficient of the :math:`2(x^2 + y^2) - 1 = Z_4 = Z_2^0`
-        zernike focus term necessary to focus at the given depth.
+        zernike focus term necessary to focus at the given depth. On an elliptical
+        aperture, whose focus term is astigmatic, depth uses the geometric mean of the
+        aperture scale.
 
     -  ``"ij"``
         True cartesian distance relative to the **camera plane** in camera pixels.
-        Cameras with rectangular (anisotropic) pixels average the pixel dimensions.
+        :math:`x` and :math:`y` convert per axis; depth uses the geometric mean of the
+        camera pitch.
 
     -  ``"ijraw"``
         True cartesian distance relative to the **camera plane** in raw (unbinned) sensor
-        pixels. This differs from ``"ij"`` by the isotropic binning scale.
+        pixels. This differs from ``"ij"`` by the binning, per axis for :math:`x` and
+        :math:`y` and by the geometric mean for depth.
 
     -  ``"m"``, ``"cm"``, ``"mm"``, ``"um"``, ``"nm"``
         True cartesian distance relative to the **camera plane** in metric units.
@@ -214,8 +218,6 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     so an SLM should be passed to ``hardware``
     (otherwise returns an array of ``nan`` values).
     The unit ``"zernike"`` also requires an SLM.
-    The unit ``"knm"`` additionally requires the ``shape`` of the computational space.
-    If not included when ``hardware`` is passed, ``shape=slm.shape`` is assumed.
     The units ``"ij"``, ``"um"``, ``"mag_um"``, and related refer to distance on the
     camera and require calibration data stored in a
     :class:`~slmsuite.hardware.cameraslms.FourierSLM`,
@@ -232,8 +234,10 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         Vectors for which we want to convert units, from ``from_units`` to ``to_units``.
         Processed according to :meth:`format_2vectors()`.
         Can be shape ``(2, N)`` or ``(3, N)``.
-    from_units, to_units : str
+    from_units, to_units : str OR ("knm", (int, int)) OR (int, int)
         Units which we are converting between. See the listed units above for options.
+        ``("knm", shape)`` is ``"knm"`` on a computational space of shape ``(h, w)``;
+        the bare shape is shorthand for it.
         Defaults to ``"norm"``.
     hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameras.camera.Camera` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Relevant hardware to pull calibration data from in the case of
@@ -243,30 +247,39 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         If a bare :class:`~slmsuite.hardware.cameras.camera.Camera`, conversions only
         between camera units (e.g. ``"ij"`` and ``"ijraw"``) are supported.
     shape : (int, int) OR None
-        Shape of the computational SLM space. Needed for ``"knm"``.
-        Defaults to ``slm.shape`` if ``hardware`` is not ``None``.
+        Deprecated. Pass ``("knm", shape)`` as the unit.
 
     Returns
     -------
     vector_converted : numpy.ndarray
         Result of the unit conversion, in the cleaned format of :meth:`format_2vectors()`.
     """
-    # Parse units.
-    if from_units not in BLAZE_UNITS:
-        raise ValueError(
-            f"From unit '{from_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
-        )
-    if to_units not in BLAZE_UNITS:
-        raise ValueError(
-            f"To unit '{to_units}' not recognized as a valid unit. Options: {BLAZE_UNITS}"
-        )
+    if shape is not None:
+        warnings.warn("convert_vector(shape=) is deprecated; pass ('knm', shape) as the unit.")
+
+    # Parse each unit into its name and, for "knm", its grid.
+    units = []
+    for unit in (from_units, to_units):
+        if isinstance(unit, str) and unit in BLAZE_UNITS:
+            grid = shape if unit == "knm" else None
+        elif isinstance(unit, (tuple, list)) and len(unit) == 2:
+            (unit, grid) = unit if unit[0] == "knm" else ("knm", unit)
+        elif isinstance(unit, np.ndarray) and unit.size == 2:
+            (unit, grid) = ("knm", unit)
+        else:
+            raise ValueError(
+                f"Unit '{unit}' not recognized as a valid unit. "
+                f"Options: {BLAZE_UNITS}, ('knm', shape) or a shape (h, w)."
+            )
+        units.append((unit, None if grid is None else format_shape(grid)))
+    ((from_units, from_shape), (to_units, to_shape)) = units
 
     # Parse vectors.
     vector_parsed = format_vectors(vector, expected_dimension=2, handle_dimension="pass").astype(
         float
     )
 
-    if from_units == to_units:
+    if from_units == to_units and from_shape == to_shape:
         return vector_parsed
 
     vector_xy = vector_parsed[:2, :]
@@ -330,6 +343,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
                 return np.full_like(vector_parsed, np.nan)
         else:
             cam_pitch_um = format_2vectors(cam_pitch_um)
+            # Depth in camera units is in geometric-mean pixels, ambiguous for rectangular ones.
+            cam_depth_pitch_um = float(np.sqrt(np.prod(cam_pitch_um)))
 
     # Generate conversion factors for various units.
     if from_units == "freq" or to_units == "freq":
@@ -355,30 +370,26 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         else:
             pitch = format_2vectors(slm.pitch)
 
-        if shape is None:
-            if slm is None:
-                logger.warning("shape or slm is required for unit 'knm'")
-                shape = (np.nan, np.nan)
-            else:
-                shape = np.array(slm.shape, dtype=float)
-        else:
-            shape = np.array(format_shape(shape), dtype=float)
-
-        shape = format_2vectors(np.flip(np.squeeze(shape)))
-
-        knm_conv = pitch * shape
+        # Each side's grid as (w, h), the SLM's own unless a shape is given.
+        default = (np.nan, np.nan) if slm is None else slm.shape
+        (from_wh, to_wh) = (
+            format_2vectors(np.flip(np.array(default if s is None else s, dtype=float)))
+            for s in (from_shape, to_shape)
+        )
 
     if from_units == "zernike" or to_units == "zernike":
         if slm is None:
             logger.warning("slm is required for unit 'zernike'")
             zernike_scale = np.nan
         else:
-            zernike_scale = 2 * np.pi * np.reciprocal(slm.aperture._isotropic_scale())
+            zernike_scale = format_2vectors(2 * np.pi * np.reciprocal(slm.aperture.scale))
+        # Focus scales with the square of the aperture; the geometric mean for an ellipse.
+        zernike_depth_scale = float(np.prod(zernike_scale))
 
     if "ijraw" in (from_units, to_units):
-        # Camera affine for "ijraw" xy; depth uses the arithmetic mean of the binning.
+        # Camera affine for "ijraw" xy; depth uses the geometric mean of the binning.
         ijcam_to_ijraw = cam._get_ijcam_to_ijraw()
-        ijraw_z_scale = np.mean(cam.binning)
+        ijraw_z_scale = float(np.sqrt(np.prod(cam.binning)))
 
     # XY
 
@@ -390,7 +401,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     elif from_units == "deg":
         rad = vector_xy * np.pi / 180
     elif from_units == "knm":
-        rad = (vector_xy - shape / 2.0) / knm_conv
+        rad = (vector_xy - from_wh / 2.0) / (pitch * from_wh)
     elif from_units == "freq":
         rad = vector_xy * wav_um / pitch_um
     elif from_units == "lpmm":
@@ -421,7 +432,7 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     elif to_units == "deg":
         vector_xy = rad * 180 / np.pi
     elif to_units == "knm":
-        vector_xy = rad * knm_conv + shape / 2.0
+        vector_xy = rad * (pitch * to_wh) + to_wh / 2.0
     elif to_units == "freq":
         vector_xy = rad * pitch_um / wav_um
     elif to_units == "lpmm":
@@ -448,11 +459,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
             z_ij = vector_z / ijraw_z_scale
         elif from_units in CAMERA_UNITS:
             unit = from_units.split("_")[-1]
-            z_ij = vector_z * LENGTH_FACTORS[unit] / np.mean(cam_pitch_um)
+            z_ij = vector_z * LENGTH_FACTORS[unit] / cam_depth_pitch_um
             if "mag_" in from_units:
                 z_ij = z_ij * cameraslm.mag**2
         elif from_units == "zernike":
-            focal_power = vector_z * ((8 * np.pi) / (zernike_scale * zernike_scale))
+            focal_power = vector_z * ((8 * np.pi) / zernike_depth_scale)
         else:
             focal_power = vector_z
 
@@ -469,11 +480,11 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
             vector_z = z_ij * ijraw_z_scale
         elif to_units in CAMERA_UNITS:
             unit = to_units.split("_")[-1]
-            vector_z = z_ij * np.mean(cam_pitch_um) / LENGTH_FACTORS[unit]
+            vector_z = z_ij * cam_depth_pitch_um / LENGTH_FACTORS[unit]
             if "mag_" in to_units:
                 vector_z = vector_z / cameraslm.mag**2
         elif to_units == "zernike":
-            vector_z = focal_power * ((zernike_scale * zernike_scale) / (8 * np.pi))
+            vector_z = focal_power * (zernike_depth_scale / (8 * np.pi))
         else:
             vector_z = focal_power
 
@@ -503,43 +514,85 @@ def print_blaze_conversions(vector, from_units="norm", **kwargs):
         print(f"'{unit}' : {result.T[0, :]}")
 
 
-def convert_radius(radius, from_units="norm", to_units="norm", hardware=None, shape=None):
-    """
-    Helper function for scalar unit conversions.
-    Uses :meth:`convert_vector` to deduce the (average, in the case of an
-    anisotropic transformation) scalar radius when going between sets of units.
+def convert_affine(from_units="norm", to_units="norm", hardware=None):
+    r"""
+    The affine map :math:`\vec{y} = M \vec{x} + \vec{b}` that :meth:`convert_vector`
+    applies to lateral vectors between two units.
 
-    Tip
-    ~~~
-    In the future, we might create a similar function to handle anisotropic
-    conversions better by converting a 2x2 matrix representing a sheared parallelogram.
+    Every conversion is affine, so :math:`M` and :math:`\vec{b}` are recovered exactly by
+    converting the origin and the two unit vectors.
 
     Parameters
     ----------
-    radius : float
-        The scalar radius to convert.
-    from_units, to_units : str
+    from_units, to_units : str OR ("knm", (int, int)) OR (int, int)
         Passed to :meth:`convert_vector`.
     hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
-        Passed to :meth:`convert_vector`.
-    shape : (int, int) OR None
         Passed to :meth:`convert_vector`.
 
     Returns
     -------
-    radius : float
-        New scalar radius.
+    (numpy.ndarray, numpy.ndarray)
+        ``M`` of shape ``(2, 2)`` and ``b`` of shape ``(2, 1)``, as
+        :meth:`~slmsuite.hardware.cameraslms.FourierSLM.fourier_calibrate_analytic` takes
+        them. ``nan`` when the conversion is unavailable.
     """
-    v0 = convert_vector(
-        (0, 0), from_units=from_units, to_units=to_units, hardware=hardware, shape=shape
+    probe = convert_vector(
+        np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), from_units, to_units, hardware=hardware
     )
-    vx = convert_vector(
-        (radius, 0), from_units=from_units, to_units=to_units, hardware=hardware, shape=shape
-    )
-    vy = convert_vector(
-        (0, radius), from_units=from_units, to_units=to_units, hardware=hardware, shape=shape
-    )
-    return np.mean([np.linalg.norm(vx - v0), np.linalg.norm(vy - v0)])
+    return (probe[:2, 1:] - probe[:2, [0]], probe[:2, [0]])
+
+
+def convert_radius(
+    radius, from_units="norm", to_units="norm", hardware=None, shape=None, form="scalar"
+):
+    r"""
+    Converts a radius between units, accounting for anisotropic conversions.
+
+    The radius is treated as the ellipse :math:`A = M \, \mathrm{diag}(r_x, r_y)`, where
+    :math:`M` is the linear part of :meth:`convert_affine` between the two units.
+    Rectangular pixels or a rotated or sheared Fourier calibration make :math:`A`
+    anisotropic; ``form`` selects how it is reported.
+
+    Parameters
+    ----------
+    radius : float OR (float, float)
+        The radius to convert, isotropic or along ``(x, y)`` of ``from_units``.
+    from_units, to_units : str OR ("knm", (int, int)) OR (int, int)
+        Passed to :meth:`convert_vector`.
+    hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
+        Passed to :meth:`convert_vector`.
+    shape : (int, int) OR None
+        Deprecated; see :meth:`convert_vector`.
+    form : {"scalar", "grid"}
+        -  ``"scalar"``
+            The area-preserving radius :math:`\sqrt{|\det A|}`.
+
+        -  ``"grid"``
+            The ``(x, y)`` extent along the axes of ``to_units``: the row norms of
+            :math:`A`, which are both the half-widths of the ellipse's bounding box and
+            its marginal radii.
+
+    Returns
+    -------
+    float OR numpy.ndarray
+        A float for ``"scalar"`` and shape ``(2,)`` for ``"grid"``. ``nan`` when the
+        conversion is unavailable.
+    """
+    if shape is not None:
+        warnings.warn("convert_radius(shape=) is deprecated; pass ('knm', shape) as the unit.")
+        (from_units, to_units) = (
+            ("knm", shape) if isinstance(unit, str) and unit == "knm" else unit
+            for unit in (from_units, to_units)
+        )
+
+    (M, _) = convert_affine(from_units, to_units, hardware)
+    A = M * np.ravel(radius)
+
+    if form == "scalar":
+        return float(np.sqrt(np.abs(np.linalg.det(A)))) if np.all(np.isfinite(A)) else np.nan
+    elif form == "grid":
+        return np.linalg.norm(A, axis=1)
+    raise ValueError(f"form '{form}' not recognized; use 'scalar' or 'grid'.")
 
 
 # Windows creation functions. Windows are views into 2D arrays.

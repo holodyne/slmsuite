@@ -26,7 +26,6 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
     vec = np.array([[0.1], [-0.2]])
     hw = {"hardware": slm}
     knm_shape = (256, 512)
-    knm_kw = {"hardware": slm, "shape": knm_shape}
     (height, width) = slm.shape
 
     with subtests.test("an unrecognized unit raises"):
@@ -76,11 +75,11 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
     with subtests.test("knm is the freq grating's DFT bin, offset to the shape's center"):
         freq = convert_vector(vec, "norm", "freq", **hw)
         np.testing.assert_allclose(
-            convert_vector(vec, "norm", "knm", **knm_kw), freq * shape_xy + shape_xy / 2
+            convert_vector(vec, "norm", knm_shape, **hw), freq * shape_xy + shape_xy / 2
         )
 
     with subtests.test("an unblazed beam sits at the knm origin, shape/2"):
-        np.testing.assert_allclose(convert_vector((0, 0), "norm", "knm", **knm_kw), shape_xy / 2)
+        np.testing.assert_allclose(convert_vector((0, 0), "norm", knm_shape, **hw), shape_xy / 2)
         np.testing.assert_allclose(
             convert_vector((0, 0), "norm", "knm", **hw), [[width / 2], [height / 2]]
         )
@@ -93,10 +92,34 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         np.testing.assert_allclose(as_numpy(tilt), ramp, rtol=1e-5, atol=1e-3)
 
     with subtests.test("every unit inverts back to norm"):
-        for unit in ["kxy", "rad", "mrad", "deg", "freq", "lpmm", "zernike", "knm"]:
-            kw = knm_kw if unit == "knm" else hw
-            roundtrip = convert_vector(convert_vector(vec, "norm", unit, **kw), unit, "norm", **kw)
-            np.testing.assert_allclose(roundtrip, vec, err_msg=unit)
+        for unit in ["kxy", "rad", "mrad", "deg", "freq", "lpmm", "zernike", "knm", knm_shape]:
+            roundtrip = convert_vector(convert_vector(vec, "norm", unit, **hw), unit, "norm", **hw)
+            np.testing.assert_allclose(roundtrip, vec, err_msg=str(unit))
+
+    with subtests.test("a shape in place of knm converts between two grids"):
+        other = (128, 1024)
+        other_xy = np.array([[other[1]], [other[0]]], dtype=float)
+        knm = convert_vector(vec, "norm", knm_shape, **hw)
+        np.testing.assert_allclose(
+            convert_vector(knm, knm_shape, other, **hw),
+            (knm - shape_xy / 2) / shape_xy * other_xy + other_xy / 2,
+        )
+        np.testing.assert_allclose(convert_vector(knm, knm_shape, knm_shape), knm)
+
+    with subtests.test("a bare shape is shorthand for the ('knm', shape) unit"):
+        from types import SimpleNamespace
+
+        expected = convert_vector(vec, "norm", ("knm", knm_shape), **hw)
+        np.testing.assert_allclose(convert_vector(vec, "norm", knm_shape, **hw), expected)
+        np.testing.assert_allclose(convert_vector(vec, "norm", np.array(knm_shape), **hw), expected)
+        for bad in (None, 5, SimpleNamespace(shape=knm_shape)):
+            with pytest.raises(ValueError, match="not recognized"):
+                convert_vector(vec, "norm", bad, **hw)
+
+    with subtests.test("shape= is deprecated but still names the knm grid"):
+        with pytest.warns(UserWarning, match="deprecated"):
+            knm = convert_vector(vec, "norm", "knm", shape=knm_shape, **hw)
+        np.testing.assert_allclose(knm, convert_vector(vec, "norm", knm_shape, **hw))
 
     with subtests.test("mag_um is the camera distance in um divided by the magnification"):
         fs = fourierslm_calibrated
@@ -208,10 +231,71 @@ def test_convert_radius(slm, subtests):
             radius = convert_radius(0.05, "norm", unit, hardware=slm)
             assert convert_radius(radius, unit, "norm", hardware=slm) == pytest.approx(0.05), unit
 
+    with subtests.test("rectangular pixels: each form of an anisotropic conversion"):
+        from slmsuite.hardware.slms.simulated import SimulatedSLM
+
+        rect = SimulatedSLM((64, 64), pitch_um=(8, 16), wav_um=1.0)
+        expected = 1e-3 * np.array([8, 16]) * 64
+        assert convert_radius(1e-3, "kxy", ("knm", (64, 64)), rect) == pytest.approx(
+            np.sqrt(np.prod(expected))
+        )
+        np.testing.assert_allclose(
+            convert_radius(1e-3, "kxy", ("knm", (64, 64)), rect, form="grid"), expected
+        )
+
+    with subtests.test("shape= is deprecated but still names the knm grid"):
+        with pytest.warns(UserWarning, match="deprecated"):
+            radius = convert_radius(1e-3, "kxy", "knm", rect, shape=(64, 64), form="grid")
+        np.testing.assert_allclose(radius, expected)
+
+    with subtests.test("an (x, y) radius scales each axis"):
+        np.testing.assert_allclose(
+            convert_radius((0.1, 0.2), "norm", "mrad", form="grid"), (100.0, 200.0)
+        )
+
+    with subtests.test("an unknown form raises"):
+        with pytest.raises(ValueError, match="form"):
+            convert_radius(0.1, "norm", "mrad", form="nonsense")
+
     with subtests.test("the convert_blaze_radius alias names the renamed convert_radius"):
         with pytest.warns(UserWarning) as record:
             convert_blaze_radius(0.1, "norm", "mrad", slm=slm)
         assert any("convert_radius(slm=)" in str(w.message) for w in record)
+
+
+def test_convert_affine(subtests):
+    """Test convert_affine, the map convert_vector applies, on a rotated and sheared system."""
+    from slmsuite.hardware.cameras.simulated import SimulatedCamera
+    from slmsuite.hardware.cameraslms import FourierSLM
+    from slmsuite.hardware.slms.simulated import SimulatedSLM
+
+    slm = SimulatedSLM((128, 128), pitch_um=(8, 16), wav_um=1.0)
+    fs = FourierSLM(SimulatedCamera(slm, resolution=(256, 256), pitch_um=(5, 10)), slm)
+    fs.fourier_calibrate_analytic(
+        *fs.fourier_calibration_build(
+            100, units="mm", theta=np.radians(20), shear_angle=(np.radians(8), np.radians(-5))
+        )
+    )
+    fs.cam.set_binning(2)
+
+    with subtests.test("M is the Jacobian of convert_vector and b its value at the origin"):
+        for units in (
+            ("kxy", "ij"),
+            ("ij", ("knm", (64, 128))),
+            ("norm", "zernike"),
+            ("kxy", "um"),
+        ):
+            (M, b) = convert_affine(*units, fs)
+            origin = convert_vector((0, 0), *units, hardware=fs)[:2]
+            for axis, step in enumerate(((1e-6, 0), (0, 1e-6))):
+                jacobian = (convert_vector(step, *units, hardware=fs)[:2] - origin) / 1e-6
+                np.testing.assert_allclose(M[:, [axis]], jacobian, rtol=1e-6, atol=1e-9)
+            np.testing.assert_allclose(b, origin)
+
+    with subtests.test("a unit that needs missing hardware gives nan"):
+        (M, b) = convert_affine("kxy", "ij")
+        assert np.all(np.isnan(M)) and np.all(np.isnan(b))
+        assert np.isnan(convert_radius(1, "kxy", "ij"))
 
 
 def test_imprint(slm, subtests, benchmark):
@@ -637,6 +721,10 @@ def test_format_shape(subtests):
         for inp in [(10, 20), [10, 20], np.array([10, 20])]:
             assert format_shape(inp) == (10, 20)
 
+    with subtests.test("a column or row of two entries is a shape"):
+        assert format_shape(np.array([[10], [20]])) == (10, 20)
+        assert format_shape(np.array([[10, 20]])) == (10, 20)
+
     with subtests.test("expected_dimension=None accepts any rank"):
         assert format_shape((2, 3, 4), expected_dimension=None) == (2, 3, 4)
 
@@ -963,14 +1051,9 @@ class TestAperture:
                 assert Aperture(grid, spec).scale == pytest.approx(expected, rel=1e-6)
 
     def test_is_isotropic(self, normalized_grid, subtests):
-        with subtests.test("is_isotropic / _isotropic_scale honor or reject anisotropy"):
-            circ = Aperture(normalized_grid, "circular")
-            assert circ.is_isotropic
-            assert circ._isotropic_scale() == pytest.approx(circ.scale[0])
-            ell = Aperture(normalized_grid, (0.01, 0.02))
-            assert not ell.is_isotropic
-            with pytest.raises(ValueError, match="isotropic"):
-                ell._isotropic_scale()
+        with subtests.test("is_isotropic tells circles from ellipses"):
+            assert Aperture(normalized_grid, "circular").is_isotropic
+            assert not Aperture(normalized_grid, (0.01, 0.02)).is_isotropic
 
     def test_crops(self, subtests):
         """Test Aperture.crops, the cheap precursor of Aperture.mask."""
