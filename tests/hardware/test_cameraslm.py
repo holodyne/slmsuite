@@ -4,7 +4,6 @@ Unit tests for FourierSLM and the calibrations mixed into it.
 
 import logging
 import os
-import warnings
 
 import cv2
 import matplotlib.pyplot as plt
@@ -32,7 +31,7 @@ from scipy import ndimage
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
 from slmsuite.hardware.cameraslms import FourierSLM, _wavefront_superpixel
 from slmsuite.hardware.slms.simulated import SimulatedSLM
-from slmsuite.holography import analysis
+from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.algorithms import SpotHologram
 from slmsuite.holography.toolbox import convert_vector
 from slmsuite.holography.toolbox.phase import blaze, zernike_sum
@@ -429,29 +428,11 @@ class TestFourierSLM:
                 rectangular_camera_system().get_farfield_spot_size(1000, basis="ij"), (20, 10)
             )
 
-        with subtests.test("the forms differ on a rotated calibration"):
-            rotated = simulated_system_factory("rotated")
-            install_ground_truth_calibration(rotated)
-            matrix = rotated.get_farfield_spot_size((1000, 500), basis="ij", form="matrix")
-            np.testing.assert_allclose(
-                rotated.get_farfield_spot_size((1000, 500), basis="ij"),
-                np.linalg.norm(matrix, axis=1),
-            )
-            np.testing.assert_allclose(
-                rotated.get_farfield_spot_size((1000, 500), basis="ij", form="eigenvalue"),
-                np.linalg.svd(matrix, compute_uv=False),
-            )
-            # Rotation mixes the axes: the bounding extent is not the principal radii.
-            assert not np.allclose(
-                np.sort(rotated.get_farfield_spot_size((1000, 500), basis="ij")),
-                np.sort(np.linalg.svd(matrix, compute_uv=False)),
-            )
-
         with subtests.test("bad basis raises"):
             with pytest.raises(ValueError, match="not recognized"):
                 fs.get_farfield_spot_size(slm_size=1.0, basis="badvalue")
 
-    def test_get_effective_focal_length(self, simulated_system_factory, subtests):
+    def test_get_effective_focal_length(self, simulated_system_factory, subtests, caplog):
         """Test FourierSLM.get_effective_focal_length."""
         defaults = SIMULATED_SYSTEM_DEFAULTS
 
@@ -479,30 +460,31 @@ class TestFourierSLM:
             fs = rectangular_camera_system()
             assert fs.get_effective_focal_length("mm") == pytest.approx(100)
             assert fs.get_effective_focal_length("norm") == pytest.approx(100e3 / fs.slm.wav_um)
-            np.testing.assert_allclose(fs.get_effective_focal_length("mm", "eigenvalue"), 100)
             # Depth in microns is f^2 times the focal power over the wavelength.
             depth = convert_vector([0, 0, 1e-4], "kxy", "um", fs)[2, 0]
             assert depth == pytest.approx(1e-4 * 100e3**2 / fs.slm.wav_um)
 
-        with subtests.test("depth in camera pixels warns on rectangular pixels and round-trips"):
+        with subtests.test("depth in camera pixels uses the geometric-mean pixel and round-trips"):
             fs = rectangular_camera_system()
-            with pytest.warns(UserWarning, match="geometric-mean pixel"):
-                ij = convert_vector([0, 0, 1e-4], "kxy", "ij", fs)
+            ij = convert_vector([0, 0, 1e-4], "kxy", "ij", fs)
+            assert ij[2, 0] == pytest.approx(1e-4 * 100e3**2 / fs.slm.wav_um / np.sqrt(50))
             np.testing.assert_allclose(convert_vector(ij, "ij", "kxy", fs)[2], 1e-4)
 
-        with subtests.test("rectangular pixels alone do not warn"):
-            with warnings.catch_warnings():
-                warnings.simplefilter("error")
-                rectangular_camera_system().get_effective_focal_length("ij")
+        with subtests.test("rectangular pixels alone do not log an anisotropic calibration"):
+            with caplog.at_level(logging.WARNING):
+                caplog.clear()
+                rectangular_camera_system()
+            assert "principal focal lengths" not in caplog.text
 
-        with subtests.test("principal focal lengths that differ warn on the scalar"):
+        with subtests.test("an anisotropic calibration logs once and gives the geometric mean"):
             fs = simulated_system_factory("sheared")
-            install_ground_truth_calibration(fs)
-            with pytest.warns(UserWarning, match="principal focal lengths differ"):
+            with caplog.at_level(logging.WARNING):
+                caplog.clear()
+                fs.fourier_calibrate_analytic(*ground_truth_affine(fs))
                 f_eff = fs.get_effective_focal_length("ij")
-            assert f_eff == pytest.approx(
-                np.sqrt(np.prod(fs.get_effective_focal_length("ij", form="eigenvalue")))
-            )
+            assert caplog.text.count("principal focal lengths differ") == 1
+            (M, _) = toolbox.convert_affine("kxy", "ij", fs)
+            assert f_eff == pytest.approx(np.sqrt(np.abs(np.linalg.det(M))))
 
     @pytest.mark.parametrize("name", GEOMETRY_CASES)
     def test_get_farfield_extent(self, simulated_system_factory, name, subtests):

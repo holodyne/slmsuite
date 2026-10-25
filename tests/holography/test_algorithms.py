@@ -1030,15 +1030,40 @@ class TestSpotHologram:
             )
 
             np.testing.assert_allclose(from_kxy.null_knm, from_ij.null_knm)
-            assert from_kxy.null_radius_knm == from_ij.null_radius_knm
+            np.testing.assert_array_equal(from_kxy.null_radius_knm, from_ij.null_radius_knm)
 
         with subtests.test("null_vectors without a null_radius fall back on the spot spacing"):
             h = SpotHologram(
                 fs.slm.shape, spots_kxy, basis="kxy", cameraslm=fs, null_vectors=null_kxy
             )
             spacing = toolbox.smallest_distance(np.hstack((h.null_knm, h.spot_knm)))
-            assert h.null_radius_knm == int(h.null_radius_knm)
-            assert 0 < h.null_radius_knm < spacing / 2, "the nulled discs must not overlap"
+            assert h.null_radius_knm.dtype.kind == "i" and h.null_radius_knm.shape == (2,)
+            assert np.all(0 < h.null_radius_knm) and np.all(h.null_radius_knm < spacing / 2), (
+                "the nulled discs must not overlap"
+            )
+
+        with subtests.test("rectangular pixels null an ellipse, 2 r + 1 wide along each axis"):
+            rect = simulated_system_factory("matched", slm_pitch_um=(8.0, 16.0))
+            install_ground_truth_calibration(rect)
+            h = SpotHologram(
+                rect.slm.shape,
+                view_kxy_grid(rect, count=2, frac=0.3),
+                basis="kxy",
+                cameraslm=rect,
+                null_vectors=view_kxy_grid(rect, count=2, frac=0.6)[:, [0]],
+                null_radius=0.003,
+            )
+            expected = toolbox.convert_radius(
+                0.003, "kxy", ("knm", rect.slm.shape), rect, form="grid"
+            )
+            np.testing.assert_array_equal(h.null_radius_knm, np.ceil(expected))
+            (rx, ry) = h.null_radius_knm
+            assert rx < ry
+            (nx, ny) = np.rint(h.null_knm[:, 0]).astype(int)
+            window = _np(h.target)[ny - ry - 1 : ny + ry + 2, nx - rx - 1 : nx + rx + 2] == 0
+            assert np.ptp(np.flatnonzero(window.any(axis=1))) + 1 == 2 * ry + 1
+            assert np.ptp(np.flatnonzero(window.any(axis=0))) + 1 == 2 * rx + 1
+            assert not window[1, 1], "the corner of the bounding box lies outside the ellipse"
 
         with subtests.test("spot_amp needs one amplitude per spot"):
             with pytest.raises(ValueError, match="spot_amp"):
@@ -1529,7 +1554,7 @@ class TestMultiplaneHologram:
         install_ground_truth_calibration(fs)
         (pitch, wav) = (fs.cam.pitch_um[0], fs.slm.wav_um)
         f_um = wav * f_eff_from_ratio(1.0, fs.cam.shape[1], pitch, fs.slm.pitch_um[0], wav)
-        w0_um = f_um * fs.slm.get_spot_radius_kxy()
+        w0_um = f_um * fs.slm.get_spot_radius_kxy()[0]
         zr = np.pi * w0_um**2 / wav
 
         # Defocus by sqrt(15) Rayleigh ranges widens the beam to four times its waist.

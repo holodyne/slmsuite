@@ -256,7 +256,7 @@ class _AbstractSpotHologram(FeedbackHologram):
                     self.spot_knm = toolbox.convert_vector(
                         self.spot_kxy,
                         from_units="kxy",
-                        to_units=self.shape,
+                        to_units=("knm", self.shape),
                         hardware=self.cameraslm.slm,
                     )
                     self.set_target(reset_weights=True)
@@ -691,7 +691,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         target = as_numpy(self.target).reshape(1, -1, 1)
 
         spot_knm_norm = toolbox.convert_vector(
-            self.spot_kxy, from_units="kxy", to_units=(1, 1), hardware=self.cameraslm
+            self.spot_kxy, from_units="kxy", to_units=("knm", (1, 1)), hardware=self.cameraslm
         )
         grid = (spot_knm_norm[0, :].reshape(-1, 1) - 0.5, spot_knm_norm[1, :].reshape(-1, 1) - 0.5)
 
@@ -1203,9 +1203,9 @@ class SpotHologram(_AbstractSpotHologram):
         points are stored in :attr:`null_knm` with shape ``(2, M)`` in the style of
         :meth:`~slmsuite.holography.toolbox.format_2vectors()`. A region around these
         points is set to zero (null) and not allowed to participate in the noise region.
-    null_radius_knm : int
-        The radius in ``"knm"`` space around the points :attr:`null_knm` to zero or null
-        (prevent from participating in the ``nan`` noise region).
+    null_radius_knm : (int, int)
+        The ``(x, y)`` radius in ``"knm"`` space around the points :attr:`null_knm` to zero
+        or null (prevent from participating in the ``nan`` noise region).
         This is useful to prevent power being deflected to very high orders,
         which are unlikely to be properly represented in practice on a physical SLM.
     null_region_knm : array_like of bool OR ``None``
@@ -1306,7 +1306,7 @@ class SpotHologram(_AbstractSpotHologram):
 
             if cameraslm is not None:
                 self.spot_kxy = toolbox.convert_vector(
-                    self.spot_knm, from_units=shape, to_units="kxy", hardware=cameraslm
+                    self.spot_knm, from_units=("knm", shape), to_units="kxy", hardware=cameraslm
                 )
 
                 if "fourier" in cameraslm.calibrations:
@@ -1334,7 +1334,7 @@ class SpotHologram(_AbstractSpotHologram):
                 self.spot_ij = cameraslm.kxyslm_to_ijcam(vectors)
 
             self.spot_knm = toolbox.convert_vector(
-                self.spot_kxy, from_units="kxy", to_units=shape, hardware=cameraslm
+                self.spot_kxy, from_units="kxy", to_units=("knm", shape), hardware=cameraslm
             )
         elif basis == "ij":  # Pixel on the camera.
             if cameraslm is None:
@@ -1349,7 +1349,7 @@ class SpotHologram(_AbstractSpotHologram):
             self.spot_ij = vectors
             self.spot_kxy = cameraslm.ijcam_to_kxyslm(vectors)
             self.spot_knm = toolbox.convert_vector(
-                vectors, from_units="ij", to_units=shape, hardware=cameraslm
+                vectors, from_units="ij", to_units=("knm", shape), hardware=cameraslm
             )
         else:
             raise ValueError(f"Unrecognized basis for spots '{basis}'.")
@@ -1359,7 +1359,7 @@ class SpotHologram(_AbstractSpotHologram):
             if null_vectors is not None:
                 # Convert the null vectors.
                 self.null_knm = toolbox.convert_vector(
-                    null_vectors, from_units=basis, to_units=shape, hardware=cameraslm
+                    null_vectors, from_units=basis, to_units=("knm", shape), hardware=cameraslm
                 )
 
                 # Convert the null radius.
@@ -1367,8 +1367,9 @@ class SpotHologram(_AbstractSpotHologram):
                     self.null_radius_knm = toolbox.convert_radius(
                         null_radius,
                         from_units=basis,
-                        to_units=shape,
+                        to_units=("knm", shape),
                         hardware=cameraslm,
+                        form="grid",
                     )
                 else:
                     self.null_radius_knm = None
@@ -1382,12 +1383,14 @@ class SpotHologram(_AbstractSpotHologram):
         (psf_knm, psf_ij) = (0, np.nan)
 
         if cameraslm is not None:
-            psf_kxy = cameraslm.slm.get_spot_radius_kxy(form="grid")
-            psf_knm = toolbox.convert_radius(psf_kxy, "kxy", shape, cameraslm.slm, form="grid")
+            psf_kxy = cameraslm.slm.get_spot_radius_kxy()
+            psf_knm = toolbox.convert_radius(
+                psf_kxy, "kxy", ("knm", shape), cameraslm.slm, form="grid"
+            )
 
             # The ij psf needs the camera located, which is what calibration produces.
             if "fourier" in cameraslm.calibrations:
-                psf_ij = toolbox.convert_radius(psf_kxy, "kxy", "ij", cameraslm, form="grid")
+                psf_ij = cameraslm.get_farfield_spot_size(basis="ij")
 
         (psf_knm, psf_ij) = (np.nan_to_num(psf_knm), np.nan_to_num(psf_ij))
 
@@ -1416,7 +1419,7 @@ class SpotHologram(_AbstractSpotHologram):
                 all_spots = np.hstack((self.null_knm, self.spot_knm))
                 self.null_radius_knm = toolbox.smallest_distance(all_spots) / 4
 
-            self.null_radius_knm = int(np.ceil(self.null_radius_knm))
+            self.null_radius_knm = np.ceil(np.broadcast_to(self.null_radius_knm, (2,))).astype(int)
 
         # Initialize target/etc. Note that this passes through FeedbackHologram.
         super().__init__(shape, target_ij=None, cameraslm=cameraslm, **kwargs)
@@ -1576,7 +1579,7 @@ class SpotHologram(_AbstractSpotHologram):
         if self.cameraslm is not None:
             self.spot_kxy_rounded = toolbox.convert_vector(
                 self.spot_knm_rounded,
-                from_units=self.shape,
+                from_units=("knm", self.shape),
                 to_units="kxy",
                 hardware=self.cameraslm.slm,
             )
@@ -1609,12 +1612,12 @@ class SpotHologram(_AbstractSpotHologram):
             # Second, zero the regions around the "null points".
             if self.null_knm is not None:
                 all_spots = np.hstack((self.null_knm, self.spot_knm))
-                w = 2 * int(np.ceil(self.null_radius_knm)) + 1
+                (wx, wy) = 2 * np.ceil(np.broadcast_to(self.null_radius_knm, (2,))).astype(int) + 1
 
                 for ii in range(all_spots.shape[1]):
                     toolbox.imprint(
                         self.target,
-                        (np.rint(all_spots[0, ii]), w, np.rint(all_spots[1, ii]), w),
+                        (np.rint(all_spots[0, ii]), wx, np.rint(all_spots[1, ii]), wy),
                         0,
                         centered=True,
                         circular=True,

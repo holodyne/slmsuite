@@ -52,6 +52,26 @@ p67:
     - [0, 2]
   data_flip: [0, 1]
 
+# From the DLPM670NIR EVM user guide (TI, Rev 15): device specs p.13, electrode map and
+# state words p.14, alpha-sample displacements (odd mirror columns) p.23.
+p67nir:
+  name: ".67 NIR PLM"
+  shape: [800, 904]
+  pitch: [1.62e-05, 1.08e-05]
+  displacement_ratios:
+    [0.0, 0.0127, 0.0293, 0.0662, 0.0522, 0.0675, 0.0854, 0.1261,
+     0.1427, 0.1834, 0.2166, 0.2803, 0.2561, 0.2968, 0.3299, 0.3962,
+     0.3771, 0.4102, 0.4510, 0.5108, 0.4930, 0.5261, 0.5682, 0.6306,
+     0.6127, 0.6675, 0.7338, 0.8229, 0.7847, 0.8369, 0.9045, 1.0]
+  # Six-bit words over electrodes (5, 4, 3, 2, 1, 0); electrode 5 always equals electrode 2.
+  memory_lut:
+    [0, 1, 2, 3, 36, 37, 38, 39, 8, 9, 10, 11, 44, 45, 46, 47,
+     16, 17, 18, 19, 52, 53, 54, 55, 24, 25, 26, 27, 60, 61, 62, 63]
+  electrode_layout:
+    - [3, 1, 5]
+    - [2, 0, 4]
+  data_flip: [0, 1]
+
 # The following models are used for testing only.
 test_single:
   name: "Test PLM"

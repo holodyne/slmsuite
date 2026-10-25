@@ -106,14 +106,15 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         )
         np.testing.assert_allclose(convert_vector(knm, knm_shape, knm_shape), knm)
 
-    with subtests.test("an object with a shape names its own grid; an array is the shape"):
+    with subtests.test("a bare shape is shorthand for the ('knm', shape) unit"):
         from types import SimpleNamespace
 
-        expected = convert_vector(vec, "norm", knm_shape, **hw)
-        np.testing.assert_allclose(
-            convert_vector(vec, "norm", SimpleNamespace(shape=knm_shape), **hw), expected
-        )
+        expected = convert_vector(vec, "norm", ("knm", knm_shape), **hw)
+        np.testing.assert_allclose(convert_vector(vec, "norm", knm_shape, **hw), expected)
         np.testing.assert_allclose(convert_vector(vec, "norm", np.array(knm_shape), **hw), expected)
+        for bad in (None, 5, SimpleNamespace(shape=knm_shape)):
+            with pytest.raises(ValueError, match="not recognized"):
+                convert_vector(vec, "norm", bad, **hw)
 
     with subtests.test("shape= is deprecated but still names the knm grid"):
         with pytest.warns(UserWarning, match="deprecated"):
@@ -235,14 +236,17 @@ def test_convert_radius(slm, subtests):
 
         rect = SimulatedSLM((64, 64), pitch_um=(8, 16), wav_um=1.0)
         expected = 1e-3 * np.array([8, 16]) * 64
-        forms = {
-            form: convert_radius(1e-3, "kxy", (64, 64), rect, form=form)
-            for form in ("scalar", "grid", "eigenvalue", "matrix")
-        }
-        assert forms["scalar"] == pytest.approx(np.sqrt(np.prod(expected)))
-        np.testing.assert_allclose(forms["grid"], expected)
-        np.testing.assert_allclose(forms["eigenvalue"], expected[::-1])
-        np.testing.assert_allclose(forms["matrix"], np.diag(expected))
+        assert convert_radius(1e-3, "kxy", ("knm", (64, 64)), rect) == pytest.approx(
+            np.sqrt(np.prod(expected))
+        )
+        np.testing.assert_allclose(
+            convert_radius(1e-3, "kxy", ("knm", (64, 64)), rect, form="grid"), expected
+        )
+
+    with subtests.test("shape= is deprecated but still names the knm grid"):
+        with pytest.warns(UserWarning, match="deprecated"):
+            radius = convert_radius(1e-3, "kxy", "knm", rect, shape=(64, 64), form="grid")
+        np.testing.assert_allclose(radius, expected)
 
     with subtests.test("an (x, y) radius scales each axis"):
         np.testing.assert_allclose(
@@ -257,6 +261,41 @@ def test_convert_radius(slm, subtests):
         with pytest.warns(UserWarning) as record:
             convert_blaze_radius(0.1, "norm", "mrad", slm=slm)
         assert any("convert_radius(slm=)" in str(w.message) for w in record)
+
+
+def test_convert_affine(subtests):
+    """Test convert_affine, the map convert_vector applies, on a rotated and sheared system."""
+    from slmsuite.hardware.cameras.simulated import SimulatedCamera
+    from slmsuite.hardware.cameraslms import FourierSLM
+    from slmsuite.hardware.slms.simulated import SimulatedSLM
+
+    slm = SimulatedSLM((128, 128), pitch_um=(8, 16), wav_um=1.0)
+    fs = FourierSLM(SimulatedCamera(slm, resolution=(256, 256), pitch_um=(5, 10)), slm)
+    fs.fourier_calibrate_analytic(
+        *fs.fourier_calibration_build(
+            100, units="mm", theta=np.radians(20), shear_angle=(np.radians(8), np.radians(-5))
+        )
+    )
+    fs.cam.set_binning(2)
+
+    with subtests.test("M is the Jacobian of convert_vector and b its value at the origin"):
+        for units in (
+            ("kxy", "ij"),
+            ("ij", ("knm", (64, 128))),
+            ("norm", "zernike"),
+            ("kxy", "um"),
+        ):
+            (M, b) = convert_affine(*units, fs)
+            origin = convert_vector((0, 0), *units, hardware=fs)[:2]
+            for axis, step in enumerate(((1e-6, 0), (0, 1e-6))):
+                jacobian = (convert_vector(step, *units, hardware=fs)[:2] - origin) / 1e-6
+                np.testing.assert_allclose(M[:, [axis]], jacobian, rtol=1e-6, atol=1e-9)
+            np.testing.assert_allclose(b, origin)
+
+    with subtests.test("a unit that needs missing hardware gives nan"):
+        (M, b) = convert_affine("kxy", "ij")
+        assert np.all(np.isnan(M)) and np.all(np.isnan(b))
+        assert np.isnan(convert_radius(1, "kxy", "ij"))
 
 
 def test_imprint(slm, subtests, benchmark):
@@ -681,6 +720,10 @@ def test_format_shape(subtests):
     with subtests.test("array-likes become an (h, w) tuple"):
         for inp in [(10, 20), [10, 20], np.array([10, 20])]:
             assert format_shape(inp) == (10, 20)
+
+    with subtests.test("a column or row of two entries is a shape"):
+        assert format_shape(np.array([[10], [20]])) == (10, 20)
+        assert format_shape(np.array([[10, 20]])) == (10, 20)
 
     with subtests.test("expected_dimension=None accepts any rank"):
         assert format_shape((2, 3, 4), expected_dimension=None) == (2, 3, 4)

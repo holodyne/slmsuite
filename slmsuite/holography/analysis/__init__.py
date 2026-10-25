@@ -1449,8 +1449,9 @@ def image_aperture_fit(
     Returns
     -------
     (numpy.ndarray, float) OR None
-        The ``center`` of the circle as an ``(x, y)`` pixel coordinate, and its ``radius`` in
-        pixel widths at ``edge_level``. ``None`` if no aperture edge is found, for instance
+        The ``center`` of the circle as an ``(x, y)`` pixel coordinate, and its ``radius`` at
+        ``edge_level`` in pixel widths, the physical radius over the x pitch when ``aspect``
+        is not 1. ``None`` if no aperture edge is found, for instance
         for an unclipped Gaussian beam, or one clipped where its power is below about a tenth
         of its peak.
     """

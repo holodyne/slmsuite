@@ -607,7 +607,7 @@ class _HologramStats:
                 # Columns are the (left, top) and (right, bottom) corners.
                 c = toolbox.convert_vector(
                     [[ext_nm[0], ext_nm[1]], [ext_nm[3], ext_nm[2]]],
-                    npsource,
+                    ("knm", npsource.shape),
                     to_units,
                     hardware=slm,
                 )
@@ -672,7 +672,7 @@ class _HologramStats:
             if units != "knm":
                 _cam_points = toolbox.convert_vector(
                     _cam_points,
-                    from_units=npsource.shape,
+                    from_units=("knm", npsource.shape),
                     to_units=units,
                     hardware=slm,
                 )

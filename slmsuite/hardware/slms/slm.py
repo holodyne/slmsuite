@@ -1573,9 +1573,11 @@ class SLM(_Common, ABC):
         units : str
             Units for ``radius``: ``"norm"`` (normalized to wavelengths, the default),
             ``"frac"`` (fraction of the smaller half-extent of the SLM), ``"pix"`` (number
-            of pixels), or a physical length (``"um"``, ``"mm"``, ...). As the pupil extends
-            to twice ``radius``, a ``"frac"`` ``radius`` puts the pupil at that fraction of
-            the full extent of the shorter axis, as in :meth:`set_source_analytic`.
+            of pixels along each axis, so a scalar is an ellipse on rectangular pixels; give
+            a physical circle in ``"um"``), or a physical length (``"um"``, ``"mm"``, ...).
+            As the pupil extends to twice ``radius``, a ``"frac"`` ``radius`` puts the pupil
+            at that fraction of the full extent of the shorter axis, as in
+            :meth:`set_source_analytic`.
 
         Returns
         -------
@@ -1620,7 +1622,8 @@ class SLM(_Common, ABC):
             :attr:`zernike_scaling`, is fit to the **rolloff** of the measured source power
             with :meth:`~slmsuite.holography.analysis.image_aperture_fit()`: its center is
             that of the circle which best fits the edge where the power falls off, and its
-            radius is where the power has fallen to ``edge_level``. Unlike the power
+            radius is where the power has fallen to ``edge_level``. The circle is physical,
+            an ellipse in the pixels of a rectangular-pixel SLM. Unlike the power
             centroid, this is not pulled toward bright regions inside the aperture, and edges
             which do not belong to the circle (such as a straight clip) are rejected.
         -   The :attr:`source_radius`: the :math:`1/e` field-amplitude radius
@@ -1869,23 +1872,18 @@ class SLM(_Common, ABC):
 
         return farfield
 
-    def get_spot_radius_kxy(self, form="scalar"):
+    def get_spot_radius_kxy(self):
         r"""
         Approximates the :math:`1/e` amplitude (:math:`1/e^2` power) radius of farfield
         spots in the ``"kxy"`` basis: :math:`1 / (\pi w)` along each axis for a Gaussian
         source of :math:`1/e` amplitude radius :math:`w =` :attr:`source_radius`.
 
-        Parameters
-        ----------
-        form : {"scalar", "grid", "eigenvalue", "matrix"}
-            See :meth:`~slmsuite.holography.toolbox.convert_radius()`.
-
         Returns
         -------
-        float OR numpy.ndarray
-            Radius of the farfield spot, of the shape ``form`` returns.
+        numpy.ndarray
+            ``(x, y)`` radius of the farfield spot.
         """
-        return toolbox.convert_radius(1 / (np.pi * self.source_radius), "kxy", "kxy", form=form)
+        return 1 / (np.pi * np.broadcast_to(self.source_radius, (2,)))
 
     # Self-test method to test everything above.
 

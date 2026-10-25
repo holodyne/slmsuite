@@ -695,8 +695,8 @@ class _WavefrontCalibrationSuperpixel:
                 )
 
                 # Map pixels into the superpixel's farfield, where the sinc zeros are integers.
-                transform = toolbox.convert_radius(
-                    1, "ij", (superpixel_size, superpixel_size), self, form="matrix"
+                (transform, _) = toolbox.convert_affine(
+                    "ij", ("knm", (superpixel_size, superpixel_size)), self
                 )
                 xy = np.tensordot(transform, np.stack(xy), axes=1)
                 xyr = xy.reshape(2, -1)

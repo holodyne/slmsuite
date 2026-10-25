@@ -143,7 +143,7 @@ class FeedbackHologram(Hologram):
             self._cam_points = toolbox.convert_vector(
                 points_kxy,
                 from_units="kxy",
-                to_units=self.shape,
+                to_units=("knm", self.shape),
                 hardware=self.cameraslm.slm,
             )
 
@@ -242,8 +242,7 @@ class FeedbackHologram(Hologram):
             return memo[1]
 
         # First transformation, knm -> kxy.
-        M1 = toolbox.convert_radius(1, self.shape, "kxy", slm, form="matrix")
-        b1 = toolbox.convert_vector((0, 0), self.shape, "kxy", hardware=slm)
+        (M1, b1) = toolbox.convert_affine(("knm", self.shape), "kxy", slm)
 
         # Composite transformation (along with xy -> yx).
         M_np = np.flip(np.flip(np.matmul(affine.M, M1), axis=0), axis=1)
