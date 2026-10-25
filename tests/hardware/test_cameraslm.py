@@ -1429,7 +1429,7 @@ class TestFourierSLM:
         assert "data" in cal
 
     def test_pixel_calibrate_range(self, simulated_system_factory, caplog, subtests):
-        """set_range searches a control that scales the phase range for the rms-optimal range."""
+        """set_bias searches the bias, which scales the phase range, for the rms-optimal range."""
         fs = simulated_system_factory("fov_much_smaller", slm_bitdepth=4)
         install_ground_truth_calibration(fs)
 
@@ -1438,48 +1438,48 @@ class TestFourierSLM:
         base = np.square(np.arange(B) / (B - 1))
         calls = []
 
-        def set_range(scale):
+        def set_bias(scale):
             calls.append(scale)
             fs.slm.gamma_sim = base * scale
 
         gaps = np.diff(base)
         optimum = 1 / (np.sum(gaps) + np.sqrt(np.sum(gaps**3) / np.sum(gaps)))
         kwargs = {"levels": 16, "periods": 2, "orders": 1, "directions": "x", "plot": False}
-        cal = fs.pixel_calibrate(set_range=set_range, range_bounds=(0.7, 1.3), **kwargs)
+        cal = fs.pixel_calibrate(set_bias=set_bias, range_bias=(0.7, 1.3), **kwargs)
 
         with subtests.test("finds the rms-optimal range"):
-            assert abs(cal["range_value"] - optimum) < 0.01
+            assert abs(cal["bias"] - optimum) < 0.01
             assert abs(optimum - (B - 1) / B) > 0.02  # The test distinguishes it from a full span.
 
-        with subtests.test("never leaves range_bounds"):
+        with subtests.test("never leaves range_bias"):
             assert all(0.7 <= c <= 1.3 for c in calls)
 
-        with subtests.test("keeps the calibration measured at the control's final value"):
-            assert calls[-1] == cal["range_value"]
+        with subtests.test("keeps the calibration measured at the final bias"):
+            assert calls[-1] == cal["bias"]
             assert fs.calibrations["pixel"] is cal
             gamma = fs.pixel_calibration_process(plot=False)
-            expected = base[cal["levels"].astype(int)] * cal["range_value"]
+            expected = base[cal["levels"].astype(int)] * cal["bias"]
             assert np.allclose(gamma, expected - np.min(expected), atol=0.02)
 
         with subtests.test("bounds short of the optimum warn and keep the nearer end"):
             calls.clear()
             with caplog.at_level(logging.WARNING):
                 cal = fs.pixel_calibrate(
-                    set_range=set_range, range_bounds=(1.0, 1.3), **{**kwargs, "plot": 1}
+                    set_bias=set_bias, range_bias=(1.0, 1.3), **{**kwargs, "plot": 1}
                 )
-            assert "outside range_bounds" in caplog.text
-            assert cal["range_value"] == calls[-1] == 1.0
+            assert "outside range_bias" in caplog.text
+            assert cal["bias"] == calls[-1] == 1.0
 
         with subtests.test("a test sweep cannot search"):
             with pytest.raises(ValueError, match="single sweep"):
                 fs.pixel_calibrate(
-                    set_range=set_range, range_bounds=(0.7, 1.3), test_index=True, **kwargs
+                    set_bias=set_bias, range_bias=(0.7, 1.3), test_index=True, **kwargs
                 )
 
         with subtests.test("the search needs bounds"):
             calls.clear()
-            with pytest.raises(ValueError, match="range_bounds"):
-                fs.pixel_calibrate(set_range=set_range, **kwargs)
+            with pytest.raises(ValueError, match="range_bias"):
+                fs.pixel_calibrate(set_bias=set_bias, **kwargs)
             assert calls == []
 
     def test_pixel_kernel(self, subtests):

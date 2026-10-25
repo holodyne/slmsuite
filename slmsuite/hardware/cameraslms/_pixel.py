@@ -17,10 +17,10 @@ class _PixelCalibration:
 
     # Phase range, in cycles, that a gamma sweep ought to resolve.
     _PIXEL_CAL_EXPECTED_CYCLES = 4
-    # Residual phase range, in cycles, at which a set_range search stops.
-    _PIXEL_CAL_RANGE_TOLERANCE = 0.01
-    # Most sweeps that a set_range search takes.
-    _PIXEL_CAL_RANGE_STEPS = 6
+    # Residual phase range, in cycles, at which a set_bias search stops.
+    _PIXEL_CAL_BIAS_TOLERANCE = 0.01
+    # Most sweeps that a set_bias search takes.
+    _PIXEL_CAL_BIAS_STEPS = 6
 
     def pixel_calibrate(
         self,
@@ -33,8 +33,8 @@ class _PixelCalibration:
         field_period=10,
         autoexpose=False,
         plot=0,
-        set_range=None,
-        range_bounds=None,
+        set_bias=None,
+        range_bias=None,
     ):
         r"""
         Measure the phase response (gamma) and pixel crosstalk (blurring) of the SLM.
@@ -73,7 +73,7 @@ class _PixelCalibration:
 
         Note
         ~~~~
-        With ``set_range``, the phase range is chosen to minimize the rms phase error of
+        With ``set_bias``, the bias is chosen to minimize the rms phase error of
         :attr:`~slmsuite.hardware.slms.slm.SLM.lut`, which maps each phase onto the
         nearest level. For levels separated in phase by gaps :math:`g_i` which the control
         scales alike, the gap from the top level around to the bottom level is then
@@ -141,15 +141,16 @@ class _PixelCalibration:
             If ``>= 1``, then the camera image is plotted at the first measurement,
             or for every test index measurement, if test indices are given.
             If ``>= 2``, then the order integration masks are additionally plotted.
-            With ``set_range``, these apply to the first sweep, and ``>= 1`` also plots
-            the phase response measured at each value of the control.
-        set_range : function OR None
-            Sets a hardware control which scales the phase range of the SLM, such as the
-            bias voltage of a PLM, to a given ``float``. If given, the sweep repeats as the
-            control is searched within ``range_bounds`` for the optimal range (see Note),
-            and the control is left at the best value, stored as ``"range_value"``.
-        range_bounds : (float, float)
-            Lowest and highest values of the control to try. The search never leaves them.
+            With ``set_bias``, these apply to the first sweep, and ``>= 1`` also plots
+            the phase response measured at each bias.
+        set_bias : function OR None
+            Sets the bias of the SLM, a hardware control which scales its phase range such
+            as :meth:`~slmsuite.hardware.slms.vialux.PLM.set_bias_voltage`, to a given
+            ``float``. If given, the sweep repeats as the bias is searched within
+            ``range_bias`` for the optimal phase range (see Note), and the bias is left at
+            the best value, stored as ``"bias"``.
+        range_bias : (float, float)
+            Lowest and highest bias to try. The search never leaves them.
 
         Returns
         -------
@@ -170,35 +171,33 @@ class _PixelCalibration:
         }
         testing = test_index is not None and test_index is not False
 
-        if set_range is not None:
+        if set_bias is not None:
             if testing:
-                raise ValueError("test_index runs a single sweep; omit set_range to test.")
-            if range_bounds is None or len(range_bounds) != 2:
-                raise ValueError(f"set_range needs range_bounds (low, high); got {range_bounds}.")
+                raise ValueError("test_index runs a single sweep; omit set_bias to test.")
+            if range_bias is None or len(range_bias) != 2:
+                raise ValueError(f"set_bias needs range_bias (low, high); got {range_bias}.")
 
         # Expose for the brightest grating of the first row, which spans every level.
         if autoexpose and not testing:
             self._pixel_calibrate_single(test_index=True, **{**kwargs, "plot": 0})
             kwargs["autoexpose"] = False
 
-        if set_range is None:
+        if set_bias is None:
             return self._pixel_calibrate_single(test_index=test_index, **kwargs)
 
         # Bracket the optimum with the bounds, then interpolate the residual to zero.
         values, residuals, calibrations = [], [], []
-        while len(values) < self._PIXEL_CAL_RANGE_STEPS:
+        while len(values) < self._PIXEL_CAL_BIAS_STEPS:
             if len(values) < 2:
-                value = float(range_bounds[len(values)])
+                value = float(range_bias[len(values)])
             else:
                 order = np.argsort(residuals)
                 value = float(np.interp(0, np.take(residuals, order), np.take(values, order)))
                 if value in values:  # Clamped at a bound already measured.
-                    self.logger.warning(
-                        "The optimal phase range lies outside range_bounds %s.", range_bounds
-                    )
+                    self.logger.warning("The optimal bias lies outside range_bias %s.", range_bias)
                     break
 
-            set_range(value)
+            set_bias(value)
             self._pixel_calibrate_single(test_index=None, **kwargs)
             kwargs["plot"] = 0
             cal = self.calibrations["pixel"]
@@ -207,20 +206,20 @@ class _PixelCalibration:
             # Under range is positive: the wrap gap exceeds the rms-optimal one.
             gaps = np.diff(np.sort(self.slm._interpolate_gamma(gamma, cal["levels"])))
             residual = 1 - np.sum(gaps) - np.sqrt(np.sum(gaps**3) / np.sum(gaps))
-            self.logger.debug("Phase range residual %+.4f cycles at %s.", residual, value)
+            self.logger.debug("Phase range residual %+.4f cycles at bias %s.", residual, value)
 
             values.append(value)
             residuals.append(residual)
             calibrations.append(cal)
-            if abs(residual) < self._PIXEL_CAL_RANGE_TOLERANCE:
+            if abs(residual) < self._PIXEL_CAL_BIAS_TOLERANCE:
                 break
 
         best = int(np.argmin(np.abs(residuals)))
-        set_range(values[best])
+        set_bias(values[best])
         self.calibrations["pixel"] = calibrations[best]
-        self.calibrations["pixel"]["range_value"] = values[best]
+        self.calibrations["pixel"]["bias"] = values[best]
         self.logger.info(
-            "Set the phase range control to %s (residual %+.4f cycles, %s sweeps).",
+            "Set the bias to %s (residual %+.4f cycles, %s sweeps).",
             values[best],
             residuals[best],
             len(values),
@@ -234,8 +233,8 @@ class _PixelCalibration:
                     ax=ax,
                     label=f"{value:g}",
                 )
-            ax.set_title("Pixel Calibration Phase Range")
-            ax.legend(title="set_range")
+            ax.set_title("Pixel Calibration Bias Search")
+            ax.legend(title="bias")
             _slmsuite_plt_show(name="pixel_calibrate_range")
 
         return self.calibrations["pixel"]
@@ -252,7 +251,7 @@ class _PixelCalibration:
         autoexpose,
         plot,
     ):
-        """One sweep of :meth:`pixel_calibrate`, at the current phase range."""
+        """One sweep of :meth:`pixel_calibrate`, at the current bias."""
         # Parse levels by forcing range and datatype.
         if np.isscalar(levels):
             if levels < 1:
