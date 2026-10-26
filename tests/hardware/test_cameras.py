@@ -209,6 +209,23 @@ class TestCamera:
                 cam.set_woi((150, 100, 60, 80))
             assert cam.woi == (150, 50, 60, 40)
 
+        with subtests.test("a window wholly off the sensor raises and keeps the old window"):
+            with pytest.raises(ValueError, match="outside the sensor"):
+                cam.set_woi((250, 20, 10, 20))
+            assert cam.woi == (150, 50, 60, 40)
+
+        for label, kwargs, swapped in ORIENTATIONS:
+            with subtests.test(f"{label} clips a window to its overlap with the sensor"):
+                rotated = SimulatedCamera(slm, resolution=WIDE, **kwargs)
+                (full_w, full_h) = (WIDE[1], WIDE[0]) if swapped else WIDE
+                # Past all four edges, so every orientation crosses both raw-sensor edges.
+                with pytest.warns(UserWarning, match="was clipped"):
+                    rotated.set_woi((-10, 40, full_h - 15, 30))
+                assert rotated.woi == (0, 30, full_h - 15, 15)
+                with pytest.warns(UserWarning, match="was clipped"):
+                    rotated.set_woi((full_w - 15, 30, -10, 40))
+                assert rotated.woi == (full_w - 15, 15, 0, 30)
+
     def test_get_woi(self, slm, subtests):
         """get_woi() reports transformed, unbinned coordinates that set_woi() accepts back."""
         cam = SimulatedCamera(slm, resolution=WIDE)
@@ -263,6 +280,12 @@ class TestCamera:
                             [[15 / binning], [10 / binning]],
                             atol=binning / 2,
                         )
+
+                        # The raw point, taken in the start window, places the same window again.
+                        woi = cam.woi
+                        for _ in range(2):
+                            cam.set_woi((30, 20), center=raw, units="ijraw")
+                            assert cam.woi == woi
 
         with subtests.test("center needs a window to place"):
             cam = SimulatedCamera(slm, resolution=WIDE)

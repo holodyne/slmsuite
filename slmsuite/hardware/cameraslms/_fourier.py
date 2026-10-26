@@ -489,6 +489,23 @@ class _FourierCalibration:
         """
         return self.kxyslm_to_ijcam([0, 0])
 
+    @property
+    def zeroth_order_ijraw(self):
+        """
+        The ``(x, y)`` position of the zeroth order in raw sensor pixels (``"ijraw"``),
+        of shape ``(2, 1)``.
+
+        Unlike :attr:`zeroth_order_ij`, it does not depend on the camera's WOI, binning, or
+        orientation, so it stays valid across
+        :meth:`~slmsuite.hardware.cameras.camera.Camera.set_woi` calls.
+
+        Raises
+        ------
+        RuntimeError
+            If the Fourier calibration does not exist.
+        """
+        return self.cam._get_ijcam_to_ijraw() @ self.zeroth_order_ij
+
     def ijcam_to_kxyslm(self, ij):
         r"""
         Converts camera pixel space (``"ij"``) to SLM Fourier space (``"kxy"``).

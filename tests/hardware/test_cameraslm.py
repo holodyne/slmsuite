@@ -342,6 +342,16 @@ class TestFourierSLM:
             finally:
                 fs.cam.set_woi(None)
 
+        with subtests.test("zeroth_order_ijraw stays on the raw zeroth order under a window"):
+            expected = fs._get_kxyslm_to_ijraw() @ np.zeros((2, 1))
+            try:
+                fs.cam.set_binning(2)
+                fs.cam.set_woi((12, 64, 7, 48))
+                assert np.allclose(fs.zeroth_order_ijraw, expected)
+            finally:
+                fs.cam.set_binning(1)
+                fs.cam.set_woi(None)
+
         with subtests.test("raises without a calibration"):
             with pytest.raises((KeyError, RuntimeError)):
                 FourierSLM(fs.cam, fs.slm).kxyslm_to_ijcam([10.0, 20.0])

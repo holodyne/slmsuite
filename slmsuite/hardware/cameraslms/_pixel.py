@@ -567,7 +567,7 @@ class _PixelCalibration:
                             self.cam.autoexpose(
                                 set_fraction=autoexpose,
                                 window=mask,
-                                verbose=True,
+                                verbose=False,
                             )
                             autoexposure_results.append(self.cam.get_exposure())
 
@@ -622,8 +622,8 @@ class _PixelCalibration:
 
                             if current_index == test_index[-1]:
                                 if autoexpose:
-                                    exposure = np.min(autoexposure_results)
-                                    self.cam.set_exposure(exposure)
+                                    exposure = self.cam.set_exposure(np.min(autoexposure_results))
+                                    self.logger.info("Set the exposure to %.2e s.", exposure)
 
                                     return {
                                         "indices": test_index,
