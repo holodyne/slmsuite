@@ -44,7 +44,6 @@ last example above) leaves whatever state the EVM was in, so phase written to
 the display can silently fail to reach the mirrors.
 """
 
-import os
 import time
 from enum import IntEnum
 
@@ -58,8 +57,8 @@ from slmsuite.hardware._pyglet import (
     _wait_for_screens_settled,
     _WindowThread,
 )
+from slmsuite.hardware.slms._plm import _PLMModel
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
-from slmsuite.hardware.slms.slm import LUT_SIZE
 from slmsuite.misc.xp import as_numpy, get_array_module
 
 logger = make_logger(__name__)
@@ -73,28 +72,10 @@ except ImportError:
     _hid = None
     HID_AVAILABLE = False
 
-# YAML availability (for the model database)
-try:
-    import yaml
-except ImportError:
-    yaml = None
-
 # PLM Constants
-MODEL_DB_PATH = os.path.join(os.path.dirname(__file__), "texasinstruments.yaml")
 DLPC900_VENDOR_ID = 0x0451
 DLPC900_PRODUCT_ID = 0xC900
 DLPC900_EXPOSURE_US = 694
-
-
-def _load_model_db():
-    """The model database read from ``texasinstruments.yaml``."""
-    if yaml is None:
-        raise ImportError(
-            "pyyaml is required to read the PLM model database. "
-            "Install it with `pip install slmsuite[slms]`."
-        )
-    with open(MODEL_DB_PATH) as f:
-        return yaml.safe_load(f)
 
 
 class DisplayMode(IntEnum):
@@ -131,7 +112,7 @@ class DLPC900Command(IntEnum):
     PAT_LUT_DEFINE = 0x1A34  #: 2.4.4.3.5 -- Pattern LUT entry definition
 
 
-class PLM(ScreenMirrored):
+class PLM(_PLMModel, ScreenMirrored):
     """
     Interfaces with Texas Instruments' Phase Light Modulators (PLMs).
 
@@ -166,8 +147,6 @@ class PLM(ScreenMirrored):
     data_flip : tuple
         Axis flip flags for electrode output.
     """
-
-    _gamma_sign = +1  # Increasing displacement increases phase delay.
 
     def __init__(
         self,
@@ -226,10 +205,13 @@ class PLM(ScreenMirrored):
         """
         self.dlpc900 = dlpc
 
-        # Load model configuration from YAML database
         self.model_config = self.load_model_config(model_name)
+        if "electrode_layout" not in self.model_config:
+            raise ValueError(
+                f"Model '{model_name}' has no DLPC900 electrode layout, so it is not driven "
+                "as a display; its controller has its own driver."
+            )
 
-        # Extract model parameters
         model_shape = tuple(self.model_config["shape"])  # (rows, cols) - input phase shape
         pitch_um = tuple(np.array(self.model_config["pitch"]) * 1e6)  # Convert m to um
 
@@ -281,16 +263,11 @@ class PLM(ScreenMirrored):
                 "that close() stops the sequencer, so reopening this way will not work."
             )
 
-        # Compute bitdepth from number of displacement ratios
-        n_phases = len(self.model_config["displacement_ratios"])
-        bitdepth = int(np.log2(n_phases))
-
-        # Initialize parent ScreenMirrored class with model shape (vs display shape)
-        # The SLM.shape should represent the input phase dimensions
+        # The SLM shape is the phase shape; the display shape is electrode-expanded below.
         super().__init__(
             display_number,
             slm_resolution=model_shape[::-1],  # ScreenMirrored expects (width, height)
-            bitdepth=bitdepth,
+            bitdepth=self._model_bitdepth,
             pitch_um=pitch_um,
             name=kwargs.pop("name", model_name),
             **kwargs,
@@ -320,12 +297,7 @@ class PLM(ScreenMirrored):
         if configure_usb:
             PLM._usb_post_configure(self.dlpc900, video_input, pixel_mode)
 
-        # Pre-compute the quantization LUT from the model's non-uniform phase response.
-        self.set_gamma(
-            np.array(self.model_config["displacement_ratios"])
-            * (self.bitresolution - 1)
-            / self.bitresolution
-        )
+        self.set_gamma()
 
         # Convert model arrays to backend (GPU or CPU)
         self.memory_lut = self.xp.array(self.model_config["memory_lut"], dtype=np.uint8)
@@ -335,34 +307,6 @@ class PLM(ScreenMirrored):
         # Re-initialize self.display with the electrode-expanded shape so that
         # _format_phase_hw can write in-place (avoiding per-frame allocations).
         self.display = self.xp.zeros(self.display_shape, dtype=self.dtype)
-
-    @staticmethod
-    def load_model_config(model_name):
-        """
-        Load model configuration from texasinstruments.yaml.
-
-        Parameters
-        ----------
-        model_name : str
-            Model identifier (e.g., "p47", "p67")
-
-        Returns
-        -------
-        dict
-            Model configuration
-
-        Raises
-        ------
-        ValueError
-            If model not found in database
-        """
-        model_db = _load_model_db()
-
-        if model_name not in model_db:
-            available = list(model_db.keys())
-            raise ValueError(f"Model '{model_name}' not found. Available models: {available}")
-
-        return model_db[model_name]
 
     @staticmethod
     def configure_usb(
@@ -757,15 +701,6 @@ class PLM(ScreenMirrored):
             self.dlpc900 = None
         super().close()
 
-    def set_gamma(self, gamma=None, levels=None, lut_size=LUT_SIZE):
-        """
-        See :meth:`~slmsuite.hardware.slms.slm.SLM.set_gamma`. A PLM addresses its phase
-        states through the table, so it has no ideal linear response to clear back to.
-        """
-        if gamma is None:
-            raise ValueError("A PLM requires a lookup table; pass the model's displacement ratios.")
-        return super().set_gamma(gamma, levels=levels, lut_size=lut_size)
-
     def _quantize(self, phase_map):
         """
         Quantize continuous phase (in any range) to discrete phase state indices via
@@ -926,20 +861,6 @@ class PLM(ScreenMirrored):
             raise ValueError(f"Bitpack requires 8 or 24 bitmaps, got {len(bitmaps)}")
 
         return as_numpy(result)
-
-    @staticmethod
-    def get_model_list():
-        """
-        Get list of available PLM models from database.
-
-        Returns
-        -------
-        list of str
-            Model identifiers available in texasinstruments.yaml
-        """
-        model_db = _load_model_db()
-
-        return list(model_db.keys())
 
 
 class DLPC900:

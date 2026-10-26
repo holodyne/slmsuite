@@ -15,7 +15,7 @@ from scipy.optimize import curve_fit
 from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware._common import _Common
 from slmsuite.holography import analysis
-from slmsuite.holography.toolbox import BLAZE_LABELS, format_shape, window_slice
+from slmsuite.holography.toolbox import BLAZE_LABELS, convert_vector, format_shape, window_slice
 from slmsuite.holography.toolbox.phase import zernike
 from slmsuite.misc.fitfunctions import lorentzian
 from slmsuite.misc.math import INTEGER_TYPES
@@ -434,7 +434,7 @@ class Camera(_Common, ABC):
         """
         raise NotImplementedError(f"Camera {self.name} has not implemented WOI")
 
-    def set_woi(self, woi=None):
+    def set_woi(self, woi=None, center=None, units="ij"):
         """
         Set the window of interest (WOI) for the camera.
 
@@ -454,11 +454,27 @@ class Camera(_Common, ABC):
             Caution
             ~~~~~~~
             The explicit form is in full-sensor coordinates (like :attr:`sensor_shape`).
+        center : array_like OR None
+            Point ``(x, y)`` to center an ``int`` or ``(w, h)`` window on, in place of the
+            center of the sensor. For instance,
+            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.zeroth_order_ij`.
+        units : str
+            Units of ``center`` (see :func:`~slmsuite.holography.toolbox.convert_vector`).
+            ``"ij"`` (the default) is the current image, so a point holds only until the
+            window changes. ``"ijraw"`` is the raw sensor, so a stored point such as
+            :attr:`~slmsuite.hardware.cameraslms.FourierSLM.zeroth_order_ijraw` places the
+            same window on every call.
 
         Returns
         -------
         (int, int, int, int)
             :attr:`~slmsuite.hardware.cameras.camera.Camera.woi` after the update.
+
+        Raises
+        ------
+        ValueError
+            If ``center`` is given with ``None`` or an explicit window, or if the window
+            lies wholly outside the sensor.
         """
         old_woi = self.woi
         old_shape = self.shape
@@ -466,6 +482,9 @@ class Camera(_Common, ABC):
         binx, biny = self._binning[0], self._binning[1]
         transformed_shape = self.sensor_shape
         H, W = transformed_shape
+
+        if center is not None and (woi is None or np.size(woi) == 4):
+            raise ValueError(f"center places an int or (w, h) window; got woi={woi}.")
 
         if woi is None:
             # Full sensor in untransformed, unbinned coordinates.
@@ -491,17 +510,23 @@ class Camera(_Common, ABC):
             else:
                 raise TypeError(f"Cannot interpret WOI of type {type(woi).__name__}.")
 
-            if w is not None:  # Center the (w, h) window on the sensor.
+            if w is not None and center is None:  # Center the (w, h) window on the sensor.
                 woi = (max(0, (W - w) // 2), w, max(0, (H - h) // 2), h)
+            elif w is not None:  # Center it on the point, in transformed, unbinned coordinates.
+                raw = convert_vector(center, from_units=units, to_units="ijraw", hardware=self)
+                (x, y) = (int(v) for v in np.rint(self.transform.affine(self._shape) @ raw).ravel())
+                woi = (x - w // 2, w, y - h // 2, h)
 
             # Get the WOI in raw camera coordinates.
             woi_unt = self.transform.inverse_woi(woi, transformed_shape)
 
-            # Clip to sensor bounds.
+            # Clip to the overlap with the sensor.
             x0 = max(0, int(woi_unt[0]))
             y0 = max(0, int(woi_unt[2]))
-            x1 = min(self._shape[1], x0 + int(woi_unt[1]))
-            y1 = min(self._shape[0], y0 + int(woi_unt[3]))
+            x1 = min(self._shape[1], int(woi_unt[0]) + int(woi_unt[1]))
+            y1 = min(self._shape[0], int(woi_unt[2]) + int(woi_unt[3]))
+            if x1 <= x0 or y1 <= y0:
+                raise ValueError(f"Requested WOI {woi} lies outside the sensor.")
             clipped = (x0, x1 - x0, y0, y1 - y0)
 
             if clipped != tuple(int(v) for v in woi_unt):
