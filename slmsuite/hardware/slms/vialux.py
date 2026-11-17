@@ -5,7 +5,9 @@ Tested with the V-9903P (Texas Instruments DLPM990 on the ALP-5.1 controller).
 Unlike a :class:`~slmsuite.hardware.slms.texasinstruments.PLM`, which is driven as a
 display, a ViALUX PLM is driven by the ALP controller: patterns are uploaded over USB
 (or PCIe) into the controller's memory, which displays them and maps each phase level
-onto the PLM's electrodes itself.
+onto the PLM's electrodes itself. The controller also stores frames and plays them as
+sequences at a fixed frame time; see :meth:`.SLM.set_frame`, :meth:`.SLM.set_phase` and
+:meth:`.SLM.set_frametime`.
 
 .. highlight:: python
 .. code-block:: python
@@ -23,6 +25,13 @@ onto the PLM's electrodes itself.
     # Set a phase pattern.
     phase = np.random.rand(1088, 2048) * 2 * np.pi
     plm.set_phase(phase)
+
+    # Store frames, then play them as a sequence.
+    for i, phase in enumerate(phases):
+        plm.set_frame(i, phase)
+    plm.set_frametime(1e-3)
+    plm.set_phase(frame=range(len(phases)), repeat=0)  # Loop until the next write.
+    plm.set_phase(frame=0)
 
 Note
 ~~~~
@@ -45,6 +54,7 @@ import os
 import time
 from contextlib import contextmanager
 from enum import IntEnum
+from typing import ClassVar
 
 import numpy as np
 
@@ -103,11 +113,13 @@ class ALPControl(IntEnum):
 
     Each value is the ``ControlType`` or ``InquireType`` passed to the ALP API, as
     defined in ``alp.h`` and the ALP-5.1 API description. Any other type can be passed
-    to the raw access methods (e.g. :meth:`PLM.dev_control`) as a plain ``int``.
+    to the private raw access methods (``PLM._dev_control`` and its siblings) as a plain
+    ``int``.
     """
 
     # AlpDevControl / AlpDevInquire, by section of the API description.
     DEVICE_NUMBER = 2000  #: 2.3 -- Serial number
+    AVAIL_MEMORY = 2003  #: 2.3 -- Free sequence memory, in bitplanes
     SYNCH_POLARITY = 2004  #: 2.2 -- Frame synch output polarity
     TRIGGER_EDGE = 2005  #: 2.2 -- Trigger input edge (slave mode)
     DEV_DMDTYPE = 2021  #: 2.2 -- DLP chip type
@@ -127,11 +139,20 @@ class ALPControl(IntEnum):
     PLM_MAX_BIAS_VOLTAGE = 2365  #: alp.h -- PLM bias voltage maximum, in millivolts
 
     # AlpSeqControl / AlpSeqInquire
+    SEQ_REPEAT = 2100  #: 2.8 -- Passes of a finite start
+    FIRSTFRAME = 2101  #: 2.8 -- First frame of the sequence to display
+    LASTFRAME = 2102  #: 2.8 -- Last frame of the sequence to display
     DATA_FORMAT = 2110  #: 2.8 -- Data format and alignment
-    MIN_PICTURE_TIME = 2211  #: 2.10 -- Minimum picture time, in microseconds
+    FLUT_MODE = 2118  #: 3.4 -- Frame lookup table mode
+    FLUT_ENTRIES9 = 2120  #: 3.4 -- Frame lookup table entries used, counted as 9-bit
+    PICTURE_TIME = 2203  #: 2.10 -- Frame time, in microseconds
+    MIN_PICTURE_TIME = 2211  #: 2.10 -- Minimum frame time, in microseconds
 
-    # AlpProjControl / AlpProjInquire
+    # AlpProjControl / AlpProjInquire / AlpProjControlEx
     PROJ_MODE = 2300  #: 2.13 -- Master or slave mode
+    FLUT_MAX_ENTRIES9 = 2324  #: 3.4 -- Size of the frame lookup table, in 9-bit entries
+    FLUT_WRITE_9BIT = 2325  #: 3.4 -- Transfer 9-bit lookup table entries
+    FLUT_WRITE_18BIT = 2326  #: 3.4 -- Transfer 18-bit lookup table entries
     PROJ_STATE = 2400  #: 2.14 -- Projection active or idle
 
 
@@ -149,106 +170,36 @@ ALP_LEVEL_LOW = 2007
 ALP_EDGE_FALLING = 2008
 ALP_EDGE_RISING = 2009
 ALP_DATA_LSB_ALIGN = 1
+ALP_FLUT_NONE = 0
+ALP_FLUT_9BIT = 1
+ALP_FLUT_18BIT = 2
 ALP_MASTER = 2301
 ALP_PROJ_IDLE = 1201
 ALP_SLAVE = 2302
 
-
-def _load_lib(sdk_path=None):
-    """
-    Load ``alp51.dll`` and declare the signatures of the functions used here.
-
-    Parameters
-    ----------
-    sdk_path : str OR None
-        Path to ``alp51.dll``, or to the directory containing it.
-        Defaults to the ALP-5.1 install location.
-
-    Returns
-    -------
-    ctypes.CDLL
-        The loaded library. Loaded once per path.
-    """
-    if sdk_path is None:
-        sdk_path = _DEFAULT_ALP_PATH
-    elif os.path.isdir(sdk_path):
-        sdk_path = os.path.join(sdk_path, "alp51.dll")
-
-    if sdk_path in _alp_libs:
-        return _alp_libs[sdk_path]
-
-    try:
-        lib = ctypes.CDLL(sdk_path)
-    except OSError as e:
-        raise RuntimeError(
-            f"Could not load the ViALUX ALP library at '{sdk_path}'. "
-            "Install ViALUX's ALP-5.1 software, or pass sdk_path to its alp51.dll."
-        ) from e
-
-    alp_id = ctypes.c_uint32
-    i32 = ctypes.c_int32
-    p_i32 = ctypes.POINTER(ctypes.c_int32)
-    p_id = ctypes.POINTER(ctypes.c_uint32)
-
-    signatures = {
-        "AlpDevAlloc": [i32, i32, p_id],
-        "AlpDevHalt": [alp_id],
-        "AlpDevFree": [alp_id],
-        "AlpDevControl": [alp_id, i32, i32],
-        "AlpDevInquire": [alp_id, i32, p_i32],
-        "AlpSeqAlloc": [alp_id, i32, i32, p_id],
-        "AlpSeqFree": [alp_id, alp_id],
-        "AlpSeqControl": [alp_id, alp_id, i32, i32],
-        "AlpSeqTiming": [alp_id, alp_id, i32, i32, i32, i32, i32],
-        "AlpSeqInquire": [alp_id, alp_id, i32, p_i32],
-        "AlpSeqPut": [alp_id, alp_id, i32, i32, ctypes.c_void_p],
-        "AlpProjStart": [alp_id, alp_id],
-        "AlpProjControl": [alp_id, i32, i32],
-        "AlpProjInquire": [alp_id, i32, p_i32],
-    }
-
-    for name, argtypes in signatures.items():
-        function = getattr(lib, name)
-        function.argtypes = argtypes
-        function.restype = i32
-
-    _alp_libs[sdk_path] = lib
-
-    return lib
+_SEQ_REPEAT_MAX = 1048576  # Section 2.8 of the ALP-5.1 API description.
+_FLUT_SPAN_9BIT = 512  # Frames addressable by a 9-bit lookup table entry.
 
 
-def _error_name(ret):
-    """The name of an ALP return code, e.g. ``"ALP_NOT_ONLINE"``."""
-    try:
-        return f"ALP_{_ALPReturn(ret).name}"
-    except ValueError:
-        return f"unknown error {ret}"
+class _FlutWrite(ctypes.Structure):
+    """``tFlutWrite`` of ``alp.h``: frame lookup table entries to transfer."""
 
-
-def _check(ret, call):
-    """
-    Raise if an ALP function did not return ``ALP_OK``.
-
-    Parameters
-    ----------
-    ret : int
-        Return code of the ALP function.
-    call : str
-        Name of the function, for the error message.
-    """
-    if ret != _ALPReturn.OK:
-        raise RuntimeError(f"ViALUX {call} failed: {_error_name(ret)}.")
+    _fields_: ClassVar = [
+        ("nOffset", ctypes.c_int32),
+        ("nSize", ctypes.c_int32),
+        ("FrameNumbers", ctypes.c_uint32 * 4096),
+    ]
 
 
 class PLM(_PLMModel, SLM):
     """
     Interfaces with ViALUX's Phase Light Modulators (PLMs), such as the V-9903P.
 
-    Patterns are double-buffered between two ALP sequences. Each write uploads to the
-    sequence that is not displayed, then displays it as a single picture, after which the
-    ALP idles and the PLM holds the pattern without refreshing. The PLM therefore never
-    displays a partially-uploaded pattern, and switches within :attr:`picture_time_us` of
-    the upload, which defaults to the fastest that the ALP supports.
+    The ALP's memory holds :attr:`frame_count` frames, which :meth:`set_frame` writes and
+    :meth:`set_phase` displays, singly or as a sequence in any order at the frame time
+    of :meth:`set_frametime`. A direct write uploads to a reserved frame and displays it.
+    Either way, the ALP shows each frame for one frame time and then idles while the
+    PLM holds the last one, so a partially uploaded pattern is never displayed.
 
     Attributes
     ----------
@@ -258,18 +209,19 @@ class PLM(_PLMModel, SLM):
         Serial number of the ALP device.
     dmd_type : int
         DMD type code reported by the ALP.
+    frame_count : int
+        Number of frames in the frame memory, numbered ``0`` to ``frame_count - 1``.
     switch_timeout_s : float
-        How long to wait, beyond :attr:`picture_time_us`, for the ALP to display a
-        written pattern before raising. Relevant with :meth:`set_input_trigger`, where
-        display awaits a trigger.
+        How long to wait, beyond the time that the started frames take to display, for
+        the ALP to finish before raising. Relevant with :meth:`set_input_trigger`, where
+        each frame awaits a trigger.
     """
 
     def __init__(
         self,
         serial=None,
         model_name=None,
-        picture_time_us=None,
-        bias_voltage_mv=None,
+        frame_count=None,
         sdk_path=None,
         **kwargs,
     ):
@@ -285,12 +237,9 @@ class PLM(_PLMModel, SLM):
             Model identifier from ``texasinstruments.yaml`` of the PLM chip which the ALP
             drives (e.g. ``"p99"``). If ``None``, the model is identified from the DMD
             type which the ALP reports.
-        picture_time_us : int OR None
-            See :attr:`picture_time_us`. If ``None``, uses the minimum which the ALP
-            supports.
-        bias_voltage_mv : int OR None
-            If given, sets the PLM bias voltage; see :meth:`set_bias_voltage`.
-            Otherwise, applies the ALP's default bias.
+        frame_count : int OR None
+            See :attr:`frame_count`. If ``None``, reserves as many frames as the ALP's free
+            memory holds.
         sdk_path : str OR None
             Path to ``alp51.dll``, or to the directory containing it.
             Defaults to the ALP-5.1 install location.
@@ -298,18 +247,23 @@ class PLM(_PLMModel, SLM):
             See :meth:`.SLM.__init__` for permissible options. ``settle_time_s``
             defaults to zero, as writes return once the pattern is displayed.
         """
-        self._lib = _load_lib(sdk_path)
+        self._lib = self._load_lib(sdk_path)
         self._device = None
-        self._sequences = []
-        self._active = None  # Index into _sequences of the displayed one.
+        self._sequence = None
+        self._started = None  # (order, repeat) of the last start.
+        self._range = None  # (first, last) frames selected on the ALP.
+        self._flut = None  # (mode, entries) of the lookup table on the ALP.
+        self._repeat = 1  # Passes of a finite start, as set on the ALP.
         self._input_trigger = False
-        self._picture_time_us = None
+        self._frametime_s = None
+        self._min_frametime_s = None
+        self._flut_entries = 0
         self._synch_delay_us = ALP_DEFAULT
         self._synch_pulse_width_us = ALP_DEFAULT
         self.switch_timeout_s = 5.0
 
         device = ctypes.c_uint32(ALP_INVALID_ID)
-        _check(
+        self._check(
             self._lib.AlpDevAlloc(
                 ALP_DEFAULT if serial is None else int(serial),
                 ALP_DEFAULT,
@@ -320,10 +274,10 @@ class PLM(_PLMModel, SLM):
         self._device = device
 
         try:
-            self.serial = self.dev_inquire(ALPControl.DEVICE_NUMBER)
-            self.dmd_type = self.dev_inquire(ALPControl.DEV_DMDTYPE)
-            width = self.dev_inquire(ALPControl.DEV_DISPLAY_WIDTH)
-            height = self.dev_inquire(ALPControl.DEV_DISPLAY_HEIGHT)
+            self.serial = self._dev_inquire(ALPControl.DEVICE_NUMBER)
+            self.dmd_type = self._dev_inquire(ALPControl.DEV_DMDTYPE)
+            width = self._dev_inquire(ALPControl.DEV_DISPLAY_WIDTH)
+            height = self._dev_inquire(ALPControl.DEV_DISPLAY_HEIGHT)
 
             logger.debug(
                 "ALP %s opened: DMD type %s, %sx%s.", self.serial, self.dmd_type, width, height
@@ -364,35 +318,128 @@ class PLM(_PLMModel, SLM):
 
             self.set_gamma()
 
-            # The double buffer: single-picture sequences of one byte per pixel, with the
-            # phase level in the least significant bits.
-            for _ in range(2):
-                sequence = ctypes.c_uint32(ALP_INVALID_ID)
-                _check(
-                    self._lib.AlpSeqAlloc(self._device, self.bitdepth, 1, ctypes.byref(sequence)),
-                    "AlpSeqAlloc",
-                )
-                self._sequences.append(sequence)
-                _check(
-                    self._lib.AlpSeqControl(
-                        self._device, sequence, int(ALPControl.DATA_FORMAT), ALP_DATA_LSB_ALIGN
-                    ),
-                    "AlpSeqControl",
-                )
+            # One sequence of one byte per pixel, with the phase level in the least
+            # significant bits: the frame memory plus a scratch frame for direct writes.
+            if frame_count is None:
+                frame_count = self._dev_inquire(ALPControl.AVAIL_MEMORY) // self.bitdepth - 1
+            self.frame_count = int(frame_count)
+            if self.frame_count < 0:
+                raise ValueError(f"frame_count must be non-negative; got {frame_count}.")
+            self._scratch = self.frame_count
 
-            if picture_time_us is None:
-                picture_time_us = self.seq_inquire(ALPControl.MIN_PICTURE_TIME)
-            self.picture_time_us = picture_time_us
+            sequence = ctypes.c_uint32(ALP_INVALID_ID)
+            ret = self._lib.AlpSeqAlloc(
+                self._device, self.bitdepth, self.frame_count + 1, ctypes.byref(sequence)
+            )
+            if ret == _ALPReturn.MEMORY_FULL:
+                raise RuntimeError(
+                    f"The ALP cannot hold {self.frame_count} frames; pass a smaller frame_count."
+                )
+            self._check(ret, "AlpSeqAlloc")
+            self._sequence = sequence
+            self._seq_control(ALPControl.DATA_FORMAT, ALP_DATA_LSB_ALIGN)
+            self._flut_entries = self._proj_inquire(ALPControl.FLUT_MAX_ENTRIES9)
+            logger.debug("ALP %s holds %s frames.", self.serial, self.frame_count)
+
+            self._min_frametime_s = self._seq_inquire(ALPControl.MIN_PICTURE_TIME) / 1e6
+            self.set_frametime(self._min_frametime_s)
 
             # Opening resets the reported bias, but the PLM applies the last bias written.
-            if bias_voltage_mv is None:
-                bias_voltage_mv = self.get_bias_voltage()
-            self.set_bias_voltage(bias_voltage_mv)
+            self.set_bias_voltage(self.get_bias_voltage())
 
             self.set_phase(None)
         except BaseException:
             self.close()
             raise
+
+    @staticmethod
+    def _load_lib(sdk_path=None):
+        """
+        Load ``alp51.dll`` and declare the signatures of the functions used here.
+
+        Parameters
+        ----------
+        sdk_path : str OR None
+            Path to ``alp51.dll``, or to the directory containing it.
+            Defaults to the ALP-5.1 install location.
+
+        Returns
+        -------
+        ctypes.CDLL
+            The loaded library. Loaded once per path.
+        """
+        if sdk_path is None:
+            sdk_path = _DEFAULT_ALP_PATH
+        elif os.path.isdir(sdk_path):
+            sdk_path = os.path.join(sdk_path, "alp51.dll")
+
+        if sdk_path in _alp_libs:
+            return _alp_libs[sdk_path]
+
+        try:
+            lib = ctypes.CDLL(sdk_path)
+        except OSError as e:
+            raise RuntimeError(
+                f"Could not load the ViALUX ALP library at '{sdk_path}'. "
+                "Install ViALUX's ALP-5.1 software, or pass sdk_path to its alp51.dll."
+            ) from e
+
+        alp_id = ctypes.c_uint32
+        i32 = ctypes.c_int32
+        p_i32 = ctypes.POINTER(ctypes.c_int32)
+        p_id = ctypes.POINTER(ctypes.c_uint32)
+
+        signatures = {
+            "AlpDevAlloc": [i32, i32, p_id],
+            "AlpDevHalt": [alp_id],
+            "AlpDevFree": [alp_id],
+            "AlpDevControl": [alp_id, i32, i32],
+            "AlpDevInquire": [alp_id, i32, p_i32],
+            "AlpSeqAlloc": [alp_id, i32, i32, p_id],
+            "AlpSeqFree": [alp_id, alp_id],
+            "AlpSeqControl": [alp_id, alp_id, i32, i32],
+            "AlpSeqTiming": [alp_id, alp_id, i32, i32, i32, i32, i32],
+            "AlpSeqInquire": [alp_id, alp_id, i32, p_i32],
+            "AlpSeqPut": [alp_id, alp_id, i32, i32, ctypes.c_void_p],
+            "AlpProjStart": [alp_id, alp_id],
+            "AlpProjStartCont": [alp_id, alp_id],
+            "AlpProjHalt": [alp_id],
+            "AlpProjControl": [alp_id, i32, i32],
+            "AlpProjControlEx": [alp_id, i32, ctypes.c_void_p],
+            "AlpProjInquire": [alp_id, i32, p_i32],
+        }
+
+        for name, argtypes in signatures.items():
+            function = getattr(lib, name)
+            function.argtypes = argtypes
+            function.restype = i32
+
+        _alp_libs[sdk_path] = lib
+
+        return lib
+
+    @staticmethod
+    def _error_name(ret):
+        """The name of an ALP return code, e.g. ``"ALP_NOT_ONLINE"``."""
+        try:
+            return f"ALP_{_ALPReturn(ret).name}"
+        except ValueError:
+            return f"unknown error {ret}"
+
+    @staticmethod
+    def _check(ret, call):
+        """
+        Raise if an ALP function did not return ``ALP_OK``.
+
+        Parameters
+        ----------
+        ret : int
+            Return code of the ALP function.
+        call : str
+            Name of the function, for the error message.
+        """
+        if ret != _ALPReturn.OK:
+            raise RuntimeError(f"ViALUX {call} failed: {PLM._error_name(ret)}.")
 
     @staticmethod
     def info(verbose=True, sdk_path=None):
@@ -414,7 +461,7 @@ class PLM(_PLMModel, SLM):
         list of (int, int) tuples
             The serial number and DMD type of each available device.
         """
-        lib = _load_lib(sdk_path)
+        lib = PLM._load_lib(sdk_path)
 
         devices = []
         device_list = []
@@ -425,13 +472,13 @@ class PLM(_PLMModel, SLM):
                 ret = lib.AlpDevAlloc(ALP_DEFAULT, ALP_DEFAULT, ctypes.byref(device))
                 if ret in (_ALPReturn.NOT_ONLINE, _ALPReturn.NOT_READY):
                     break
-                _check(ret, "AlpDevAlloc")
+                PLM._check(ret, "AlpDevAlloc")
                 devices.append(device)
 
                 values = []
                 for inquire in (ALPControl.DEVICE_NUMBER, ALPControl.DEV_DMDTYPE):
                     value = ctypes.c_int32(0)
-                    _check(
+                    PLM._check(
                         lib.AlpDevInquire(device, inquire, ctypes.byref(value)),
                         "AlpDevInquire",
                     )
@@ -466,78 +513,119 @@ class PLM(_PLMModel, SLM):
         def release(call, *args):
             ret = getattr(self._lib, call)(self._device, *args)
             if ret != _ALPReturn.OK:
-                logger.warning("ViALUX %s failed while closing: %s.", call, _error_name(ret))
+                logger.warning("ViALUX %s failed while closing: %s.", call, self._error_name(ret))
 
         try:
             release("AlpDevHalt")
             if park:
                 release("AlpDevControl", int(ALPControl.DEV_DMD_MODE), int(DMDMode.POWER_FLOAT))
-            for sequence in self._sequences:
-                release("AlpSeqFree", sequence)
+            if self._sequence is not None:
+                release("AlpSeqFree", self._sequence)
             release("AlpDevFree")
         finally:
-            self._sequences = []
-            self._active = None
+            self._sequence = None
+            self._started = None
             self._device = None
 
-    # Sequences
+    # Frames
 
-    @property
-    def picture_time_us(self):
+    def set_frametime(self, frametime_s):
         """
-        Duration of the single picture that displays each written pattern, in
-        microseconds, which a blocking write waits for. The PLM holds the pattern
-        afterwards.
-        """
-        return self._picture_time_us
+        Set the time that each displayed frame lasts: the period of a sequence, and the
+        time a direct write takes to switch. See :meth:`.SLM.set_frametime`. A looping
+        sequence resumes with the new frame time.
 
-    @picture_time_us.setter
-    def picture_time_us(self, value):
-        previous = self._picture_time_us
-        self._picture_time_us = int(value)
+        Parameters
+        ----------
+        frametime_s : float
+            Frame time in seconds, rounded to the ALP's microseconds. Must be at least
+            the minimum which the ALP supports, the default at open.
 
-        try:
-            self._wait_for_idle()
-            self._apply_timing()
-        except RuntimeError:
-            self._picture_time_us = previous
-            raise
-
-    def _apply_timing(self):
+        Returns
+        -------
+        float
+            The resulting frame time in seconds, from :meth:`get_frametime`.
         """
-        Apply :attr:`picture_time_us` and the synch output settings to both sequences.
-        These take effect when a sequence is next started.
-        """
-        for sequence in self._sequences:
-            _check(
-                self._lib.AlpSeqTiming(
-                    self._device,
-                    sequence,
-                    ALP_DEFAULT,  # Illuminate time: the full picture time.
-                    self._picture_time_us,
-                    int(self._synch_delay_us),
-                    int(self._synch_pulse_width_us),
-                    ALP_DEFAULT,  # Trigger in delay.
-                ),
-                "AlpSeqTiming",
+        frametime_s = float(frametime_s)
+        if frametime_s < self._min_frametime_s:
+            raise ValueError(
+                f"Frame time {frametime_s:.3g} s is below the minimum {self._min_frametime_s:.3g} s."
             )
 
+        with self._paused():
+            previous = self._frametime_s
+            self._frametime_s = frametime_s
+            try:
+                self._apply_timing()
+            except RuntimeError:
+                self._frametime_s = previous
+                raise
+
+        return self.get_frametime()
+
+    def get_frametime(self):
+        """Frame time read back from the ALP, in seconds. See :meth:`.SLM.get_frametime`."""
+        return self._seq_inquire(ALPControl.PICTURE_TIME) / 1e6
+
+    def _apply_timing(self):
+        """Apply the frame time and the synch output settings, effective at the next start."""
+        self._check(
+            self._lib.AlpSeqTiming(
+                self._device,
+                self._sequence,
+                ALP_DEFAULT,  # Illuminate time: the full frame time.
+                round(self._frametime_s * 1e6),
+                int(self._synch_delay_us),
+                int(self._synch_pulse_width_us),
+                ALP_DEFAULT,  # Trigger in delay.
+            ),
+            "AlpSeqTiming",
+        )
+
+    @property
+    def _looping(self):
+        """Whether the last start plays until stopped."""
+        return self._started is not None and self._started[1] == 0
+
     def _wait_for_idle(self):
-        """Wait until the ALP has displayed every started pattern and idles."""
-        timeout_s = self.switch_timeout_s + 1e-6 * self._picture_time_us
+        """Wait until the ALP has displayed every started frame and idles."""
+        if self._started is None:
+            duration_s = 0.0
+        else:
+            (order, repeat) = self._started
+            duration_s = len(order) * max(repeat, 1) * self._frametime_s
+        timeout_s = self.switch_timeout_s + duration_s
         deadline = time.perf_counter() + timeout_s
 
         # No sleep: each inquiry is already a round trip to the ALP.
-        while self.proj_inquire(ALPControl.PROJ_STATE) != ALP_PROJ_IDLE:
+        while self._proj_inquire(ALPControl.PROJ_STATE) != ALP_PROJ_IDLE:
             if time.perf_counter() > deadline:
                 raise RuntimeError(
-                    f"PLM did not finish displaying a pattern within {timeout_s:.3g} s."
+                    f"PLM did not finish displaying within {timeout_s:.3g} s."
                     + (" Is the input trigger firing?" if self._input_trigger else "")
                 )
 
+    def _stop(self):
+        """End a looping sequence after its current pass, then wait for the ALP to idle."""
+        if self._looping:
+            self._check(self._lib.AlpProjHalt(self._device), "AlpProjHalt")
+            self._started = (self._started[0], 1)
+        self._wait_for_idle()
+
+    @contextmanager
+    def _paused(self):
+        """Idle the ALP for the context, then restart a sequence that was looping."""
+        (started, looping) = (self._started, self._looping)
+        self._stop()
+        try:
+            yield
+        finally:
+            if looping:
+                self._start(*started)
+
     def _halt(self):
         """Stop projection immediately, clearing the mirrors."""
-        _check(self._lib.AlpDevHalt(self._device), "AlpDevHalt")
+        self._check(self._lib.AlpDevHalt(self._device), "AlpDevHalt")
 
     @contextmanager
     def _halted(self):
@@ -546,11 +634,104 @@ class PLM(_PLMModel, SLM):
         try:
             yield
         finally:
-            if self._active is not None:
-                _check(
-                    self._lib.AlpProjStart(self._device, self._sequences[self._active]),
-                    "AlpProjStart",
+            if self._started is not None:
+                self._start(*self._started)
+
+    def _put(self, display, frame):
+        """Upload levels into frame ``frame`` of the sequence, or the scratch frame."""
+        display = np.ascontiguousarray(as_numpy(display), dtype=np.uint8)
+        self._check(
+            self._lib.AlpSeqPut(
+                self._device, self._sequence, int(frame), 1, display.ctypes.data_as(ctypes.c_void_p)
+            ),
+            "AlpSeqPut",
+        )
+
+    def _plan(self, order):
+        """
+        The frames ``(first, last)`` and the lookup table ``(mode, entries)``, or ``None``
+        for a contiguous ascending ``order``, that display ``order``.
+        """
+        if np.all(np.diff(order) == 1):
+            return (int(order[0]), int(order[-1]), None)
+
+        # Any other order goes through the frame lookup table, relative to the first.
+        (first, last) = (int(order.min()), int(order.max()))
+        entries = tuple(int(i) for i in order - first)
+        if last - first < _FLUT_SPAN_9BIT and len(order) <= self._flut_entries:
+            return (first, last, (ALP_FLUT_9BIT, entries))
+        if len(order) <= self._flut_entries // 2:
+            return (first, last, (ALP_FLUT_18BIT, entries))
+        raise ValueError(
+            f"At most {self._flut_entries // 2} frames can be played in arbitrary order "
+            f"({self._flut_entries} if they span fewer than {_FLUT_SPAN_9BIT} frames); "
+            f"got {len(order)}."
+        )
+
+    def _start(self, order, repeat):
+        """
+        Display the frames ``order``, in order, ``repeat`` times, or
+        until stopped if ``repeat`` is zero. Settings already on the ALP are not resent.
+        """
+        (first, last, flut) = self._plan(order)
+
+        if (first, last) != self._range:
+            # The ALP keeps the first frame at or before the last at every step.
+            if self._range is None or first <= self._range[1]:
+                self._seq_control(ALPControl.FIRSTFRAME, first)
+                self._seq_control(ALPControl.LASTFRAME, last)
+            else:
+                self._seq_control(ALPControl.LASTFRAME, last)
+                self._seq_control(ALPControl.FIRSTFRAME, first)
+            self._range = (first, last)
+
+        if flut != self._flut:
+            if flut is None:
+                self._seq_control(ALPControl.FLUT_MODE, ALP_FLUT_NONE)
+            else:
+                (mode, entries) = flut
+                table = _FlutWrite(0, len(entries))
+                table.FrameNumbers[: len(entries)] = entries
+                write = (
+                    ALPControl.FLUT_WRITE_9BIT
+                    if mode == ALP_FLUT_9BIT
+                    else ALPControl.FLUT_WRITE_18BIT
                 )
+                self._check(
+                    self._lib.AlpProjControlEx(self._device, int(write), ctypes.byref(table)),
+                    "AlpProjControlEx",
+                )
+                self._seq_control(
+                    ALPControl.FLUT_ENTRIES9, len(entries) * (2 if mode == ALP_FLUT_18BIT else 1)
+                )
+                self._seq_control(ALPControl.FLUT_MODE, mode)
+            self._flut = flut
+
+        if repeat and repeat != self._repeat:
+            self._seq_control(ALPControl.SEQ_REPEAT, repeat)
+            self._repeat = repeat
+
+        call = "AlpProjStartCont" if repeat == 0 else "AlpProjStart"
+        self._check(getattr(self._lib, call)(self._device, self._sequence), call)
+        self._started = (order, repeat)
+
+    def _set_frame_hw(self, display, frame):
+        """
+        Store levels in frame ``frame`` of the ALP's memory. See :meth:`.SLM._set_frame_hw`.
+        A finite sequence in progress finishes first; a looping one must be ended by
+        displaying something, as the ALP refuses uploads into a started sequence.
+        """
+        if not 0 <= frame < self.frame_count:
+            raise IndexError(
+                f"Frame {frame} is outside the frame memory of {self.frame_count} frames."
+            )
+        if self._looping:
+            raise RuntimeError(
+                "Frames cannot be stored while a sequence loops; display a frame first."
+            )
+
+        self._wait_for_idle()
+        self._put(display, frame)
 
     def _set_phase_hw(self, display, block=True):
         """
@@ -561,39 +742,59 @@ class PLM(_PLMModel, SLM):
         display
             Phase levels to display on the PLM.
         block : bool
-            Whether to wait until the PLM displays ``display`` before returning.
+            Whether to wait until the PLM has displayed the frame before returning.
             If ``False``, or while :meth:`set_input_trigger` is enabled, returns once the
-            pattern is uploaded; the next write still waits for this one to be displayed
-            before uploading.
+            frame is started; the next call still waits for it.
         """
-        display = np.ascontiguousarray(as_numpy(display), dtype=np.uint8)
-
-        # The idle sequence must not still be displayed, or queued for display.
-        self._wait_for_idle()
-        index = 0 if self._active is None else 1 - self._active
-        sequence = self._sequences[index]
-
-        _check(
-            self._lib.AlpSeqPut(
-                self._device, sequence, 0, 1, display.ctypes.data_as(ctypes.c_void_p)
-            ),
-            "AlpSeqPut",
-        )
-        _check(self._lib.AlpProjStart(self._device, sequence), "AlpProjStart")
-        self._active = index
-
+        self._stop()
+        self._put(display, self._scratch)
+        self._start(np.array([self._scratch]), 1)
         if block and not self._input_trigger:
+            self._wait_for_idle()
+
+    def _set_phase_frame_hw(self, frame, repeat=1, block=True):
+        """
+        Display stored frames. See :meth:`.SLM._set_phase_frame_hw`.
+
+        Parameters
+        ----------
+        frame : int OR numpy.ndarray
+            Stored frames to display, in order. Any order is supported through the ALP's
+            frame lookup table, which bounds the length of a sequence that is not a
+            contiguous ascending range.
+        repeat : int
+            Passes of ``frame``, at most 1048576; ``0`` loops until the next write.
+        block : bool
+            Whether to wait until the PLM has displayed every frame before returning.
+            If ``False``, while :meth:`set_input_trigger` is enabled, or when looping,
+            returns once the frames are started; the next call still waits for them.
+        """
+        order = np.atleast_1d(frame)
+        if np.any(order < 0) or np.any(order >= self.frame_count):
+            raise IndexError(
+                f"Frames {order.min()}..{order.max()} are outside the frame memory of "
+                f"{self.frame_count} frames."
+            )
+        if not 0 <= repeat <= _SEQ_REPEAT_MAX:
+            raise ValueError(f"repeat must lie in [0, {_SEQ_REPEAT_MAX}]; got {repeat}.")
+        self._plan(order)
+
+        self._stop()
+        self._start(order, repeat)
+        if block and repeat and not self._input_trigger:
             self._wait_for_idle()
 
     # Triggering
 
     def set_input_trigger(self, on=False, edge="rising"):
         r"""
-        Configures the input trigger (pin 7 of the ALP's synchronization connector): a
-        written pattern is displayed upon the next trigger edge (``ALP_SLAVE`` mode).
+        Configures the input trigger (pin 7 of the ALP's synchronization connector): each
+        frame is displayed upon the next trigger edge (``ALP_SLAVE`` mode).
 
         While enabled, writes do not block, and a write waits up to
-        :attr:`switch_timeout_s` for the previous pattern to be triggered.
+        :attr:`switch_timeout_s` beyond the frames' duration for the previous frames to
+        be triggered. Disabling halts frames still awaiting a trigger and redisplays
+        the last start free-running.
 
         Parameters
         ----------
@@ -606,16 +807,23 @@ class PLM(_PLMModel, SLM):
         if edge not in values:
             raise ValueError(f"Unknown edge '{edge}'. Valid: {list(values)}")
 
-        self._wait_for_idle()
         if on:
-            self.dev_control(ALPControl.TRIGGER_EDGE, values[edge])
-        self._proj_control(ALPControl.PROJ_MODE, ALP_SLAVE if on else ALP_MASTER)
+            with self._paused():
+                self._dev_control(ALPControl.TRIGGER_EDGE, values[edge])
+                self._proj_control(ALPControl.PROJ_MODE, ALP_SLAVE)
+        elif self._input_trigger:
+            # Frames awaiting a trigger never finish, so halt rather than wait for them.
+            if self._proj_inquire(ALPControl.PROJ_STATE) == ALP_PROJ_IDLE:
+                self._proj_control(ALPControl.PROJ_MODE, ALP_MASTER)
+            else:
+                with self._halted():
+                    self._proj_control(ALPControl.PROJ_MODE, ALP_MASTER)
         self._input_trigger = bool(on)
 
-    def set_output_trigger(self, on=False, polarity="high", delay_us=0, pulse_width_us=None):
+    def set_output_trigger(self, on=False, polarity="high", delay_s=0, pulse_width_s=None):
         r"""
         Configures the frame synch output of the ALP, which pulses at the start of every
-        displayed pattern.
+        displayed frame.
 
         Note
         ~~~~
@@ -628,11 +836,10 @@ class PLM(_PLMModel, SLM):
             Whether to apply the configuration below, or to restore the defaults.
         polarity : str
             ``"high"`` or ``"low"``: the level of the active pulse.
-        delay_us : int
-            Delay from the start of the pulse to the start of the picture, in
-            microseconds.
-        pulse_width_us : int OR None
-            Duration of the pulse, in microseconds. If ``None``, uses the ALP's default.
+        delay_s : float
+            Delay from the start of the pulse to the start of the frame, in seconds.
+        pulse_width_s : float OR None
+            Duration of the pulse, in seconds. If ``None``, uses the ALP's default.
         """
         values = {"high": ALP_LEVEL_HIGH, "low": ALP_LEVEL_LOW}
         if polarity not in values:
@@ -640,9 +847,9 @@ class PLM(_PLMModel, SLM):
 
         previous = (self._synch_delay_us, self._synch_pulse_width_us)
         if on:
-            self._synch_delay_us = int(delay_us)
+            self._synch_delay_us = round(delay_s * 1e6)
             self._synch_pulse_width_us = (
-                ALP_DEFAULT if pulse_width_us is None else int(pulse_width_us)
+                ALP_DEFAULT if pulse_width_s is None else round(pulse_width_s * 1e6)
             )
         else:
             polarity = "high"
@@ -651,32 +858,33 @@ class PLM(_PLMModel, SLM):
 
         # The ALP refuses to change the polarity while projecting.
         try:
-            self._wait_for_idle()
-            self._apply_timing()
-            self.dev_control(ALPControl.SYNCH_POLARITY, values[polarity])
+            with self._paused():
+                self._apply_timing()
+                self._dev_control(ALPControl.SYNCH_POLARITY, values[polarity])
         except RuntimeError:
             (self._synch_delay_us, self._synch_pulse_width_us) = previous
             raise
 
     # Bias voltage
 
-    def set_bias_voltage(self, voltage_mv):
+    def set_bias_voltage(self, voltage_v):
         """
         Set the PLM bias voltage (``ALP_PLM_BIAS_VOLTAGE``), which scales the mirrors'
         displacement and thus the phase stroke.
 
         Parameters
         ----------
-        voltage_mv : int
-            Bias voltage in millivolts. Must lie within :meth:`get_bias_voltage_range`.
+        voltage_v : float
+            Bias voltage in volts, rounded to the ALP's millivolts. Must lie within
+            :meth:`get_bias_voltage_range`.
         """
-        voltage_mv = int(voltage_mv)
+        voltage_v = float(voltage_v)
         (minimum, maximum) = self.get_bias_voltage_range()
 
-        if not minimum <= voltage_mv <= maximum:
-            raise ValueError(f"Bias voltage {voltage_mv} mV is outside [{minimum}, {maximum}] mV.")
+        if not minimum <= voltage_v <= maximum:
+            raise ValueError(f"Bias voltage {voltage_v} V is outside [{minimum}, {maximum}] V.")
 
-        self.dev_control(ALPControl.PLM_BIAS_VOLTAGE, voltage_mv)
+        self._dev_control(ALPControl.PLM_BIAS_VOLTAGE, round(voltage_v * 1000))
 
     def get_bias_voltage(self):
         """
@@ -684,10 +892,10 @@ class PLM(_PLMModel, SLM):
 
         Returns
         -------
-        int
-            Bias voltage in millivolts.
+        float
+            Bias voltage in volts.
         """
-        return self.dev_inquire(ALPControl.PLM_BIAS_VOLTAGE)
+        return self._dev_inquire(ALPControl.PLM_BIAS_VOLTAGE) / 1000
 
     def get_bias_voltage_range(self):
         """
@@ -695,12 +903,12 @@ class PLM(_PLMModel, SLM):
 
         Returns
         -------
-        (int, int)
-            Minimum and maximum bias voltage in millivolts.
+        (float, float)
+            Minimum and maximum bias voltage in volts.
         """
         return (
-            self.dev_inquire(ALPControl.PLM_MIN_BIAS_VOLTAGE),
-            self.dev_inquire(ALPControl.PLM_MAX_BIAS_VOLTAGE),
+            self._dev_inquire(ALPControl.PLM_MIN_BIAS_VOLTAGE) / 1000,
+            self._dev_inquire(ALPControl.PLM_MAX_BIAS_VOLTAGE) / 1000,
         )
 
     # Status
@@ -727,7 +935,9 @@ class PLM(_PLMModel, SLM):
             "pcb_max": (ALPControl.MAX_PCB_TEMPERATURE, 1),
         }
 
-        return {key: self.dev_inquire(inquire) / scale for key, (inquire, scale) in sensors.items()}
+        return {
+            key: self._dev_inquire(inquire) / scale for key, (inquire, scale) in sensors.items()
+        }
 
     def get_dmd_mode(self):
         """
@@ -739,7 +949,7 @@ class PLM(_PLMModel, SLM):
         DMDMode OR int
             The state, or the raw value if ``alp.h`` does not define it.
         """
-        mode = self.dev_inquire(ALPControl.DEV_DMD_MODE)
+        mode = self._dev_inquire(ALPControl.DEV_DMD_MODE)
         try:
             return DMDMode(mode)
         except ValueError:
@@ -748,13 +958,13 @@ class PLM(_PLMModel, SLM):
     def reset_interface(self):
         """
         Clear a latched :attr:`DMDMode.INTERFACE_ERROR` with ``AlpDevHalt()``, as ViALUX
-        advises, and redisplay the current pattern. The halt briefly clears the mirrors,
+        advises, and redisplay the last start. The halt briefly clears the mirrors,
         and the redisplay awaits a trigger while :meth:`set_input_trigger` is enabled.
 
         Returns
         -------
         DMDMode OR int
-            The state after the reset, before the pattern is redisplayed.
+            The state after the reset, before the frames are redisplayed.
         """
         with self._halted():
             mode = self.get_dmd_mode()
@@ -768,101 +978,63 @@ class PLM(_PLMModel, SLM):
         until :meth:`resume`.
         """
         self._halt()
-        self.dev_control(ALPControl.DEV_DMD_MODE, DMDMode.POWER_FLOAT)
+        self._dev_control(ALPControl.DEV_DMD_MODE, DMDMode.POWER_FLOAT)
 
     def resume(self):
         """
-        Wake the mirrors after :meth:`park` (``ALP_DMD_RESUME``) and redisplay the current
-        pattern.
+        Wake the mirrors after :meth:`park` (``ALP_DMD_RESUME``) and redisplay the last
+        start.
         """
         with self._halted():
-            self.dev_control(ALPControl.DEV_DMD_MODE, DMDMode.RESUME)
+            self._dev_control(ALPControl.DEV_DMD_MODE, DMDMode.RESUME)
 
     # Raw access
 
-    def dev_control(self, control_type, value):
-        """
-        Error-checked ``AlpDevControl``, for settings without a dedicated method.
-
-        Parameters
-        ----------
-        control_type : ALPControl OR int
-            ``ControlType``; see the ALP-5.1 API description.
-        value : int
-            ``ControlValue``.
-        """
-        _check(
+    def _dev_control(self, control_type, value):
+        """Error-checked ``AlpDevControl``."""
+        self._check(
             self._lib.AlpDevControl(self._device, int(control_type), int(value)),
             "AlpDevControl",
         )
 
-    def dev_inquire(self, inquire_type):
-        """
-        Error-checked ``AlpDevInquire``.
-
-        Parameters
-        ----------
-        inquire_type : ALPControl OR int
-            ``InquireType``; see the ALP-5.1 API description.
-
-        Returns
-        -------
-        int
-            The inquired value.
-        """
+    def _dev_inquire(self, inquire_type):
+        """Error-checked ``AlpDevInquire``; returns the inquired value."""
         value = ctypes.c_int32(0)
-        _check(
+        self._check(
             self._lib.AlpDevInquire(self._device, int(inquire_type), ctypes.byref(value)),
             "AlpDevInquire",
         )
         return value.value
 
-    def seq_inquire(self, inquire_type):
-        """
-        Error-checked ``AlpSeqInquire`` of the displayed sequence (or the first, before
-        any display).
+    def _seq_control(self, control_type, value):
+        """Error-checked ``AlpSeqControl`` of the sequence."""
+        self._check(
+            self._lib.AlpSeqControl(self._device, self._sequence, int(control_type), int(value)),
+            "AlpSeqControl",
+        )
 
-        Parameters
-        ----------
-        inquire_type : ALPControl OR int
-            ``InquireType``; see the ALP-5.1 API description.
-
-        Returns
-        -------
-        int
-            The inquired value.
-        """
-        sequence = self._sequences[0 if self._active is None else self._active]
+    def _seq_inquire(self, inquire_type):
+        """Error-checked ``AlpSeqInquire`` of the sequence; returns the inquired value."""
         value = ctypes.c_int32(0)
-        _check(
-            self._lib.AlpSeqInquire(self._device, sequence, int(inquire_type), ctypes.byref(value)),
+        self._check(
+            self._lib.AlpSeqInquire(
+                self._device, self._sequence, int(inquire_type), ctypes.byref(value)
+            ),
             "AlpSeqInquire",
         )
         return value.value
 
     def _proj_control(self, control_type, value):
         """Error-checked ``AlpProjControl``, which requires an idle ALP."""
-        _check(
+        self._check(
             self._lib.AlpProjControl(self._device, int(control_type), int(value)),
             "AlpProjControl",
         )
 
-    def proj_inquire(self, inquire_type):
-        """
-        Error-checked ``AlpProjInquire``.
-
-        Parameters
-        ----------
-        inquire_type : ALPControl OR int
-            ``InquireType``; see the ALP-5.1 API description.
-
-        Returns
-        -------
-        int
-            The inquired value.
-        """
+    def _proj_inquire(self, inquire_type):
+        """Error-checked ``AlpProjInquire``; returns the inquired value."""
         value = ctypes.c_int32(0)
-        _check(
+        self._check(
             self._lib.AlpProjInquire(self._device, int(inquire_type), ctypes.byref(value)),
             "AlpProjInquire",
         )

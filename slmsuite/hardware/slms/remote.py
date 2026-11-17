@@ -35,9 +35,10 @@ class RemoteSLM(_Client, SLM):
         Connects to an SLM on a remote :class:`~slmsuite.hardware.remote.Server`.
 
         This client only (1) reads the SLM's attributes on initialization and (2) forwards
-        :meth:`._set_phase_hw` commands. Class attributes are not concurrent (not kept up-to-date).
-        Any vendor-specific functionality beyond :meth:`._set_phase_hw` must be handled on
-        the server, as a security precaution.
+        :meth:`._set_phase_hw`, :meth:`._set_frame_hw` and :meth:`._set_phase_frame_hw`
+        commands. Class attributes are not concurrent (not kept up-to-date). Any
+        vendor-specific functionality beyond these must be handled on the server, as a
+        security precaution.
 
         :param name:
             Name of the SLM on the server to connect to.
@@ -92,3 +93,11 @@ class RemoteSLM(_Client, SLM):
             kwargs["block"] = block
 
         self._com(command="_set_phase_hw", kwargs=dict(display=display, **kwargs))
+
+    def _set_frame_hw(self, display, frame):
+        """Forwards a frame memory store to the server's SLM. See :meth:`.SLM._set_frame_hw`."""
+        self._com(command="_set_frame_hw", kwargs={"display": display, "frame": frame})
+
+    def _set_phase_frame_hw(self, frame, repeat=1, **kwargs):
+        """Forwards a display of stored frames. See :meth:`.SLM._set_phase_frame_hw`."""
+        self._com(command="_set_phase_frame_hw", kwargs=dict(frame=frame, repeat=repeat, **kwargs))

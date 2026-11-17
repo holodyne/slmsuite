@@ -5,6 +5,7 @@ Unit tests for the SLM base class and its subclasses.
 import ctypes
 import itertools
 import os
+import types
 import warnings
 from typing import ClassVar
 
@@ -222,32 +223,67 @@ class TestSLM:
             assert any("deprecated" in str(w.message).lower() for w in caught)
             assert display is slm.display
 
-        with subtests.test("execute and block reach the hardware which advertises them"):
+        with subtests.test("execute, block and frame reach the hardware which advertises them"):
 
             class Recording(SimulatedSLM):
-                """An SLM advertising execute and block, recording what it is given."""
+                """An SLM with execute, block and frame memory, recording what it is given."""
 
                 calls: ClassVar[list] = []
 
                 def _set_phase_hw(self, display, execute=True, block=True):
-                    self.calls.append((execute, block))
+                    self.calls.append((execute, block, None, 1, False))
+
+                def _set_frame_hw(self, display, frame):
+                    pass
+
+                def _set_phase_frame_hw(self, frame, repeat=1, execute=True, block=True):
+                    self.calls.append((execute, block, frame, repeat, True))
 
             s = Recording(resolution=(32, 32))
             for kwargs, expected in (
-                ({}, [(True, True)]),
-                ({"execute": False}, [(False, True)]),
-                ({"execute": False, "block": False}, [(False, False)]),
-                ({"execute": True, "block": False}, [(True, False)]),
+                ({}, [(True, True, None, 1, False)]),
+                ({"execute": False}, [(False, True, None, 1, False)]),
+                ({"execute": False, "block": False}, [(False, False, None, 1, False)]),
+                ({"execute": True, "block": False}, [(True, False, None, 1, False)]),
             ):
                 s.calls.clear()
                 s.set_phase(np.zeros(s.shape), phase_correct=False, **kwargs)
                 assert s.calls == expected
+
+            s.calls.clear()
+            held = s.display.copy()
+            assert s.set_phase(frame=3) is None
+            assert s.set_phase(frame=range(3), repeat=0, block=False) is None
+            assert s.calls[0] == (True, True, 3, 1, True)
+            assert s.calls[1][:2] + s.calls[1][3:] == (True, False, 0, True)
+            np.testing.assert_array_equal(s.calls[1][2], [0, 1, 2])
+            np.testing.assert_array_equal(s.display, held)
+
+            rendered = []
+            s.viewer = types.SimpleNamespace(render=rendered.append)
+            s.set_phase(frame=3)
+            assert not rendered
+            s.set_phase(None)
+            assert len(rendered) == 1
+            s.viewer = None
+
+            with pytest.raises(ValueError, match="set_frame"):
+                s.set_phase(np.zeros(s.shape), frame=3)
+            with pytest.raises(ValueError, match="set_frame"):
+                s.set_phase(frame=3, phase_correct=False)
+            with pytest.raises(ValueError, match="repeat"):
+                s.set_phase(np.zeros(s.shape), repeat=2)
+            with pytest.raises(ValueError, match="repeat"):
+                s.set_phase(frame=3, repeat=-1)
+            for frame in (1.5, [], [[0, 1]], "0"):
+                with pytest.raises(ValueError, match="frame must be"):
+                    s.set_phase(frame=frame)
             s.close()
 
         with subtests.test("hardware without execute or block refuses them"):
-            for kwarg in ("execute", "block"):
-                with pytest.raises(ValueError, match=kwarg):
-                    slm.set_phase(np.zeros(slm.shape), **{kwarg: False})
+            for kwargs in ({"execute": False}, {"block": False}):
+                with pytest.raises(ValueError, match=next(iter(kwargs))):
+                    slm.set_phase(np.zeros(slm.shape), **kwargs)
 
     @pytest.mark.gpu
     def test_set_phase_gpu(self):
@@ -287,6 +323,24 @@ class TestSLM:
             s.set_phase(None)
             assert len(sleeps) == 1 and 99 < sleeps[0] <= 100
 
+        with subtests.test("a memory display settles like a write"):
+
+            class Memory(SimulatedSLM):
+                """An SLM with hardware frame memory, displaying nothing from it."""
+
+                def _set_frame_hw(self, display, frame):
+                    pass
+
+                def _set_phase_frame_hw(self, frame, repeat=1):
+                    pass
+
+            m = Memory(resolution=(32, 32))
+            m.settle_time_s = 100
+            sleeps.clear()
+            m.set_phase(frame=0, settle=True)
+            assert len(sleeps) == 1 and 99 < sleeps[0] <= 100
+            m.close()
+
         s.save_phase()
         for settle, expected in [(True, [100]), (2.5, [2.5]), (False, [])]:
             with subtests.test(f"load_phase(settle={settle!r}) waits {expected}"):
@@ -295,6 +349,132 @@ class TestSLM:
                 assert sleeps == expected
 
         s.close()
+
+    def test_set_frame(self, slm, subtests):
+        """set_frame stores what set_phase would display, without touching the display."""
+
+        class Storing(SimulatedSLM):
+            """An SLM with hardware frame memory, recording what is stored."""
+
+            stored: ClassVar[list] = []
+
+            def _set_phase_frame_hw(self, frame, repeat=1):
+                pass
+
+            def _set_frame_hw(self, display, frame):
+                self.stored.append((frame, as_numpy(display).copy()))
+
+        s = Storing(resolution=(32, 32), bitdepth=6)
+        s.set_gamma(_quadratic_gamma(s.bitresolution))
+        s.source["phase"] = np.random.default_rng(2).uniform(0, 1, s.shape)
+        wrapped = self._wrapped_phase(s)
+        levels = (np.arange(s.shape[0] * s.shape[1]) % s.bitresolution).astype(s.dtype)
+        cases = {
+            "float": wrapped,
+            "integer": levels.reshape(s.shape),
+            "oversize": np.pad(wrapped, 4),
+            "None": None,
+            "hologram": types.SimpleNamespace(get_phase=lambda: wrapped),
+        }
+
+        for name, phase in cases.items():
+            for phase_correct in (True, False):
+                with subtests.test(f"{name} stores as it would display, {phase_correct=}"):
+                    expected = s.set_phase(phase, phase_correct=phase_correct).copy()
+                    before = (s.phase.copy(), s.display.copy())
+                    s.stored.clear()
+                    out = s.set_frame(7, phase, phase_correct=phase_correct)
+                    assert len(s.stored) == 1 and s.stored[0][0] == 7
+                    np.testing.assert_array_equal(s.stored[0][1], expected)
+                    np.testing.assert_array_equal(out, expected)
+                    assert out is not s.display
+                    np.testing.assert_array_equal(s.phase, before[0])
+                    np.testing.assert_array_equal(s.display, before[1])
+
+        with subtests.test("a bad frame raises"):
+            with pytest.raises(IndexError):
+                s.set_frame(-1, wrapped)
+            with pytest.raises(TypeError):
+                s.set_frame(1.5, wrapped)
+
+        with subtests.test("frames are bounded by frame_count"):
+            assert s.frame_count is None
+            s.frame_count = 8
+            s.stored.clear()
+            s.set_frame(7, wrapped)
+            s.set_phase(frame=[0, 7])
+            with pytest.raises(IndexError, match="8 frames"):
+                s.set_frame(8, wrapped)
+            for frame in (8, [0, 8], -1, [0, -1]):
+                with pytest.raises(IndexError, match="8 frames"):
+                    s.set_phase(frame=frame)
+            assert len(s.stored) == 1
+
+        s.close()
+
+        with subtests.test("an SLM without frame timing raises"):
+            with pytest.raises(NotImplementedError, match="frame timing"):
+                slm.set_frametime(1e-3)
+            with pytest.raises(NotImplementedError, match="frame timing"):
+                slm.get_frametime()
+
+    def test_host_frames(self, slm, subtests):
+        """An SLM without hardware frame memory holds frames on the host."""
+        rng = np.random.default_rng(3)
+        phases = [rng.uniform(0, 2 * np.pi, slm.shape) for _ in range(2)]
+        expected = []
+        for phase in phases:
+            slm.set_phase(phase)
+            expected.append((slm.phase.copy(), slm.display.copy()))
+        slm.set_phase(None)
+        blank = slm.display.copy()
+
+        with subtests.test("a store leaves the display"):
+            for frame, phase in enumerate(phases):
+                slm.set_frame(frame, phase)
+            np.testing.assert_array_equal(slm.display, blank)
+
+        with subtests.test("a stored frame displays as its direct write"):
+            sent = []
+            hook = slm._set_phase_hw
+            slm._set_phase_hw = lambda display: sent.append(as_numpy(display).copy())
+            try:
+                for frame in (1, 0, np.int64(1)):
+                    assert slm.set_phase(frame=frame) is None
+                    np.testing.assert_array_equal(sent[-1], expected[frame][1])
+                    np.testing.assert_array_equal(slm.phase, expected[frame][0])
+                    np.testing.assert_array_equal(slm.display, expected[frame][1])
+            finally:
+                slm._set_phase_hw = hook
+
+        with subtests.test("a direct write leaves the stored frames"):
+            slm.set_phase(frame=0)
+            slm.set_phase(None)
+            slm.set_phase(frame=0)
+            np.testing.assert_array_equal(slm.display, expected[0][1])
+
+        with subtests.test("sequences, repeats and unstored frames raise"):
+            with pytest.raises(ValueError, match="one stored frame"):
+                slm.set_phase(frame=[0, 1])
+            with pytest.raises(ValueError, match="one stored frame"):
+                slm.set_phase(frame=0, repeat=2)
+            with pytest.raises(IndexError, match="not been stored"):
+                slm.set_phase(frame=5)
+            np.testing.assert_array_equal(slm.display, expected[0][1])
+
+    def test_format_buffers(self, slm):
+        """The formatting helpers write a given buffer and leave the display alone."""
+        levels = (np.arange(slm.shape[0] * slm.shape[1]) % slm.bitresolution).astype(slm.dtype)
+        levels = levels.reshape(slm.shape)
+        slm.set_phase(self._wrapped_phase(slm), phase_correct=False)
+        held = slm.display.copy()
+        buffer = np.empty_like(slm.display)
+
+        assert slm._gray2display(levels, out=buffer) is buffer
+        np.testing.assert_array_equal(buffer, levels)
+        assert slm._format_phase_hw(slm.phase.copy(), out=buffer) is buffer
+        np.testing.assert_array_equal(buffer, held)
+        np.testing.assert_array_equal(slm.display, held)
 
     def test_set_gamma(self, subtests):
         """The table inverts a measured response; clearing it restores the linear path."""
@@ -992,6 +1172,23 @@ class TestSegmentedSLM:
 
         parent.close()
 
+    def test_frames(self):
+        """A segment holds its frames on the host; frame timing is the parent's."""
+        parent = SimulatedSLM(resolution=(64, 64))
+        child = SegmentedSLM(parent, window=(16, 32, 8, 24), name="rect")
+        level = parent.bitresolution // 2
+        held = parent.display.copy()
+        child.set_frame(0, np.full(child.shape, level, dtype=parent.dtype))
+        np.testing.assert_array_equal(parent.display, held)
+        child.set_phase(frame=0)
+        held[tuple(child.extent_slice)] = level
+        np.testing.assert_array_equal(parent.display, held)
+
+        for call in (lambda: child.set_frametime(1e-3), child.get_frametime):
+            with pytest.raises(RuntimeError, match="parent SLM"):
+                call()
+        parent.close()
+
     def test_lut(self, subtests):
         """A segment tracks the parent's lut until given one of its own."""
         parent = SimulatedSLM(resolution=(64, 64))
@@ -1108,6 +1305,81 @@ class TestScreenMirrored:
                     assert np.array_equal(cp.asnumpy(frame), reference)
 
 
+class _FakeLcoslib:
+    """Stand-in for Hamamatsu's library: hardware frames and the displayed frame."""
+
+    def __init__(self):
+        self.frames = {}
+        self.displayed = None
+        self.Open_Dev = self._wrap(lambda ids, size: 1)
+        self.Close_Dev = self._wrap(lambda ids, size: 1)
+        self.Check_HeadSerial = self._wrap(lambda board, serial, size: 1)
+        self.Mode_Check = self._wrap(self._mode_check)
+        self.Write_FMemArray = self._wrap(self._write)
+        self.Change_DispSlot = self._wrap(self._change)
+
+    @staticmethod
+    def _wrap(function):
+        """Accept the ``argtypes`` and ``restype`` that the driver assigns."""
+
+        def call(*args):
+            return function(*args)
+
+        return call
+
+    @staticmethod
+    def _mode_check(board, mode):
+        mode._obj.value = 1
+        return 1
+
+    def _write(self, board, data, size, width, height, frame):
+        self.frames[frame] = np.frombuffer(data, dtype=np.uint8).reshape(height, width).copy()
+        return 1
+
+    def _change(self, board, frame):
+        self.displayed = frame
+        return 1
+
+
+class TestHamamatsu:
+    """Tests for Hamamatsu's frame memory against a stand-in for its library."""
+
+    def test_frames(self, monkeypatch, subtests):
+        """Direct writes use hardware frame 0; stored frames follow it."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import slmsuite.hardware.slms.hamamatsu as hamamatsu
+
+        lib = _FakeLcoslib()
+        monkeypatch.setattr(hamamatsu, "Lcoslib", lib)
+        slm = hamamatsu.Hamamatsu(resolution=(48, 32))
+        frames = [np.full(slm.shape, level, dtype=slm.dtype) for level in (10, 20, 30)]
+
+        with subtests.test("a store leaves the display"):
+            slm.set_phase(frames[2])
+            slm.set_frame(0, frames[0])
+            slm.set_frame(1, frames[1])
+            assert lib.displayed == 0 and sorted(lib.frames) == [0, 1, 2]
+            np.testing.assert_array_equal(lib.frames[0], frames[2])
+
+        with subtests.test("a direct write leaves the stored frames"):
+            slm.set_phase(frame=0)
+            np.testing.assert_array_equal(lib.frames[lib.displayed], frames[0])
+            slm.set_phase(frames[2])
+            slm.set_phase(frame=0)
+            np.testing.assert_array_equal(lib.frames[lib.displayed], frames[0])
+            slm.set_phase(frame=1)
+            np.testing.assert_array_equal(lib.frames[lib.displayed], frames[1])
+
+        with subtests.test("sequences and repeats raise"):
+            with pytest.raises(ValueError, match="one stored frame"):
+                slm.set_phase(frame=[0, 1])
+            with pytest.raises(ValueError, match="one stored frame"):
+                slm.set_phase(frame=0, repeat=2)
+
+        slm.close()
+
+
 class TestPLM:
     """Tests for PLM's bit packing, which needs no display."""
 
@@ -1140,14 +1412,16 @@ class TestPLM:
 
 class _FakeALP:
     """
-    Stand-in for ViALUX's ``alp51.dll`` with V-9903Ps that stay busy for ``busy_polls``
-    ``ALP_PROJ_STATE`` inquiries after each start, as for a picture, and refuse uploads,
-    timing and projection settings while busy.
+    Stand-in for ViALUX's ``alp51.dll`` with V-9903Ps whose sequence holds frames,
+    plays them linearly or through the frame lookup table, and stays busy for
+    ``busy_polls`` ``ALP_PROJ_STATE`` inquiries after each start (forever in slave mode,
+    awaiting a trigger), refusing uploads, timing and projection settings while busy.
     """
 
     ACTIVE = vialux.ALP_PROJ_IDLE - 1
+    SHAPE = (1088, 2048)
 
-    def __init__(self, devices=1, busy_polls=2):
+    def __init__(self, devices=1, busy_polls=2, memory=36, flut_entries=8):
         self.devices = devices
         self.busy_polls = busy_polls
         self.allocated = 0
@@ -1155,20 +1429,31 @@ class _FakeALP:
         self.dev = {
             vialux.ALPControl.DEVICE_NUMBER: 4242,
             vialux.ALPControl.DEV_DMDTYPE: 14,
-            vialux.ALPControl.DEV_DISPLAY_WIDTH: 2048,
-            vialux.ALPControl.DEV_DISPLAY_HEIGHT: 1088,
+            vialux.ALPControl.DEV_DISPLAY_WIDTH: self.SHAPE[1],
+            vialux.ALPControl.DEV_DISPLAY_HEIGHT: self.SHAPE[0],
+            vialux.ALPControl.AVAIL_MEMORY: memory,
             vialux.ALPControl.PLM_BIAS_VOLTAGE: 1000,
             vialux.ALPControl.PLM_MIN_BIAS_VOLTAGE: -500,
             vialux.ALPControl.PLM_MAX_BIAS_VOLTAGE: 2500,
             vialux.ALPControl.DEV_DMD_MODE: vialux.DMDMode.RESUME,
         }
-        self.proj = {vialux.ALPControl.PROJ_MODE: vialux.ALP_MASTER}
+        self.proj = {
+            vialux.ALPControl.PROJ_MODE: vialux.ALP_MASTER,
+            vialux.ALPControl.FLUT_MAX_ENTRIES9: flut_entries,
+        }
         self.seqs = {}
+        self.flut = [0] * flut_entries
+        self.flut_writes = []
+        self.seq_controls = []
         self.running = self.waiting = None
+        self.looping = False
         self.busy = 0
         self.displayed = None
+        self.shown = []
         self.halts = 0
+        self.proj_halts = 0
         self.starts = []
+        self.puts = []
 
     @staticmethod
     def _id(x):
@@ -1179,14 +1464,33 @@ class _FakeALP:
         ref._obj.value = value
         return vialux._ALPReturn.OK
 
-    def _busy(self, sequence=None):
-        if sequence is None:
-            return self.running is not None
-        return sequence in (self.running, self.waiting)
+    def _busy(self):
+        return self.running is not None
 
-    def _run(self, sequence):
-        self.running, self.busy = sequence, self.busy_polls
-        self.displayed = self.seqs[sequence]["frame"]
+    def _order(self, sequence):
+        """The frames that a start of ``sequence`` plays, per its controls."""
+        seq = self.seqs[sequence]
+        controls = seq["controls"]
+        first = controls.get(vialux.ALPControl.FIRSTFRAME, 0)
+        last = controls.get(vialux.ALPControl.LASTFRAME, len(seq["frames"]) - 1)
+        mode = controls.get(vialux.ALPControl.FLUT_MODE, vialux.ALP_FLUT_NONE)
+        if mode == vialux.ALP_FLUT_NONE:
+            return list(range(first, last + 1))
+        entries = controls.get(vialux.ALPControl.FLUT_ENTRIES9, 1)
+        if mode == vialux.ALP_FLUT_18BIT:
+            entries //= 2
+        return [first + e for e in self.flut[:entries]]
+
+    def _run(self, sequence, continuous):
+        order = self._order(sequence)
+        passes = (
+            1
+            if continuous
+            else self.seqs[sequence]["controls"].get(vialux.ALPControl.SEQ_REPEAT, 1)
+        )
+        self.shown.extend(order * passes)
+        self.displayed = self.seqs[sequence]["frames"][order[-1]]
+        (self.running, self.looping, self.busy) = (sequence, continuous, self.busy_polls)
 
     def AlpDevAlloc(self, number, flag, ref):
         if self.alloc_error is not None:
@@ -1202,6 +1506,7 @@ class _FakeALP:
 
     def AlpDevHalt(self, device):
         self.running = self.waiting = self.displayed = None
+        self.looping = False
         self.halts += 1
         return vialux._ALPReturn.OK
 
@@ -1214,9 +1519,11 @@ class _FakeALP:
     def AlpDevInquire(self, device, inquire, ref):
         return self._put(ref, int(self.dev.get(inquire, 0)))
 
-    def AlpSeqAlloc(self, device, bitplanes, pictures, ref):
+    def AlpSeqAlloc(self, device, bitplanes, frames, ref):
+        if frames * bitplanes > self.dev[vialux.ALPControl.AVAIL_MEMORY]:
+            return vialux._ALPReturn.MEMORY_FULL
         sequence = 200 + len(self.seqs)
-        self.seqs[sequence] = {"controls": {}, "timing": None, "frame": None}
+        self.seqs[sequence] = {"controls": {}, "timing": None, "frames": [None] * frames}
         return self._put(ref, sequence)
 
     def AlpSeqFree(self, device, sequence):
@@ -1224,33 +1531,63 @@ class _FakeALP:
         return vialux._ALPReturn.OK
 
     def AlpSeqControl(self, device, sequence, control, value):
-        self.seqs[self._id(sequence)]["controls"][control] = value
+        seq = self.seqs[self._id(sequence)]
+        controls = seq["controls"]
+        controls[control] = value
+        self.seq_controls.append((control, value))
+        first = controls.get(vialux.ALPControl.FIRSTFRAME, 0)
+        last = controls.get(vialux.ALPControl.LASTFRAME, len(seq["frames"]) - 1)
+        if first > last:
+            return vialux._ALPReturn.PARM_INVALID
         return vialux._ALPReturn.OK
 
-    def AlpSeqTiming(self, device, sequence, illuminate, picture, delay, width, trigger_delay):
-        if self._busy(self._id(sequence)):
+    def AlpSeqTiming(self, device, sequence, illuminate, frametime, delay, width, trigger_delay):
+        if self._busy():
             return vialux._ALPReturn.SEQ_IN_USE
-        if width > picture:
+        if width > frametime:
             return vialux._ALPReturn.PARM_INVALID
-        self.seqs[self._id(sequence)]["timing"] = (picture, delay, width)
+        self.seqs[self._id(sequence)]["timing"] = (frametime, delay, width)
         return vialux._ALPReturn.OK
 
     def AlpSeqInquire(self, device, sequence, inquire, ref):
-        return self._put(ref, 150 if inquire == vialux.ALPControl.MIN_PICTURE_TIME else 0)
+        seq = self.seqs[self._id(sequence)]
+        values = {
+            vialux.ALPControl.MIN_PICTURE_TIME: 150,
+            vialux.ALPControl.PICTURE_TIME: seq["timing"][0] if seq["timing"] else 0,
+        }
+        return self._put(ref, values.get(inquire, 0))
 
     def AlpSeqPut(self, device, sequence, offset, load, pointer):
-        if self._busy(self._id(sequence)):
+        seq = self.seqs[self._id(sequence)]
+        if self._busy():
             return vialux._ALPReturn.SEQ_IN_USE
-        frame = np.frombuffer(ctypes.string_at(pointer, 1088 * 2048), dtype=np.uint8)
-        self.seqs[self._id(sequence)]["frame"] = frame.reshape(1088, 2048).copy()
+        if offset < 0 or offset + load > len(seq["frames"]):
+            return vialux._ALPReturn.PARM_INVALID
+        size = self.SHAPE[0] * self.SHAPE[1]
+        frames = np.frombuffer(ctypes.string_at(pointer, load * size), dtype=np.uint8)
+        for k, frame in enumerate(frames.reshape(load, *self.SHAPE)):
+            seq["frames"][offset + k] = frame.copy()
+        self.puts.append((self._id(sequence), offset))
+        return vialux._ALPReturn.OK
+
+    def _enqueue(self, sequence, continuous):
+        self.starts.append((self._id(sequence), continuous))
+        if self.running is None:
+            self._run(self._id(sequence), continuous)
+        else:
+            self.waiting = (self._id(sequence), continuous)
         return vialux._ALPReturn.OK
 
     def AlpProjStart(self, device, sequence):
-        self.starts.append(self._id(sequence))
-        if self.running is None:
-            self._run(self._id(sequence))
-        else:
-            self.waiting = self._id(sequence)
+        return self._enqueue(sequence, False)
+
+    def AlpProjStartCont(self, device, sequence):
+        return self._enqueue(sequence, True)
+
+    def AlpProjHalt(self, device):
+        self.waiting = None
+        self.looping = False
+        self.proj_halts += 1
         return vialux._ALPReturn.OK
 
     def AlpProjControl(self, device, control, value):
@@ -1259,14 +1596,31 @@ class _FakeALP:
         self.proj[control] = value
         return vialux._ALPReturn.OK
 
+    def AlpProjControlEx(self, device, control, pointer):
+        table = pointer._obj
+        limit = self.proj[vialux.ALPControl.FLUT_MAX_ENTRIES9]
+        if control == vialux.ALPControl.FLUT_WRITE_18BIT:
+            limit //= 2
+        if table.nOffset + table.nSize > limit:
+            return vialux._ALPReturn.PARM_INVALID
+        entries = list(table.FrameNumbers[: table.nSize])
+        self.flut[table.nOffset : table.nOffset + table.nSize] = entries
+        self.flut_writes.append((control, entries))
+        return vialux._ALPReturn.OK
+
     def AlpProjInquire(self, device, inquire, ref):
-        if self.running is not None:
+        if inquire != vialux.ALPControl.PROJ_STATE:
+            return self._put(ref, int(self.proj.get(inquire, 0)))
+        if self.running is not None and self.proj[vialux.ALPControl.PROJ_MODE] == vialux.ALP_MASTER:
             self.busy -= 1
             if self.busy <= 0:
-                self.running = None
-                if self.waiting is not None:
-                    (waiting, self.waiting) = (self.waiting, None)
-                    self._run(waiting)
+                if self.looping:
+                    self.busy = self.busy_polls
+                else:
+                    self.running = None
+                    if self.waiting is not None:
+                        (waiting, self.waiting) = (self.waiting, None)
+                        self._run(*waiting)
         return self._put(ref, vialux.ALP_PROJ_IDLE if self.running is None else self.ACTIVE)
 
 
@@ -1283,29 +1637,48 @@ class TestVialuxPLM:
     def _phase(seed):
         return np.random.default_rng(seed).uniform(0, 2 * np.pi, (1088, 2048))
 
+    @staticmethod
+    def _seq(alp):
+        return next(iter(alp.seqs.values()))
+
+    def _fill(self, plm, n):
+        for i in range(n):
+            plm.set_frame(i, self._phase(i))
+
     def test_open_close(self, alp, subtests):
-        """Opening configures the double buffer and shows a blank; closing releases all."""
-        plm = vialux.PLM(wav_um=0.488, bias_voltage_mv=530)
+        """Opening reserves the frame memory and shows a blank; closing releases all."""
+        plm = vialux.PLM(wav_um=0.488)
 
         with subtests.test("model and settings"):
             assert plm.shape == (1088, 2048) and plm.bitdepth == 4
-            assert plm.picture_time_us == 150 and plm.settle_time_s == 0
-            assert alp.dev[vialux.ALPControl.PLM_BIAS_VOLTAGE] == 530
+            assert plm.get_frametime() == 150e-6 and plm.settle_time_s == 0
+            assert alp.dev[vialux.ALPControl.PLM_BIAS_VOLTAGE] == 1000
 
-        with subtests.test("two sequences of LSB-aligned levels, timed"):
-            assert len(alp.seqs) == 2
-            for seq in alp.seqs.values():
-                assert seq["controls"][vialux.ALPControl.DATA_FORMAT] == vialux.ALP_DATA_LSB_ALIGN
-                assert seq["timing"][0] == 150
+        with subtests.test("one LSB-aligned sequence, timed: the frame memory and a scratch"):
+            assert plm.frame_count == 8 and len(alp.seqs) == 1
+            seq = self._seq(alp)
+            assert len(seq["frames"]) == 9
+            assert seq["controls"][vialux.ALPControl.DATA_FORMAT] == vialux.ALP_DATA_LSB_ALIGN
+            assert seq["timing"][0] == 150
 
-        with subtests.test("a blank pattern is displayed and held"):
+        with subtests.test("a blank pattern is displayed from the scratch frame and held"):
             assert alp.displayed is not None and np.all(alp.displayed == alp.displayed[0, 0])
-            assert alp.running is None
+            assert alp.shown == [8] and alp.running is None
 
         plm.close()
         plm.close()
-        with subtests.test("close frees the sequences and the device, once"):
+        with subtests.test("close frees the sequence and the device, once"):
             assert alp.seqs == {} and alp.allocated == 0
+
+        with subtests.test("frame_count= reserves fewer"):
+            plm = vialux.PLM(wav_um=0.488, frame_count=3)
+            assert plm.frame_count == 3 and len(self._seq(alp)["frames"]) == 4
+            plm.close()
+
+        with subtests.test("more frames than the memory holds raises and releases"):
+            with pytest.raises(RuntimeError, match="frames"):
+                vialux.PLM(wav_um=0.488, frame_count=20)
+            assert alp.allocated == 0
 
     def test_open_writes_the_bias(self, alp):
         """Opening writes the reported bias, which the PLM otherwise keeps from before."""
@@ -1342,19 +1715,22 @@ class TestVialuxPLM:
             vialux.PLM(wav_um=0.488, model_name="p99").close()
 
     def test_writes(self, alp, subtests):
-        """Each write displays its levels as one picture, alternating buffers."""
+        """Each write displays its levels from the scratch frame, once."""
         plm = vialux.PLM(wav_um=0.488)
-        starts = len(alp.starts)
+        (puts, shown) = (len(alp.puts), len(alp.shown))
 
         with subtests.test("blocking writes are displayed when they return"):
             for seed in range(3):
-                plm.set_phase(self._phase(seed))
+                assert plm.set_phase(self._phase(seed)) is plm.display
                 assert alp.running is None
                 assert np.array_equal(alp.displayed, as_numpy(plm.display))
 
-        with subtests.test("the buffers alternate"):
-            used = alp.starts[starts:]
-            assert len(set(used)) == 2 and all(a != b for a, b in itertools.pairwise(used))
+        with subtests.test("writes use the scratch frame"):
+            assert [offset for _, offset in alp.puts[puts:]] == [8, 8, 8]
+            assert alp.shown[shown:] == [8, 8, 8]
+            seq = self._seq(alp)
+            assert seq["controls"][vialux.ALPControl.FIRSTFRAME] == 8
+            assert seq["controls"][vialux.ALPControl.LASTFRAME] == 8
 
         with subtests.test("non-blocking writes never upload into a busy sequence"):
             for seed in range(3, 7):
@@ -1364,26 +1740,288 @@ class TestVialuxPLM:
 
         plm.close()
 
+    def test_frames(self, alp, subtests):
+        """Stores fill the frame memory without displaying; set_phase(frame=) displays it."""
+        plm = vialux.PLM(wav_um=0.488)
+        seq = self._seq(alp)
+
+        with subtests.test("a store is processed like a write and does not change the display"):
+            plm.set_phase(self._phase(0))
+            expected = as_numpy(plm.display).copy()
+            plm.set_phase(self._phase(1))
+            (held, display) = (alp.displayed, as_numpy(plm.display).copy())
+            stored = plm.set_frame(2, self._phase(0))
+            np.testing.assert_array_equal(seq["frames"][2], expected)
+            np.testing.assert_array_equal(as_numpy(stored), expected)
+            assert alp.displayed is held
+            np.testing.assert_array_equal(as_numpy(plm.display), display)
+
+        with subtests.test("indices outside the frame memory raise"):
+            with pytest.raises(IndexError, match="8 frames"):
+                plm.set_frame(8, self._phase(0))
+            with pytest.raises(IndexError, match="Frame -1 is outside"):
+                plm.set_frame(-1, self._phase(0))
+            with pytest.raises(IndexError, match="8"):
+                plm.set_phase(frame=[0, 8])
+
+        with subtests.test("set_phase(frame=) displays a stored frame and holds it"):
+            display = as_numpy(plm.display).copy()
+            assert plm.set_phase(frame=2) is None
+            assert alp.running is None and alp.shown[-1] == 2
+            np.testing.assert_array_equal(alp.displayed, expected)
+            np.testing.assert_array_equal(as_numpy(plm.display), display)
+
+        with subtests.test("a range plays in order, repeat times, and blocks"):
+            self._fill(plm, 3)
+            alp.shown.clear()
+            plm.set_phase(frame=range(3), repeat=2)
+            assert alp.shown == [0, 1, 2, 0, 1, 2] and alp.running is None
+            assert seq["controls"][vialux.ALPControl.SEQ_REPEAT] == 2
+            np.testing.assert_array_equal(alp.displayed, seq["frames"][2])
+
+        with subtests.test("an unchanged range is not resent"):
+            controls = len(alp.seq_controls)
+            plm.set_phase(frame=range(3), repeat=2)
+            assert len(alp.seq_controls) == controls
+
+        with subtests.test("block=False returns while busy; a store waits for the end"):
+            plm.set_phase(frame=range(3), block=False)
+            assert alp.running is not None
+            plm.set_frame(5, self._phase(5))
+            assert alp.running is None and alp.puts[-1][1] == 5
+
+        with subtests.test("bad frame arguments raise"):
+            for frame in ([], [[0, 1]], [0.5]):
+                with pytest.raises(ValueError, match="frame"):
+                    plm.set_phase(frame=frame)
+            with pytest.raises(ValueError, match="repeat"):
+                plm.set_phase(frame=0, repeat=vialux._SEQ_REPEAT_MAX + 1)
+
+        plm.close()
+
+    def test_orders(self, alp, subtests):
+        """Any order plays through the frame lookup table; ranges bypass it."""
+        plm = vialux.PLM(wav_um=0.488)
+        seq = self._seq(alp)
+        self._fill(plm, 8)
+
+        with subtests.test("an order is written relative to its first frame, 9-bit"):
+            alp.shown.clear()
+            plm.set_phase(frame=[1, 3, 5])
+            assert alp.shown == [1, 3, 5]
+            assert seq["controls"][vialux.ALPControl.FLUT_MODE] == vialux.ALP_FLUT_9BIT
+            assert seq["controls"][vialux.ALPControl.FLUT_ENTRIES9] == 3
+            assert seq["controls"][vialux.ALPControl.FIRSTFRAME] == 1
+            assert seq["controls"][vialux.ALPControl.LASTFRAME] == 5
+            assert alp.flut_writes[-1] == (vialux.ALPControl.FLUT_WRITE_9BIT, [0, 2, 4])
+
+        with subtests.test("an unchanged order is not rewritten"):
+            writes = len(alp.flut_writes)
+            plm.set_phase(frame=[1, 3, 5])
+            assert len(alp.flut_writes) == writes
+
+        with subtests.test("frames may repeat within an order"):
+            alp.shown.clear()
+            plm.set_phase(frame=np.array([0, 1, 0, 2]), repeat=2)
+            assert alp.shown == [0, 1, 0, 2, 0, 1, 0, 2]
+
+        with subtests.test("a descending range is an order"):
+            alp.shown.clear()
+            plm.set_phase(frame=range(7, 4, -1))
+            assert alp.shown == [7, 6, 5]
+
+        with subtests.test("a range after an order bypasses the table"):
+            alp.shown.clear()
+            plm.set_phase(frame=range(2, 5))
+            assert alp.shown == [2, 3, 4]
+            assert seq["controls"][vialux.ALPControl.FLUT_MODE] == vialux.ALP_FLUT_NONE
+
+        with subtests.test("more entries than the table holds raise"):
+            with pytest.raises(ValueError, match="arbitrary order"):
+                plm.set_phase(frame=[0, 2, 1, 3, 5, 4, 6, 7, 0])
+
+        with subtests.test("a rejected order leaves a running loop alone"):
+            plm.set_phase(frame=range(3), repeat=0)
+            with pytest.raises(ValueError, match="arbitrary order"):
+                plm.set_phase(frame=[0, 2, 1, 3, 5, 4, 6, 7, 0])
+            assert alp.proj_halts == 0 and alp.running is not None
+            plm.set_phase(frame=0)
+            assert alp.running is None
+
+        with subtests.test("the order is copied, not aliased"):
+            order = np.array([1, 3, 5])
+            plm.set_phase(frame=order)
+            order[:] = 2
+            alp.shown.clear()
+            plm.reset_interface()
+            plm._wait_for_idle()
+            assert alp.shown == [1, 3, 5]
+
+        plm.close()
+
+    def test_wide_orders(self, monkeypatch, subtests):
+        """Orders spanning 512 or more frames use 18-bit entries, which halve the table."""
+        fake = _FakeALP(memory=4 * 1201)
+        monkeypatch.setitem(vialux._alp_libs, vialux._DEFAULT_ALP_PATH, fake)
+        plm = vialux.PLM(wav_um=0.488)
+        seq = self._seq(fake)
+        assert plm.frame_count == 1200
+
+        with subtests.test("18-bit entries"):
+            for i in (0, 600):
+                plm.set_frame(i, self._phase(i))
+            fake.shown.clear()
+            plm.set_phase(frame=[600, 0])
+            assert fake.shown == [600, 0]
+            assert seq["controls"][vialux.ALPControl.FLUT_MODE] == vialux.ALP_FLUT_18BIT
+            assert seq["controls"][vialux.ALPControl.FLUT_ENTRIES9] == 4
+            assert fake.flut_writes[-1] == (vialux.ALPControl.FLUT_WRITE_18BIT, [600, 0])
+
+        with subtests.test("the halved table bounds the length"):
+            with pytest.raises(ValueError, match="At most 4"):
+                plm.set_phase(frame=[0, 600, 0, 600, 0])
+
+        plm.close()
+
+    def test_loops(self, alp, monkeypatch, subtests):
+        """A loop runs until a write; settings pause and resume it; stores are refused."""
+        plm = vialux.PLM(wav_um=0.488)
+        seq = self._seq(alp)
+        self._fill(plm, 3)
+
+        with subtests.test("repeat=0 starts a continuous loop and returns"):
+            plm.set_phase(frame=range(3), repeat=0)
+            assert alp.starts[-1][1] is True and alp.running is not None
+
+        with subtests.test("a store during a loop raises"):
+            with pytest.raises(RuntimeError, match="loops"):
+                plm.set_frame(1, self._phase(9))
+            assert alp.running is not None
+
+        with subtests.test("the frame time changes under the loop"):
+            plm.set_frametime(300e-6)
+            assert alp.proj_halts == 1 and seq["timing"][0] == 300
+            assert alp.starts[-1][1] is True and alp.running is not None
+
+        with subtests.test("a shorter frame time waits out the pass at the old one"):
+            plm.set_frametime(1.0)
+            plm.switch_timeout_s = 0
+            clock = itertools.count(1.0)
+            monkeypatch.setattr(vialux.time, "perf_counter", lambda: next(clock))
+            plm.set_frametime(150e-6)
+            monkeypatch.undo()
+            plm.switch_timeout_s = 5.0
+            assert seq["timing"][0] == 150 and alp.running is not None and plm._looping
+
+        with subtests.test("the synch output changes under the loop"):
+            halts = alp.proj_halts
+            plm.set_output_trigger(True, polarity="low", pulse_width_s=100e-6)
+            assert alp.proj_halts == halts + 1 and seq["timing"][2] == 100
+            assert alp.dev[vialux.ALPControl.SYNCH_POLARITY] == vialux.ALP_LEVEL_LOW
+            assert alp.starts[-1][1] is True and alp.running is not None
+
+        with subtests.test("reset_interface redisplays the loop"):
+            halts = alp.halts
+            plm.reset_interface()
+            assert alp.halts == halts + 1
+            assert alp.starts[-1][1] is True and alp.running is not None
+
+        with subtests.test("a write ends the loop"):
+            halts = alp.proj_halts
+            plm.set_phase(self._phase(4))
+            assert alp.proj_halts == halts + 1 and alp.running is None
+            assert alp.starts[-1][1] is False
+            assert np.array_equal(alp.displayed, as_numpy(plm.display))
+
+        with subtests.test("a stored frame ends the loop too"):
+            plm.set_phase(frame=range(3), repeat=0)
+            plm.set_phase(frame=1)
+            assert alp.running is None and alp.shown[-1] == 1
+
+        plm.close()
+
+    def test_triggers(self, alp, subtests):
+        """The input trigger makes frames wait; disabling it frees stalled frames."""
+        plm = vialux.PLM(wav_um=0.488)
+        self._fill(plm, 3)
+
+        with subtests.test("enabling under a loop restarts it in slave mode"):
+            plm.set_phase(frame=range(3), repeat=0)
+            plm.set_input_trigger(True, edge="falling")
+            assert alp.proj[vialux.ALPControl.PROJ_MODE] == vialux.ALP_SLAVE
+            assert alp.dev[vialux.ALPControl.TRIGGER_EDGE] == vialux.ALP_EDGE_FALLING
+            assert alp.starts[-1][1] is True and alp.running is not None
+
+        with subtests.test("disabling halts the stalled loop and redisplays it free-running"):
+            halts = alp.halts
+            plm.set_input_trigger(False)
+            assert alp.halts == halts + 1
+            assert alp.proj[vialux.ALPControl.PROJ_MODE] == vialux.ALP_MASTER
+            assert alp.starts[-1][1] is True and alp.running is not None
+            plm.set_phase(frame=1)
+            assert alp.running is None
+
+        with subtests.test("triggered frames do not block"):
+            plm.set_input_trigger(True)
+            plm.set_phase(frame=range(3))
+            assert alp.running is not None
+
+        with subtests.test("disabling halts stalled frames and redisplays free-running"):
+            halts = alp.halts
+            plm.set_input_trigger(False)
+            assert alp.halts == halts + 1
+            assert alp.proj[vialux.ALPControl.PROJ_MODE] == vialux.ALP_MASTER
+            assert alp.starts[-1][1] is False
+            plm._wait_for_idle()
+            assert alp.running is None and alp.shown[-3:] == [0, 1, 2]
+
+        with subtests.test("disabling while idle just switches mode"):
+            halts = alp.halts
+            plm.set_input_trigger(False)
+            assert alp.halts == halts
+
+        with subtests.test("disabling an already disabled trigger leaves a loop alone"):
+            plm.set_phase(frame=range(3), repeat=0)
+            (halts, starts) = (alp.halts, len(alp.starts))
+            plm.set_input_trigger(False)
+            assert alp.halts == halts and len(alp.starts) == starts and alp.running is not None
+            plm.set_phase(frame=0)
+
+        with subtests.test("a stalled write times out with a hint"):
+            plm.set_input_trigger(True)
+            plm.switch_timeout_s = 0
+            plm.set_phase(self._phase(0))
+            with pytest.raises(RuntimeError, match="trigger"):
+                plm.set_phase(self._phase(1))
+
+        plm.close()
+
     def test_settings_keep_the_pattern(self, alp, subtests):
         """Timing and synch settings apply while idle, without clearing the held pattern."""
         plm = vialux.PLM(wav_um=0.488)
         plm.set_phase(self._phase(0))
-        held, halts = alp.displayed, alp.halts
+        (held, halts) = (alp.displayed, alp.halts)
+        seq = self._seq(alp)
 
-        with subtests.test("picture time"):
-            plm.picture_time_us = 300
-            assert all(seq["timing"][0] == 300 for seq in alp.seqs.values())
+        with subtests.test("frame time, rounded to microseconds and read back"):
+            assert plm.set_frametime(300.4e-6) == 300e-6
+            assert seq["timing"][0] == 300 and plm.get_frametime() == 300e-6
 
-        with subtests.test("output trigger"):
-            plm.set_output_trigger(True, polarity="low", delay_us=10, pulse_width_us=100)
-            assert all(seq["timing"][1:] == (10, 100) for seq in alp.seqs.values())
+        with subtests.test("below the minimum raises and keeps the setting"):
+            with pytest.raises(ValueError, match="minimum"):
+                plm.set_frametime(100e-6)
+            assert plm.get_frametime() == 300e-6
+
+        with subtests.test("output trigger, in seconds"):
+            plm.set_output_trigger(True, polarity="low", delay_s=10e-6, pulse_width_s=100e-6)
+            assert seq["timing"][1:] == (10, 100)
 
         with subtests.test("no halt, pattern held"):
             assert alp.halts == halts and alp.displayed is held
 
         with subtests.test("a rejected output trigger leaves the timing and polarity unchanged"):
             with pytest.raises(RuntimeError):
-                plm.set_output_trigger(True, pulse_width_us=1000)
+                plm.set_output_trigger(True, pulse_width_s=1000e-6)
             assert (plm._synch_delay_us, plm._synch_pulse_width_us) == (10, 100)
             assert alp.dev[vialux.ALPControl.SYNCH_POLARITY] == vialux.ALP_LEVEL_LOW
 
@@ -1395,14 +2033,16 @@ class TestVialuxPLM:
         plm.close()
 
     def test_bias_and_gamma(self, alp, subtests):
-        """The bias is range-checked, and clearing the lookup table restores the model's."""
+        """The bias is range-checked in volts, and clearing the lookup table restores the model's."""
         plm = vialux.PLM(wav_um=0.488)
 
         with subtests.test("bias"):
-            plm.set_bias_voltage(600)
-            assert plm.get_bias_voltage() == 600
+            assert plm.get_bias_voltage_range() == (-0.5, 2.5)
+            plm.set_bias_voltage(0.6)
+            assert plm.get_bias_voltage() == 0.6
+            assert alp.dev[vialux.ALPControl.PLM_BIAS_VOLTAGE] == 600
             with pytest.raises(ValueError, match="outside"):
-                plm.set_bias_voltage(3000)
+                plm.set_bias_voltage(3)
 
         with subtests.test("set_gamma(None) restores the model's table"):
             plm.set_gamma(np.linspace(0, 0.9, 16))

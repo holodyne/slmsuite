@@ -272,6 +272,8 @@ class Server:
             "pickle",
             "flush",
             "_set_phase_hw",
+            "_set_frame_hw",
+            "_set_phase_frame_hw",
             "_set_exposure_hw",
             "_get_exposure_hw",
             "_get_image_hw",

@@ -204,3 +204,23 @@ class SegmentedSLM(SLM):
         RuntimeError
         """
         raise RuntimeError("Program the output trigger on the parent SLM.")
+
+    def set_frametime(self, frametime_s):
+        r"""
+        Set the frame time on the parent SLM.
+
+        Raises
+        ------
+        RuntimeError
+        """
+        raise RuntimeError("Set the frame time on the parent SLM.")
+
+    def get_frametime(self):
+        r"""
+        Read the frame time from the parent SLM.
+
+        Raises
+        ------
+        RuntimeError
+        """
+        raise RuntimeError("Read the frame time from the parent SLM.")
