@@ -361,21 +361,20 @@ class MultiplaneHologram(Hologram):
                 "Otherwise, we have no reference for the scale of a wavelength."
             )
 
-        f_eff = cameraslm.get_effective_focal_length("ij")
-        w0_kxy = cameraslm.slm.get_spot_radius_kxy()
-        w0_pix = f_eff * w0_kxy
-        w0_um = w0_pix * np.mean(cameraslm.cam.pitch_um)
+        f_um = cameraslm.get_effective_focal_length("um")
+        w0_pix = cameraslm.get_farfield_spot_size(basis="ij")
+        w0_um = f_um * cameraslm.slm.get_spot_radius_kxy()
 
         zr = np.pi * w0_um * w0_um / cameraslm.slm.wav_um  # (what if n != 1?)
 
         for j, z2 in enumerate(return_depths):
             for i, z1 in enumerate(target_depths):
-                dz = (z1 - z2) * (f_eff * f_eff)
+                dz = (z1 - z2) * f_um * f_um / cameraslm.slm.wav_um
 
                 blur = w0_pix * (np.sqrt(1 + (dz / zr) ** 2) - (1 if sharp_focus else 0))
-                blur = 2 * int(blur) + 1
+                blur = tuple(2 * int(b) + 1 for b in blur)
 
-                canvas[j, :, :] += cv2.GaussianBlur(targets[i], (blur, blur), 0)
+                canvas[j, :, :] += cv2.GaussianBlur(targets[i], blur, 0)
 
         return canvas
 

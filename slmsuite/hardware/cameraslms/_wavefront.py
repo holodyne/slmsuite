@@ -6,7 +6,7 @@ import numpy as np
 from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware.cameraslms._wavefront_superpixel import _WavefrontCalibrationSuperpixel
 from slmsuite.hardware.cameraslms._wavefront_zernike import _WavefrontCalibrationZernike
-from slmsuite.holography import toolbox
+from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.toolbox import fit_3pt, format_2vectors
 from slmsuite.misc.math import INTEGER_TYPES
 
@@ -94,17 +94,9 @@ class _WavefrontCalibration(
         calibration_points = np.rint(format_2vectors(calibration_points)).astype(int)
 
         # Error check that the calibration points are within the camera's field of view.
-        # If pitch is passed to kwargs, then camera should accommodate points within pitch/2 of the edge.
-        pitch = kwargs.get("pitch", 0)
-        # Unpack per axis; a raw (2, 1) pitch would broadcast into a (2, N) truth table.
-        (pitch_x, pitch_y) = (pitch, pitch) if np.isscalar(pitch) else np.ravel(pitch)[:2]
-
-        outside_fov_mask = (
-            (calibration_points[0, :] < pitch_x / 2)
-            + (calibration_points[1, :] < pitch_y / 2)
-            + (calibration_points[0, :] > self.cam.shape[1] - pitch_x / 2)
-            + (calibration_points[1, :] > self.cam.shape[0] - pitch_y / 2)
-        ) > 0
+        # If pitch is passed to kwargs, then camera should accommodate the pitch-wide patch.
+        pitch = np.maximum(np.ravel(kwargs.get("pitch", 0)), 1)
+        outside_fov_mask = ~analysis.take_validate(self.cam.shape, calibration_points, pitch)
 
         if np.any(outside_fov_mask):
             raise ValueError(
@@ -134,8 +126,9 @@ class _WavefrontCalibration(
         pitch : float OR (float, float)
             The grid of points in the camera plane must have pixel pitch
             greater than this value.
-        field_exclusion : float OR None
-            Remove all points within ``field_exclusion`` of a ``field_point``.
+        field_exclusion : float OR (float, float) OR None
+            Remove all points within ``field_exclusion`` (an ellipse, for a pair) of a
+            ``field_point``.
             Set to zero if no removal is desired.
             If ``None``, defaults to ``pitch``.
         field_point : (float, float)
@@ -189,8 +182,7 @@ class _WavefrontCalibration(
         # Parse field_exclusion.
         if field_exclusion is None:
             field_exclusion = pitch
-        if not np.isscalar(field_exclusion):
-            field_exclusion = np.mean(field_exclusion)
+        field_exclusion = np.reshape(np.broadcast_to(np.ravel(field_exclusion), (2,)), (2, 1))
 
         # Gather other information.
         zeroth_order = np.rint(self.kxyslm_to_ijcam([0, 0])).astype(int)
@@ -276,10 +268,10 @@ class _WavefrontCalibration(
 
         for i in range(avoid_points.shape[1]):
             point = avoid_points[:, [i]]
-            distance = np.sum(np.square(calibration_points - point), axis=0)
-            calibration_points = np.delete(
-                calibration_points, distance < field_exclusion * field_exclusion, axis=1
-            )
+            # A zero exclusion along an axis removes nothing.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                distance = np.sum(np.square((calibration_points - point) / field_exclusion), axis=0)
+            calibration_points = np.delete(calibration_points, distance < 1, axis=1)
 
             # Plot bad points.
             if plot >= 1:

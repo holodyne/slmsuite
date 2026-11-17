@@ -18,7 +18,6 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PIL import Image
 
 from slmsuite import __version__
@@ -344,17 +343,15 @@ class SLM(_Common, ABC):
     @property
     def source_radius(self):
         r"""
-        The :math:`1/e` field-amplitude source radius in normalized units, for structured
-        beams such as :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian`. Set
-        independently of the pupil by :meth:`fit_aperture` or by
+        The ``(x, y)`` :math:`1/e` field-amplitude source radius in normalized units, for
+        structured beams such as :meth:`~slmsuite.holography.toolbox.phase.laguerre_gaussian`.
+        Set independently of the pupil by :meth:`fit_aperture` or by
         :meth:`set_aperture` ``(radius=...)``. Otherwise, it is derived from the
-        :attr:`aperture` scaling as :math:`1 / (2\,s)`, where :math:`s` is the (isotropic)
-        lateral scale, which raises :class:`ValueError` for an anisotropic (elliptical)
-        aperture that a single radius cannot describe.
+        :attr:`aperture` scaling :math:`s` as :math:`1 / (2\,s)` along each axis.
         """
         if self._source_radius is not None:
             return self._source_radius
-        return float(1.0 / (2.0 * self.aperture._isotropic_scale()))
+        return 1.0 / (2.0 * np.array(self.aperture.scale))
 
     def _unpickle(self, data):
         """
@@ -388,7 +385,7 @@ class SLM(_Common, ABC):
         # A None radius (derived from the aperture) is written to .h5 as a bool.
         source_radius = data.get("_source_radius", None)
         if source_radius is not None and not isinstance(source_radius, (bool, np.bool_)):
-            self._source_radius = float(source_radius)
+            self._source_radius = np.full(2, source_radius, dtype=float)
 
         # Last, as this renders through everything set above. The stored phase is
         # already corrected, so it must not be corrected a second time.
@@ -1492,9 +1489,10 @@ class SLM(_Common, ABC):
 
     def _fit_source_radius(self, power, method):
         """
-        The ``(x, y)`` pixel center and the :math:`1/e` field-amplitude radius, in the grid's
-        normalized units, of a source ``power`` distribution. Analyzed by moment calculations
-        (``"moments"``, faster) or by a least-squares Gaussian ``"fit"`` (more accurate).
+        The ``(x, y)`` pixel center and the ``(x, y)`` :math:`1/e` field-amplitude radius, in
+        the grid's normalized units, of a source ``power`` distribution. Analyzed by moment
+        calculations (``"moments"``, faster) or by a least-squares Gaussian ``"fit"`` (more
+        accurate).
         """
         if method == "fit":
             # The fit is on the amplitude; gaussian2d depends on the widths only through
@@ -1513,11 +1511,12 @@ class SLM(_Common, ABC):
         # same convention to recover absolute pixels.
         center_pix = np.squeeze(center) + (np.flip(self.shape) - 1) / 2.0
 
-        return (center_pix, float(np.mean(self.pitch * np.squeeze(radius))))
+        return (center_pix, self.pitch * np.squeeze(radius))
 
     def _length_to_norm(self, length, units):
         """
-        Convert a scalar ``length`` in ``units`` to the grid's normalized units.
+        Convert a ``length`` or ``(x, y)`` pair in ``units`` to the grid's normalized units.
+        A scalar in ``"pix"`` counts pixel widths; a pair counts pixels along each axis.
         ``units`` is one of ``"norm"``, ``"frac"``, ``"pix"``, or a key of
         :attr:`~slmsuite.holography.toolbox.LENGTH_FACTORS`.
         """
@@ -1533,12 +1532,12 @@ class SLM(_Common, ABC):
                 float(xp.nanmax(self._grid_base[1])),
             )
         elif units == "pix":
-            factor = float(np.mean(self.pitch))
+            factor = self.pitch if np.size(length) == 2 else self.pitch[0]
         elif units in toolbox.LENGTH_FACTORS:
             factor = toolbox.LENGTH_FACTORS[units] / self.wav_um
         else:
             raise RuntimeError(f"Did not recognize units '{units}'")
-        return length * factor
+        return np.asarray(length, dtype=float) * factor
 
     def set_aperture(self, spec=None, *, radius=None, center=None, units="norm"):
         r"""
@@ -1561,8 +1560,9 @@ class SLM(_Common, ABC):
             ``(float, float)`` / an :class:`~slmsuite.holography.toolbox.Aperture`).
             Mutually exclusive with ``radius``. If both ``spec`` and ``radius`` are
             ``None``, the current aperture's spec is kept.
-        radius : float OR None
-            Shorthand for a circular aperture of the given source (:math:`1/e`) radius,
+        radius : float OR (float, float) OR None
+            Shorthand for a circular aperture of the given source (:math:`1/e`) radius, or
+            an elliptical one for an ``(x, y)`` pair,
             interpreted in ``units`` and stored as :attr:`source_radius`. The
             aperture/pupil itself extends to twice this radius (the lateral scaling is
             :math:`1 / (2\,r)`). Passing a new ``spec`` instead drops any stored source
@@ -1572,10 +1572,13 @@ class SLM(_Common, ABC):
             centers the aperture on the geometric center of the SLM.
         units : str
             Units for ``radius``: ``"norm"`` (normalized to wavelengths, the default),
-            ``"frac"`` (fraction of the smaller half-extent of the SLM), ``"pix"`` (number
-            of pixels), or a physical length (``"um"``, ``"mm"``, ...). As the pupil extends
-            to twice ``radius``, a ``"frac"`` ``radius`` puts the pupil at that fraction of
-            the full extent of the shorter axis, as in :meth:`set_source_analytic`.
+            ``"frac"`` (fraction of the smaller half-extent of the SLM), ``"pix"`` (pixel
+            widths for a scalar, as :meth:`~slmsuite.holography.analysis.image_aperture_fit()`
+            returns; pixels along each axis for a pair), or a physical length (``"um"``,
+            ``"mm"``, ...).
+            As the pupil extends to twice ``radius``, a ``"frac"`` ``radius`` puts the pupil
+            at that fraction of the full extent of the shorter axis, as in
+            :meth:`set_source_analytic`.
 
         Returns
         -------
@@ -1586,8 +1589,9 @@ class SLM(_Common, ABC):
         if radius is not None:
             if spec is not None:
                 raise ValueError("Provide either spec or radius, not both.")
-            source_radius = float(self._length_to_norm(radius, units))
+            source_radius = np.full(2, np.ravel(self._length_to_norm(radius, units)))
             spec = 1.0 / (2.0 * source_radius)
+            spec = float(spec[0]) if spec[0] == spec[1] else tuple(spec)
 
         # An Aperture may be passed directly; take its spec, and its (already
         # normalized) center unless an explicit pixel ``center`` overrides it.
@@ -1619,7 +1623,8 @@ class SLM(_Common, ABC):
             :attr:`zernike_scaling`, is fit to the **rolloff** of the measured source power
             with :meth:`~slmsuite.holography.analysis.image_aperture_fit()`: its center is
             that of the circle which best fits the edge where the power falls off, and its
-            radius is where the power has fallen to ``edge_level``. Unlike the power
+            radius is where the power has fallen to ``edge_level``. The circle is physical,
+            an ellipse in the pixels of a rectangular-pixel SLM. Unlike the power
             centroid, this is not pulled toward bright regions inside the aperture, and edges
             which do not belong to the circle (such as a straight clip) are rejected.
         -   The :attr:`source_radius`: the :math:`1/e` field-amplitude radius
@@ -1659,34 +1664,38 @@ class SLM(_Common, ABC):
 
         if "amplitude" not in self.source:
             # No measured amplitude: guess a circular aperture from the grid extent.
-            radius_norm = 0.25 * float(np.min(np.flip(self.shape) * self.pitch))
-            (center_norm, pupil_norm) = (None, 2.0 * radius_norm)
+            radius_norm = np.full(2, 0.25 * float(np.min(np.flip(self.shape) * self.pitch)))
+            (center_norm, pupil_norm) = (None, 2.0 * radius_norm[0])
         else:
             power = np.square(np.abs(as_numpy(self.source["amplitude"])), dtype=float)
             (center_pix, radius_norm) = self._fit_source_radius(power, method)
 
             # Fit the pupil to the rolloff of the source power, not its centroid, which
             # bright regions inside the aperture pull off center.
-            rolloff = analysis.image_aperture_fit(power, edge_level=edge_level)
+            rolloff = analysis.image_aperture_fit(
+                power,
+                edge_level=edge_level,
+                aspect=self.pixel_aspect,
+            )
 
             if rolloff is None:
                 # With no edge, place the pupil where a Gaussian's power falls to edge_level.
                 center_norm = self._center_pix_to_norm(center_pix)
-                pupil_norm = float(np.sqrt(np.log(1 / edge_level) / 2) * radius_norm)
+                pupil_norm = float(np.sqrt(np.log(1 / edge_level) / 2 * np.prod(radius_norm)))
             else:
                 (edge_center, edge_radius) = rolloff
                 center_norm = self._center_pix_to_norm(edge_center)
-                pupil_norm = float(edge_radius * np.mean(self.pitch))
+                pupil_norm = float(edge_radius * self.pitch[0])
 
         for name, radius in (("source", radius_norm), ("aperture", pupil_norm)):
-            if not np.isfinite(radius) or radius <= 0:
+            if not np.all(np.isfinite(radius)) or np.any(radius <= 0):
                 raise RuntimeError(
                     f"fit_aperture found a degenerate {name} radius ({radius}); the "
                     "measured source amplitude carries no usable signal."
                 )
 
         self.aperture = toolbox.Aperture(self._grid_base, 1.0 / pupil_norm, center=center_norm)
-        self._source_radius = float(radius_norm)
+        self._source_radius = radius_norm
         self._grid = None
         return self.aperture
 
@@ -1739,6 +1748,7 @@ class SLM(_Common, ABC):
         """
         Plots measured or simulated amplitude and phase distribution
         of the SLM illumination. Also plots the rsquared goodness of fit value if available.
+        Pixels are drawn at their physical aspect ratio.
 
         Parameters
         ----------
@@ -1783,41 +1793,39 @@ class SLM(_Common, ABC):
 
         # Make the subplots.
         _, axs = plt.subplots(1, 3 if plot_r2 else 2, figsize=(10, 6))
+        aspect = self.pixel_aspect
 
         # Panel 1: Phase
         im = axs[0].imshow(
             np.mod(phase_raw, 2 * np.pi),
             cmap=plt.get_cmap("twilight"),
             interpolation="none",
+            aspect=aspect,
         )
         if aperture:
             self._plot_aperture(axs[0])
         axs[0].set_title("Simulated Source Phase" if sim else "Source Phase")
         axs[0].set_xlabel("SLM $x$ [pix]")
         axs[0].set_ylabel("SLM $y$ [pix]")
-        divider = make_axes_locatable(axs[0])
-        cax = divider.append_axes("right", size="5%", pad=0.05)
         im.set_clim([0, 2 * np.pi])
-        plt.colorbar(im, cax=cax)
+        plt.colorbar(im, cax=axs[0].inset_axes([1.03, 0, 0.05, 1]))
 
         # Panel 2: Amplitude or Power
         if power:
-            im = axs[1].imshow(np.square(amplitude_raw), clim=(0, 1))
+            im = axs[1].imshow(np.square(amplitude_raw), clim=(0, 1), aspect=aspect)
             axs[1].set_title("Simulated Source Power" if sim else "Source Power")
         else:
-            im = axs[1].imshow(amplitude_raw, clim=(0, 1))
+            im = axs[1].imshow(amplitude_raw, clim=(0, 1), aspect=aspect)
             axs[1].set_title("Simulated Source Amplitude" if sim else "Source Amplitude")
         if aperture:
             self._plot_aperture(axs[1])
         axs[1].set_xlabel("SLM $x$ [pix]")
         axs[1].set_ylabel("SLM $y$ [pix]")
-        divider = make_axes_locatable(axs[1])
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
+        plt.colorbar(im, cax=axs[1].inset_axes([1.03, 0, 0.05, 1]))
 
         # Panel 3: R^2
         if plot_r2:
-            im = axs[2].imshow(r2_raw, clim=(0, 1))
+            im = axs[2].imshow(r2_raw, clim=(0, 1), aspect=aspect)
             if plot_r2_contour:
                 axs[2].contour(
                     r2_raw,
@@ -1832,9 +1840,7 @@ class SLM(_Common, ABC):
             else:
                 axs[2].set_xlabel("SLM $x$ [superpix]")
                 axs[2].set_ylabel("SLM $y$ [superpix]")
-            divider = make_axes_locatable(axs[2])
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            plt.colorbar(im, cax=cax)
+            plt.colorbar(im, cax=axs[2].inset_axes([1.03, 0, 0.05, 1]))
 
         # Finalize the plot and return the axes.
         plt.tight_layout()
@@ -1867,27 +1873,15 @@ class SLM(_Common, ABC):
     def get_spot_radius_kxy(self):
         r"""
         Approximates the :math:`1/e` amplitude (:math:`1/e^2` power) radius of farfield
-        spots in the ``"kxy"`` basis: :math:`1 / (\pi w)` for a Gaussian source of
-        :math:`1/e` amplitude radius :math:`w =` :attr:`source_radius`.
+        spots in the ``"kxy"`` basis: :math:`1 / (\pi w)` along each axis for a Gaussian
+        source of :math:`1/e` amplitude radius :math:`w =` :attr:`source_radius`.
 
         Returns
         -------
-        float
-            Radius of the farfield spot.
+        numpy.ndarray
+            ``(x, y)`` radius of the farfield spot.
         """
-        rad_norm = self.source_radius
-        rad_pix = rad_norm / np.mean(self.pitch)
-        rad_freq = np.reciprocal(np.pi * rad_pix)
-
-        psf_kxy = toolbox.convert_vector(
-            [rad_freq, rad_freq],
-            from_units="freq",
-            to_units="kxy",
-            hardware=self,
-            shape=self.shape,
-        )
-
-        return np.mean(psf_kxy)
+        return 1 / (np.pi * self.source_radius)
 
     # Self-test method to test everything above.
 

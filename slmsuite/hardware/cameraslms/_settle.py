@@ -32,7 +32,7 @@ class _SettleCalibration:
         ----------
         vector : array_like
             Point to measure settle time at via a simple blaze in the ``"kxy"`` basis.
-        size : int
+        size : int OR (int, int)
             Size in pixels of the integration region in the ``"ij"`` basis.
             If ``None``, sets to sixteen times the approximate size of a diffraction-limited spot.
         times : array_like OR None OR int
@@ -60,10 +60,7 @@ class _SettleCalibration:
 
         # Parse size.
         if size is None:
-            size = 16 * toolbox.convert_radius(
-                self.slm.get_spot_radius_kxy(), to_units="ij", hardware=self
-            )
-        size = int(size)
+            size = 16 * self.get_farfield_spot_size(basis="ij")
 
         # Parse times.
         if times is None:

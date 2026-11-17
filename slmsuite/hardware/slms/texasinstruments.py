@@ -18,6 +18,9 @@ compatibility.
     # Once that mapping is known, pass it to skip discovery and open in seconds.
     plms = PLM.open_all("p47", display_numbers=[1, 2])
 
+    # PLMs of different models take one model name each, in USB device order.
+    plms = PLM.open_all(["p67", "p67nir"], display_numbers=[1, 2])
+
     # Or open a single PLM, finding the display it adds automatically.
     plm = PLM("p47", configure_usb=True)
 
@@ -188,8 +191,8 @@ class PLM(ScreenMirrored):
         Parameters
         ----------
         model_name : str
-            Model identifier from ``texasinstruments.yaml`` (e.g., ``"p47"``, ``"p67"``).
-            Available models can be queried with :meth:`get_model_list()`.
+            Model identifier from ``texasinstruments.yaml`` (e.g., ``"p47"``, ``"p67"``,
+            ``"p67nir"``). Available models can be queried with :meth:`get_model_list()`.
         display_number : int OR None
             Monitor number for display.
             Use :func:`ScreenMirrored.info()` to list available displays and their numbers.
@@ -296,16 +299,19 @@ class PLM(ScreenMirrored):
             **kwargs,
         )
 
-        # Calculate display shape after electrode mapping
+        # The electrode image sits on the model's display inside any zero margin.
         elec_shape = self._electrode_layout_raw.shape
-        display_shape = (model_shape[0] * elec_shape[0], model_shape[1] * elec_shape[1])
+        electrode_shape = (model_shape[0] * elec_shape[0], model_shape[1] * elec_shape[1])
+        margin = tuple(self.model_config.get("display_margin", (0, 0)))
+        display_shape = tuple(s + 2 * m for (s, m) in zip(electrode_shape, margin))
 
         if display_shape != self.display_shape:
             raise ValueError(
-                f"Calculated display shape {display_shape} does not match "
+                f"Model display shape {display_shape} does not match "
                 f"ScreenMirrored display shape {self.display_shape}. "
                 f"Check model configuration for consistency."
             )
+        self._display_slice = tuple(slice(m, m + s) for (m, s) in zip(margin, electrode_shape))
 
         # Update window shape and recreate buffers for electrode-mapped output.
         # Must run on the window thread to satisfy OpenGL context thread affinity.
@@ -452,9 +458,10 @@ class PLM(ScreenMirrored):
 
         Parameters
         ----------
-        model_name : str
+        model_name : str OR list of str
             Model identifier from ``texasinstruments.yaml`` (e.g. ``"p47"``,
-            ``"p67"``), applied to every PLM. See :meth:`get_model_list`.
+            ``"p67"``), applied to every PLM, or one identifier per EVM in
+            device order. See :meth:`get_model_list`.
         display_numbers : list of int OR None
             Display number driven by each EVM, in device order. When given, the
             displays are assumed to be attached already and the mapping is used
@@ -499,9 +506,18 @@ class PLM(ScreenMirrored):
                 "Check that the EVM(s) are powered on and connected via USB."
             )
 
+        if isinstance(model_name, str):
+            model_names = [model_name] * len(devices)
+        elif len(model_name) != len(devices):
+            raise ValueError(
+                f"Got {len(model_name)} model names for {len(devices)} connected PLM(s)."
+            )
+        else:
+            model_names = list(model_name)
+
         if names is None:
             names = [
-                f"{model_name}_{i}" if len(devices) > 1 else model_name for i in range(len(devices))
+                f"{model}_{i}" if len(devices) > 1 else model for i, model in enumerate(model_names)
             ]
         elif len(names) != len(devices):
             raise ValueError(f"Got {len(names)} names for {len(devices)} connected PLM(s).")
@@ -527,8 +543,8 @@ class PLM(ScreenMirrored):
                 for dlpc, display_number in zip(dlpcs, display_numbers):
                     PLM._usb_pre_configure(dlpc, video_input, pixel_mode, display_number)
 
-            for dlpc, display_number, name in zip(dlpcs, display_numbers, names):
-                plms.append(PLM(model_name, display_number, dlpc=dlpc, name=name, **kwargs))
+            for model, dlpc, number, name in zip(model_names, dlpcs, display_numbers, names):
+                plms.append(PLM(model, number, dlpc=dlpc, name=name, **kwargs))
 
             # Lock and start the sequencers only now that no more displays will appear.
             for plm in plms:
@@ -866,10 +882,11 @@ class PLM(ScreenMirrored):
 
         # Write into self.display in-place to avoid per-frame allocations
         # (mirrors how _phase2gray writes to self.display in slm.py).
+        display = self.display[(..., *self._display_slice)]
         if replicate_bits:
-            xp.multiply(result, 255, out=self.display, casting="unsafe")
+            xp.multiply(result, 255, out=display, casting="unsafe")
         else:
-            xp.copyto(self.display, result, casting="unsafe")
+            xp.copyto(display, result, casting="unsafe")
 
         return self.display
 

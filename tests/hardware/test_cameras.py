@@ -628,6 +628,11 @@ class TestCamera:
                     assert cam._software_binning, "SimulatedCamera must bin in software."
                 assert cam.test() is True
 
+    def test_plot_aspect(self, mpl_test):
+        """Rectangular camera pixels are drawn at their physical aspect ratio."""
+        cam = SimulatedCamera(SimulatedSLM((32, 32)), resolution=(32, 24), pitch_um=(5, 10))
+        assert cam.plot(image=np.zeros(cam.shape), cbar=False).get_aspect() == pytest.approx(2)
+
     def test_plot(self, camera, mpl_test, subtests):
         """plot() renders the given array and applies titles, limits, labels, and a colorbar."""
         plt = mpl_test
@@ -649,10 +654,10 @@ class TestCamera:
 
         with subtests.test("colorbar drawn only when requested"):
             ax = camera.plot(image=img, cbar=True)
-            assert len(ax.get_figure().axes) == 2
+            assert len(ax.child_axes) == 1
             plt.close("all")
             ax = camera.plot(image=img, cbar=False)
-            assert len(ax.get_figure().axes) == 1
+            assert len(ax.child_axes) == 0
             plt.close("all")
 
         with subtests.test("supplied ax is drawn upon without a colorbar"):

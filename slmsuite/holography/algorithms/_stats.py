@@ -364,7 +364,8 @@ class _HologramStats:
         """
         Plots the amplitude (left) and phase (right) of the nearfield (plane of the SLM).
         The amplitude is assumed (whether uniform, assumed, or measured) while the
-        phase is the result of optimization.
+        phase is the result of optimization. Pixels are drawn at the physical aspect
+        ratio of the SLM when the hologram has a ``cameraslm``.
 
         Parameters
         ----------
@@ -398,10 +399,14 @@ class _HologramStats:
         if np.ndim(amp) == 0:
             amp = amp * np.ones(self.slm_shape)
 
+        cameraslm = getattr(self, "cameraslm", None)
+        aspect = 1 if cameraslm is None else cameraslm.slm.pixel_aspect
+
         im_amp = axs[0].imshow(
             toolbox.pad(amp, self.shape if padded else self.slm_shape),
             vmin=0,
             vmax=np.amax(amp),
+            aspect=aspect,
         )
 
         im_phase = axs[1].imshow(
@@ -410,6 +415,7 @@ class _HologramStats:
             vmax=2,
             interpolation="none",
             cmap="twilight",
+            aspect=aspect,
         )
 
         if len(title) > 0:
@@ -604,25 +610,14 @@ class _HologramStats:
         def rebase(ax, img, to_units):
             if to_units != "knm":
                 ext_nm = img.get_extent()
-                ext_min = np.squeeze(
-                    toolbox.convert_vector(
-                        [ext_nm[0], ext_nm[-1]],
-                        from_units="knm",
-                        to_units=to_units,
-                        hardware=slm,
-                        shape=npsource.shape,
-                    )
+                # Columns are the (left, top) and (right, bottom) corners.
+                c = toolbox.convert_vector(
+                    [[ext_nm[0], ext_nm[1]], [ext_nm[3], ext_nm[2]]],
+                    ("knm", npsource.shape),
+                    to_units,
+                    hardware=slm,
                 )
-                ext_max = np.squeeze(
-                    toolbox.convert_vector(
-                        [ext_nm[1], ext_nm[2]],
-                        from_units="knm",
-                        to_units=to_units,
-                        hardware=slm,
-                        shape=npsource.shape,
-                    )
-                )
-                img.set_extent([ext_min[0], ext_max[0], ext_max[1], ext_min[1]])
+                img.set_extent([c[0, 0], c[0, 1], c[1, 1], c[1, 0]])
 
         # Scale and label plots depending on units
         rebase(axs[0], full, units)
@@ -683,10 +678,9 @@ class _HologramStats:
             if units != "knm":
                 _cam_points = toolbox.convert_vector(
                     _cam_points,
-                    from_units="knm",
+                    from_units=("knm", npsource.shape),
                     to_units=units,
                     hardware=slm,
-                    shape=npsource.shape,
                 )
 
             # Plot the labeled yellow rectangle representing the camera.

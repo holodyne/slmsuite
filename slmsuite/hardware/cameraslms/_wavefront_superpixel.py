@@ -192,11 +192,11 @@ class _WavefrontCalibrationSuperpixel:
 
         # Next, we get the size of the window necessary to measure a spot
         # produced by the given superpixel size.
-        interference_window = self.wavefront_calibration_superpixel_window(superpixel_size).ravel()
+        interference_window = self.wavefront_calibration_superpixel_window(superpixel_size)
         interference_size = interference_window / self._wavefront_calibration_window_multiplier
 
-        interference_window = (interference_window // 2) * 2 + 1
-        interference_size = (interference_size // 2) * 2 + 1
+        interference_window = analysis._odd_size(interference_window)
+        interference_size = analysis._odd_size(interference_size)
 
         # Now that we have the supershape, we label each of the pixels with an index.
         # It's sometimes useful to map that index to the xy coordinates of the pixel,
@@ -240,8 +240,8 @@ class _WavefrontCalibrationSuperpixel:
         # Parse calibration_points.
         calibration_points = self._wavefront_calibration_points_parse(
             calibration_points,
-            pitch=1.5 * np.max(interference_window),
-            field_exclusion=np.max(interference_window),
+            pitch=1.5 * interference_window,
+            field_exclusion=interference_window,
             field_point=field_point,
             field_point_units=field_point_units,
             plot=plot,
@@ -285,13 +285,13 @@ class _WavefrontCalibrationSuperpixel:
         # Set the reference superpixels to be centered on the SLM if undefined.
         if reference_superpixels is None:
             all_superpixels = np.arange(num_superpixels)
-            all_superpixels_coords = index2coord(all_superpixels)
+            centers = (index2coord(all_superpixels) + 0.5) * superpixel_size
 
             distance = np.sum(
-                np.square(all_superpixels_coords - format_2vectors(slm_supershape[::-1]) / 2),
+                np.square(centers - format_2vectors(self.slm.shape[::-1]) / 2),
                 axis=0,
             )
-            I = np.argsort(distance)
+            I = np.argsort(distance, kind="stable")
 
             reference_superpixels = I[:num_points]
         else:
@@ -425,7 +425,7 @@ class _WavefrontCalibrationSuperpixel:
             if order_distance_this < order_distance:
                 order_distance = order_distance_this
 
-        if np.mean(interference_window) > order_distance:
+        if np.max(interference_window) > order_distance:
             self.logger.warning(
                 "The requested calibration point(s) are close to the expected positions of "
                 "the field diffractive orders. Consider moving calibration regions further away."
@@ -443,7 +443,7 @@ class _WavefrontCalibrationSuperpixel:
             "euclidean",
         )
 
-        if np.mean(interference_window) / 2 > reflection_distance:
+        if np.max(interference_window) / 2 > reflection_distance:
             self.logger.warning(
                 "The requested calibration points are close to the expected positions of "
                 "the -1th orders of calibration points. Consider shifting the calibration regions "
@@ -695,8 +695,8 @@ class _WavefrontCalibrationSuperpixel:
                 )
 
                 # Map pixels into the superpixel's farfield, where the sinc zeros are integers.
-                transform = format_2vectors(superpixel_size * self.slm.pitch) * np.linalg.inv(
-                    self.fourier_affine.M
+                (transform, _) = toolbox.convert_affine(
+                    "ij", ("knm", (superpixel_size, superpixel_size)), self
                 )
                 xy = np.tensordot(transform, np.stack(xy), axes=1)
                 xyr = xy.reshape(2, -1)
@@ -753,9 +753,10 @@ class _WavefrontCalibrationSuperpixel:
                 if plot_fits:
                     _, axs = plt.subplots(1, 3, figsize=(20, 10))
 
-                    axs[0].imshow(img)
-                    axs[1].imshow(sinc2d_centered(xy, *guess))
-                    axs[2].imshow(sinc2d_centered(xy, *popt))
+                    aspect = self.cam.pixel_aspect
+                    axs[0].imshow(img, aspect=aspect)
+                    axs[1].imshow(sinc2d_centered(xy, *guess), aspect=aspect)
+                    axs[2].imshow(sinc2d_centered(xy, *popt), aspect=aspect)
 
                     for index, title in enumerate(["Image", "Guess", "Fit"]):
                         axs[index].set_title(title)
@@ -800,6 +801,7 @@ class _WavefrontCalibrationSuperpixel:
                         np.mod(phase, 2 * np.pi),
                         cmap=plt.get_cmap("twilight"),
                         interpolation="none",
+                        aspect=self.slm.pixel_aspect,
                     )
 
                     points = []
@@ -851,7 +853,7 @@ class _WavefrontCalibrationSuperpixel:
                     #             axs[0].set_xlim(lim)
 
                     if img is not None:
-                        im = axs[1].imshow(np.log10(img + 0.1))
+                        im = axs[1].imshow(np.log10(img + 0.1), aspect=self.cam.pixel_aspect)
                         im.set_clim(0, np.log10(self.cam.bitresolution))
 
                     dpoint = field_point - base_point
@@ -882,7 +884,7 @@ class _WavefrontCalibrationSuperpixel:
                     plot_labeled_rects(axs[1], points, labels, colors, wh, hh)
 
                     if img is not None:
-                        im = axs[2].imshow(np.log10(img + 0.1))
+                        im = axs[2].imshow(np.log10(img + 0.1), aspect=self.cam.pixel_aspect)
                         im.set_clim(0, np.log10(self.cam.bitresolution))
 
                         if self.cam.bitdepth > 10:
@@ -1255,7 +1257,7 @@ class _WavefrontCalibrationSuperpixel:
             The size of the superpixel on the SLM.
         """
         interference_size = np.rint(
-            np.array(self.get_farfield_spot_size(superpixel_size * self.slm.pitch, basis="ij"))
+            self.get_farfield_spot_size(superpixel_size * self.slm.pitch, basis="ij")
         ).astype(int)
 
         return self._wavefront_calibration_window_multiplier * interference_size
@@ -1763,6 +1765,7 @@ class _WavefrontCalibrationSuperpixel:
         amp[below_thresh] = np.nan
 
         kscale = np.max([np.nanmax(np.abs(kx)), np.nanmax(np.abs(ky))])
+        aspect = self.slm.pixel_aspect
 
         plt.subplot(1, 4, 1)
         plt.scatter(coord[0], coord[1], c="r")
@@ -1780,6 +1783,7 @@ class _WavefrontCalibrationSuperpixel:
             clim=(0, 2 * np.pi),
             cmap=plt.get_cmap("twilight"),
             interpolation="none",
+            aspect=aspect,
         )
         plt.title(r"Phase Correction $\phi$")
         plt.xticks([])
@@ -1792,10 +1796,11 @@ class _WavefrontCalibrationSuperpixel:
                 clim=(-kscale, kscale),
                 cmap=plt.get_cmap("twilight"),
                 interpolation="none",
+                aspect=aspect,
             )
             plt.title(r"$k_x \propto \partial\phi/\partial x$")
         else:
-            plt.imshow(power)
+            plt.imshow(power, aspect=aspect)
             plt.title("Measured Beam Power")
         plt.xticks([])
         plt.yticks([])
@@ -1807,10 +1812,11 @@ class _WavefrontCalibrationSuperpixel:
                 clim=(-kscale, kscale),
                 cmap=plt.get_cmap("twilight"),
                 interpolation="none",
+                aspect=aspect,
             )
             plt.title(r"$k_y \propto \partial\phi/\partial y$")
         else:
-            plt.imshow(r2, clim=(0, 1))
+            plt.imshow(r2, clim=(0, 1), aspect=aspect)
             # plt.contour(r2, [r2_threshold], c="r")
             plt.title("$R^2$")
         plt.xticks([])

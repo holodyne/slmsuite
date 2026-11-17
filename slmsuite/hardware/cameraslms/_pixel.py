@@ -348,11 +348,10 @@ class _PixelCalibration:
             )
 
         # Error check that the windows of the swept directions fit on the camera.
-        half = integration_size // 2
         for i in directions:
             for j in range(P):
-                if np.any(order_ij[j + P * i] - half < 0) or np.any(
-                    order_ij[j + P * i] + half >= np.flip(self.cam.shape)[:, np.newaxis]
+                if not np.all(
+                    analysis.take_validate(self.cam.shape, order_ij[j + P * i], integration_size)
                 ):
                     raise ValueError(
                         "Some orders miss the camera. "

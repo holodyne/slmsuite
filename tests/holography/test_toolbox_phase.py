@@ -1295,11 +1295,12 @@ def test_determine_source_radius(simple_grid, subtests):
             min(np.amax(simple_grid[0]), np.amax(simple_grid[1])) / 4
         )
 
-    with subtests.test("an anisotropic SLM aperture asks for w explicitly"):
+    with subtests.test("an elliptical SLM aperture uses its geometric-mean source radius"):
         slm = SimulatedSLM((96, 64), pitch_um=(8, 8), wav_um=1.0)
         slm.set_aperture("elliptical")
-        with pytest.raises(ValueError, match="w="):
-            _determine_source_radius(slm, w=None)
+        assert _determine_source_radius(slm, w=None) == pytest.approx(
+            np.sqrt(np.prod(slm.source_radius))
+        )
 
     with subtests.test("an SLM-like object supplies its own source_radius"):
 

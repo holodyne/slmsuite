@@ -538,7 +538,7 @@ class TestSaveLoadRoundTrip:
             assert slm.aperture.spec == fs_sim.slm.aperture.spec
             assert np.allclose(slm.aperture.center, fs_sim.slm.aperture.center)
             assert slm._source_radius == pytest.approx(1 / 0.7)
-            assert slm._source_radius == fs_sim.slm._source_radius
+            assert np.array_equal(slm._source_radius, fs_sim.slm._source_radius)
 
         with subtests.test("displayed phase"):
             assert np.allclose(as_numpy(slm.phase), as_numpy(fs_sim.slm.phase))

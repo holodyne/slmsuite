@@ -1,3 +1,5 @@
+import numpy as np
+
 from slmsuite.holography.toolbox import _process_grid
 
 
@@ -37,11 +39,9 @@ def _determine_source_radius(grid, w=None):
 
     if hasattr(grid, "slm") and hasattr(grid, "cam"):
         grid = grid.slm
-    try:
-        if hasattr(grid, "source_radius"):
-            return grid.source_radius
-    except ValueError as e:
-        raise ValueError(f"{e} Pass the source radius w= explicitly.") from e
+    if hasattr(grid, "source_radius"):
+        # Structured beams are round; an elliptical source uses its geometric mean.
+        return float(np.sqrt(np.prod(np.broadcast_to(grid.source_radius, (2,)))))
 
     (x_grid, y_grid) = _process_grid(grid)
     # Reduce on the device.
