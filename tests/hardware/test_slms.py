@@ -776,7 +776,7 @@ class TestSLM:
 
         def check(ax):
             assert ax.get_aspect() == pytest.approx(10.8 / 16.2)
-            ax.get_figure().canvas.draw()
+            ax.get_figure().draw_without_rendering()
             (cbar,) = ax.child_axes
             height = ax.get_window_extent().height
             assert cbar.get_window_extent().height == pytest.approx(height, abs=1), (
