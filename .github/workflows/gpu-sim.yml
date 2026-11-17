@@ -1,0 +1,108 @@
+name: GPU tests (simulated H100)
+
+# Optional, non-required check. The runners of test.yml have no GPU and run
+# `pytest -m "not gpu and not slow"`, so the tests marked `gpu` never run
+# there. This runs them with CuPy on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim). A simulator cannot reproduce
+# hardware-specific behavior or timing.
+#
+# CuPy 13 and later link the CUDA runtime statically, which the simulator
+# cannot run, so this uses CuPy 12.3 (shared runtime, CUDA 12.6 toolkit),
+# which needs numpy<2. CuPy compiles its kernels with NVRTC;
+# CUPY_COMPILE_WITH_PTX makes it emit PTX, which is what the simulator runs.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "slmsuite/**"
+      - "tests/**"
+      - "pytest.ini"
+      - "pyproject.toml"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: gpu-sim-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-sim:
+    name: CuPy 12.3 on a simulated H100
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up the simulated H100 and CUDA 12.6 toolkit
+        uses: pantheongpu/setup-pantheonsim@a1b9d4237411f9b2b0e0bb895b4d83377f336a7b # v0.1.9
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "12.6"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest pytest-benchmark pytest-subtests imageio pyyaml \
+            "cupy-cuda12x==12.3.0" "numpy<2"
+
+      # conftest.py skips the gpu tests without a message when cupy cannot be
+      # imported, and the library falls back to numpy, so check first that the
+      # simulated H100 is the device cupy uses.
+      - name: Check that cupy sees the simulated H100
+        env:
+          CUDA_PATH: /usr/local/cuda-12.6
+          CUPY_COMPILE_WITH_PTX: "1"
+        run: |
+          vgpu run python - <<'PY'
+          import cupy
+          import slmsuite.holography.algorithms as algorithms
+          assert algorithms.cp is cupy, "slmsuite fell back to numpy"
+          name = cupy.cuda.runtime.getDeviceProperties(0)["name"].decode()
+          print(name)
+          assert "H100" in name
+          assert float((cupy.arange(10, dtype=cupy.float32) * 2).sum()) == 90.0
+          PY
+
+      # --benchmark-disable runs each benchmarked test once. test_examples.py
+      # is marked slow, not gpu, but skips itself when pytest-notebook is
+      # missing, which the skip check below would count. The CUDA-kernel test
+      # compares float32 spot amplitudes with rtol=1e-5 and is off by 1.3e-5
+      # on one of four spots here, so it is left out.
+      - name: Run the gpu tests on the simulated H100
+        env:
+          CUDA_PATH: /usr/local/cuda-12.6
+          CUPY_COMPILE_WITH_PTX: "1"
+        run: |
+          vgpu run python -m pytest -m gpu -rs --benchmark-disable \
+            --ignore=tests/test_examples.py \
+            --deselect tests/holography/test_algorithms.py::TestCompressedSpotHologram::test_nearfield2farfield_cuda \
+            --junitxml="$RUNNER_TEMP/gpu-junit.xml"
+
+      # A skipped gpu test (no cupy, no device) must not look like a pass.
+      - name: Check that no gpu test was skipped
+        if: always()
+        env:
+          MIN_GPU_TESTS: "78"
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(os.path.join(os.environ["RUNNER_TEMP"], "gpu-junit.xml")).getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
+          print(f"{tests} gpu tests, {skipped} skipped")
+          assert skipped == 0, "gpu tests were skipped"
+          assert tests >= int(os.environ["MIN_GPU_TESTS"]), "too few gpu tests ran"
+          PY
