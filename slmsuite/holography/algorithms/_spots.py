@@ -228,7 +228,7 @@ class _AbstractSpotHologram(FeedbackHologram):
             )
 
             plt.figure(figsize=(12, 12))
-            plt.imshow(masked)
+            plt.imshow(masked, aspect=self.cameraslm.cam.pixel_aspect)
             plt.scatter(sv1[0, :], sv1[1, :], s=200, fc="none", ec="r", label="Before affine fit")
             if force_affine:
                 plt.scatter(
@@ -690,10 +690,10 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         # Grab the target.
         target = as_numpy(self.target).reshape(1, -1, 1)
 
-        spot_knm_norm = toolbox.convert_vector(
-            self.spot_kxy, from_units="kxy", to_units=("knm", (1, 1)), hardware=self.cameraslm
+        spot_freq = toolbox.convert_vector(
+            self.spot_kxy, from_units="kxy", to_units="freq", hardware=self.cameraslm
         )
-        grid = (spot_knm_norm[0, :].reshape(-1, 1) - 0.5, spot_knm_norm[1, :].reshape(-1, 1) - 0.5)
+        grid = (spot_freq[0, :].reshape(-1, 1), spot_freq[1, :].reshape(-1, 1))
 
         # Figure out the size of the target in knm space
         center_knm_norm = analysis.image_positions(
@@ -1259,11 +1259,8 @@ class SpotHologram(_AbstractSpotHologram):
             :meth:`~slmsuite.holography.toolbox.format_2vectors()`.
             MRAF methods are forced zero around these points.
         null_radius : float OR None
-            Radius to null around in the given ``basis``.
-            Note that basis conversions are imperfect for anisotropic basis
-            transformations. The radius will always be set to be circular in ``"knm"``
-            space, and will attempt to match to the closest circle
-            to the (potentially elliptical) projection into ``"knm"`` from the given ``basis``.
+            Radius to null around in the given ``basis``, an ellipse along the axes of
+            ``"knm"`` after conversion.
         null_region : array_like OR None
             Array of shape :attr:`shape`. Where ``True``, sets the background to zero
             instead of ``nan``. If ``None``, has no effect.
@@ -1612,7 +1609,7 @@ class SpotHologram(_AbstractSpotHologram):
             # Second, zero the regions around the "null points".
             if self.null_knm is not None:
                 all_spots = np.hstack((self.null_knm, self.spot_knm))
-                (wx, wy) = 2 * np.ceil(np.broadcast_to(self.null_radius_knm, (2,))).astype(int) + 1
+                (wx, wy) = 2 * self.null_radius_knm + 1
 
                 for ii in range(all_spots.shape[1]):
                     toolbox.imprint(

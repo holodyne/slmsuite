@@ -75,11 +75,13 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
     with subtests.test("knm is the freq grating's DFT bin, offset to the shape's center"):
         freq = convert_vector(vec, "norm", "freq", **hw)
         np.testing.assert_allclose(
-            convert_vector(vec, "norm", knm_shape, **hw), freq * shape_xy + shape_xy / 2
+            convert_vector(vec, "norm", ("knm", knm_shape), **hw), freq * shape_xy + shape_xy / 2
         )
 
     with subtests.test("an unblazed beam sits at the knm origin, shape/2"):
-        np.testing.assert_allclose(convert_vector((0, 0), "norm", knm_shape, **hw), shape_xy / 2)
+        np.testing.assert_allclose(
+            convert_vector((0, 0), "norm", ("knm", knm_shape), **hw), shape_xy / 2
+        )
         np.testing.assert_allclose(
             convert_vector((0, 0), "norm", "knm", **hw), [[width / 2], [height / 2]]
         )
@@ -92,34 +94,39 @@ def test_convert_vector(slm, camera, fourierslm_calibrated, subtests, caplog):
         np.testing.assert_allclose(as_numpy(tilt), ramp, rtol=1e-5, atol=1e-3)
 
     with subtests.test("every unit inverts back to norm"):
-        for unit in ["kxy", "rad", "mrad", "deg", "freq", "lpmm", "zernike", "knm", knm_shape]:
+        for unit in [
+            "kxy",
+            "rad",
+            "mrad",
+            "deg",
+            "freq",
+            "lpmm",
+            "zernike",
+            "knm",
+            ("knm", knm_shape),
+        ]:
             roundtrip = convert_vector(convert_vector(vec, "norm", unit, **hw), unit, "norm", **hw)
             np.testing.assert_allclose(roundtrip, vec, err_msg=str(unit))
 
-    with subtests.test("a shape in place of knm converts between two grids"):
-        other = (128, 1024)
-        other_xy = np.array([[other[1]], [other[0]]], dtype=float)
-        knm = convert_vector(vec, "norm", knm_shape, **hw)
+    with subtests.test("('knm', shape) units convert between two grids"):
+        (here, other) = (("knm", knm_shape), ("knm", (128, 1024)))
+        other_xy = np.array([[1024], [128]], dtype=float)
+        knm = convert_vector(vec, "norm", here, **hw)
         np.testing.assert_allclose(
-            convert_vector(knm, knm_shape, other, **hw),
+            convert_vector(knm, here, other, **hw),
             (knm - shape_xy / 2) / shape_xy * other_xy + other_xy / 2,
         )
-        np.testing.assert_allclose(convert_vector(knm, knm_shape, knm_shape), knm)
+        np.testing.assert_allclose(convert_vector(knm, here, here), knm)
 
-    with subtests.test("a bare shape is shorthand for the ('knm', shape) unit"):
-        from types import SimpleNamespace
-
-        expected = convert_vector(vec, "norm", ("knm", knm_shape), **hw)
-        np.testing.assert_allclose(convert_vector(vec, "norm", knm_shape, **hw), expected)
-        np.testing.assert_allclose(convert_vector(vec, "norm", np.array(knm_shape), **hw), expected)
-        for bad in (None, 5, SimpleNamespace(shape=knm_shape)):
+    with subtests.test("anything but a unit name or ('knm', shape) raises"):
+        for bad in (None, 5, knm_shape, np.array(knm_shape), ("ij", knm_shape)):
             with pytest.raises(ValueError, match="not recognized"):
                 convert_vector(vec, "norm", bad, **hw)
 
-    with subtests.test("shape= is deprecated but still names the knm grid"):
+    with subtests.test("shape= warns and names the knm grid"):
         with pytest.warns(UserWarning, match="deprecated"):
             knm = convert_vector(vec, "norm", "knm", shape=knm_shape, **hw)
-        np.testing.assert_allclose(knm, convert_vector(vec, "norm", knm_shape, **hw))
+        np.testing.assert_allclose(knm, convert_vector(vec, "norm", ("knm", knm_shape), **hw))
 
     with subtests.test("mag_um is the camera distance in um divided by the magnification"):
         fs = fourierslm_calibrated
@@ -242,8 +249,12 @@ def test_convert_radius(slm, subtests):
         np.testing.assert_allclose(
             convert_radius(1e-3, "kxy", ("knm", (64, 64)), rect, form="grid"), expected
         )
+        np.testing.assert_allclose(
+            convert_radius(1e-3, "kxy", ("knm", (64, 64)), rect, form="eigenvalue"),
+            expected[::-1],
+        )
 
-    with subtests.test("shape= is deprecated but still names the knm grid"):
+    with subtests.test("shape= warns and names the knm grid"):
         with pytest.warns(UserWarning, match="deprecated"):
             radius = convert_radius(1e-3, "kxy", "knm", rect, shape=(64, 64), form="grid")
         np.testing.assert_allclose(radius, expected)

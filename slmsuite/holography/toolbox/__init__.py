@@ -113,8 +113,8 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         Computational blaze units: integer points on the grid of a (potentially padded)
         Fourier transform of the SLM, centered at ``shape/2`` unlike all of the other
         units. See :class:`~slmsuite.holography.algorithms.Hologram`.
-        The grid is named with the unit as ``("knm", shape)``, or by the bare ``shape`` as
-        shorthand; ``"knm"`` alone is the SLM's own ``shape``.
+        The grid is named with the unit as ``("knm", shape)``; ``"knm"`` alone is the
+        SLM's own ``shape``.
 
     -  ``"freq"``
         Pixel frequency of a grating producing the blaze.
@@ -234,10 +234,9 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
         Vectors for which we want to convert units, from ``from_units`` to ``to_units``.
         Processed according to :meth:`format_2vectors()`.
         Can be shape ``(2, N)`` or ``(3, N)``.
-    from_units, to_units : str OR ("knm", (int, int)) OR (int, int)
+    from_units, to_units : str OR ("knm", (int, int))
         Units which we are converting between. See the listed units above for options.
-        ``("knm", shape)`` is ``"knm"`` on a computational space of shape ``(h, w)``;
-        the bare shape is shorthand for it.
+        ``("knm", shape)`` is ``"knm"`` on a computational space of shape ``(h, w)``.
         Defaults to ``"norm"``.
     hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameras.camera.Camera` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Relevant hardware to pull calibration data from in the case of
@@ -260,18 +259,15 @@ def convert_vector(vector, from_units="norm", to_units="norm", hardware=None, sh
     # Parse each unit into its name and, for "knm", its grid.
     units = []
     for unit in (from_units, to_units):
-        if isinstance(unit, str) and unit in BLAZE_UNITS:
-            grid = shape if unit == "knm" else None
-        elif isinstance(unit, (tuple, list)) and len(unit) == 2:
-            (unit, grid) = unit if unit[0] == "knm" else ("knm", unit)
-        elif isinstance(unit, np.ndarray) and unit.size == 2:
-            (unit, grid) = ("knm", unit)
-        else:
+        grid = shape
+        if isinstance(unit, (tuple, list)) and len(unit) == 2 and unit[0] == "knm":
+            (unit, grid) = unit
+        if not isinstance(unit, str) or unit not in BLAZE_UNITS:
             raise ValueError(
                 f"Unit '{unit}' not recognized as a valid unit. "
-                f"Options: {BLAZE_UNITS}, ('knm', shape) or a shape (h, w)."
+                f"Options: {BLAZE_UNITS} or ('knm', shape)."
             )
-        units.append((unit, None if grid is None else format_shape(grid)))
+        units.append((unit, None if grid is None or unit != "knm" else format_shape(grid)))
     ((from_units, from_shape), (to_units, to_shape)) = units
 
     # Parse vectors.
@@ -524,7 +520,7 @@ def convert_affine(from_units="norm", to_units="norm", hardware=None):
 
     Parameters
     ----------
-    from_units, to_units : str OR ("knm", (int, int)) OR (int, int)
+    from_units, to_units : str OR ("knm", (int, int))
         Passed to :meth:`convert_vector`.
     hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Passed to :meth:`convert_vector`.
@@ -557,13 +553,13 @@ def convert_radius(
     ----------
     radius : float OR (float, float)
         The radius to convert, isotropic or along ``(x, y)`` of ``from_units``.
-    from_units, to_units : str OR ("knm", (int, int)) OR (int, int)
+    from_units, to_units : str OR ("knm", (int, int))
         Passed to :meth:`convert_vector`.
     hardware : :class:`~slmsuite.hardware.slms.slm.SLM` OR :class:`~slmsuite.hardware.cameraslms.FourierSLM` OR None
         Passed to :meth:`convert_vector`.
     shape : (int, int) OR None
         Deprecated; see :meth:`convert_vector`.
-    form : {"scalar", "grid"}
+    form : {"scalar", "grid", "eigenvalue"}
         -  ``"scalar"``
             The area-preserving radius :math:`\sqrt{|\det A|}`.
 
@@ -572,11 +568,15 @@ def convert_radius(
             :math:`A`, which are both the half-widths of the ellipse's bounding box and
             its marginal radii.
 
+        -  ``"eigenvalue"``
+            The principal radii of the ellipse: the singular values of :math:`A`, in
+            descending order and not in axis order.
+
     Returns
     -------
     float OR numpy.ndarray
-        A float for ``"scalar"`` and shape ``(2,)`` for ``"grid"``. ``nan`` when the
-        conversion is unavailable.
+        A float for ``"scalar"`` and shape ``(2,)`` for ``"grid"`` and ``"eigenvalue"``.
+        ``nan`` when the conversion is unavailable.
     """
     if shape is not None:
         warnings.warn("convert_radius(shape=) is deprecated; pass ('knm', shape) as the unit.")
@@ -587,12 +587,15 @@ def convert_radius(
 
     (M, _) = convert_affine(from_units, to_units, hardware)
     A = M * np.ravel(radius)
+    finite = np.all(np.isfinite(A))
 
     if form == "scalar":
-        return float(np.sqrt(np.abs(np.linalg.det(A)))) if np.all(np.isfinite(A)) else np.nan
+        return float(np.sqrt(np.abs(np.linalg.det(A)))) if finite else np.nan
     elif form == "grid":
         return np.linalg.norm(A, axis=1)
-    raise ValueError(f"form '{form}' not recognized; use 'scalar' or 'grid'.")
+    elif form == "eigenvalue":
+        return np.linalg.svd(A, compute_uv=False) if finite else np.full(2, np.nan)
+    raise ValueError(f"form '{form}' not recognized; use 'scalar', 'grid' or 'eigenvalue'.")
 
 
 # Windows creation functions. Windows are views into 2D arrays.

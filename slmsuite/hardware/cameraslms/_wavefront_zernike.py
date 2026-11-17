@@ -390,11 +390,10 @@ class _WavefrontCalibrationZernike:
         max_spot_integration_width_ij = int(
             2 * np.ceil(np.min((0.5 * max_window_size, 51)) / 2) + 1
         )
+        if spot_integration_width_ij is None:
+            spot_integration_width_ij = max_spot_integration_width_ij
         hologram.spot_integration_width_ij = np.minimum(
-            max_spot_integration_width_ij
-            if spot_integration_width_ij is None
-            else spot_integration_width_ij,
-            max_spot_integration_width_ij,
+            spot_integration_width_ij, max_spot_integration_width_ij
         )
         spot_integration_width_ij = hologram.spot_integration_width_ij
 
@@ -929,6 +928,7 @@ class _WavefrontCalibrationZernike:
                 im = ax.imshow(
                     field[j, :].reshape(N, N),
                     extent=(0, self.cam.shape[1], self.cam.shape[0], 0),
+                    aspect=self.cam.pixel_aspect,
                     **kwargs,
                 )
                 # Control points.

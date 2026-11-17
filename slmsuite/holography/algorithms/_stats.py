@@ -364,7 +364,8 @@ class _HologramStats:
         """
         Plots the amplitude (left) and phase (right) of the nearfield (plane of the SLM).
         The amplitude is assumed (whether uniform, assumed, or measured) while the
-        phase is the result of optimization.
+        phase is the result of optimization. Pixels are drawn at the physical aspect
+        ratio of the SLM when the hologram has a ``cameraslm``.
 
         Parameters
         ----------
@@ -398,10 +399,14 @@ class _HologramStats:
         if np.ndim(amp) == 0:
             amp = amp * np.ones(self.slm_shape)
 
+        cameraslm = getattr(self, "cameraslm", None)
+        aspect = 1 if cameraslm is None else cameraslm.slm.pixel_aspect
+
         im_amp = axs[0].imshow(
             toolbox.pad(amp, self.shape if padded else self.slm_shape),
             vmin=0,
             vmax=np.amax(amp),
+            aspect=aspect,
         )
 
         im_phase = axs[1].imshow(
@@ -410,6 +415,7 @@ class _HologramStats:
             vmax=2,
             interpolation="none",
             cmap="twilight",
+            aspect=aspect,
         )
 
         if len(title) > 0:

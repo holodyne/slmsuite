@@ -267,8 +267,12 @@ def take_validate(images, vectors, size, centered=True):
     ----------
     images : array_like OR (int, int)
         2D image, stack of 2D images, or the shape ``(h, w)`` of one, as in :meth:`take`.
-    vectors, size, centered
-        See :meth:`take`.
+    vectors : array_like
+        Region anchors, as in :meth:`take`.
+    size : int OR (int, int)
+        Region size, as in :meth:`take`.
+    centered : bool
+        Whether the regions are centered on ``vectors``, as in :meth:`take`.
 
     Returns
     -------
@@ -1241,6 +1245,13 @@ _APERTURE_MIN_RADIUS = 5.0
 # for image_aperture_fit() to stop iterating. See the note at its use.
 _APERTURE_CONVERGENCE = 0.2
 
+# Limits of image_aperture_fit(): rays cast, detect-and-fit passes, and the fewest
+# consensus edge points and smallest arc in degrees they may span for a fit.
+_APERTURE_RAYS = 720
+_APERTURE_ITERATIONS = 10
+_APERTURE_MIN_POINTS = 20
+_APERTURE_MIN_COVERAGE = 90
+
 
 def _aperture_edge_points(power, center, theta, step, drop, floor, edge_level):
     """
@@ -1314,7 +1325,7 @@ def _aperture_edge_points(power, center, theta, step, drop, floor, edge_level):
     return (coordinates(edge), coordinates(level))
 
 
-def _aperture_circle_fit(points, tolerance, smooth, max_radius, seed, trials=1000):
+def _aperture_circle_fit(points, tolerance, smooth, max_radius, trials=1000):
     """
     Helper for :meth:`image_aperture_fit()`: RANSAC circle over ``(2, N)`` edge ``points``,
     refined by least squares on the consensus. Returns ``(center, radius, inliers)``, or
@@ -1322,7 +1333,7 @@ def _aperture_circle_fit(points, tolerance, smooth, max_radius, seed, trials=100
     """
     pts = points.T
     n = len(pts)
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(0)
 
     # Circles through random triplets of points.
     triplets = np.argsort(rng.random((trials, n)), axis=1)[:, :3]
@@ -1377,11 +1388,6 @@ def image_aperture_fit(
     drop=0.5,
     floor=0.05,
     tolerance=None,
-    rays=720,
-    min_points=20,
-    min_coverage=90,
-    iterations=10,
-    seed=0,
     plot=False,
 ):
     r"""
@@ -1399,7 +1405,7 @@ def image_aperture_fit(
         at its steepest) is not mistaken for an edge, while non-uniform power inside the
         aperture does not move the edge. Rays which leave the image before the comparison can
         be made are skipped, so the border of the image is never mistaken for the aperture.
-    #.  A circle is fit to the edge points with RANSAC (deterministic for a given ``seed``),
+    #.  A circle is fit to the edge points with RANSAC (seeded, so deterministic),
         which rejects edges that do not belong to the circle, such as a straight clip. The
         consensus circle is then refined by least squares.
     #.  Steps 2 and 3 repeat from the new center until it settles, which takes two or three
@@ -1433,16 +1439,6 @@ def image_aperture_fit(
     tolerance : float OR None
         RANSAC consensus distance in pixels. If ``None``, defaults to the larger of
         ``1.5 * smooth`` and 2.5% of the circle's radius.
-    rays : int
-        Number of rays to cast.
-    min_points : int
-        Minimum number of consensus edge points for a fit.
-    min_coverage : float
-        Minimum arc, in degrees, that the consensus edge points must span for a fit.
-    iterations : int
-        Maximum number of detect-and-fit passes.
-    seed : int
-        Seed for the RANSAC sampling.
     plot : bool
         Whether to plot the image with the detected edge points and the fit.
 
@@ -1455,56 +1451,61 @@ def image_aperture_fit(
         for an unclipped Gaussian beam, or one clipped where its power is below about a tenth
         of its peak.
     """
+    # Parse arguments.
     image = np.asarray(as_numpy(image), dtype=float)
     if image.ndim != 2:
         raise ValueError(f"image_aperture_fit expects a 2D image; got shape {image.shape}.")
     image = np.nan_to_num(image, nan=0, posinf=0, neginf=0)
-    min_points = max(int(min_points), 3)
     if not 0 < edge_level < 1:
         raise ValueError(f"edge_level must be in (0, 1); got {edge_level}.")
     (h, w) = image.shape
 
+    # Step 1: smooth the image.
     if smooth is None:
         smooth = max(1.0, min(h, w) / 200)
     power = gaussian_filter(image, smooth)
     peak = float(np.max(power))
 
+    # Cast the first rays from the given center, else the power centroid.
     if center is None:
         # image_positions is relative to the image center at (N - 1) / 2.
         center = np.squeeze(image_positions(image)) + (np.array([w, h]) - 1) / 2
     center = np.array(center, dtype=float).ravel()
 
-    theta = np.linspace(0, 2 * np.pi, int(rays), endpoint=False)
+    theta = np.linspace(0, 2 * np.pi, _APERTURE_RAYS, endpoint=False)
     (points, levels) = (np.zeros((2, 0)), np.zeros((2, 0)))
     fit = None
+    # Scales (x, y) in pixels to coordinates where pixels are square.
     stretch = np.array([[1.0], [float(aspect)]])
 
+    # Steps 2 to 4: find edge points along the rays, fit a circle, recenter and repeat.
     if np.isfinite(peak) and peak > 0 and np.all(np.isfinite(center)):
-        for _ in range(int(iterations)):
+        for _ in range(_APERTURE_ITERATIONS):
+            # points are the steepest descents; levels are where power reaches edge_level.
             (points, levels) = _aperture_edge_points(
                 power, center, theta, _APERTURE_STEP, drop, floor * peak, edge_level
             )
             fit = None
-            if points.shape[1] < min_points:
+            if points.shape[1] < _APERTURE_MIN_POINTS:
                 break
-            fit = _aperture_circle_fit(
-                stretch * points, tolerance, smooth, 2 * np.hypot(h, w), seed
-            )
+
+            # fit is (center, radius, inliers), with the center returned to pixels.
+            fit = _aperture_circle_fit(stretch * points, tolerance, smooth, 2 * np.hypot(h, w))
             if fit is None:
                 break
             fit = (fit[0] / stretch[:, 0], *fit[1:])
+
+            # Stop once the center settles to the scale at which the fit repeats.
             moved = np.hypot(*(fit[0] - center))
             center = fit[0]
-            # Re-casting the rays from the new center shifts the fit by a fraction of a
-            # percent of its radius, so stop at that scale: a tighter tolerance is below
-            # what the fit can repeat, and the loop would run out its iterations instead.
             if moved < max(_APERTURE_CONVERGENCE, 0.005 * fit[1]):
                 break
 
+    # Step 5: accept the fit if its edges span enough arc, and measure the radius.
     result = None
     if fit is not None:
         (center, _, inliers) = fit
-        # The consensus must span a wide enough arc to pin the circle down.
+        # The arc spanned is the full turn less the largest gap between consensus rays.
         angles = np.sort(
             np.arctan2(*(points[::-1, inliers] - center[::-1, np.newaxis])) % (2 * np.pi)
         )
@@ -1514,7 +1515,8 @@ def image_aperture_fit(
             else [2 * np.pi]
         )
         coverage = np.degrees(2 * np.pi - np.max(gaps))
-        if np.sum(inliers) >= min_points and coverage >= min_coverage:
+        if np.sum(inliers) >= _APERTURE_MIN_POINTS and coverage >= _APERTURE_MIN_COVERAGE:
+            # Median distance of the edge_level points from the center, in pixel widths.
             radius = float(
                 np.median(np.hypot(*(stretch * (levels[:, inliers] - center[:, np.newaxis]))))
             )

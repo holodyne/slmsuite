@@ -18,7 +18,6 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PIL import Image
 
 from slmsuite import __version__
@@ -1491,8 +1490,9 @@ class SLM(_Common, ABC):
     def _fit_source_radius(self, power, method):
         """
         The ``(x, y)`` pixel center and the ``(x, y)`` :math:`1/e` field-amplitude radius, in
-        the grid's normalized units, of a source ``power`` distribution. Analyzed by moment calculations
-        (``"moments"``, faster) or by a least-squares Gaussian ``"fit"`` (more accurate).
+        the grid's normalized units, of a source ``power`` distribution. Analyzed by moment
+        calculations (``"moments"``, faster) or by a least-squares Gaussian ``"fit"`` (more
+        accurate).
         """
         if method == "fit":
             # The fit is on the amplitude; gaussian2d depends on the widths only through
@@ -1515,8 +1515,8 @@ class SLM(_Common, ABC):
 
     def _length_to_norm(self, length, units):
         """
-        Convert a ``length`` or ``(x, y)`` pair in ``units`` to the grid's normalized units,
-        per axis for ``"pix"``.
+        Convert a ``length`` or ``(x, y)`` pair in ``units`` to the grid's normalized units.
+        A scalar in ``"pix"`` counts pixel widths; a pair counts pixels along each axis.
         ``units`` is one of ``"norm"``, ``"frac"``, ``"pix"``, or a key of
         :attr:`~slmsuite.holography.toolbox.LENGTH_FACTORS`.
         """
@@ -1532,7 +1532,7 @@ class SLM(_Common, ABC):
                 float(xp.nanmax(self._grid_base[1])),
             )
         elif units == "pix":
-            factor = self.pitch
+            factor = self.pitch if np.size(length) == 2 else self.pitch[0]
         elif units in toolbox.LENGTH_FACTORS:
             factor = toolbox.LENGTH_FACTORS[units] / self.wav_um
         else:
@@ -1562,7 +1562,7 @@ class SLM(_Common, ABC):
             ``None``, the current aperture's spec is kept.
         radius : float OR (float, float) OR None
             Shorthand for a circular aperture of the given source (:math:`1/e`) radius, or
-            an elliptical one for an ``(x, y)`` pair or for ``"pix"`` on rectangular pixels,
+            an elliptical one for an ``(x, y)`` pair,
             interpreted in ``units`` and stored as :attr:`source_radius`. The
             aperture/pupil itself extends to twice this radius (the lateral scaling is
             :math:`1 / (2\,r)`). Passing a new ``spec`` instead drops any stored source
@@ -1572,9 +1572,10 @@ class SLM(_Common, ABC):
             centers the aperture on the geometric center of the SLM.
         units : str
             Units for ``radius``: ``"norm"`` (normalized to wavelengths, the default),
-            ``"frac"`` (fraction of the smaller half-extent of the SLM), ``"pix"`` (number
-            of pixels along each axis, so a scalar is an ellipse on rectangular pixels; give
-            a physical circle in ``"um"``), or a physical length (``"um"``, ``"mm"``, ...).
+            ``"frac"`` (fraction of the smaller half-extent of the SLM), ``"pix"`` (pixel
+            widths for a scalar, as :meth:`~slmsuite.holography.analysis.image_aperture_fit()`
+            returns; pixels along each axis for a pair), or a physical length (``"um"``,
+            ``"mm"``, ...).
             As the pupil extends to twice ``radius``, a ``"frac"`` ``radius`` puts the pupil
             at that fraction of the full extent of the shorter axis, as in
             :meth:`set_source_analytic`.
@@ -1674,7 +1675,7 @@ class SLM(_Common, ABC):
             rolloff = analysis.image_aperture_fit(
                 power,
                 edge_level=edge_level,
-                aspect=self.pitch[1] / self.pitch[0],
+                aspect=self.pixel_aspect,
             )
 
             if rolloff is None:
@@ -1747,6 +1748,7 @@ class SLM(_Common, ABC):
         """
         Plots measured or simulated amplitude and phase distribution
         of the SLM illumination. Also plots the rsquared goodness of fit value if available.
+        Pixels are drawn at their physical aspect ratio.
 
         Parameters
         ----------
@@ -1791,41 +1793,39 @@ class SLM(_Common, ABC):
 
         # Make the subplots.
         _, axs = plt.subplots(1, 3 if plot_r2 else 2, figsize=(10, 6))
+        aspect = self.pixel_aspect
 
         # Panel 1: Phase
         im = axs[0].imshow(
             np.mod(phase_raw, 2 * np.pi),
             cmap=plt.get_cmap("twilight"),
             interpolation="none",
+            aspect=aspect,
         )
         if aperture:
             self._plot_aperture(axs[0])
         axs[0].set_title("Simulated Source Phase" if sim else "Source Phase")
         axs[0].set_xlabel("SLM $x$ [pix]")
         axs[0].set_ylabel("SLM $y$ [pix]")
-        divider = make_axes_locatable(axs[0])
-        cax = divider.append_axes("right", size="5%", pad=0.05)
         im.set_clim([0, 2 * np.pi])
-        plt.colorbar(im, cax=cax)
+        plt.colorbar(im, cax=axs[0].inset_axes([1.03, 0, 0.05, 1]))
 
         # Panel 2: Amplitude or Power
         if power:
-            im = axs[1].imshow(np.square(amplitude_raw), clim=(0, 1))
+            im = axs[1].imshow(np.square(amplitude_raw), clim=(0, 1), aspect=aspect)
             axs[1].set_title("Simulated Source Power" if sim else "Source Power")
         else:
-            im = axs[1].imshow(amplitude_raw, clim=(0, 1))
+            im = axs[1].imshow(amplitude_raw, clim=(0, 1), aspect=aspect)
             axs[1].set_title("Simulated Source Amplitude" if sim else "Source Amplitude")
         if aperture:
             self._plot_aperture(axs[1])
         axs[1].set_xlabel("SLM $x$ [pix]")
         axs[1].set_ylabel("SLM $y$ [pix]")
-        divider = make_axes_locatable(axs[1])
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
+        plt.colorbar(im, cax=axs[1].inset_axes([1.03, 0, 0.05, 1]))
 
         # Panel 3: R^2
         if plot_r2:
-            im = axs[2].imshow(r2_raw, clim=(0, 1))
+            im = axs[2].imshow(r2_raw, clim=(0, 1), aspect=aspect)
             if plot_r2_contour:
                 axs[2].contour(
                     r2_raw,
@@ -1840,9 +1840,7 @@ class SLM(_Common, ABC):
             else:
                 axs[2].set_xlabel("SLM $x$ [superpix]")
                 axs[2].set_ylabel("SLM $y$ [superpix]")
-            divider = make_axes_locatable(axs[2])
-            cax = divider.append_axes("right", size="5%", pad=0.05)
-            plt.colorbar(im, cax=cax)
+            plt.colorbar(im, cax=axs[2].inset_axes([1.03, 0, 0.05, 1]))
 
         # Finalize the plot and return the axes.
         plt.tight_layout()
@@ -1883,7 +1881,7 @@ class SLM(_Common, ABC):
         numpy.ndarray
             ``(x, y)`` radius of the farfield spot.
         """
-        return 1 / (np.pi * np.broadcast_to(self.source_radius, (2,)))
+        return 1 / (np.pi * self.source_radius)
 
     # Self-test method to test everything above.
 

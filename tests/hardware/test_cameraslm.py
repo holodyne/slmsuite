@@ -505,6 +505,29 @@ class TestFourierSLM:
                 f"disagrees with the ground truth on {(1 - agreement) * 100:.1f}% of pixels."
             )
 
+    def test_rectangular_geometry(self, subtests):
+        """Rectangular SLM and camera pixels, a non-square SLM and a rotated calibration."""
+        slm = SimulatedSLM((96, 160), pitch_um=(16.2, 10.8), wav_um=1.0)
+        fs = FourierSLM(SimulatedCamera(slm, resolution=(320, 256), pitch_um=(5, 10)), slm)
+        fs.fourier_calibrate_analytic(*fs.fourier_calibration_build(50, units="mm", theta=0.3))
+        slm.set_aperture(radius=40, units="pix")
+        radius_kxy = 1 / (np.pi * 40 * slm.pitch[0])
+
+        with subtests.test("a round spot is round in microns on the camera, whatever the rotation"):
+            np.testing.assert_allclose(
+                fs.get_farfield_spot_size(basis="ij"), 5e4 * radius_kxy / np.array([5, 10])
+            )
+
+        with subtests.test("knm integration widths follow each axis of the padded grid"):
+            hologram = SpotHologram(
+                (512, 256), [[-0.008, 0.008], [0, 0]], basis="kxy", cameraslm=fs
+            )
+            psf_knm = radius_kxy * slm.pitch * (256, 512)
+            np.testing.assert_array_equal(
+                hologram.spot_integration_width_knm, 2 * np.floor(10 * psf_knm / 2) + 1
+            )
+            assert hologram.spot_integration_width_knm[0] != hologram.spot_integration_width_knm[1]
+
     def test_get_camera_extent(self, fourierslm_calibrated, subtests):
         """Test FourierSLM.get_camera_extent."""
         (h, w) = fourierslm_calibrated.cam.shape
@@ -521,9 +544,18 @@ class TestFourierSLM:
             shape = SpotHologram.get_padded_shape(
                 fourierslm_calibrated, padding_order=1, square_padding=True
             )
-            mask = fourierslm_calibrated.get_camera_extent(units=shape, return_mask=True)
+            units = ("knm", shape)
+            mask = fourierslm_calibrated.get_camera_extent(units=units, return_mask=True)
             assert mask.dtype == bool and mask.shape == shape
             assert mask.any()
+            hologram = SpotHologram(shape, [[shape[1] // 2], [shape[0] // 2]], basis="knm")
+            same = fourierslm_calibrated.get_camera_extent(units=hologram, return_mask=True)
+            np.testing.assert_array_equal(same, mask)
+
+        with subtests.test("a bare shape warns and names the knm grid"):
+            with pytest.warns(UserWarning, match="deprecated"):
+                same = fourierslm_calibrated.get_camera_extent(units=shape, return_mask=True)
+            np.testing.assert_array_equal(same, mask)
 
         with subtests.test("a mask in a string basis raises"):
             with pytest.raises(ValueError, match="return_mask must be False"):
@@ -888,6 +920,22 @@ class TestFourierSLM:
         assert not conflicts, (
             f"(measurement, writer, reader, superpixel) hijacks: {conflicts}\n{scheduling}"
         )
+
+    def test_wavefront_calibrate_superpixel_default_reference(self, simulated_system_factory):
+        """The default reference is the superpixel holding the SLM's center pixel."""
+        fs = simulated_system_factory(
+            "matched", slm_resolution=(100, 72), cam_resolution=(256, 256)
+        )
+        install_ground_truth_calibration(fs)
+        fs.wavefront_calibrate_superpixel(
+            calibration_points=np.array([[60], [60]]), superpixel_size=20, phase_steps=1, plot=-1
+        )
+        cal = fs.calibrations["wavefront_superpixel"]
+        columns = cal["slm_supershape"][1]
+        reference = int(np.ravel(cal["reference_superpixels"])[0])
+        corner = 20 * np.array([reference % columns, reference // columns])
+        center = np.array(fs.slm.shape[::-1]) / 2
+        assert np.all((corner <= center) & (center < corner + 20)), (corner, center)
 
     def test_wavefront_calibration_superpixel_process(self, simulated_system_factory, subtests):
         """

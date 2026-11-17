@@ -13,7 +13,7 @@ Configuration (environment variables, all optional except the gate):
 ``SLMSUITE_TEST_CAMERA_PITCH``   Camera pixel pitch, um. Default ``2.74``.
 ``SLMSUITE_TEST_CAMERA_BITS``    Camera bitdepth. Default ``12``.
 ``SLMSUITE_TEST_EXPOSURE``       Camera exposure, s. Default ``0.002``.
-``SLMSUITE_TEST_PLM_MODEL``      PLM model. Default ``p67``.
+``SLMSUITE_TEST_PLM_MODEL``      PLM model, or one per EVM comma-separated. Default ``p67``.
 ``SLMSUITE_TEST_PLM_DISPLAYS``   Comma-separated display numbers. Default ``1,2``.
 ``SLMSUITE_TEST_PLM_INDEX``      Which of the opened PLMs is the device under test.
                                  Default ``1``, i.e. ``slm2``. The rest are blanked.
@@ -277,7 +277,7 @@ def hardware():
 
     displays = [int(d) for d in _env("SLMSUITE_TEST_PLM_DISPLAYS", "1,2").split(",")]
     slms = PLM.open_all(
-        _env("SLMSUITE_TEST_PLM_MODEL", "p67"),
+        _env("SLMSUITE_TEST_PLM_MODEL", "p67", lambda m: m.split(",") if "," in m else m),
         display_numbers=displays,
         wav_um=_env("SLMSUITE_TEST_WAV_UM", "0.488", float),
         settle_time_s=0.05,

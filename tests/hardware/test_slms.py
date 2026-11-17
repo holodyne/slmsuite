@@ -659,7 +659,7 @@ class TestSLM:
             with pytest.raises(ValueError, match="not both"):
                 slm.set_aperture("circular", radius=0.3)
 
-        with subtests.test("an old scalar source radius loads as a pair"):
+        with subtests.test("a stored scalar source radius loads as a pair"):
             data = slm.pickle(attributes=True, metadata=False)
             data["_source_radius"] = 0.5
             slm._unpickle(data)
@@ -731,16 +731,15 @@ class TestSLM:
 
         with subtests.test("colorbar drawn only when requested, labeled in pi"):
             ax = slm.plot(phase=phase, cbar=True)
-            axes = ax.get_figure().axes
-            assert len(axes) == 2
-            assert [t.get_text() for t in axes[1].get_yticklabels()] == [
+            assert len(ax.child_axes) == 1
+            assert [t.get_text() for t in ax.child_axes[0].get_yticklabels()] == [
                 "$0\\pi$",
                 "$1\\pi$",
                 "$2\\pi$",
             ]
             plt.close("all")
             ax = slm.plot(phase=phase, cbar=False)
-            assert len(ax.get_figure().axes) == 1
+            assert len(ax.child_axes) == 0
             plt.close("all")
 
         with subtests.test("labels and title applied only when the phase fills the SLM"):
@@ -769,6 +768,49 @@ class TestSLM:
             assert len(ax.collections) == 0
             plt.close("all")
             slm.set_aperture("cropped")
+
+    def test_plot_aspect(self):
+        """Pixel-axis plots draw rectangular pixels at their physical aspect ratio."""
+        rect = SimulatedSLM((64, 48), pitch_um=(16.2, 10.8))
+        rect.set_source_analytic()
+
+        def check(ax):
+            assert ax.get_aspect() == pytest.approx(10.8 / 16.2)
+            ax.get_figure().canvas.draw()
+            (cbar,) = ax.child_axes
+            height = ax.get_window_extent().height
+            assert cbar.get_window_extent().height == pytest.approx(height, abs=1), (
+                "colorbar spans the image"
+            )
+
+        check(rect.plot())
+        plt.close("all")
+        for ax in rect.plot_source():
+            check(ax)
+        plt.close("all")
+
+    def test_aperture_rectangular(self, subtests):
+        """Apertures on rectangular pixels are physical circles unless given per axis."""
+        rect = SimulatedSLM((96, 160), pitch_um=(16.2, 10.8))
+
+        with subtests.test("a scalar radius in pixels counts pixel widths, a circle"):
+            rect.set_aperture(radius=20, units="pix")
+            assert rect.aperture.is_isotropic
+            np.testing.assert_allclose(rect.source_radius, 20 * rect.pitch[0])
+
+        with subtests.test("a pair of radii in pixels counts pixels along each axis"):
+            rect.set_aperture(radius=(20, 30), units="pix")
+            np.testing.assert_allclose(rect.source_radius, (20, 30) * rect.pitch)
+
+        with subtests.test("fit_aperture finds an off-center physical circle"):
+            rect.set_aperture("cropped")
+            (x, y) = map(as_numpy, rect.grid)
+            (cx, cy, a) = (0.1 * float(x.max()), -0.15 * float(y.max()), 0.6 * float(x.max()))
+            rect.source["amplitude"] = (np.hypot(x - cx, y - cy) <= a).astype(float)
+            rect.fit_aperture(edge_level=0.5)
+            np.testing.assert_allclose(as_numpy(rect.aperture.center), (cx, cy), atol=0.02 * a)
+            np.testing.assert_allclose(1 / np.array(rect.aperture.scale), a, rtol=3e-2)
+            np.testing.assert_allclose(rect.source_radius, a, rtol=3e-2)
 
     def test_plot_source(self, slm, subtests):
         """plot_source renders the measured or simulated source in two panels."""
@@ -1140,6 +1182,11 @@ class TestPLM:
             assert ratios[0] == 0 and ratios[-1] == 1 and np.all((0 <= ratios) & (ratios <= 1))
             np.testing.assert_array_equal((words >> 5) & 1, (words >> 2) & 1)
             assert sorted(np.ravel(config["electrode_layout"])) == list(range(6))
+
+        with subtests.test("the display is the electrode image plus two zero columns per side"):
+            electrodes = np.multiply(config["shape"], np.shape(config["electrode_layout"]))
+            display = electrodes + 2 * np.array(config["display_margin"])
+            np.testing.assert_array_equal(display, (1600, 2716))
 
         stub = SimpleNamespace(
             xp=np,

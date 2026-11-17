@@ -218,6 +218,10 @@ def test_take(subtests, benchmark):
                 analysis.take_validate((10, 10), vectors, size), np.array(expected, dtype=bool)
             )
 
+    with subtests.test("an uncentered window extends right and down from its anchor"):
+        valid = analysis.take_validate((10, 10), [[0, 7, 8], [0, 0, 0]], 3, centered=False)
+        np.testing.assert_array_equal(valid, [True, True, False])
+
     with subtests.test("take_validate takes an image or a stack in place of a shape"):
         vectors = [[2.0, 8.0], [5.0, 5.0]]
         expected = analysis.take_validate((10, 12), vectors, 5)

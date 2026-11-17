@@ -285,13 +285,13 @@ class _WavefrontCalibrationSuperpixel:
         # Set the reference superpixels to be centered on the SLM if undefined.
         if reference_superpixels is None:
             all_superpixels = np.arange(num_superpixels)
-            all_superpixels_coords = index2coord(all_superpixels)
+            centers = (index2coord(all_superpixels) + 0.5) * superpixel_size
 
             distance = np.sum(
-                np.square(all_superpixels_coords - format_2vectors(slm_supershape[::-1]) / 2),
+                np.square(centers - format_2vectors(self.slm.shape[::-1]) / 2),
                 axis=0,
             )
-            I = np.argsort(distance)
+            I = np.argsort(distance, kind="stable")
 
             reference_superpixels = I[:num_points]
         else:
@@ -753,9 +753,10 @@ class _WavefrontCalibrationSuperpixel:
                 if plot_fits:
                     _, axs = plt.subplots(1, 3, figsize=(20, 10))
 
-                    axs[0].imshow(img)
-                    axs[1].imshow(sinc2d_centered(xy, *guess))
-                    axs[2].imshow(sinc2d_centered(xy, *popt))
+                    aspect = self.cam.pixel_aspect
+                    axs[0].imshow(img, aspect=aspect)
+                    axs[1].imshow(sinc2d_centered(xy, *guess), aspect=aspect)
+                    axs[2].imshow(sinc2d_centered(xy, *popt), aspect=aspect)
 
                     for index, title in enumerate(["Image", "Guess", "Fit"]):
                         axs[index].set_title(title)
@@ -800,6 +801,7 @@ class _WavefrontCalibrationSuperpixel:
                         np.mod(phase, 2 * np.pi),
                         cmap=plt.get_cmap("twilight"),
                         interpolation="none",
+                        aspect=self.slm.pixel_aspect,
                     )
 
                     points = []
@@ -851,7 +853,7 @@ class _WavefrontCalibrationSuperpixel:
                     #             axs[0].set_xlim(lim)
 
                     if img is not None:
-                        im = axs[1].imshow(np.log10(img + 0.1))
+                        im = axs[1].imshow(np.log10(img + 0.1), aspect=self.cam.pixel_aspect)
                         im.set_clim(0, np.log10(self.cam.bitresolution))
 
                     dpoint = field_point - base_point
@@ -882,7 +884,7 @@ class _WavefrontCalibrationSuperpixel:
                     plot_labeled_rects(axs[1], points, labels, colors, wh, hh)
 
                     if img is not None:
-                        im = axs[2].imshow(np.log10(img + 0.1))
+                        im = axs[2].imshow(np.log10(img + 0.1), aspect=self.cam.pixel_aspect)
                         im.set_clim(0, np.log10(self.cam.bitresolution))
 
                         if self.cam.bitdepth > 10:
@@ -1763,6 +1765,7 @@ class _WavefrontCalibrationSuperpixel:
         amp[below_thresh] = np.nan
 
         kscale = np.max([np.nanmax(np.abs(kx)), np.nanmax(np.abs(ky))])
+        aspect = self.slm.pixel_aspect
 
         plt.subplot(1, 4, 1)
         plt.scatter(coord[0], coord[1], c="r")
@@ -1780,6 +1783,7 @@ class _WavefrontCalibrationSuperpixel:
             clim=(0, 2 * np.pi),
             cmap=plt.get_cmap("twilight"),
             interpolation="none",
+            aspect=aspect,
         )
         plt.title(r"Phase Correction $\phi$")
         plt.xticks([])
@@ -1792,10 +1796,11 @@ class _WavefrontCalibrationSuperpixel:
                 clim=(-kscale, kscale),
                 cmap=plt.get_cmap("twilight"),
                 interpolation="none",
+                aspect=aspect,
             )
             plt.title(r"$k_x \propto \partial\phi/\partial x$")
         else:
-            plt.imshow(power)
+            plt.imshow(power, aspect=aspect)
             plt.title("Measured Beam Power")
         plt.xticks([])
         plt.yticks([])
@@ -1807,10 +1812,11 @@ class _WavefrontCalibrationSuperpixel:
                 clim=(-kscale, kscale),
                 cmap=plt.get_cmap("twilight"),
                 interpolation="none",
+                aspect=aspect,
             )
             plt.title(r"$k_y \propto \partial\phi/\partial y$")
         else:
-            plt.imshow(r2, clim=(0, 1))
+            plt.imshow(r2, clim=(0, 1), aspect=aspect)
             # plt.contour(r2, [r2_threshold], c="r")
             plt.title("$R^2$")
         plt.xticks([])

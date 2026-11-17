@@ -57,6 +57,8 @@ p67:
 p67nir:
   name: ".67 NIR PLM"
   shape: [800, 904]
+  # Rows and columns of zero padding on each side of the electrode image.
+  display_margin: [0, 2]
   pitch: [1.62e-05, 1.08e-05]
   displacement_ratios:
     [0.0, 0.0127, 0.0293, 0.0662, 0.0522, 0.0675, 0.0854, 0.1261,

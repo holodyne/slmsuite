@@ -4,7 +4,6 @@ from contextlib import contextmanager
 
 import matplotlib.pyplot as plt
 import numpy as np
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from slmsuite._logging import _Loggable
 from slmsuite.hardware._viewer import _Viewable
@@ -113,6 +112,11 @@ class _Common(_Viewable, _Loggable, ABC):
         """``(width, height)`` in pixels, the reverse of :attr:`shape`."""
         return (self.shape[1], self.shape[0])
 
+    @property
+    def pixel_aspect(self):
+        """Height over width of a pixel, 1 when the pitch is unknown."""
+        return 1.0 if self.pitch_um is None else float(self.pitch_um[1] / self.pitch_um[0])
+
     def _get_dtype(self, test_data=None):
         """
         Determines and sets the dtype appropriate for the hardware's bitdepth.
@@ -173,8 +177,8 @@ class _Common(_Viewable, _Loggable, ABC):
 
     def _plot(self, data, limits, title, *, ax, cbar, labels, **kwargs):
         """
-        Plots ``data`` on a pixel axis, passing ``kwargs`` to ``imshow`` and applying
-        ``labels`` only when ``data`` fills the hardware.
+        Plots ``data`` on a pixel axis at the physical pixel aspect ratio, passing
+        ``kwargs`` to ``imshow`` and applying ``labels`` only when ``data`` fills the hardware.
 
         Returns
         -------
@@ -192,12 +196,14 @@ class _Common(_Viewable, _Loggable, ABC):
             fig = None
             plt.sca(ax)
 
+        kwargs.setdefault("aspect", self.pixel_aspect)
         im = plt.imshow(data, **kwargs)
         ax = plt.gca()
 
         cax = None
         if cbar and fig is not None:
-            cax = make_axes_locatable(ax).append_axes("right", size="2%", pad=0.05)
+            # An inset follows the image's drawn height, which a pixel aspect changes.
+            cax = ax.inset_axes([1.01, 0, 0.02, 1])
             fig.colorbar(im, cax=cax, orientation="vertical")
             plt.sca(ax)
 
