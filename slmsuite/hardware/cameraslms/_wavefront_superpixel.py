@@ -52,6 +52,7 @@ class _WavefrontCalibrationSuperpixel:
         measure_background=False,
         corrected_amplitude=False,
         plot=0,
+        autoexpose=False,
     ):
         """
         Perform wavefront calibration by
@@ -170,6 +171,12 @@ class _WavefrontCalibrationSuperpixel:
             - ``2`` : Plots on everything.
             - ``3`` : ``test_index`` not ``None`` only: returns image frames
               to make a movie from the phase measurement (not for general use).
+        autoexpose : bool OR float
+            If truthy, sets the camera exposure on the interference windows before the
+            sweep, while each reference superpixel and its neighbor are blazed in phase to
+            the calibration point, a stand-in for the brightest frame of the sweep.
+            A ``float`` is passed as the ``set_fraction`` of
+            :meth:`~slmsuite.hardware.cameras.camera.Camera.autoexpose()`.
 
         Returns
         -------
@@ -796,7 +803,11 @@ class _WavefrontCalibrationSuperpixel:
 
                     # Plot phase on the first axis.
                     if phase is None:
-                        phase = self.slm.phase if self.slm.xp is np else self.slm.phase.get()
+                        if self.slm.phase is None:
+                            raise ValueError(
+                                "phase is undefined while hardware frame memory is displayed."
+                            )
+                        phase = as_numpy(self.slm.phase)
                     axs[0].imshow(
                         np.mod(phase, 2 * np.pi),
                         cmap=plt.get_cmap("twilight"),
@@ -1107,7 +1118,7 @@ class _WavefrontCalibrationSuperpixel:
                     # Determine whether to use a progress bar.
                     if verbose:
                         description = "phase_measurement"
-                        prange = tqdm(phases, position=0, leave=False, desc=description)
+                        prange = tqdm(phases, leave=False, desc=description)
                     else:
                         prange = phases
 
@@ -1183,7 +1194,39 @@ class _WavefrontCalibrationSuperpixel:
                     "r2_fit": r2_fit,
                 }
 
-            # Correct exposure and position of the reference mode(s).
+            # Expose for the brightest frame: each reference and its neighbor, in phase.
+            if autoexpose:
+                matrix = blaze(self.slm, field_blaze)
+                for i in range(num_points):
+                    imprint(
+                        matrix,
+                        np.array(
+                            [
+                                min(reference_superpixels_coords[0, i], slm_supershape[1] - 2),
+                                2,
+                                reference_superpixels_coords[1, i],
+                                1,
+                            ]
+                        )
+                        * superpixel_size,
+                        blaze,
+                        self.slm,
+                        vector=reference_blazes[:, [i]],
+                    )
+                self.slm.set_phase(matrix, settle=True)
+                self.cam.autoexpose(
+                    set_fraction=autoexpose,
+                    window=analysis.take(
+                        images=np.zeros(self.cam.shape),
+                        vectors=calibration_points,
+                        size=interference_window,
+                        clip=True,
+                        return_mask=True,
+                    ),
+                    verbose=verbose,
+                )
+
+            # Correct the position of the reference mode(s).
             # self.cam.flush()
             base_image = superpixels(None, 0, None)
             plot_labeled(None, base_image, plot=plot_everything, title="Base Reference Diffraction")
@@ -1209,7 +1252,7 @@ class _WavefrontCalibrationSuperpixel:
 
             measurements = range(num_measurements)
             if plot >= 0:
-                measurements = tqdm(measurements, position=1, leave=True, desc="calibration")
+                measurements = tqdm(measurements, desc="calibration")
 
             # Proceed with all of the superpixels.
             for n in measurements:

@@ -695,3 +695,11 @@ class FLIR(Camera):
 
         except PySpin.SpinnakerException as ex:
             raise RuntimeError(f"Camera acquisition failed: {ex}") from ex
+
+    def flush(self, timeout_s=1):
+        """
+        See :meth:`.Camera.flush`. A software-triggered camera exposes each frame on
+        request, so it has no stale frames to flush.
+        """
+        if not self._trigger_is_software:
+            super().flush(timeout_s=timeout_s)

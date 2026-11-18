@@ -89,8 +89,8 @@ the user can install selectively.
     - Other cameras are loaded directly via .dll.
 - SLMs ``pip install -e ".[slms]"``
     - `pyglet <https://pyglet.org/>`_
-    - `hidapi <https://pypi.org/project/hidapi/>`_ and
-      `pyyaml <https://pypi.org/project/PyYAML/>`_, for Texas Instruments PLMs
+    - `hidapi <https://pypi.org/project/hidapi/>`_, for Texas Instruments PLMs
+    - `pyyaml <https://pypi.org/project/PyYAML/>`_, for PLMs (Texas Instruments, ViALUX)
     - Other SLMs are loaded via their vendor's SDK or .dll.
 - Image saving ``pip install -e ".[images]"``
     - For most images and videos, `imageio <https://imageio.readthedocs.io/en/stable/>`_

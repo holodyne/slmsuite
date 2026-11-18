@@ -34,7 +34,7 @@ class Template(SLM):
         bitdepth : int
             Depth of SLM pixel well in bits. Defaults to 8.
         wav_um : float
-            Wavelength of operation in microns. Defaults to 1 μm.
+            Wavelength of operation in microns. Defaults to 1 micron.
         pitch_um : (float, float)
             Pixel pitch in microns. Defaults to 8 micron square pixels.
         **kwargs
@@ -166,3 +166,42 @@ class Template(SLM):
     #         also accept other datatypes or parameters as needed.
     #     """
     #     raise NotImplementedError("This SLM does not support output triggering.")
+
+    # Hardware frame memory (implement if supported):
+
+    # def _set_frame_hw(self, display, frame):
+    #     r"""
+    #     Stores integer data in frame ``frame`` of the frame memory without displaying it.
+    #     Set :attr:`frame_count` to the number of frames when opening the SLM.
+    #     See :meth:`.SLM._set_frame_hw`.
+    #     """
+    #     raise NotImplementedError("This SLM does not have hardware frame memory.")
+
+    # def _set_frames_hw(self, displays, frames):
+    #     r"""
+    #     Stores several frames at once, if the hardware has a faster way than one
+    #     :meth:`_set_frame_hw` per frame. See :meth:`.SLM._set_frames_hw`.
+    #     """
+    #     for display, frame in zip(displays, frames):
+    #         self._set_frame_hw(display, frame)
+
+    # def _set_phase_frame_hw(self, frame, repeat=1):
+    #     r"""
+    #     Displays stored frames: an int ``frame`` is held; a 1D array of frames plays
+    #     in order ``repeat`` times. See :meth:`.SLM._set_phase_frame_hw`.
+    #     """
+    #     raise NotImplementedError("This SLM does not have hardware frame memory.")
+
+    # def set_frametime(self, frametime_s):
+    #     r"""
+    #     Sets the time each frame of a stored sequence is displayed for, in seconds.
+    #     See :meth:`.SLM.set_frametime`.
+    #     """
+    #     raise NotImplementedError("This SLM does not support frame timing.")
+
+    # def get_frametime(self):
+    #     r"""
+    #     Reads the frame time back from the hardware, in seconds.
+    #     See :meth:`.SLM.get_frametime`.
+    #     """
+    #     raise NotImplementedError("This SLM does not support frame timing.")

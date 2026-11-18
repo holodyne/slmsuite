@@ -447,6 +447,8 @@ class FourierSLM(
 
         # Display what the hardware is displaying. The hardware's `phase` is already
         # corrected, so the correction must not be applied a second time.
+        if self.slm.phase is None:
+            raise ValueError("phase is undefined while hardware frame memory is displayed.")
         slm_sim.set_phase(self.slm.phase, phase_correct=False, settle=False)
 
         return slm_sim
