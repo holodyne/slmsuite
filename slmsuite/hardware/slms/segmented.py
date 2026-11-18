@@ -113,6 +113,9 @@ class SegmentedSLM(SLM):
             gpu=(parent.xp is not np),
         )
 
+        # Frames go to the parent's frame memory, when it has one.
+        self.frame_count = parent.frame_count
+
         # Load source data from the parent SLM when available.
         for key in ("amplitude", "phase"):
             if key in self.parent.source:
@@ -169,13 +172,13 @@ class SegmentedSLM(SLM):
         """
         # Update the parent SLM's display and phase data.
         if self.subwindow is None:  # Rectangular window case
-            self.parent.display[tuple(self.extent_slice)] = display
-            if self.phase is not None:
-                self.parent.phase[tuple(self.extent_slice)] = self.phase
+            self.parent._display[tuple(self.extent_slice)] = display
+            if self._phase is not None:
+                self.parent._phase[tuple(self.extent_slice)] = self._phase
         else:  # Non-rectangular window case
-            self.parent.display[tuple(self.extent_slice)][self.subwindow] = display[self.subwindow]
-            if self.phase is not None:
-                self.parent.phase[tuple(self.extent_slice)][self.subwindow] = self.phase[
+            self.parent._display[tuple(self.extent_slice)][self.subwindow] = display[self.subwindow]
+            if self._phase is not None:
+                self.parent._phase[tuple(self.extent_slice)][self.subwindow] = self._phase[
                     self.subwindow
                 ]
 
@@ -183,7 +186,42 @@ class SegmentedSLM(SLM):
         if refresh is None:
             refresh = self.refresh
         if refresh:
-            self.parent._set_phase_hw(self.parent.display)
+            self.parent._set_phase_hw(self.parent._display)
+            self.parent._memory_displayed = False
+
+    def _set_frame_hw(self, display, frame):
+        """
+        Stores the parent SLM's display, with this segment's data in its window, in the
+        parent's frame memory. See :meth:`.SLM._set_frame_hw`. A frame of that memory is
+        the whole display, shared by the parent and all of its segments: a later store to
+        the same frame replaces it, other segments' windows included.
+        """
+        self._set_frames_hw([display], [frame])
+
+    def _set_frames_hw(self, displays, frames):
+        """Stores several frames as :meth:`_set_frame_hw` does. See :meth:`.SLM._set_frames_hw`."""
+        fulls = []
+        for display in displays:
+            full = self.parent._display.copy()
+            if self.subwindow is None:
+                full[tuple(self.extent_slice)] = display
+            else:
+                full[tuple(self.extent_slice)][self.subwindow] = display[self.subwindow]
+            fulls.append(full)
+        self.parent._set_frames_hw(fulls, frames)
+
+    @property
+    def _memory_displayed(self):
+        return self.parent._memory_displayed
+
+    @_memory_displayed.setter
+    def _memory_displayed(self, value):
+        pass
+
+    def _set_phase_frame_hw(self, frame, repeat=1, refresh=None):
+        """Displays frames of the parent SLM's frame memory. See :meth:`.SLM._set_phase_frame_hw`."""
+        self.parent._set_phase_frame_hw(frame, repeat)
+        self.parent._memory_displayed = True
 
     def set_input_trigger(self, on: bool = False):
         r"""
@@ -204,3 +242,23 @@ class SegmentedSLM(SLM):
         RuntimeError
         """
         raise RuntimeError("Program the output trigger on the parent SLM.")
+
+    def set_frametime(self, frametime_s):
+        r"""
+        Set the frame time on the parent SLM.
+
+        Raises
+        ------
+        RuntimeError
+        """
+        raise RuntimeError("Set the frame time on the parent SLM.")
+
+    def get_frametime(self):
+        r"""
+        Read the frame time from the parent SLM.
+
+        Raises
+        ------
+        RuntimeError
+        """
+        raise RuntimeError("Read the frame time from the parent SLM.")

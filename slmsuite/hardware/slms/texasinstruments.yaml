@@ -1,5 +1,7 @@
-# Model specifications for Texas Instruments PLM EVM kits.
-# These values are adapted from the json files provided in Texas Instruments'
+# Model specifications for Texas Instruments PLM chips. Models with a memory_lut,
+# electrode_layout and data_flip are driven as displays by a DLPC900 EVM kit
+# (texasinstruments.PLM); the others are driven by another controller (vialux.PLM).
+# The EVM values are adapted from the json files provided in Texas Instruments'
 # https://github.com/TexasInstruments-Sandbox/ti-phase-light-modulator/tree/main
 # Original license below for reference:
 
@@ -51,6 +53,14 @@ p67:
     - [1, 3]
     - [0, 2]
   data_flip: [0, 1]
+
+p99:
+  name: ".99 PLM"
+  shape: [1088, 2048]
+  pitch: [1.08e-05, 1.08e-05]
+  displacement_ratios:
+    [0.0, 0.0126, 0.0258, 0.0494, 0.0709, 0.0878, 0.1381, 0.2153,
+     0.3274, 0.361, 0.4203, 0.5045, 0.5916, 0.6729, 0.8254, 1.0]
 
 # The following models are used for testing only.
 test_single:

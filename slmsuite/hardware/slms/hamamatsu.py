@@ -72,6 +72,11 @@ class Hamamatsu(SLM):
     r"""
     Initializes an instance of a Hamamatsu SLM.
 
+    Direct writes use frame 0 of the hardware frame memory; frame ``frame`` of
+    :meth:`set_frame` is hardware frame ``frame + 1``. The size of the frame memory
+    depends on the model and is not read from the device: pass ``frame_count`` to have
+    frames checked against it.
+
     Attributes
     ----------
     serial_number : str
@@ -85,6 +90,7 @@ class Hamamatsu(SLM):
         resolution=(1272, 1024),
         pitch_um=(12.5, 12.5),
         verbose=None,
+        frame_count=None,
         **kwargs,
     ):
         r"""
@@ -116,6 +122,9 @@ class Hamamatsu(SLM):
         verbose : None
             Ignored, with a warning. Use :func:`slmsuite.configure_logging()`
             to see the progress of initialization.
+        frame_count : int OR None
+            Number of frames :meth:`set_frame` may use: one fewer than the device holds.
+            ``None`` leaves frames unchecked.
         """
         # Search for one device.
         if verbose is not None:
@@ -170,27 +179,38 @@ class Hamamatsu(SLM):
             pitch_um=pitch_um,
             **kwargs,
         )
+        self.frame_count = frame_count
 
         # Zero the display using the superclass `set_phase()` function.
         self.set_phase(None)
 
-    def _set_phase_hw(self, display, slot_number=0):
+    def _set_phase_hw(self, display):
         r"""
         Hardware-specific implementation for Hamamatsu SLM devices.
 
-        See :meth:`SLM._set_phase_hw` for the base class documentation.
+        See :meth:`SLM._set_phase_hw` for the base class documentation. Data is written
+        to hardware frame 0, which is reserved for it, and displayed from there.
 
         Parameters
         ----------
         display
             Integer data to display on the SLM. See :meth:`.SLM._set_phase_hw`.
-        slot_number : int
-            Hardware-specific implementation. The number of the frame memory
-            slot where to write the pattern. The default value is 0.
-            This can be passed as a ``**kwargs``argument to :meth:`set_phase()`;
-            this variable may be renamed in a future slmsuite release to
-            conform with eventual implementation of this feature in other SLMs.
         """
+        self._Write_FMemArray(display, 0)
+        self._Change_DispSlot(0)
+
+    def _set_phase_frame_hw(self, frame, repeat=1):
+        """Display stored frame ``frame``. See :meth:`.SLM._set_phase_frame_hw`."""
+        if repeat != 1 or np.ndim(frame):
+            raise ValueError("This SLM displays one stored frame at a time.")
+        self._Change_DispSlot(frame + 1)
+
+    def _set_frame_hw(self, display, frame):
+        """Store ``display`` as frame ``frame``. See :meth:`.SLM._set_frame_hw`."""
+        self._Write_FMemArray(display, frame + 1)
+
+    def _Write_FMemArray(self, display, frame):
+        """Writes integer data to hardware frame ``frame`` (a slot, in Hamamatsu's terms)."""
         display = as_numpy(display)  # The driver needs host memory.
 
         array_size = int(self.shape[0] * self.shape[1])
@@ -211,26 +231,11 @@ class Hamamatsu(SLM):
             array_size,
             self.shape[1],
             self.shape[0],
-            slot_number,
+            frame,
         )
 
         if v != 1:
             raise RuntimeError("Failed to write to Hamamatsu SLM.")
-
-        # TODO: is this necessary to call every frame?
-        self._Change_DispSlot(slot_number)
-
-    def set_slot_number(self, slot_number=0):
-        r"""
-        Switches the displayed pattern to the one in the specified slot number, from the
-        frame memory. This function may be deprecated in the future.
-
-        Parameters
-        ----------
-        slot_number : int
-            The number of the frame memory slot. The default value is 0.
-        """
-        self._Change_DispSlot(slot_number)
 
     def get_display(self):
         r"""
@@ -374,16 +379,14 @@ class Hamamatsu(SLM):
 
         return head_serial.value.decode("utf-8").strip("\x00")
 
-    def _Change_DispSlot(self, slot_number):
-        r"""
-        Changes the displayed pattern to the one in the specified slot number, from the frame memory.
-        """
-        change_slot = Lcoslib.Change_DispSlot
-        change_slot.argtypes = [c_uint8, c_uint32]
-        v = change_slot(self.board_id, slot_number)
+    def _Change_DispSlot(self, frame):
+        """Displays hardware frame ``frame`` (a slot, in Hamamatsu's terms)."""
+        change_disp_slot = Lcoslib.Change_DispSlot
+        change_disp_slot.argtypes = [c_uint8, c_uint32]
+        v = change_disp_slot(self.board_id, frame)
 
         if v != 1:
-            raise RuntimeError("Failed to change the display slot for Hamamatsu SLM.")
+            raise RuntimeError("Failed to change the displayed frame of Hamamatsu SLM.")
 
     def get_temperature(self):
         r"""
