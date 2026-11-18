@@ -750,7 +750,7 @@ class PLM(_PLMModel, ScreenMirrored):
 
         return out
 
-    def _format_phase_hw(self, phase, replicate_bits=True, out=None):
+    def _format_phase_hw(self, phase, replicate_bits=True):
         r"""
         Process phase array into PLM electrode bitmap.
 
@@ -766,13 +766,11 @@ class PLM(_PLMModel, ScreenMirrored):
         replicate_bits : bool, optional
             Multiply final bitplane by 255 to display same CGH for full frame.
             Defaults to True.
-        out : numpy.ndarray or cupy.ndarray or None
-            Buffer like :attr:`display` to write into. Defaults to :attr:`display`.
 
         Returns
         -------
         numpy.ndarray or cupy.ndarray (uint8)
-            Electrode-mapped bitmap ready for display, in ``out``.
+            Electrode-mapped bitmap ready for display.
             Returns GPU array if ``gpu`` backend is active, otherwise CPU array.
 
         Raises
@@ -794,22 +792,21 @@ class PLM(_PLMModel, ScreenMirrored):
         # Quantize phase to discrete states (handles [0, 2pi) wrapping internally)
         phase_state_idx = self._quantize(phase)
 
-        return self._gray2display(phase_state_idx, replicate_bits=replicate_bits, out=out)
+        return self._gray2display(phase_state_idx, replicate_bits=replicate_bits)
 
-    def _gray2display(self, gray, replicate_bits=True, out=None):
+    def _gray2display(self, gray, replicate_bits=True):
         xp = self.xp
-        if out is None:
-            out = self.display
         # Map to electrode pattern
         result = self._electrode_map(gray)
 
-        # Write into the buffer in place to avoid per-frame allocations.
+        # Write into self.display in-place to avoid per-frame allocations
+        # (mirrors how _phase2gray writes to self.display in slm.py).
         if replicate_bits:
-            xp.multiply(result, 255, out=out, casting="unsafe")
+            xp.multiply(result, 255, out=self._display, casting="unsafe")
         else:
-            xp.copyto(out, result, casting="unsafe")
+            xp.copyto(self._display, result, casting="unsafe")
 
-        return out
+        return self._display
 
     @staticmethod
     def bitpack(bitmaps):

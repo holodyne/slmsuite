@@ -74,6 +74,12 @@ class TestSimulateFidelity:
         fs = _calibrated(name)
         kxy = _display(fs)
 
+        with subtests.test("a system displaying its frame memory has no phase to clone"):
+            fs.slm._memory_displayed = True
+            with pytest.raises(ValueError, match="undefined"):
+                fs.simulate()
+            fs.slm._memory_displayed = False
+
         fs_sim = fs.simulate()
 
         with subtests.test("camera geometry"):

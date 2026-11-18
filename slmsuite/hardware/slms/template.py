@@ -177,6 +177,14 @@ class Template(SLM):
     #     """
     #     raise NotImplementedError("This SLM does not have hardware frame memory.")
 
+    # def _set_frames_hw(self, displays, frames):
+    #     r"""
+    #     Stores several frames at once, if the hardware has a faster way than one
+    #     :meth:`_set_frame_hw` per frame. See :meth:`.SLM._set_frames_hw`.
+    #     """
+    #     for display, frame in zip(displays, frames):
+    #         self._set_frame_hw(display, frame)
+
     # def _set_phase_frame_hw(self, frame, repeat=1):
     #     r"""
     #     Displays stored frames: an int ``frame`` is held; a 1D array of frames plays

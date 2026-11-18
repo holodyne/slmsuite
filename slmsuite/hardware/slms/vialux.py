@@ -41,6 +41,14 @@ load it from elsewhere. The constants used here are those of the ALP-5.1 ``alp.h
 (header version 29 or later, which adds ``ALP_DMDTYPE_2K_099A_PLM`` and the
 ``ALP_PLM_*_BIAS_VOLTAGE`` controls) and the ALP-5.1 API description.
 
+Tip
+~~~
+The PLM warms while the device is open and cools while it is closed, and both the
+pointing of the beam and its wavefront follow the temperature
+(:meth:`PLM.get_temperature`). Leave the device open until the temperature settles
+before calibrating, or repeat the Fourier and wavefront calibrations once it has. The
+pixel calibration does not depend on the temperature.
+
 Caution
 ~~~~~~~
 ``alp.h`` describes :attr:`DMDMode.INTERFACE_ERROR` as an error on the DMD interface,
@@ -52,7 +60,6 @@ it at random when loading the DMD, while displaying patterns correctly. See
 import ctypes
 import os
 import time
-from contextlib import contextmanager
 from enum import IntEnum
 from typing import ClassVar
 
@@ -119,7 +126,7 @@ class ALPControl(IntEnum):
 
     # AlpDevControl / AlpDevInquire, by section of the API description.
     DEVICE_NUMBER = 2000  #: 2.3 -- Serial number
-    AVAIL_MEMORY = 2003  #: 2.3 -- Free sequence memory, in bitplanes
+    AVAIL_MEMORY = 2003  #: 2.3 -- Free sequence memory, in frames
     SYNCH_POLARITY = 2004  #: 2.2 -- Frame synch output polarity
     TRIGGER_EDGE = 2005  #: 2.2 -- Trigger input edge (slave mode)
     DEV_DMDTYPE = 2021  #: 2.2 -- DLP chip type
@@ -151,7 +158,6 @@ class ALPControl(IntEnum):
     # AlpProjControl / AlpProjInquire / AlpProjControlEx
     PROJ_MODE = 2300  #: 2.13 -- Master or slave mode
     FLUT_MAX_ENTRIES9 = 2324  #: 3.4 -- Size of the frame lookup table, in 9-bit entries
-    FLUT_WRITE_9BIT = 2325  #: 3.4 -- Transfer 9-bit lookup table entries
     FLUT_WRITE_18BIT = 2326  #: 3.4 -- Transfer 18-bit lookup table entries
     PROJ_STATE = 2400  #: 2.14 -- Projection active or idle
 
@@ -171,14 +177,12 @@ ALP_EDGE_FALLING = 2008
 ALP_EDGE_RISING = 2009
 ALP_DATA_LSB_ALIGN = 1
 ALP_FLUT_NONE = 0
-ALP_FLUT_9BIT = 1
 ALP_FLUT_18BIT = 2
 ALP_MASTER = 2301
 ALP_PROJ_IDLE = 1201
 ALP_SLAVE = 2302
 
 _SEQ_REPEAT_MAX = 1048576  # Section 2.8 of the ALP-5.1 API description.
-_FLUT_SPAN_9BIT = 512  # Frames addressable by a 9-bit lookup table entry.
 
 
 class _FlutWrite(ctypes.Structure):
@@ -199,7 +203,8 @@ class PLM(_PLMModel, SLM):
     :meth:`set_phase` displays, singly or as a sequence in any order at the frame time
     of :meth:`set_frametime`. A direct write uploads to a reserved frame and displays it.
     Either way, the ALP shows each frame for one frame time and then idles while the
-    PLM holds the last one, so a partially uploaded pattern is never displayed.
+    PLM holds the last one, so a partially uploaded pattern is never displayed. Any
+    write or setting ends a sequence in progress after its current pass.
 
     Attributes
     ----------
@@ -250,16 +255,15 @@ class PLM(_PLMModel, SLM):
         self._lib = self._load_lib(sdk_path)
         self._device = None
         self._sequence = None
-        self._started = None  # (order, repeat) of the last start.
-        self._range = None  # (first, last) frames selected on the ALP.
-        self._flut = None  # (mode, entries) of the lookup table on the ALP.
-        self._repeat = 1  # Passes of a finite start, as set on the ALP.
+        self._held = None  # Frame that the PLM holds once the ALP idles.
+        self._looping = False
+        self._pass_s = 0.0  # Time that one pass of the started frames takes.
+        self._duration_s = 0.0  # Longest time that the ALP takes to idle.
         self._input_trigger = False
         self._frametime_s = None
         self._min_frametime_s = None
         self._flut_entries = 0
-        self._synch_delay_us = ALP_DEFAULT
-        self._synch_pulse_width_us = ALP_DEFAULT
+        self._synch_us = (ALP_DEFAULT, ALP_DEFAULT)  # Delay and pulse width.
         self.switch_timeout_s = 5.0
 
         device = ctypes.c_uint32(ALP_INVALID_ID)
@@ -321,7 +325,7 @@ class PLM(_PLMModel, SLM):
             # One sequence of one byte per pixel, with the phase level in the least
             # significant bits: the frame memory plus a scratch frame for direct writes.
             if frame_count is None:
-                frame_count = self._dev_inquire(ALPControl.AVAIL_MEMORY) // self.bitdepth - 1
+                frame_count = self._dev_inquire(ALPControl.AVAIL_MEMORY) - 1
             self.frame_count = int(frame_count)
             if self.frame_count < 0:
                 raise ValueError(f"frame_count must be non-negative; got {frame_count}.")
@@ -342,7 +346,7 @@ class PLM(_PLMModel, SLM):
             logger.debug("ALP %s holds %s frames.", self.serial, self.frame_count)
 
             self._min_frametime_s = self._seq_inquire(ALPControl.MIN_PICTURE_TIME) / 1e6
-            self.set_frametime(self._min_frametime_s)
+            self._frametime_s = self._min_frametime_s
 
             # Opening resets the reported bias, but the PLM applies the last bias written.
             self.set_bias_voltage(self.get_bias_voltage())
@@ -524,16 +528,16 @@ class PLM(_PLMModel, SLM):
             release("AlpDevFree")
         finally:
             self._sequence = None
-            self._started = None
             self._device = None
 
     # Frames
 
     def set_frametime(self, frametime_s):
         """
-        Set the time that each displayed frame lasts: the period of a sequence, and the
-        time a direct write takes to switch. See :meth:`.SLM.set_frametime`. A looping
-        sequence resumes with the new frame time.
+        Set the time that each frame of a sequence lasts, from the next sequence
+        started. See :meth:`.SLM.set_frametime`. A single frame always switches in the
+        minimum frame time; either way, a frame lasts its frame time before the next
+        write is displayed.
 
         Parameters
         ----------
@@ -546,55 +550,38 @@ class PLM(_PLMModel, SLM):
         float
             The resulting frame time in seconds, from :meth:`get_frametime`.
         """
-        frametime_s = float(frametime_s)
+        frametime_s = round(float(frametime_s) * 1e6) / 1e6
         if frametime_s < self._min_frametime_s:
             raise ValueError(
                 f"Frame time {frametime_s:.3g} s is below the minimum {self._min_frametime_s:.3g} s."
             )
-
-        with self._paused():
-            previous = self._frametime_s
-            self._frametime_s = frametime_s
-            try:
-                self._apply_timing()
-            except RuntimeError:
-                self._frametime_s = previous
-                raise
+        self._frametime_s = frametime_s
 
         return self.get_frametime()
 
     def get_frametime(self):
-        """Frame time read back from the ALP, in seconds. See :meth:`.SLM.get_frametime`."""
-        return self._seq_inquire(ALPControl.PICTURE_TIME) / 1e6
+        """Frame time of sequences, in seconds. See :meth:`.SLM.get_frametime`."""
+        return self._frametime_s
 
-    def _apply_timing(self):
-        """Apply the frame time and the synch output settings, effective at the next start."""
+    def _apply_timing(self, frametime_s, synch_us=None):
+        """Apply a frame time and the synch output delay and pulse width to the next start."""
+        (delay_us, pulse_width_us) = self._synch_us if synch_us is None else synch_us
         self._check(
             self._lib.AlpSeqTiming(
                 self._device,
                 self._sequence,
                 ALP_DEFAULT,  # Illuminate time: the full frame time.
-                round(self._frametime_s * 1e6),
-                int(self._synch_delay_us),
-                int(self._synch_pulse_width_us),
+                round(frametime_s * 1e6),
+                delay_us,
+                pulse_width_us,
                 ALP_DEFAULT,  # Trigger in delay.
             ),
             "AlpSeqTiming",
         )
 
-    @property
-    def _looping(self):
-        """Whether the last start plays until stopped."""
-        return self._started is not None and self._started[1] == 0
-
     def _wait_for_idle(self):
-        """Wait until the ALP has displayed every started frame and idles."""
-        if self._started is None:
-            duration_s = 0.0
-        else:
-            (order, repeat) = self._started
-            duration_s = len(order) * max(repeat, 1) * self._frametime_s
-        timeout_s = self.switch_timeout_s + duration_s
+        """Wait until the ALP displays the last of the started frames and idles."""
+        timeout_s = self.switch_timeout_s + self._duration_s
         deadline = time.perf_counter() + timeout_s
 
         # No sleep: each inquiry is already a round trip to the ALP.
@@ -606,114 +593,80 @@ class PLM(_PLMModel, SLM):
                 )
 
     def _stop(self):
-        """End a looping sequence after its current pass, then wait for the ALP to idle."""
-        if self._looping:
-            self._check(self._lib.AlpProjHalt(self._device), "AlpProjHalt")
-            self._started = (self._started[0], 1)
+        """End a sequence after its current pass, then wait for the ALP to idle."""
+        self._check(self._lib.AlpProjHalt(self._device), "AlpProjHalt")
+        self._looping = False
         self._wait_for_idle()
-
-    @contextmanager
-    def _paused(self):
-        """Idle the ALP for the context, then restart a sequence that was looping."""
-        (started, looping) = (self._started, self._looping)
-        self._stop()
-        try:
-            yield
-        finally:
-            if looping:
-                self._start(*started)
 
     def _halt(self):
         """Stop projection immediately, clearing the mirrors."""
         self._check(self._lib.AlpDevHalt(self._device), "AlpDevHalt")
+        self._looping = False
+        self._pass_s = 0.0
 
-    @contextmanager
-    def _halted(self):
-        """Halt projection, clearing the mirrors, for the context; then redisplay."""
-        self._halt()
-        try:
-            yield
-        finally:
-            if self._started is not None:
-                self._start(*self._started)
+    def _redisplay(self):
+        """Display the held frame again, as after :meth:`_halt`."""
+        self._start(np.array([self._held]))
 
     def _put(self, display, frame):
-        """Upload levels into frame ``frame`` of the sequence, or the scratch frame."""
+        """Upload levels, or a stack of them, into the sequence starting at frame ``frame``."""
         display = np.ascontiguousarray(as_numpy(display), dtype=np.uint8)
-        self._check(
-            self._lib.AlpSeqPut(
-                self._device, self._sequence, int(frame), 1, display.ctypes.data_as(ctypes.c_void_p)
-            ),
-            "AlpSeqPut",
-        )
+        count = len(display) if display.ndim == 3 else 1
+        data = display.ctypes.data_as(ctypes.c_void_p)
+        deadline = time.perf_counter() + self.switch_timeout_s + self._pass_s
 
-    def _plan(self, order):
-        """
-        The frames ``(first, last)`` and the lookup table ``(mode, entries)``, or ``None``
-        for a contiguous ascending ``order``, that display ``order``.
-        """
-        if np.all(np.diff(order) == 1):
-            return (int(order[0]), int(order[-1]), None)
+        # The ALP idles at once when a sequence is ended, but refuses uploads until its pass is over.
+        while True:
+            ret = self._lib.AlpSeqPut(self._device, self._sequence, int(frame), count, data)
+            if ret != _ALPReturn.SEQ_IN_USE or time.perf_counter() > deadline:
+                break
+        self._check(ret, "AlpSeqPut")
 
-        # Any other order goes through the frame lookup table, relative to the first.
+    def _start(self, order, repeat=1, block=True):
+        """
+        Display the frames ``order``, in order, ``repeat`` times, or until stopped if
+        ``repeat`` is zero; then wait for the last frame if ``block``, unless looping or
+        awaiting triggers.
+        """
+        single = len(order) == 1 and repeat == 1
+        frametime_s = self._min_frametime_s if single else self._frametime_s
+        self._apply_timing(frametime_s)
+
+        # The ALP keeps the first frame at or before the last at every step.
         (first, last) = (int(order.min()), int(order.max()))
-        entries = tuple(int(i) for i in order - first)
-        if last - first < _FLUT_SPAN_9BIT and len(order) <= self._flut_entries:
-            return (first, last, (ALP_FLUT_9BIT, entries))
-        if len(order) <= self._flut_entries // 2:
-            return (first, last, (ALP_FLUT_18BIT, entries))
-        raise ValueError(
-            f"At most {self._flut_entries // 2} frames can be played in arbitrary order "
-            f"({self._flut_entries} if they span fewer than {_FLUT_SPAN_9BIT} frames); "
-            f"got {len(order)}."
-        )
+        self._seq_control(ALPControl.FIRSTFRAME, 0)
+        self._seq_control(ALPControl.LASTFRAME, last)
+        self._seq_control(ALPControl.FIRSTFRAME, first)
 
-    def _start(self, order, repeat):
-        """
-        Display the frames ``order``, in order, ``repeat`` times, or
-        until stopped if ``repeat`` is zero. Settings already on the ALP are not resent.
-        """
-        (first, last, flut) = self._plan(order)
+        if np.all(np.diff(order) == 1):
+            self._seq_control(ALPControl.FLUT_MODE, ALP_FLUT_NONE)
+        else:
+            # Any other order goes through the frame lookup table, relative to the first.
+            table = _FlutWrite(0, len(order))
+            table.FrameNumbers[: len(order)] = (order - first).tolist()
+            self._check(
+                self._lib.AlpProjControlEx(
+                    self._device, int(ALPControl.FLUT_WRITE_18BIT), ctypes.byref(table)
+                ),
+                "AlpProjControlEx",
+            )
+            self._seq_control(ALPControl.FLUT_ENTRIES9, 2 * len(order))
+            self._seq_control(ALPControl.FLUT_MODE, ALP_FLUT_18BIT)
 
-        if (first, last) != self._range:
-            # The ALP keeps the first frame at or before the last at every step.
-            if self._range is None or first <= self._range[1]:
-                self._seq_control(ALPControl.FIRSTFRAME, first)
-                self._seq_control(ALPControl.LASTFRAME, last)
-            else:
-                self._seq_control(ALPControl.LASTFRAME, last)
-                self._seq_control(ALPControl.FIRSTFRAME, first)
-            self._range = (first, last)
-
-        if flut != self._flut:
-            if flut is None:
-                self._seq_control(ALPControl.FLUT_MODE, ALP_FLUT_NONE)
-            else:
-                (mode, entries) = flut
-                table = _FlutWrite(0, len(entries))
-                table.FrameNumbers[: len(entries)] = entries
-                write = (
-                    ALPControl.FLUT_WRITE_9BIT
-                    if mode == ALP_FLUT_9BIT
-                    else ALPControl.FLUT_WRITE_18BIT
-                )
-                self._check(
-                    self._lib.AlpProjControlEx(self._device, int(write), ctypes.byref(table)),
-                    "AlpProjControlEx",
-                )
-                self._seq_control(
-                    ALPControl.FLUT_ENTRIES9, len(entries) * (2 if mode == ALP_FLUT_18BIT else 1)
-                )
-                self._seq_control(ALPControl.FLUT_MODE, mode)
-            self._flut = flut
-
-        if repeat and repeat != self._repeat:
+        if repeat:
             self._seq_control(ALPControl.SEQ_REPEAT, repeat)
-            self._repeat = repeat
 
         call = "AlpProjStartCont" if repeat == 0 else "AlpProjStart"
         self._check(getattr(self._lib, call)(self._device, self._sequence), call)
-        self._started = (order, repeat)
+
+        # A pass in progress plays out before these frames.
+        self._duration_s = self._pass_s + len(order) * max(repeat, 1) * frametime_s
+        self._pass_s = len(order) * frametime_s
+        self._held = int(order[-1])
+        self._looping = repeat == 0
+
+        if block and repeat and not self._input_trigger:
+            self._wait_for_idle()
 
     def _set_frame_hw(self, display, frame):
         """
@@ -721,17 +674,22 @@ class PLM(_PLMModel, SLM):
         A finite sequence in progress finishes first; a looping one must be ended by
         displaying something, as the ALP refuses uploads into a started sequence.
         """
-        if not 0 <= frame < self.frame_count:
-            raise IndexError(
-                f"Frame {frame} is outside the frame memory of {self.frame_count} frames."
-            )
+        self._set_frames_hw([display], [frame])
+
+    def _set_frames_hw(self, displays, frames):
+        """
+        Store several frames as :meth:`_set_frame_hw` does, each run of consecutive
+        frames in one upload. See :meth:`.SLM._set_frames_hw`.
+        """
         if self._looping:
             raise RuntimeError(
                 "Frames cannot be stored while a sequence loops; display a frame first."
             )
 
         self._wait_for_idle()
-        self._put(display, frame)
+        runs = np.split(np.arange(len(frames)), np.flatnonzero(np.diff(frames) != 1) + 1)
+        for run in runs:
+            self._put(np.stack([as_numpy(displays[i]) for i in run]), frames[run[0]])
 
     def _set_phase_hw(self, display, block=True):
         """
@@ -744,13 +702,11 @@ class PLM(_PLMModel, SLM):
         block : bool
             Whether to wait until the PLM has displayed the frame before returning.
             If ``False``, or while :meth:`set_input_trigger` is enabled, returns once the
-            frame is started; the next call still waits for it.
+            frame is started.
         """
         self._stop()
         self._put(display, self._scratch)
-        self._start(np.array([self._scratch]), 1)
-        if block and not self._input_trigger:
-            self._wait_for_idle()
+        self._start(np.array([self._scratch]), block=block)
 
     def _set_phase_frame_hw(self, frame, repeat=1, block=True):
         """
@@ -759,30 +715,28 @@ class PLM(_PLMModel, SLM):
         Parameters
         ----------
         frame : int OR numpy.ndarray
-            Stored frames to display, in order. Any order is supported through the ALP's
-            frame lookup table, which bounds the length of a sequence that is not a
-            contiguous ascending range.
+            Stored frames to display, in order. An order other than a contiguous
+            ascending range plays through the ALP's frame lookup table, which bounds its
+            length.
         repeat : int
             Passes of ``frame``, at most 1048576; ``0`` loops until the next write.
         block : bool
             Whether to wait until the PLM has displayed every frame before returning.
             If ``False``, while :meth:`set_input_trigger` is enabled, or when looping,
-            returns once the frames are started; the next call still waits for them.
+            returns once the frames are started; the next write ends them after their
+            current pass.
         """
         order = np.atleast_1d(frame)
-        if np.any(order < 0) or np.any(order >= self.frame_count):
-            raise IndexError(
-                f"Frames {order.min()}..{order.max()} are outside the frame memory of "
-                f"{self.frame_count} frames."
+        if repeat > _SEQ_REPEAT_MAX:
+            raise ValueError(f"repeat must be at most {_SEQ_REPEAT_MAX}; got {repeat}.")
+        if len(order) > self._flut_entries // 2 and np.any(np.diff(order) != 1):
+            raise ValueError(
+                f"At most {self._flut_entries // 2} frames can be played in arbitrary order; "
+                f"got {len(order)}."
             )
-        if not 0 <= repeat <= _SEQ_REPEAT_MAX:
-            raise ValueError(f"repeat must lie in [0, {_SEQ_REPEAT_MAX}]; got {repeat}.")
-        self._plan(order)
 
         self._stop()
-        self._start(order, repeat)
-        if block and repeat and not self._input_trigger:
-            self._wait_for_idle()
+        self._start(order, repeat, block)
 
     # Triggering
 
@@ -793,8 +747,8 @@ class PLM(_PLMModel, SLM):
 
         While enabled, writes do not block, and a write waits up to
         :attr:`switch_timeout_s` beyond the frames' duration for the previous frames to
-        be triggered. Disabling halts frames still awaiting a trigger and redisplays
-        the last start free-running.
+        be triggered. Enabling ends a sequence in progress; disabling halts frames still
+        awaiting a trigger and redisplays the held frame.
 
         Parameters
         ----------
@@ -808,17 +762,16 @@ class PLM(_PLMModel, SLM):
             raise ValueError(f"Unknown edge '{edge}'. Valid: {list(values)}")
 
         if on:
-            with self._paused():
-                self._dev_control(ALPControl.TRIGGER_EDGE, values[edge])
-                self._proj_control(ALPControl.PROJ_MODE, ALP_SLAVE)
+            self._stop()
+            self._dev_control(ALPControl.TRIGGER_EDGE, values[edge])
+            self._proj_control(ALPControl.PROJ_MODE, ALP_SLAVE)
+            self._input_trigger = True
         elif self._input_trigger:
             # Frames awaiting a trigger never finish, so halt rather than wait for them.
-            if self._proj_inquire(ALPControl.PROJ_STATE) == ALP_PROJ_IDLE:
-                self._proj_control(ALPControl.PROJ_MODE, ALP_MASTER)
-            else:
-                with self._halted():
-                    self._proj_control(ALPControl.PROJ_MODE, ALP_MASTER)
-        self._input_trigger = bool(on)
+            self._halt()
+            self._proj_control(ALPControl.PROJ_MODE, ALP_MASTER)
+            self._input_trigger = False
+            self._redisplay()
 
     def set_output_trigger(self, on=False, polarity="high", delay_s=0, pulse_width_s=None):
         r"""
@@ -828,7 +781,8 @@ class PLM(_PLMModel, SLM):
         Note
         ~~~~
         The ALP always drives this output; it cannot be disabled. ``on=False`` restores
-        the default configuration, ignoring the other arguments.
+        the default configuration, ignoring the other arguments. Ends a sequence in
+        progress.
 
         Parameters
         ----------
@@ -839,31 +793,27 @@ class PLM(_PLMModel, SLM):
         delay_s : float
             Delay from the start of the pulse to the start of the frame, in seconds.
         pulse_width_s : float OR None
-            Duration of the pulse, in seconds. If ``None``, uses the ALP's default.
+            Duration of the pulse, in seconds, within the minimum frame time. If
+            ``None``, uses the ALP's default.
         """
         values = {"high": ALP_LEVEL_HIGH, "low": ALP_LEVEL_LOW}
         if polarity not in values:
             raise ValueError(f"Unknown polarity '{polarity}'. Valid: {list(values)}")
 
-        previous = (self._synch_delay_us, self._synch_pulse_width_us)
+        synch_us = (ALP_DEFAULT, ALP_DEFAULT)
         if on:
-            self._synch_delay_us = round(delay_s * 1e6)
-            self._synch_pulse_width_us = (
-                ALP_DEFAULT if pulse_width_s is None else round(pulse_width_s * 1e6)
+            synch_us = (
+                round(delay_s * 1e6),
+                ALP_DEFAULT if pulse_width_s is None else round(pulse_width_s * 1e6),
             )
         else:
             polarity = "high"
-            self._synch_delay_us = ALP_DEFAULT
-            self._synch_pulse_width_us = ALP_DEFAULT
 
         # The ALP refuses to change the polarity while projecting.
-        try:
-            with self._paused():
-                self._apply_timing()
-                self._dev_control(ALPControl.SYNCH_POLARITY, values[polarity])
-        except RuntimeError:
-            (self._synch_delay_us, self._synch_pulse_width_us) = previous
-            raise
+        self._stop()
+        self._apply_timing(self._min_frametime_s, synch_us)
+        self._synch_us = synch_us
+        self._dev_control(ALPControl.SYNCH_POLARITY, values[polarity])
 
     # Bias voltage
 
@@ -958,16 +908,18 @@ class PLM(_PLMModel, SLM):
     def reset_interface(self):
         """
         Clear a latched :attr:`DMDMode.INTERFACE_ERROR` with ``AlpDevHalt()``, as ViALUX
-        advises, and redisplay the last start. The halt briefly clears the mirrors,
-        and the redisplay awaits a trigger while :meth:`set_input_trigger` is enabled.
+        advises, and redisplay the held frame. The halt briefly clears the mirrors and
+        ends a sequence in progress, and the redisplay awaits a trigger while
+        :meth:`set_input_trigger` is enabled.
 
         Returns
         -------
         DMDMode OR int
-            The state after the reset, before the frames are redisplayed.
+            The state after the reset, before the frame is redisplayed.
         """
-        with self._halted():
-            mode = self.get_dmd_mode()
+        self._halt()
+        mode = self.get_dmd_mode()
+        self._redisplay()
 
         return mode
 
@@ -982,11 +934,12 @@ class PLM(_PLMModel, SLM):
 
     def resume(self):
         """
-        Wake the mirrors after :meth:`park` (``ALP_DMD_RESUME``) and redisplay the last
-        start.
+        Wake the mirrors after :meth:`park` (``ALP_DMD_RESUME``) and redisplay the held
+        frame.
         """
-        with self._halted():
-            self._dev_control(ALPControl.DEV_DMD_MODE, DMDMode.RESUME)
+        self._halt()
+        self._dev_control(ALPControl.DEV_DMD_MODE, DMDMode.RESUME)
+        self._redisplay()
 
     # Raw access
 

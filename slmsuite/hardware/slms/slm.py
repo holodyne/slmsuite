@@ -115,16 +115,16 @@ class SLM(_Common, ABC):
         required --- plotting, :mod:`cv2`, :mod:`scipy`, or a Python scalar --- ask for it
         explicitly with :meth:`slmsuite.misc.xp.as_numpy`. Pass ``gpu=False`` to keep the
         SLM on :mod:`numpy` instead.
-    phase : numpy.ndarray OR cupy.ndarray
+    phase : numpy.ndarray OR cupy.ndarray OR None
         The data last written by :meth:`set_phase`, in units of phase (radians), held on
         :attr:`xp`. If wavefront calibration (`phase_correct=True`) is used, this includes
-        the calibration data. Displaying stored frames (``frame=``) from hardware frame
-        memory leaves it unchanged, as that memory cannot be read back.
-    display : numpy.ndarray OR cupy.ndarray
+        the calibration data. ``None`` while hardware frame memory is displayed
+        (:meth:`set_phase` with ``frame=``), as that memory cannot be read back.
+    display : numpy.ndarray OR cupy.ndarray OR None
         The data last written by :meth:`set_phase`, in discrete SLM units (integers), held
         on :attr:`xp`. This is the data that is actually displayed by the bit-limited
         hardware. If wavefront calibration (`phase_correct=True`) is used, this includes
-        the calibration data.
+        the calibration data. ``None`` while hardware frame memory is displayed.
     frame_count : int OR None
         Number of frames in the frame memory, set by drivers which know it; frames are
         numbered ``0`` to ``frame_count - 1``. ``None`` if unbounded or unknown, as for
@@ -152,6 +152,7 @@ class SLM(_Common, ABC):
         "settle_time_s",
         "wav_um",
         "wav_design_um",
+        "frame_count",
         "phase_scaling",
         "aperture",
         "_source_radius",
@@ -250,8 +251,8 @@ class SLM(_Common, ABC):
                 self.logger.info("Using GPU (cupy) backend.")
 
         # Phase and display caches for user reference.
-        self.phase = self.xp.zeros(self.shape, dtype=np.float32)
-        self.display = self.xp.zeros(self.shape, dtype=self.dtype)
+        self._phase = self.xp.zeros(self.shape, dtype=np.float32)
+        self._display = self.xp.zeros(self.shape, dtype=self.dtype)
 
         # By default, target wavelength is the design wavelength
         self.wav_um = float(wav_um)
@@ -297,9 +298,12 @@ class SLM(_Common, ABC):
         self._set_phase_hw_execute = "execute" in self._set_phase_hw_args
 
         # Frames stored by set_frame() on an SLM without hardware frame memory.
-        self._set_frame_hw_implemented = type(self)._set_frame_hw is not SLM._set_frame_hw
+        hooks = ("_set_frame_hw", "_set_phase_frame_hw")
+        if len({getattr(type(self), hook) is getattr(SLM, hook) for hook in hooks}) > 1:
+            raise TypeError(f"An SLM with frame memory implements both {hooks[0]} and {hooks[1]}.")
         self._frames = {}
         self.frame_count = None
+        self._memory_displayed = False
 
         # Time to delay after writing (allows SLM to stabilize).
         self.settle_time_s = float(settle_time_s)
@@ -539,6 +543,8 @@ class SLM(_Common, ABC):
         """
         if phase is None:
             phase = self.phase
+        if phase is None:
+            raise ValueError("phase is undefined while hardware frame memory is displayed.")
         phase = as_numpy(phase)
         phase = np.mod(phase, 2 * np.pi) / np.pi
 
@@ -907,6 +913,8 @@ class SLM(_Common, ABC):
             Float32 phase in radians, on the SLM's backend.
         """
         xp = self.xp
+        if phase is None and self.phase is None:
+            raise ValueError("phase is undefined while hardware frame memory is displayed.")
         # A copy: _phase2gray scales its input in place.
         phase = xp.array(as_backend(self.phase if phase is None else phase, xp), dtype=xp.float32)
         gray = self._phase2gray(phase, out=xp.empty(phase.shape, dtype=self.dtype))
@@ -948,6 +956,21 @@ class SLM(_Common, ABC):
         """
         raise NotImplementedError("This SLM does not have hardware frame memory.")
 
+    def _set_frames_hw(self, displays, frames):
+        """
+        Low-level hardware interface to store several frames at once. Stores them one by
+        one with :meth:`_set_frame_hw`; subclasses with a faster batch upload override it.
+
+        Parameters
+        ----------
+        displays : list
+            Integer data to store, one array per frame.
+        frames : list of int
+            Frames to write.
+        """
+        for display, frame in zip(displays, frames):
+            self._set_frame_hw(display, frame)
+
     def _set_phase_frame_hw(self, frame, repeat=1):
         """
         **(Not supported by this SLM.)**
@@ -967,7 +990,7 @@ class SLM(_Common, ABC):
         """
         raise NotImplementedError("This SLM does not have hardware frame memory.")
 
-    def _format_phase_hw(self, phase, out=None):
+    def _format_phase_hw(self, phase):
         """
         Formats the phase data for hardware-specific requirements prior to calling
         :meth:`_set_phase_hw`. By default, performs grayscale conversion via
@@ -978,43 +1001,27 @@ class SLM(_Common, ABC):
         ----------
         phase : numpy.ndarray
              See :meth:`set_phase`.
-        out : numpy.ndarray OR cupy.ndarray OR None
-            Buffer like :attr:`display` to write into. Defaults to :attr:`display`.
 
         Returns
         -------
         numpy.ndarray
-            Formatted phase data for :meth:`_set_phase_hw`, in ``out``.
+            Formatted phase data for :meth:`_set_phase_hw`.
         """
-        return self._phase2gray(phase, out=self.display if out is None else out)
+        return self._phase2gray(phase, out=self._display)
 
-    def _gray2display(self, gray, out=None):
+    def _gray2display(self, gray):
         """
         Helper function to send integer data to a format understood by the SLM.
         For most SLMs, this is a no-op, but for some SLMs (e.g. :class:`.texasinstruments.PLM`),
         this is a more complicated step to convert from grayscale to an electrode bitmap.
-
-        Parameters
-        ----------
-        gray : numpy.ndarray OR cupy.ndarray
-            Integer data of :attr:`dtype`.
-        out : numpy.ndarray OR cupy.ndarray OR None
-            Buffer like :attr:`display` to write into. Defaults to :attr:`display`.
-
-        Returns
-        -------
-        numpy.ndarray OR cupy.ndarray
-            ``out``.
         """
-        if out is None:
-            out = self.display
-        self.xp.copyto(out, gray)
-        return out
+        self.xp.copyto(self._display, gray)
+        return self._display
 
-    def _phase2display(self, phase, phase_correct=None, phase_out=None, display_out=None):
+    def _phase2display(self, phase, phase_correct=None):
         """
-        Checks, crops, corrects and quantizes ``phase`` as :meth:`set_phase` does, into the
-        given buffers.
+        Checks, crops, corrects and quantizes ``phase`` into :attr:`phase` and
+        :attr:`display`, as :meth:`set_phase` and :meth:`set_frame` share.
 
         Parameters
         ----------
@@ -1022,23 +1029,13 @@ class SLM(_Common, ABC):
             See :meth:`set_phase`.
         phase_correct : bool OR None
             See :meth:`set_phase`.
-        phase_out : numpy.ndarray OR cupy.ndarray OR None
-            Float32 buffer of :attr:`shape` on :attr:`xp` that receives the phase in
-            radians. Defaults to :attr:`phase`.
-        display_out : numpy.ndarray OR cupy.ndarray OR None
-            Buffer like :attr:`display` that receives the integer data. Defaults to
-            :attr:`display`.
 
         Returns
         -------
         numpy.ndarray OR cupy.ndarray
-            ``display_out``, holding the integer data.
+            The integer data, for :attr:`display`.
         """
         xp = self.xp
-        if phase_out is None:
-            phase_out = self.phase
-        if display_out is None:
-            display_out = self.display
 
         if hasattr(phase, "get_phase"):
             phase = phase.get_phase()
@@ -1058,7 +1055,7 @@ class SLM(_Common, ABC):
             if phase.shape != self.shape:
                 phase = toolbox.unpad(phase, self.shape)
 
-            display_out = self._gray2display(phase, out=display_out)
+            display = self._gray2display(phase)
 
             # Record the phase that the integer data realizes.
             if self.gamma is None:
@@ -1067,29 +1064,45 @@ class SLM(_Common, ABC):
                 )
             else:
                 realized = self._gamma_sign * 2 * np.pi * self.gamma[phase]
-            xp.copyto(phase_out, xp.mod(realized, 2 * np.pi))
+            xp.copyto(self._phase, xp.mod(realized, 2 * np.pi))
         else:
             if phase is None:
-                phase_out.fill(0)
+                self._phase.fill(0)
             else:
                 if phase.shape != self.shape:
                     phase = toolbox.unpad(phase, self.shape)
-                xp.copyto(phase_out, phase)
+                xp.copyto(self._phase, phase)
 
             if phase_correct is None:
                 phase_correct = self.phase_correct
             if phase_correct and ("phase" in self.source):
-                phase_out += as_backend(self._get_source_phase(), xp)
+                self._phase += as_backend(self._get_source_phase(), xp)
 
-            display_out = self._format_phase_hw(phase_out, out=display_out)
+            display = self._format_phase_hw(self._phase)
 
-        return display_out
+        return display
+
+    @property
+    def phase(self):
+        return None if self._memory_displayed else self._phase
+
+    @phase.setter
+    def phase(self, value):
+        self._phase = value
+
+    @property
+    def display(self):
+        return None if self._memory_displayed else self._display
+
+    @display.setter
+    def display(self, value):
+        self._display = value
 
     @property
     def _viewer_frame(self):
         """The current phase in the gray levels that the viewer's color range spans."""
         factor = self.phase_scaling * self.bitresolution / (2 * np.pi)
-        return as_numpy((self.phase * factor % self.bitresolution).astype(self.dtype))
+        return as_numpy((self._phase * factor % self.bitresolution).astype(self.dtype))
 
     def set_phase(
         self,
@@ -1242,8 +1255,8 @@ class SLM(_Common, ABC):
         Returns
         -------
         numpy.ndarray OR cupy.ndarray OR None
-           :attr:`~slmsuite.hardware.slms.slm.SLM.display`, the integer data
-           sent to the SLM, or ``None`` after displaying stored frames.
+           :attr:`~slmsuite.hardware.slms.slm.SLM.display`: the integer data sent to the
+           SLM, or ``None`` while hardware frame memory is displayed.
 
         Raises
         ------
@@ -1257,7 +1270,8 @@ class SLM(_Common, ABC):
             a sequence or ``repeat`` is given to an SLM which displays one stored frame at
             a time.
         IndexError
-            If ``frame`` is outside the frame memory or was never stored.
+            If ``frame`` is outside the frame memory or, for frames held on the host, was
+            never stored.
         """
         # Parse execute and block arguments.
         if execute is not None:
@@ -1279,8 +1293,9 @@ class SLM(_Common, ABC):
         if frame is None:
             if repeat != 1:
                 raise ValueError("repeat applies to displaying stored frames (frame=...).")
-            self.display = self._phase2display(phase, phase_correct)
-            self._set_phase_hw(self.display, **kwargs)
+            self._display = self._phase2display(phase, phase_correct)
+            self._set_phase_hw(self._display, **kwargs)
+            self._memory_displayed = False
         else:
             if phase is not None or phase_correct is not None:
                 raise ValueError("phase and phase_correct belong to set_frame, not frame=.")
@@ -1298,24 +1313,26 @@ class SLM(_Common, ABC):
             if frame.ndim == 0:
                 frame = int(frame)
 
-            if self._set_frame_hw_implemented:
+            try:
                 self._set_phase_frame_hw(frame, repeat, **kwargs)
-            elif repeat != 1 or np.ndim(frame):
-                raise ValueError("This SLM displays one stored frame at a time.")
-            elif frame not in self._frames:
-                raise IndexError(f"Frame {frame} has not been stored.")
-            else:
+                self._memory_displayed = True
+            except NotImplementedError:
+                # Without hardware frame memory, display the copy held on the host.
+                if repeat != 1 or np.ndim(frame):
+                    raise ValueError("This SLM displays one stored frame at a time.") from None
+                if frame not in self._frames:
+                    raise IndexError(f"Frame {frame} has not been stored.") from None
                 (stored_phase, stored_display) = self._frames[frame]
-                self.xp.copyto(self.phase, stored_phase)
-                self.xp.copyto(self.display, stored_display)
-                self._set_phase_hw(self.display, **kwargs)
+                self.xp.copyto(self._phase, stored_phase)
+                self.xp.copyto(self._display, stored_display)
+                self._set_phase_hw(self._display, **kwargs)
+                self._memory_displayed = False
 
         # For accurate settle, reset the time to be after the data has actually been sent to the SLM.
         t0 = time.perf_counter()
 
         # Maybe some of that time will be spent rendering the data in the viewer...
-        held = frame is None or not self._set_frame_hw_implemented
-        if held and self.viewer is not None:
+        if not self._memory_displayed and self.viewer is not None:
             self.viewer.render(self._viewer_frame)
 
         # Optional delay.
@@ -1329,7 +1346,7 @@ class SLM(_Common, ABC):
             if time_remaining > 0:
                 time.sleep(time_remaining)
 
-        return None if frame is not None else self.display
+        return self.display
 
     def write(
         self,
@@ -1348,50 +1365,58 @@ class SLM(_Common, ABC):
 
     def set_frame(self, frame, phase, phase_correct=None):
         """
-        Stores a phase pattern in the SLM's frame memory without displaying it.
-        ``phase`` is checked, cropped, corrected and quantized exactly as
+        Stores phase patterns in the SLM's frame memory without displaying them.
+        Each ``phase`` is checked, cropped, corrected and quantized exactly as
         :meth:`set_phase` would display it, so :meth:`set_phase` with ``frame=frame``
-        later shows the same pattern. :attr:`phase` and :attr:`display` are not changed.
+        later shows the same pattern. What is displayed does not change.
         SLMs without hardware frame memory hold the frames on the host.
 
         Parameters
         ----------
-        frame : int
-            Frame to write, below :attr:`frame_count`.
+        frame : int OR array_like of int
+            Frame to write, below :attr:`frame_count`, or a 1D sequence of frames.
         phase : numpy.ndarray OR cupy.ndarray OR Hologram OR None
-            See :meth:`set_phase`.
+            See :meth:`set_phase`. With a sequence of frames, a stack or sequence of one
+            such pattern per frame.
         phase_correct : bool OR None
             See :meth:`set_phase`.
 
-        Returns
-        -------
-        numpy.ndarray OR cupy.ndarray
-            The integer data stored, in the format of :attr:`display`.
-
         Raises
         ------
+        ValueError
+            If a sequence of frames is not given one pattern per frame.
         IndexError
             If ``frame`` is outside the frame memory.
         """
-        frame = operator.index(frame)
+        if np.ndim(frame) == 0:
+            (frames, phases) = ([operator.index(frame)], [phase])
+        else:
+            (frames, phases) = ([operator.index(f) for f in frame], phase)
+            if phases is None or len(phases) != len(frames):
+                raise ValueError("A sequence of frames takes one phase pattern per frame.")
         count = self.frame_count
-        if frame < 0 or (count is not None and frame >= count):
+        if min(frames) < 0 or (count is not None and max(frames) >= count):
             raise IndexError(
-                f"Frame {frame} is outside the frame memory"
+                f"Frames {min(frames)}..{max(frames)} are outside the frame memory"
                 + ("." if count is None else f" of {count} frames.")
             )
 
-        xp = self.xp
-        stored_phase = xp.empty_like(self.phase)
-        display = self._phase2display(
-            phase, phase_correct, stored_phase, xp.empty_like(self.display)
-        )
-        if self._set_frame_hw_implemented:
-            self._set_frame_hw(display, frame)
-        else:
-            self._frames[frame] = (stored_phase, display)
+        # Process into fresh buffers, leaving what is displayed in phase and display.
+        held = (self._phase, self._display)
+        stored = []
+        try:
+            for phase in phases:
+                self._phase = self.xp.empty_like(held[0])
+                self._display = self.xp.empty_like(held[1])
+                display = self._phase2display(phase, phase_correct)
+                stored.append((self._phase, display))
+        finally:
+            (self._phase, self._display) = held
 
-        return display
+        try:
+            self._set_frames_hw([display for (_, display) in stored], frames)
+        except NotImplementedError:
+            self._frames.update(zip(frames, stored))
 
     # File saving methods
 
@@ -1415,6 +1440,8 @@ class SLM(_Common, ABC):
         """
         if name is None:
             name = self.name + "_phase"
+        if self.phase is None:
+            raise ValueError("phase is undefined while hardware frame memory is displayed.")
         file_path = generate_path(path, name, extension="h5")
         save_h5(
             file_path,
@@ -1467,17 +1494,18 @@ class SLM(_Common, ABC):
         data = load_h5(file_path)
 
         display = self.xp.asarray(data["display"])
-        self.phase = self.xp.asarray(data["phase"], dtype=np.float32)
+        self._phase = self.xp.asarray(data["phase"], dtype=np.float32)
 
         self._set_phase_hw(display)
+        self._memory_displayed = False
 
         self.logger.info("Loaded phase from '%s'.", file_path)
 
         # Verify the file's display against one recomputed from its phase.
-        if not self.xp.all(self.xp.isclose(display, self._format_phase_hw(self.phase))):
+        if not self.xp.all(self.xp.isclose(display, self._format_phase_hw(self._phase))):
             self.logger.warning("Integer data in 'display' does not match 'phase' for this SLM.")
 
-        self.display = display
+        self._display = display
 
         # Optional delay.
         if settle:
@@ -1549,6 +1577,28 @@ class SLM(_Common, ABC):
             Frame time in seconds.
         """
         raise NotImplementedError("This SLM does not support frame timing.")
+
+    def set_framerate(self, framerate_hz):
+        """
+        Sets the frame time of stored sequences as a rate; see :meth:`set_frametime`.
+
+        Parameters
+        ----------
+        framerate_hz : float
+            Frames per second.
+
+        Returns
+        -------
+        float
+            The resulting frame rate in hertz.
+        """
+        return 1 / self.set_frametime(1 / framerate_hz)
+
+    def get_framerate(self):
+        """
+        Reads the frame rate of stored sequences in hertz; see :meth:`get_frametime`.
+        """
+        return 1 / self.get_frametime()
 
     # Segmentation
 
@@ -2103,7 +2153,7 @@ class SLM(_Common, ABC):
         """
         self.logger.info("Testing %s.", self.name)
 
-        orig_phase = self.phase.copy()
+        orig_phase = self._phase.copy()
         count = 20
         phase = np.random.rand(count, *self.shape) * 2 * np.pi
 

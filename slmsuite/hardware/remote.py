@@ -425,6 +425,9 @@ class Server:
                         f"{instrument} does not support the argument '{unsupported.group(1)}'.",
                     )
 
+            if isinstance(e, NotImplementedError):
+                return False, f"NotImplementedError: {instrument} is not implemented."
+
             return False, "Server error. See the server log for details."
 
 
@@ -538,6 +541,8 @@ class _Client(_Picklable):
             success, reply = _recv(sock, timeout)
 
         if not success:
+            if str(reply).startswith("NotImplementedError"):
+                raise NotImplementedError(reply)
             raise RuntimeError(f"Server {host}:{port} communication failed. Message:\n{reply}")
 
         return reply

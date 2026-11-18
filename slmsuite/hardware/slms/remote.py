@@ -70,6 +70,7 @@ class RemoteSLM(_Client, SLM):
             pitch_um=pickled["pitch_um"],
             settle_time_s=pickled["settle_time_s"] if settle_time_s is None else settle_time_s,
         )
+        self.frame_count = pickled.get("frame_count", None)
 
     def close(self):
         pass

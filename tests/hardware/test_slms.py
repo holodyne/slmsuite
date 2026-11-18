@@ -3,7 +3,6 @@ Unit tests for the SLM base class and its subclasses.
 """
 
 import ctypes
-import itertools
 import os
 import types
 import warnings
@@ -257,13 +256,16 @@ class TestSLM:
             assert s.calls[0] == (True, True, 3, 1, True)
             assert s.calls[1][:2] + s.calls[1][3:] == (True, False, 0, True)
             np.testing.assert_array_equal(s.calls[1][2], [0, 1, 2])
-            np.testing.assert_array_equal(s.display, held)
+            assert s.phase is None and s.display is None
+            s.set_frame(0, None)
+            assert s.phase is None and s.display is None
+            np.testing.assert_array_equal(as_numpy(s._display), as_numpy(held))
 
             rendered = []
             s.viewer = types.SimpleNamespace(render=rendered.append)
             s.set_phase(frame=3)
             assert not rendered
-            s.set_phase(None)
+            assert s.set_phase(None) is s.display and s.phase is not None
             assert len(rendered) == 1
             s.viewer = None
 
@@ -350,7 +352,7 @@ class TestSLM:
 
         s.close()
 
-    def test_set_frame(self, slm, subtests):
+    def test_set_frame(self, slm, subtests, tmp_path):
         """set_frame stores what set_phase would display, without touching the display."""
 
         class Storing(SimulatedSLM):
@@ -380,16 +382,14 @@ class TestSLM:
         for name, phase in cases.items():
             for phase_correct in (True, False):
                 with subtests.test(f"{name} stores as it would display, {phase_correct=}"):
-                    expected = s.set_phase(phase, phase_correct=phase_correct).copy()
-                    before = (s.phase.copy(), s.display.copy())
+                    expected = as_numpy(s.set_phase(phase, phase_correct=phase_correct)).copy()
+                    before = (as_numpy(s.phase).copy(), as_numpy(s.display).copy())
                     s.stored.clear()
-                    out = s.set_frame(7, phase, phase_correct=phase_correct)
+                    assert s.set_frame(7, phase, phase_correct=phase_correct) is None
                     assert len(s.stored) == 1 and s.stored[0][0] == 7
                     np.testing.assert_array_equal(s.stored[0][1], expected)
-                    np.testing.assert_array_equal(out, expected)
-                    assert out is not s.display
-                    np.testing.assert_array_equal(s.phase, before[0])
-                    np.testing.assert_array_equal(s.display, before[1])
+                    np.testing.assert_array_equal(as_numpy(s.phase), before[0])
+                    np.testing.assert_array_equal(as_numpy(s.display), before[1])
 
         with subtests.test("a bad frame raises"):
             with pytest.raises(IndexError):
@@ -410,6 +410,27 @@ class TestSLM:
                     s.set_phase(frame=frame)
             assert len(s.stored) == 1
 
+        with subtests.test("an SLM implementing one frame hook is refused"):
+
+            class Half(SimulatedSLM):
+                def _set_frame_hw(self, display, frame):
+                    pass
+
+            with pytest.raises(TypeError, match="both"):
+                Half(resolution=(32, 32))
+
+        with subtests.test("readers of an undefined phase raise, and load_phase defines it"):
+            s.set_phase(wrapped)
+            saved = as_numpy(s.phase).copy()
+            path = s.save_phase(str(tmp_path))
+            s.set_phase(frame=0)
+            for reader in (s.plot, s.get_realized_phase, lambda: s.save_phase(str(tmp_path))):
+                with pytest.raises(ValueError, match="undefined"):
+                    reader()
+            s.load_phase(path, settle=False)
+            np.testing.assert_array_equal(as_numpy(s.phase), saved)
+            assert s.display is not None
+
         s.close()
 
         with subtests.test("an SLM without frame timing raises"):
@@ -417,6 +438,10 @@ class TestSLM:
                 slm.set_frametime(1e-3)
             with pytest.raises(NotImplementedError, match="frame timing"):
                 slm.get_frametime()
+            with pytest.raises(NotImplementedError, match="frame timing"):
+                slm.set_framerate(1e3)
+            with pytest.raises(NotImplementedError, match="frame timing"):
+                slm.get_framerate()
 
     def test_host_frames(self, slm, subtests):
         """An SLM without hardware frame memory holds frames on the host."""
@@ -425,14 +450,13 @@ class TestSLM:
         expected = []
         for phase in phases:
             slm.set_phase(phase)
-            expected.append((slm.phase.copy(), slm.display.copy()))
+            expected.append((as_numpy(slm.phase).copy(), as_numpy(slm.display).copy()))
         slm.set_phase(None)
-        blank = slm.display.copy()
+        blank = as_numpy(slm.display).copy()
 
         with subtests.test("a store leaves the display"):
-            for frame, phase in enumerate(phases):
-                slm.set_frame(frame, phase)
-            np.testing.assert_array_equal(slm.display, blank)
+            slm.set_frame(range(2), np.stack(phases))
+            np.testing.assert_array_equal(as_numpy(slm.display), blank)
 
         with subtests.test("a stored frame displays as its direct write"):
             sent = []
@@ -440,10 +464,10 @@ class TestSLM:
             slm._set_phase_hw = lambda display: sent.append(as_numpy(display).copy())
             try:
                 for frame in (1, 0, np.int64(1)):
-                    assert slm.set_phase(frame=frame) is None
+                    assert slm.set_phase(frame=frame) is slm.display
                     np.testing.assert_array_equal(sent[-1], expected[frame][1])
-                    np.testing.assert_array_equal(slm.phase, expected[frame][0])
-                    np.testing.assert_array_equal(slm.display, expected[frame][1])
+                    np.testing.assert_array_equal(as_numpy(slm.phase), expected[frame][0])
+                    np.testing.assert_array_equal(as_numpy(slm.display), expected[frame][1])
             finally:
                 slm._set_phase_hw = hook
 
@@ -451,7 +475,7 @@ class TestSLM:
             slm.set_phase(frame=0)
             slm.set_phase(None)
             slm.set_phase(frame=0)
-            np.testing.assert_array_equal(slm.display, expected[0][1])
+            np.testing.assert_array_equal(as_numpy(slm.display), expected[0][1])
 
         with subtests.test("sequences, repeats and unstored frames raise"):
             with pytest.raises(ValueError, match="one stored frame"):
@@ -460,21 +484,7 @@ class TestSLM:
                 slm.set_phase(frame=0, repeat=2)
             with pytest.raises(IndexError, match="not been stored"):
                 slm.set_phase(frame=5)
-            np.testing.assert_array_equal(slm.display, expected[0][1])
-
-    def test_format_buffers(self, slm):
-        """The formatting helpers write a given buffer and leave the display alone."""
-        levels = (np.arange(slm.shape[0] * slm.shape[1]) % slm.bitresolution).astype(slm.dtype)
-        levels = levels.reshape(slm.shape)
-        slm.set_phase(self._wrapped_phase(slm), phase_correct=False)
-        held = slm.display.copy()
-        buffer = np.empty_like(slm.display)
-
-        assert slm._gray2display(levels, out=buffer) is buffer
-        np.testing.assert_array_equal(buffer, levels)
-        assert slm._format_phase_hw(slm.phase.copy(), out=buffer) is buffer
-        np.testing.assert_array_equal(buffer, held)
-        np.testing.assert_array_equal(slm.display, held)
+            np.testing.assert_array_equal(as_numpy(slm.display), expected[0][1])
 
     def test_set_gamma(self, subtests):
         """The table inverts a measured response; clearing it restores the linear path."""
@@ -1177,16 +1187,60 @@ class TestSegmentedSLM:
         parent = SimulatedSLM(resolution=(64, 64))
         child = SegmentedSLM(parent, window=(16, 32, 8, 24), name="rect")
         level = parent.bitresolution // 2
-        held = parent.display.copy()
+        held = as_numpy(parent.display).copy()
         child.set_frame(0, np.full(child.shape, level, dtype=parent.dtype))
-        np.testing.assert_array_equal(parent.display, held)
-        child.set_phase(frame=0)
+        np.testing.assert_array_equal(as_numpy(parent.display), held)
+        child.set_phase(frame=0, refresh=True)
         held[tuple(child.extent_slice)] = level
-        np.testing.assert_array_equal(parent.display, held)
+        np.testing.assert_array_equal(as_numpy(parent.display), held)
 
         for call in (lambda: child.set_frametime(1e-3), child.get_frametime):
             with pytest.raises(RuntimeError, match="parent SLM"):
                 call()
+        parent.close()
+
+    def test_parent_frames(self):
+        """A segment of an SLM with frame memory stores and displays through it."""
+
+        class Storing(SimulatedSLM):
+            calls: ClassVar[list] = []
+
+            def _set_frame_hw(self, display, frame):
+                self.calls.append((frame, as_numpy(display).copy()))
+
+            def _set_phase_frame_hw(self, frame, repeat=1):
+                self.calls.append((frame, repeat))
+
+        parent = Storing(resolution=(64, 64))
+        parent.frame_count = 4
+        parent.set_phase(np.full(parent.shape, 3, dtype=parent.dtype))
+        child = SegmentedSLM(parent, window=(16, 32, 8, 24), name="rect")
+        assert child.frame_count == 4
+
+        expected = as_numpy(parent.display).copy()
+        expected[tuple(child.extent_slice)] = 7
+        child.set_frame([1, 2], [None, np.full(child.shape, 7, dtype=parent.dtype)])
+        assert [call[0] for call in parent.calls[-2:]] == [1, 2]
+        np.testing.assert_array_equal(parent.calls[-1][1], expected)
+        assert np.all(as_numpy(parent.display) == 3)
+
+        child.set_phase(frame=[2, 0], repeat=3)
+        np.testing.assert_array_equal(parent.calls[-1][0], [2, 0])
+        assert parent.calls[-1][1] == 3
+        assert parent.display is None and child.display is None
+        with pytest.raises(IndexError, match="4 frames"):
+            child.set_frame(4, None)
+        child.set_frame(1, None)
+        child.set_phase(None, refresh=True)
+        assert parent.display is not None and child.display is not None
+
+        sibling = SegmentedSLM(parent, window=(40, 16, 8, 24), name="sibling")
+        child.set_phase(frame=1, refresh=True)
+        assert sibling.phase is None and parent.phase is None
+        parent.set_phase(None)
+        assert child.phase is not None and sibling.phase is not None
+        parent.set_phase(frame=0)
+        assert child.phase is None and sibling.phase is None
         parent.close()
 
     def test_lut(self, subtests):
@@ -1421,7 +1475,7 @@ class _FakeALP:
     ACTIVE = vialux.ALP_PROJ_IDLE - 1
     SHAPE = (1088, 2048)
 
-    def __init__(self, devices=1, busy_polls=2, memory=36, flut_entries=8):
+    def __init__(self, devices=1, busy_polls=2, memory=9, flut_entries=8):
         self.devices = devices
         self.busy_polls = busy_polls
         self.allocated = 0
@@ -1444,7 +1498,6 @@ class _FakeALP:
         self.seqs = {}
         self.flut = [0] * flut_entries
         self.flut_writes = []
-        self.seq_controls = []
         self.running = self.waiting = None
         self.looping = False
         self.busy = 0
@@ -1454,6 +1507,7 @@ class _FakeALP:
         self.proj_halts = 0
         self.starts = []
         self.puts = []
+        self.put_refusals = 0
 
     @staticmethod
     def _id(x):
@@ -1520,7 +1574,7 @@ class _FakeALP:
         return self._put(ref, int(self.dev.get(inquire, 0)))
 
     def AlpSeqAlloc(self, device, bitplanes, frames, ref):
-        if frames * bitplanes > self.dev[vialux.ALPControl.AVAIL_MEMORY]:
+        if frames > self.dev[vialux.ALPControl.AVAIL_MEMORY]:
             return vialux._ALPReturn.MEMORY_FULL
         sequence = 200 + len(self.seqs)
         self.seqs[sequence] = {"controls": {}, "timing": None, "frames": [None] * frames}
@@ -1534,7 +1588,6 @@ class _FakeALP:
         seq = self.seqs[self._id(sequence)]
         controls = seq["controls"]
         controls[control] = value
-        self.seq_controls.append((control, value))
         first = controls.get(vialux.ALPControl.FIRSTFRAME, 0)
         last = controls.get(vialux.ALPControl.LASTFRAME, len(seq["frames"]) - 1)
         if first > last:
@@ -1559,7 +1612,8 @@ class _FakeALP:
 
     def AlpSeqPut(self, device, sequence, offset, load, pointer):
         seq = self.seqs[self._id(sequence)]
-        if self._busy():
+        if self._busy() or self.put_refusals:
+            self.put_refusals = max(self.put_refusals - 1, 0)
             return vialux._ALPReturn.SEQ_IN_USE
         if offset < 0 or offset + load > len(seq["frames"]):
             return vialux._ALPReturn.PARM_INVALID
@@ -1585,7 +1639,6 @@ class _FakeALP:
         return self._enqueue(sequence, True)
 
     def AlpProjHalt(self, device):
-        self.waiting = None
         self.looping = False
         self.proj_halts += 1
         return vialux._ALPReturn.OK
@@ -1750,26 +1803,47 @@ class TestVialuxPLM:
             expected = as_numpy(plm.display).copy()
             plm.set_phase(self._phase(1))
             (held, display) = (alp.displayed, as_numpy(plm.display).copy())
-            stored = plm.set_frame(2, self._phase(0))
+            assert plm.set_frame(2, self._phase(0)) is None
             np.testing.assert_array_equal(seq["frames"][2], expected)
-            np.testing.assert_array_equal(as_numpy(stored), expected)
             assert alp.displayed is held
             np.testing.assert_array_equal(as_numpy(plm.display), display)
 
         with subtests.test("indices outside the frame memory raise"):
             with pytest.raises(IndexError, match="8 frames"):
                 plm.set_frame(8, self._phase(0))
-            with pytest.raises(IndexError, match="Frame -1 is outside"):
+            with pytest.raises(IndexError, match="-1 are outside"):
                 plm.set_frame(-1, self._phase(0))
             with pytest.raises(IndexError, match="8"):
                 plm.set_phase(frame=[0, 8])
 
+        with subtests.test("a sequence of frames uploads each consecutive run at once"):
+            singles = [seq["frames"][2].copy()]
+            for i in (1, 2, 3):
+                plm.set_frame(7, self._phase(i))
+                singles.append(seq["frames"][7].copy())
+            puts = len(alp.puts)
+            plm.set_frame([4, 5, 0, 1], np.stack([self._phase(i) for i in (0, 1, 2, 3)]))
+            assert [offset for _, offset in alp.puts[puts:]] == [4, 0]
+            for frame, single in zip((4, 5, 0, 1), singles):
+                np.testing.assert_array_equal(seq["frames"][frame], single)
+            with pytest.raises(ValueError, match="one phase pattern per frame"):
+                plm.set_frame([0, 1], self._phase(0)[np.newaxis])
+            with pytest.raises(IndexError, match="8 frames"):
+                plm.set_frame([7, 8], [None, None])
+
         with subtests.test("set_phase(frame=) displays a stored frame and holds it"):
-            display = as_numpy(plm.display).copy()
             assert plm.set_phase(frame=2) is None
             assert alp.running is None and alp.shown[-1] == 2
             np.testing.assert_array_equal(alp.displayed, expected)
-            np.testing.assert_array_equal(as_numpy(plm.display), display)
+            assert plm.phase is None and plm.display is None
+
+        with subtests.test("a store and a write work while the frame memory is displayed"):
+            plm.set_frame(3, self._phase(1))
+            assert plm.display is None
+            np.testing.assert_array_equal(seq["frames"][2], expected)
+            plm.set_phase(self._phase(0))
+            np.testing.assert_array_equal(as_numpy(plm.display), expected)
+            plm.set_phase(frame=2)
 
         with subtests.test("a range plays in order, repeat times, and blocks"):
             self._fill(plm, 3)
@@ -1778,11 +1852,6 @@ class TestVialuxPLM:
             assert alp.shown == [0, 1, 2, 0, 1, 2] and alp.running is None
             assert seq["controls"][vialux.ALPControl.SEQ_REPEAT] == 2
             np.testing.assert_array_equal(alp.displayed, seq["frames"][2])
-
-        with subtests.test("an unchanged range is not resent"):
-            controls = len(alp.seq_controls)
-            plm.set_phase(frame=range(3), repeat=2)
-            assert len(alp.seq_controls) == controls
 
         with subtests.test("block=False returns while busy; a store waits for the end"):
             plm.set_phase(frame=range(3), block=False)
@@ -1805,20 +1874,15 @@ class TestVialuxPLM:
         seq = self._seq(alp)
         self._fill(plm, 8)
 
-        with subtests.test("an order is written relative to its first frame, 9-bit"):
+        with subtests.test("an order is written relative to its first frame"):
             alp.shown.clear()
             plm.set_phase(frame=[1, 3, 5])
             assert alp.shown == [1, 3, 5]
-            assert seq["controls"][vialux.ALPControl.FLUT_MODE] == vialux.ALP_FLUT_9BIT
-            assert seq["controls"][vialux.ALPControl.FLUT_ENTRIES9] == 3
+            assert seq["controls"][vialux.ALPControl.FLUT_MODE] == vialux.ALP_FLUT_18BIT
+            assert seq["controls"][vialux.ALPControl.FLUT_ENTRIES9] == 6
             assert seq["controls"][vialux.ALPControl.FIRSTFRAME] == 1
             assert seq["controls"][vialux.ALPControl.LASTFRAME] == 5
-            assert alp.flut_writes[-1] == (vialux.ALPControl.FLUT_WRITE_9BIT, [0, 2, 4])
-
-        with subtests.test("an unchanged order is not rewritten"):
-            writes = len(alp.flut_writes)
-            plm.set_phase(frame=[1, 3, 5])
-            assert len(alp.flut_writes) == writes
+            assert alp.flut_writes[-1] == (vialux.ALPControl.FLUT_WRITE_18BIT, [0, 2, 4])
 
         with subtests.test("frames may repeat within an order"):
             alp.shown.clear()
@@ -1842,32 +1906,24 @@ class TestVialuxPLM:
 
         with subtests.test("a rejected order leaves a running loop alone"):
             plm.set_phase(frame=range(3), repeat=0)
+            halts = alp.proj_halts
             with pytest.raises(ValueError, match="arbitrary order"):
                 plm.set_phase(frame=[0, 2, 1, 3, 5, 4, 6, 7, 0])
-            assert alp.proj_halts == 0 and alp.running is not None
+            assert alp.proj_halts == halts and alp.running is not None
             plm.set_phase(frame=0)
             assert alp.running is None
-
-        with subtests.test("the order is copied, not aliased"):
-            order = np.array([1, 3, 5])
-            plm.set_phase(frame=order)
-            order[:] = 2
-            alp.shown.clear()
-            plm.reset_interface()
-            plm._wait_for_idle()
-            assert alp.shown == [1, 3, 5]
 
         plm.close()
 
     def test_wide_orders(self, monkeypatch, subtests):
-        """Orders spanning 512 or more frames use 18-bit entries, which halve the table."""
-        fake = _FakeALP(memory=4 * 1201)
+        """Orders may span the whole frame memory, up to half the table's 9-bit entries."""
+        fake = _FakeALP(memory=1201)
         monkeypatch.setitem(vialux._alp_libs, vialux._DEFAULT_ALP_PATH, fake)
         plm = vialux.PLM(wav_um=0.488)
         seq = self._seq(fake)
         assert plm.frame_count == 1200
 
-        with subtests.test("18-bit entries"):
+        with subtests.test("a wide order"):
             for i in (0, 600):
                 plm.set_frame(i, self._phase(i))
             fake.shown.clear()
@@ -1877,14 +1933,14 @@ class TestVialuxPLM:
             assert seq["controls"][vialux.ALPControl.FLUT_ENTRIES9] == 4
             assert fake.flut_writes[-1] == (vialux.ALPControl.FLUT_WRITE_18BIT, [600, 0])
 
-        with subtests.test("the halved table bounds the length"):
+        with subtests.test("the table bounds the length"):
             with pytest.raises(ValueError, match="At most 4"):
                 plm.set_phase(frame=[0, 600, 0, 600, 0])
 
         plm.close()
 
-    def test_loops(self, alp, monkeypatch, subtests):
-        """A loop runs until a write; settings pause and resume it; stores are refused."""
+    def test_loops(self, alp, subtests):
+        """A sequence plays until a write or a setting ends it; stores into a loop are refused."""
         plm = vialux.PLM(wav_um=0.488)
         seq = self._seq(alp)
         self._fill(plm, 3)
@@ -1898,35 +1954,37 @@ class TestVialuxPLM:
                 plm.set_frame(1, self._phase(9))
             assert alp.running is not None
 
-        with subtests.test("the frame time changes under the loop"):
+        with subtests.test("the frame time leaves the loop alone and times the next sequence"):
+            halts = alp.proj_halts
             plm.set_frametime(300e-6)
-            assert alp.proj_halts == 1 and seq["timing"][0] == 300
-            assert alp.starts[-1][1] is True and alp.running is not None
+            assert alp.proj_halts == halts and alp.running is not None
+            assert seq["timing"][0] == 150
+            plm.set_phase(frame=range(3))
+            assert seq["timing"][0] == 300
 
-        with subtests.test("a shorter frame time waits out the pass at the old one"):
-            plm.set_frametime(1.0)
-            plm.switch_timeout_s = 0
-            clock = itertools.count(1.0)
-            monkeypatch.setattr(vialux.time, "perf_counter", lambda: next(clock))
-            plm.set_frametime(150e-6)
-            monkeypatch.undo()
-            plm.switch_timeout_s = 5.0
-            assert seq["timing"][0] == 150 and alp.running is not None and plm._looping
+        with subtests.test("a single frame switches in the minimum frame time"):
+            plm.set_phase(frame=1)
+            assert seq["timing"][0] == 150
+            plm.set_phase(self._phase(3))
+            assert seq["timing"][0] == 150
 
-        with subtests.test("the synch output changes under the loop"):
+        with subtests.test("the synch output ends the loop"):
+            plm.set_phase(frame=range(3), repeat=0)
             halts = alp.proj_halts
             plm.set_output_trigger(True, polarity="low", pulse_width_s=100e-6)
             assert alp.proj_halts == halts + 1 and seq["timing"][2] == 100
             assert alp.dev[vialux.ALPControl.SYNCH_POLARITY] == vialux.ALP_LEVEL_LOW
-            assert alp.starts[-1][1] is True and alp.running is not None
+            assert alp.running is None
 
-        with subtests.test("reset_interface redisplays the loop"):
+        with subtests.test("reset_interface ends the loop and redisplays its last frame"):
+            plm.set_phase(frame=range(3), repeat=0)
             halts = alp.halts
             plm.reset_interface()
-            assert alp.halts == halts + 1
-            assert alp.starts[-1][1] is True and alp.running is not None
+            assert alp.halts == halts + 1 and alp.running is None
+            assert alp.starts[-1][1] is False and alp.shown[-1] == 2
 
         with subtests.test("a write ends the loop"):
+            plm.set_phase(frame=range(3), repeat=0)
             halts = alp.proj_halts
             plm.set_phase(self._phase(4))
             assert alp.proj_halts == halts + 1 and alp.running is None
@@ -1938,6 +1996,18 @@ class TestVialuxPLM:
             plm.set_phase(frame=1)
             assert alp.running is None and alp.shown[-1] == 1
 
+        with subtests.test("a write ends a finite sequence as it does a loop"):
+            plm.set_phase(frame=range(3), repeat=5, block=False)
+            halts = alp.proj_halts
+            plm.set_phase(frame=1)
+            assert alp.proj_halts == halts + 1 and alp.shown[-1] == 1
+
+        with subtests.test("an upload retries while the ended pass plays out"):
+            alp.put_refusals = 3
+            plm.set_phase(self._phase(5))
+            assert alp.put_refusals == 0
+            assert np.array_equal(alp.displayed, as_numpy(plm.display))
+
         plm.close()
 
     def test_triggers(self, alp, subtests):
@@ -1945,40 +2015,24 @@ class TestVialuxPLM:
         plm = vialux.PLM(wav_um=0.488)
         self._fill(plm, 3)
 
-        with subtests.test("enabling under a loop restarts it in slave mode"):
+        with subtests.test("enabling ends a loop and enters slave mode"):
             plm.set_phase(frame=range(3), repeat=0)
             plm.set_input_trigger(True, edge="falling")
             assert alp.proj[vialux.ALPControl.PROJ_MODE] == vialux.ALP_SLAVE
             assert alp.dev[vialux.ALPControl.TRIGGER_EDGE] == vialux.ALP_EDGE_FALLING
-            assert alp.starts[-1][1] is True and alp.running is not None
-
-        with subtests.test("disabling halts the stalled loop and redisplays it free-running"):
-            halts = alp.halts
-            plm.set_input_trigger(False)
-            assert alp.halts == halts + 1
-            assert alp.proj[vialux.ALPControl.PROJ_MODE] == vialux.ALP_MASTER
-            assert alp.starts[-1][1] is True and alp.running is not None
-            plm.set_phase(frame=1)
             assert alp.running is None
 
         with subtests.test("triggered frames do not block"):
-            plm.set_input_trigger(True)
             plm.set_phase(frame=range(3))
             assert alp.running is not None
 
-        with subtests.test("disabling halts stalled frames and redisplays free-running"):
+        with subtests.test("disabling halts stalled frames and redisplays the last free-running"):
             halts = alp.halts
             plm.set_input_trigger(False)
             assert alp.halts == halts + 1
             assert alp.proj[vialux.ALPControl.PROJ_MODE] == vialux.ALP_MASTER
             assert alp.starts[-1][1] is False
-            plm._wait_for_idle()
-            assert alp.running is None and alp.shown[-3:] == [0, 1, 2]
-
-        with subtests.test("disabling while idle just switches mode"):
-            halts = alp.halts
-            plm.set_input_trigger(False)
-            assert alp.halts == halts
+            assert alp.running is None and alp.shown[-1] == 2
 
         with subtests.test("disabling an already disabled trigger leaves a loop alone"):
             plm.set_phase(frame=range(3), repeat=0)
@@ -1997,7 +2051,7 @@ class TestVialuxPLM:
         plm.close()
 
     def test_settings_keep_the_pattern(self, alp, subtests):
-        """Timing and synch settings apply while idle, without clearing the held pattern."""
+        """Timing and synch settings leave the held pattern displayed."""
         plm = vialux.PLM(wav_um=0.488)
         plm.set_phase(self._phase(0))
         (held, halts) = (alp.displayed, alp.halts)
@@ -2005,7 +2059,11 @@ class TestVialuxPLM:
 
         with subtests.test("frame time, rounded to microseconds and read back"):
             assert plm.set_frametime(300.4e-6) == 300e-6
-            assert seq["timing"][0] == 300 and plm.get_frametime() == 300e-6
+            assert plm.set_framerate(2e3) == pytest.approx(2e3) and plm.get_frametime() == 500e-6
+            assert plm.set_frametime(300e-6) == 300e-6 and plm.get_framerate() == pytest.approx(
+                1 / 300e-6
+            )
+            assert plm.get_frametime() == 300e-6
 
         with subtests.test("below the minimum raises and keeps the setting"):
             with pytest.raises(ValueError, match="minimum"):
@@ -2022,7 +2080,7 @@ class TestVialuxPLM:
         with subtests.test("a rejected output trigger leaves the timing and polarity unchanged"):
             with pytest.raises(RuntimeError):
                 plm.set_output_trigger(True, pulse_width_s=1000e-6)
-            assert (plm._synch_delay_us, plm._synch_pulse_width_us) == (10, 100)
+            assert plm._synch_us == (10, 100)
             assert alp.dev[vialux.ALPControl.SYNCH_POLARITY] == vialux.ALP_LEVEL_LOW
 
         with subtests.test("reset_interface halts and redisplays"):

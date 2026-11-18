@@ -802,7 +802,11 @@ class _WavefrontCalibrationSuperpixel:
 
                     # Plot phase on the first axis.
                     if phase is None:
-                        phase = self.slm.phase if self.slm.xp is np else self.slm.phase.get()
+                        if self.slm.phase is None:
+                            raise ValueError(
+                                "phase is undefined while hardware frame memory is displayed."
+                            )
+                        phase = as_numpy(self.slm.phase)
                     axs[0].imshow(
                         np.mod(phase, 2 * np.pi),
                         cmap=plt.get_cmap("twilight"),

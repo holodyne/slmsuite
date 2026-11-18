@@ -1877,6 +1877,8 @@ class Camera(_Common, ABC):
         if hasattr(set_z, "set_phase"):
             # SLM passed; create lens phase setter.
             slm = set_z
+            if slm.phase is None:
+                raise ValueError("phase is undefined while hardware frame memory is displayed.")
             base_phase = slm.phase - slm._get_source_phase()
             base_correction = slm.source.get("phase", None)
             if base_correction is None:

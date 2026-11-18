@@ -340,6 +340,38 @@ class TestRemoteSLM:
         assert received[0].dtype == remote.display.dtype
         np.testing.assert_array_equal(as_numpy(received[0]), as_numpy(remote.display))
 
+    def test_frames(self, hardware, serve, subtests):
+        """Frames go to the server's frame memory when it has one, else stay on the client."""
+        (slm, _) = hardware
+        port = serve(hardware)
+
+        with subtests.test("a server without frame memory leaves the frames on the client"):
+            remote = RemoteSLM(name="test_slm", host=HOST, port=port)
+            assert remote.frame_count is None
+            remote.set_frame(0, blaze(remote, vector=(0.01, 0)))
+            remote.set_phase(None, settle=False)
+            flat = as_numpy(remote.display).copy()
+            assert remote.set_phase(frame=0, settle=False) is remote.display
+            assert not np.array_equal(as_numpy(remote.display), flat)
+
+        with subtests.test("a server with frame memory stores and displays the frames"):
+            calls = []
+            slm.frame_count = 4
+            slm._set_frame_hw = lambda display, frame: calls.append(("store", frame))
+            slm._set_phase_frame_hw = lambda frame, repeat=1: calls.append(("show", frame, repeat))
+            try:
+                remote = RemoteSLM(name="test_slm", host=HOST, port=port)
+                assert remote.frame_count == 4
+                remote.set_frame(3, None)
+                assert remote.set_phase(frame=3, settle=False) is None
+                assert remote.phase is None
+                assert calls == [("store", 3), ("show", 3, 1)]
+                with pytest.raises(IndexError, match="4 frames"):
+                    remote.set_frame(4, None)
+            finally:
+                slm.frame_count = None
+                del slm._set_frame_hw, slm._set_phase_frame_hw
+
 
 class TestRemoteCamera:
     def test_init(self, hardware, serve, subtests):

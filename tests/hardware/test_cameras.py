@@ -803,6 +803,12 @@ class TestCamera:
             with pytest.raises(ValueError, match="set_z must be"):
                 camera.autofocus(set_z="not_callable")
 
+        with subtests.test("an SLM displaying its frame memory has no phase to focus"):
+            monkeypatch.setattr(slm, "_memory_displayed", True)
+            with pytest.raises(ValueError, match="undefined"):
+                camera.autofocus(set_z=slm)
+            monkeypatch.setattr(slm, "_memory_displayed", False)
+
         for range_z in ([-1.0, -0.5, 0.0, 0.5, 1.0], np.array([-1, 0, 1])):
             with subtests.test(f"a {type(range_z).__name__} range_z is not mutated"):
                 before = np.copy(range_z)

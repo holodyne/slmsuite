@@ -73,7 +73,9 @@ class Hamamatsu(SLM):
     Initializes an instance of a Hamamatsu SLM.
 
     Direct writes use frame 0 of the hardware frame memory; frame ``frame`` of
-    :meth:`set_frame` is hardware frame ``frame + 1``.
+    :meth:`set_frame` is hardware frame ``frame + 1``. The size of the frame memory
+    depends on the model and is not read from the device: pass ``frame_count`` to have
+    frames checked against it.
 
     Attributes
     ----------
@@ -88,6 +90,7 @@ class Hamamatsu(SLM):
         resolution=(1272, 1024),
         pitch_um=(12.5, 12.5),
         verbose=None,
+        frame_count=None,
         **kwargs,
     ):
         r"""
@@ -119,6 +122,9 @@ class Hamamatsu(SLM):
         verbose : None
             Ignored, with a warning. Use :func:`slmsuite.configure_logging()`
             to see the progress of initialization.
+        frame_count : int OR None
+            Number of frames :meth:`set_frame` may use: one fewer than the device holds.
+            ``None`` leaves frames unchecked.
         """
         # Search for one device.
         if verbose is not None:
@@ -173,6 +179,7 @@ class Hamamatsu(SLM):
             pitch_um=pitch_um,
             **kwargs,
         )
+        self.frame_count = frame_count
 
         # Zero the display using the superclass `set_phase()` function.
         self.set_phase(None)

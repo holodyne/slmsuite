@@ -276,7 +276,7 @@ class _PixelCalibration:
                 self.slm.bitresolution,
             )
             levels = levels[valid]
-        levels = levels.astype(self.slm.display.dtype)
+        levels = levels.astype(self.slm.dtype)
         levels = np.unique(levels)  # Processing reads the response in level order.
         N = len(levels)
 
@@ -428,9 +428,7 @@ class _PixelCalibration:
         field_kxy = toolbox.convert_vector(
             field_freq, from_units="freq", to_units="norm", hardware=self
         )
-        (field_hi, field_lo) = np.array([self.slm.bitresolution / 2, 0]).astype(
-            self.slm.display.dtype
-        )
+        (field_hi, field_lo) = np.array([self.slm.bitresolution / 2, 0]).astype(self.slm.dtype)
 
         field_ij = toolbox.convert_vector(
             field_freq, from_units="freq", to_units="ij", hardware=self
