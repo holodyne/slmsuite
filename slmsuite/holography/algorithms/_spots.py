@@ -1089,7 +1089,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
 
         # Weighting strategy depends on the chosen feedback method.
         if feedback == "computational_spot":
-            amp_feedback = self.amp_ff
+            amp_feedback = self._get_amp_ff_pixel()
         elif feedback == "experimental_spot":
             self.measure(basis="ij")
 
@@ -1110,6 +1110,18 @@ class CompressedSpotHologram(_AbstractSpotHologram):
             nan_checks=True,
         )
 
+    def _get_pixel_amp(self):
+        """
+        The element pattern of the :attr:`pixel` at each spot, as an amplitude. See
+        :meth:`Hologram._get_pixel_amp`.
+        """
+        if self._pixel_amp is None or not np.array_equal(self._pixel_spot_kxy, self.spot_kxy):
+            self._pixel_spot_kxy = np.array(self.spot_kxy)
+            kxy = cp.asarray(self._pixel_spot_kxy[:2] + self._pixel_blaze[:, np.newaxis])
+            self._pixel_amp = cp.abs(self.pixel.amplitude(kxy)).astype(self.dtype)
+
+        return self._pixel_amp
+
     def _calculate_stats_computational_spot(self, stats, stat_groups=None):
         """
         Wrapped by :meth:`CompressedSpotHologram._update_stats()`.
@@ -1119,7 +1131,7 @@ class CompressedSpotHologram(_AbstractSpotHologram):
         if "computational_spot" in stat_groups:
             # amp carries unit power, so the unnormalized spot power is the efficiency.
             stats["computational_spot"] = self._calculate_stats(
-                self.amp_ff * self._farfield_norm,
+                self._get_amp_ff_pixel() * self._farfield_norm,
                 self.target,
                 xp=cp,
                 total=1,
@@ -1669,13 +1681,15 @@ class SpotHologram(_AbstractSpotHologram):
         # Weighting strategy depends on the chosen feedback method.
         if feedback == "computational":
             # Pixel-by-pixel weighting
-            self._update_weights_generic(self.weights, self.amp_ff, self.target, nan_checks=True)
+            self._update_weights_generic(
+                self.weights, self._get_amp_ff_pixel(), self.target, nan_checks=True
+            )
         else:
             # Integrate a window around each spot, with feedback from respective sources.
             if feedback == "computational_spot":
                 amp_feedback = cp.sqrt(
                     analysis.take(
-                        cp.square(self.amp_ff),
+                        cp.square(self._get_amp_ff_pixel()),
                         self.spot_knm_rounded,
                         self.spot_integration_width_knm,
                         centered=True,
@@ -1715,10 +1729,12 @@ class SpotHologram(_AbstractSpotHologram):
             stat_groups = []
 
         if "computational_spot" in stat_groups:
+            # The spots carry the pixel's element pattern; the total stays the incident power.
+            amp_ff = self._get_amp_ff_pixel()
             if self.shape == self.slm_shape:
                 # Spot size is one pixel wide: no integration required.
                 stats["computational_spot"] = self._calculate_stats(
-                    self.amp_ff[self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]],
+                    amp_ff[self.spot_knm_rounded[1, :], self.spot_knm_rounded[0, :]],
                     self.spot_amp,
                     efficiency_compensation=False,
                     total=cp.sum(cp.square(self.amp_ff)),
@@ -1729,7 +1745,7 @@ class SpotHologram(_AbstractSpotHologram):
                 if cp != np:
                     pwr_ff = cp.square(self.amp_ff)
                     pwr_feedback = analysis.take(
-                        pwr_ff,
+                        cp.square(amp_ff),
                         self.spot_knm_rounded,
                         self.spot_integration_width_knm,
                         centered=True,
@@ -1748,7 +1764,7 @@ class SpotHologram(_AbstractSpotHologram):
                 else:
                     pwr_ff = np.square(self.amp_ff)
                     pwr_feedback = analysis.take(
-                        pwr_ff,
+                        np.square(amp_ff),
                         self.spot_knm_rounded,
                         self.spot_integration_width_knm,
                         centered=True,

@@ -16,6 +16,7 @@ from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.hardware.cameras.simulated import SimulatedCamera
 
 # Import calibrations (separated into different files for readability).
+from slmsuite.hardware.cameraslms._farfield import _FarfieldCalibration
 from slmsuite.hardware.cameraslms._fourier import _FourierCalibration
 from slmsuite.hardware.cameraslms._pixel import _PixelCalibration
 from slmsuite.hardware.cameraslms._settle import _SettleCalibration
@@ -202,6 +203,7 @@ class NearfieldSLM(CameraSLM):
 class FourierSLM(
     CameraSLM,
     _FourierCalibration,
+    _FarfieldCalibration,
     _PixelCalibration,
     _SettleCalibration,
     _WavefrontCalibration,
@@ -244,6 +246,16 @@ class FourierSLM(
 
             See
             :meth:`~slmsuite.hardware.cameraslms.FourierSLM.wavefront_calibrate_zernike()`.
+        "farfield" : dict
+            Raw data measuring the diffraction efficiency over the farfield
+            (including aperture cropping) and the 0th order scatter.
+
+            See
+            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.farfield_calibrate()`.
+            Usable data is produced by running
+            :meth:`~slmsuite.hardware.cameraslms.FourierSLM.farfield_calibration_process()`,
+            which also fits the fill factor of the SLM's pixels and installs it as the
+            :attr:`~slmsuite.hardware.slms.slm.SLM.pixel`.
         "pixel" : dict
             Raw data for measuring the phase response (gamma) and pixel crosstalk of the
             SLM via measurements on the diffractive orders of binary gratings.
@@ -429,6 +441,7 @@ class FourierSLM(
             pitch_um=self.slm.pitch_um,
             settle_time_s=self.slm.settle_time_s if settle else 0,
             gpu=gpu,
+            pixel=self.slm.pixel,
         )
 
         # Quantize through the same lookup table that the hardware does.

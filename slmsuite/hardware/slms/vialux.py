@@ -250,7 +250,8 @@ class PLM(_PLMModel, SLM):
             Defaults to the ALP-5.1 install location.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options. ``settle_time_s``
-            defaults to zero, as writes return once the pattern is displayed.
+            defaults to zero, as writes return once the pattern is displayed, and
+            ``pixel`` defaults to that of the model, if its entry has one.
         """
         self._lib = self._load_lib(sdk_path)
         self._device = None
@@ -316,6 +317,7 @@ class PLM(_PLMModel, SLM):
                 (width, height),
                 bitdepth=self._model_bitdepth,
                 pitch_um=tuple(np.array(self.model_config["pitch"]) * 1e6),
+                pixel=kwargs.pop("pixel", self._model_pixel),
                 name=kwargs.pop("name", f"{model_name}_{self.serial}"),
                 **kwargs,
             )

@@ -231,6 +231,7 @@ class SimulatedCamera(Camera):
         self._supersample = (1, 1)
         self._knm_cam_super = None
         self._pixel_area = 1.0
+        self._pixel_power = self._pixel_power_key = None
 
         if self._interpolate:
             self.M = M
@@ -428,22 +429,54 @@ class SimulatedCamera(Camera):
         ff = self._hologram.get_farfield(get=False)
         intensity = cp.abs(ff) ** 2
 
-        # Use map_coordinates for fastest interpolation
-        # Note: by default, map_coordinates sets pixels outside the SLM k-space to 0 as desired
+        # A pixel model repeats the farfield in every Nyquist zone; without one, they are dark.
+        pixel = self._slm.pixel
+        mode = "constant" if pixel is None else "grid-wrap"
         if self._interpolate:
             # Each pixel collects the mean over its footprint times the footprint's area;
             # partially outside the k-space aperture, subsamples there return zero.
             if self._knm_cam_super is not None:
                 (sv, su) = self._supersample
-                img = map_coordinates(intensity, self._knm_cam_super, order=0)
+                img = map_coordinates(intensity, self._knm_cam_super, order=0, mode=mode)
                 img = img.reshape(self._shape[0], sv, self._shape[1], su).mean(axis=(1, 3))
             else:
-                img = map_coordinates(intensity, self.knm_cam, order=0)
+                img = map_coordinates(intensity, self.knm_cam, order=0, mode=mode)
             img = img * self._pixel_area
         else:
             img = toolbox.unpad(intensity, self._shape)
 
+        if pixel is not None:
+            img = img * self._get_pixel_power(pixel)
+
         return img
+
+    def _get_pixel_power(self, pixel):
+        """
+        The power of the element pattern ``pixel`` on this camera's pixels, evaluated at
+        the spatial frequency each pixel sees less the tilt of the simulated wavefront.
+        """
+        blaze = self._slm._get_source_blaze(sim=True)
+        key = (pixel, *blaze)
+        if self._pixel_power_key != key:
+            if self._interpolate:
+                kxy = cp.stack([cp.asarray(g) for g in self.grid])
+            else:
+                kxy = cp.stack(
+                    [
+                        toolbox.unpad(g, self._shape)
+                        for g in cp.meshgrid(
+                            *[
+                                (cp.arange(n) - n // 2) / (n * p)
+                                for (n, p) in zip(self.shape_padded[::-1], self._slm.pitch)
+                            ]
+                        )
+                    ]
+                )
+            power = pixel.power(kxy - cp.asarray(blaze)[:, None, None])
+            self._pixel_power = power.astype(cp.float32)
+            self._pixel_power_key = key
+
+        return self._pixel_power
 
     def render(self):
         """
@@ -455,7 +488,10 @@ class SimulatedCamera(Camera):
         usable as a photometric reference, for instance as the diffraction-limited
         reference of :meth:`~slmsuite.holography.analysis.image_strehl()`. The underlying
         farfield carries unit total power, so the scale is arbitrary; use ratios such as
-        peak-over-total. The window, binning, and orientation are applied as
+        peak-over-total. With a :attr:`~slmsuite.hardware.slms.slm.SLM.pixel` on the
+        SLM, the farfield is tiled over every Nyquist zone and weighted by the pixel's
+        element pattern, so the total falls with the fill factor and reflectance.
+        The window, binning, and orientation are applied as
         :meth:`get_image()` applies them, so the two are pixel-for-pixel comparable.
 
         Returns

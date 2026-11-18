@@ -135,6 +135,12 @@ class SLM(_Common, ABC):
         Lookup table mapping phase onto the grayscale level which realizes it, inverted
         from :attr:`gamma` by :meth:`set_gamma`. If ``None`` (the default), the private
         method :meth:`_phase2gray` assumes the ideal linear phase response instead.
+    pixel : :class:`~slmsuite.holography.toolbox.Pixel` OR None
+        Element pattern of one pixel: the farfield envelope that its fill factor and
+        reflectance impose. Assign anything that
+        :meth:`~slmsuite.holography.toolbox.Pixel.resolve` accepts, such as a fill
+        factor. If ``None`` (the default), the pixel is not modeled and the farfield is
+        the discrete Fourier transform of the pixel phases.
     settle : bool
         Default behavior for the ``settle`` argument of :meth:`set_phase()`. Defaults to ``False``.
     phase_correct : bool
@@ -154,6 +160,7 @@ class SLM(_Common, ABC):
         "frame_count",
         "phase_scaling",
         "aperture",
+        "pixel",
         "_source_radius",
         "phase_correct",
         "settle",
@@ -176,6 +183,7 @@ class SLM(_Common, ABC):
         pitch_um=(8, 8),
         settle_time_s=0.3,
         gpu=None,
+        pixel=None,
     ):
         """
         Initialize SLM.
@@ -209,6 +217,8 @@ class SLM(_Common, ABC):
             This governs the whole object --- grid, aperture, and source as well as the
             phase buffers --- so a :mod:`cupy`-backed SLM returns :mod:`cupy` arrays
             throughout; see the note on :attr:`xp`.
+        pixel : Pixel OR float OR (float, float) OR dict OR None
+            See :attr:`pixel`.
         """
         # Choose the array backend that this SLM will hold all of its data in.
         if gpu is None:
@@ -269,6 +279,8 @@ class SLM(_Common, ABC):
                 "SLM design wavelength of %.2f um is unusual. Was this a typo?", self.wav_design_um
             )
 
+        self._pixel = toolbox.Pixel.resolve(self, pixel)
+
         # Make normalized coordinate grids. ``_grid_base`` is the immutable geometric
         # grid (centered on the SLM); the public ``grid`` property derives the
         # aperture-centered working frame from it (see the ``grid`` property).
@@ -288,6 +300,7 @@ class SLM(_Common, ABC):
         self._source_radius = None  # None derives it from the aperture; see source_radius.
 
         # Source profile dictionary. Holds its arrays on self.xp; see _Source.
+        self._source_blaze = {}  # cache for _get_source_blaze(); writes to source clear it
         self.source = _Source(self)
 
         # Now inspect the _set_phase_hw() method to see if it supports the execute and
@@ -310,6 +323,14 @@ class SLM(_Common, ABC):
         # Default settle and phase_correct behavior for set_phase.
         self.phase_correct = True
         self.settle = False
+
+    @property
+    def pixel(self):
+        return self._pixel
+
+    @pixel.setter
+    def pixel(self, pixel):
+        self._pixel = toolbox.Pixel.resolve(self, pixel)
 
     # Aperture-derived properties
     @property
@@ -397,6 +418,10 @@ class SLM(_Common, ABC):
                 self._grid_base, aperture["spec"], center=aperture.get("center", None)
             )
             self._grid = None
+
+        pixel = data.get("pixel", None)
+        if isinstance(pixel, dict):
+            self.pixel = pixel
 
         # A None radius (derived from the aperture) is written to .h5 as a bool.
         source_radius = data.get("_source_radius", None)
@@ -754,6 +779,68 @@ class SLM(_Common, ABC):
             _slmsuite_plt_show(name="plot_gamma")
 
         return ax
+
+    def plot_pixel(self, zones=1, axs=None):
+        r"""
+        Plots the element pattern of the :attr:`pixel`: its power over the farfield
+        (left) and along each axis (right), against the spatial frequency of the
+        displayed pattern in cycles per pixel.
+
+        Parameters
+        ----------
+        zones : float
+            Number of Nyquist zones to span along each axis. The first zone, which
+            holograms address, is :math:`\pm 1/2` cycle per pixel.
+        axs : (matplotlib.axes.Axes, matplotlib.axes.Axes) OR None
+            Axes to plot onto, if desired.
+
+        Returns
+        -------
+        (matplotlib.axes.Axes, matplotlib.axes.Axes)
+            Axes of the generated plots.
+
+        Raises
+        ------
+        RuntimeError
+            If there is no :attr:`pixel` to plot.
+        """
+        if self.pixel is None:
+            raise RuntimeError("No pixel to plot; set slm.pixel first.")
+
+        should_show = axs is None
+        if should_show:
+            (_, axs) = plt.subplots(1, 2, figsize=(10, 4))
+
+        freq = np.linspace(-zones / 2, zones / 2, 257)
+        power = self.pixel.power(np.array(np.meshgrid(freq, freq)) / self.pitch[:, None, None])
+        extent = (freq[0], freq[-1], freq[-1], freq[0])
+
+        image = axs[0].imshow(power, extent=extent, vmin=0)
+        self.pixel._plot(axs[0], power, extent)
+        if zones > 1:
+            axs[0].add_patch(plt.Rectangle((-0.5, -0.5), 1, 1, ec="w", fc="none", ls=":"))
+        axs[0].set_title("Pixel Power")
+        axs[0].set_xlabel(r"$f_x$ [cycles/pixel]")
+        axs[0].set_ylabel(r"$f_y$ [cycles/pixel]")
+        plt.colorbar(image, ax=axs[0])
+
+        zero = np.zeros_like(freq)
+        for label, cut in (("$x$", (freq, zero)), ("$y$", (zero, freq))):
+            axs[1].plot(freq, self.pixel.power(np.array(cut) / self.pitch[:, None]), label=label)
+        for edge in (-0.5, 0.5):
+            axs[1].axvline(edge, c="gray", ls=":", lw=1)
+        axs[1].set_title("Pixel Power along Each Axis")
+        axs[1].set_xlabel("Spatial frequency [cycles/pixel]")
+        axs[1].set_xlim(freq[0], freq[-1])
+        axs[1].set_ylim(0, None)
+        axs[1].grid("on")
+        axs[1].legend()
+
+        if should_show:
+            plt.tight_layout()
+            _slmsuite_plt_show(name="plot_pixel")
+
+        return axs
 
     @property
     def _phase_to_lut(self):
@@ -1997,6 +2084,50 @@ class SLM(_Common, ABC):
                 return phase  # Already a fresh, independent array.
         return phase * as_backend(self.aperture_mask, get_array_module(phase))
 
+    def _get_source_blaze(self, sim=False):
+        r"""
+        The tilt of the source wavefront as a ``"kxy"`` vector: the mean phase gradient
+        between neighboring pixels, weighted by their amplitudes.
+
+        Parameters
+        ----------
+        sim : bool
+            Whether to read the simulated wavefront (``"amplitude_sim"``, ``"phase_sim"``)
+            in place of the measured correction.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(x, y)`` tilt.
+        """
+        # The measured source is masked by the aperture, so the cache is built for one.
+        (aperture, blaze) = self._source_blaze.get(sim, (None, None))
+        if blaze is not None and (sim or aperture is self.aperture):
+            return blaze
+
+        if sim:
+            (amp, phase) = (self.source["amplitude_sim"], self.source["phase_sim"])
+        elif self.source.get("phase") is None:
+            (amp, phase) = (None, None)
+        else:
+            (amp, phase) = (self._get_source_amplitude(), self._get_source_phase())
+
+        if phase is None:
+            blaze = np.zeros(2)
+        else:
+            xp = self.xp
+            field = (amp * xp.exp(1j * phase)).astype(xp.complex64)
+            steps = xp.stack(
+                (
+                    xp.vdot(field[:, :-1], field[:, 1:]),
+                    xp.vdot(field[:-1], field[1:]),
+                )
+            )
+            blaze = as_numpy(xp.angle(steps)).astype(float) / (2 * np.pi * self.pitch)
+
+        self._source_blaze[sim] = (self.aperture, blaze)
+        return blaze
+
     def plot_source(self, source=None, sim=False, power=False, aperture=True):
         """
         Plots measured or simulated amplitude and phase distribution
@@ -2123,6 +2254,54 @@ class SLM(_Common, ABC):
 
         return farfield
 
+    def get_efficiency(self, phase=None, kxy=(0, 0)):
+        r"""
+        The fraction of the source power that ``phase`` sends to each point ``kxy`` of
+        the farfield, as a diffraction-limited spot there would collect it.
+
+        The phase is quantized as :meth:`get_realized_phase` does, projected onto the
+        plane wave leaving toward ``kxy``, and weighted by the :attr:`pixel`'s element
+        pattern. Without a :attr:`pixel`, the loss is that of quantization alone.
+
+        Parameters
+        ----------
+        phase : array_like OR None
+            Phase in radians, of shape :attr:`shape`, without the wavefront correction:
+            the correction is added as :meth:`set_phase` adds it. Defaults to
+            :attr:`phase`, the phase on display.
+        kxy : array_like
+            Points of the farfield in the ``"kxy"`` basis, of shape ``(2, N)``. The
+            orders of a blaze toward ``vector`` sit at its integer multiples.
+
+        Returns
+        -------
+        numpy.ndarray
+            Efficiencies of shape ``(N,)``.
+        """
+        xp = self.xp
+        kxy = toolbox.format_2vectors(kxy)
+        correction = self._get_source_phase()
+        if phase is not None:
+            phase = as_backend(phase, xp) + correction
+        power = self._get_source_amplitude() ** 2
+
+        # The field left once the correction has canceled the aberration it measured.
+        field = power * xp.exp(1j * (self.get_realized_phase(phase) - correction))
+        field = (field / xp.sum(power)).astype(xp.complex64)
+
+        # The grid is separable, so every plane wave is a product of two 1D phasors.
+        (kx, ky) = xp.asarray(-2 * np.pi * kxy, dtype=xp.float32)[:, :, np.newaxis]
+        (x_grid, y_grid) = self.grid
+        phasors_x = xp.exp(1j * kx * x_grid[:1, :])
+        phasors_y = xp.exp(1j * ky * y_grid[:, 0])
+        efficiency = np.abs(as_numpy(xp.sum((phasors_y @ field) * phasors_x, axis=1))) ** 2
+
+        if self.pixel is not None:
+            blaze = self._get_source_blaze()[:, np.newaxis]
+            efficiency = efficiency * self.pixel.power(kxy + blaze)
+
+        return efficiency
+
     def get_spot_radius_kxy(self):
         r"""
         Approximates the :math:`1/e` amplitude (:math:`1/e^2` power) radius of farfield
@@ -2216,8 +2395,33 @@ class _Source(dict):
             return value
         return as_backend(value, slm.xp)
 
+    def _changed(self):
+        """Drops what the SLM derived from the source. Writes into a stored array are not seen."""
+        slm = self._slm()
+        if slm is not None:
+            slm._source_blaze.clear()
+
     def __setitem__(self, key, value):
         super().__setitem__(key, self._to_backend(value))
+        self._changed()
+
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        self._changed()
+
+    def pop(self, *args):
+        value = super().pop(*args)
+        self._changed()
+        return value
+
+    def popitem(self):
+        item = super().popitem()
+        self._changed()
+        return item
+
+    def clear(self):
+        super().clear()
+        self._changed()
 
     def update(self, *args, **kwargs):
         for key, value in dict(*args, **kwargs).items():

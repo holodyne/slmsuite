@@ -19,6 +19,7 @@ from conftest import (
 from scipy import ndimage
 
 import slmsuite._plotting
+from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.holography import analysis, toolbox
 from slmsuite.holography.algorithms import (
     CompressedSpotHologram,
@@ -38,6 +39,8 @@ from slmsuite.holography.algorithms._header import (
 )
 from slmsuite.holography.analysis import Affine
 from slmsuite.holography.analysis.files import load_h5
+from slmsuite.holography.toolbox import Pixel
+from slmsuite.holography.toolbox.phase import blaze
 
 try:
     import cupy as cp
@@ -442,6 +445,117 @@ class TestHologram:
         with subtests.test("std_err does not increase"):
             assert comp["std_err"][-1] <= comp["std_err"][1]
 
+    @staticmethod
+    def _pixel_slm(**kwargs):
+        """An SLM whose pixels fill their pitch unevenly, so the envelope differs per axis."""
+        return SimulatedSLM((64, 48), pitch_um=(12, 8), wav_um=0.5, pixel=(0.9, 0.8), **kwargs)
+
+    @staticmethod
+    def _pixel_kxy(slm, shape):
+        """The spatial frequency of every point of a farfield grid of ``shape``."""
+        return np.array(
+            np.meshgrid(
+                *[(np.arange(n) - n // 2) / (n * p) for (n, p) in zip(shape[::-1], slm.pitch)]
+            )
+        )
+
+    def test_get_amp_ff_pixel(self, subtests):
+        """Computational feedback reads the farfield under the pixel's element pattern."""
+        shape = (64, 64)
+        target = _spot_target(shape, (8, 8), (32, 40), (56, 20))
+
+        with subtests.test("without a pixel the feedback is the farfield itself"):
+            h = Hologram(target, slm_shape=SimulatedSLM((64, 48)))
+            h.optimize("GS", maxiter=1, verbose=False, stat_groups=[])
+            assert h.pixel is None
+            assert h._get_amp_ff_pixel() is h.amp_ff
+
+        slm = self._pixel_slm()
+        h = Hologram(target, slm_shape=slm)
+        h.optimize("GS", maxiter=1, verbose=False, stat_groups=[])
+        amplitude = slm.pixel.amplitude(self._pixel_kxy(slm, shape))
+
+        with subtests.test("with a pixel it is the farfield times the element pattern"):
+            np.testing.assert_allclose(
+                _np(h._get_amp_ff_pixel()), _np(h.amp_ff) * amplitude, rtol=1e-5, atol=1e-9
+            )
+            assert _np(h._get_pixel_amp())[32, 32] == pytest.approx(0.72)
+
+        with subtests.test("the farfield itself is left alone"):
+            reference = Hologram(target, slm_shape=SimulatedSLM((64, 48)))
+            reference.reset_phase(h.phase)
+            reference.optimize("GS", maxiter=0, verbose=False, stat_groups=[])
+            np.testing.assert_allclose(_np(h.get_farfield()), _np(reference.get_farfield()))
+
+        with subtests.test("a hologram keeps the pixel it was built with"):
+            slm.pixel = None
+            assert h.pixel is not None
+
+        with subtests.test("a blaze in the correction moves the element pattern with it"):
+            slm = self._pixel_slm()
+            offset = np.array([8 / (64 * slm.pitch[0]), -4 / (64 * slm.pitch[1])])
+            slm.source["amplitude"] = slm.xp.ones(slm.shape)
+            slm.source["phase"] = slm.xp.asarray(blaze(slm, offset))
+            pattern = _np(Hologram(target, slm_shape=slm)._get_pixel_amp())
+            shifted = slm.pixel.amplitude(self._pixel_kxy(slm, shape) + offset[:, None, None])
+            np.testing.assert_allclose(pattern, shifted, rtol=1e-4, atol=1e-6)
+            assert np.unravel_index(np.argmax(pattern), shape) == (36, 24)
+
+        with subtests.test("WGS levels the spots under the element pattern, not the farfield"):
+            slm = self._pixel_slm()
+            h = Hologram(target, slm_shape=slm)
+            h.optimize("WGS-Kim", maxiter=40, verbose=False, stat_groups=["computational"])
+            at_spots = _np(target) > 0
+            raw = _np(h.amp_ff)[at_spots] ** 2
+            power = raw * amplitude[at_spots] ** 2
+            assert np.ptp(power) / np.mean(power) < 0.01
+            assert np.ptp(raw) / np.mean(raw) > 0.3
+
+        with subtests.test("and the computational statistics report that uniformity"):
+            assert h.stats["stats"]["computational"]["uniformity"][-1] > 0.99
+
+        with subtests.test("their efficiency is a fraction of the incident power"):
+            dim = self._pixel_slm()
+            dim.pixel = {"fill": (0.9, 0.8), "reflectance": 0.5}
+            efficiencies = []
+            for slm in (self._pixel_slm(), dim):
+                h = Hologram(target, slm_shape=slm)
+                h.optimize("WGS-Kim", maxiter=40, verbose=False, stat_groups=["computational"])
+                efficiencies.append(h.stats["stats"]["computational"]["efficiency"][-1])
+            assert efficiencies[1] == pytest.approx(0.5 * efficiencies[0], rel=1e-3)
+            assert efficiencies[0] < 0.72**2
+
+        with subtests.test("a pixel assigned to a hologram takes effect"):
+            h = Hologram(target)
+            h.optimize("GS", maxiter=1, verbose=False, stat_groups=[])
+            assert h._get_amp_ff_pixel() is h.amp_ff
+            h.pixel = Pixel(slm.pitch, fill=(0.9, 0.8))
+            np.testing.assert_allclose(
+                _np(h._get_amp_ff_pixel()), _np(h.amp_ff) * amplitude, rtol=1e-5, atol=1e-9
+            )
+            h.pixel = Pixel(slm.pitch, fill=(0.5, 0.5))
+            assert _np(h._get_pixel_amp())[32, 32] == pytest.approx(0.25)
+            h.pixel = None
+            assert h._get_amp_ff_pixel() is h.amp_ff
+
+    def test_cg_loss(self, subtests):
+        """Conjugate gradient compares the farfield under the element pattern with the target."""
+        _require_cg()
+        seed_for("cg_loss")
+        target = _spot_target((64, 64), (8, 8), (32, 40))
+        slm = self._pixel_slm()
+        h = Hologram(target, slm_shape=slm)
+        h.optimize(method="CG", maxiter=150, verbose=False, stat_groups=[])
+        at_spots = _np(target) > 0
+
+        with subtests.test("the spots come out level under the element pattern"):
+            power = _np(h._get_amp_ff_pixel())[at_spots] ** 2
+            assert np.ptp(power) / np.mean(power) < 0.15
+
+        with subtests.test("so the farfield itself favors the spot the pixel dims"):
+            raw = _np(h.amp_ff)[at_spots] ** 2
+            assert np.ptp(raw) / np.mean(raw) > 0.3
+
     def test_optimize_cg(self, subtests):
         _require_cg()
         seed_for("optimize_cg")
@@ -820,6 +934,30 @@ class TestHologram:
                 assert keep_figures.gcf().axes[0].get_title() == title + ": Full"
                 keep_figures.flush()
 
+        with subtests.test("a hologram without a pixel draws no contours"):
+            h.plot_farfield()
+            assert all(len(ax.collections) == 0 for ax in keep_figures.gcf().axes)
+            keep_figures.flush()
+
+        with subtests.test("the pixel's element pattern is contoured, within the limits"):
+            pixelated = Hologram(
+                target=_spot_target((64, 64), (20, 20), (44, 44)), slm_shape=self._pixel_slm()
+            )
+            pixelated.optimize(method="GS", maxiter=1, verbose=False)
+            pixelated.plot_farfield()
+            (full, zoom) = keep_figures.gcf().axes[:2]
+            for ax in (full, zoom):
+                drawn = [len(p.vertices) for c in ax.collections for p in c.get_paths()]
+                assert len(drawn) > 0 and min(drawn) > 0
+            assert full.get_xlim() == (-0.5, 63.5)
+            (left, right) = target_limits[0]
+            assert zoom.get_xlim() == (left, right)
+            keep_figures.flush()
+
+            pixelated.plot_farfield(pixel=False)
+            assert all(len(ax.collections) == 0 for ax in keep_figures.gcf().axes)
+            keep_figures.flush()
+
         with subtests.test("an unknown source, unit, or empty zoom raises"):
             with pytest.raises(ValueError, match="Did not recognize source"):
                 h.plot_farfield(source="nonsense")
@@ -1117,6 +1255,34 @@ class TestSpotHologram:
         h.optimize(method="GS", maxiter=30, verbose=False, stat_groups=["computational"])
         eff = h.stats["stats"]["computational"]["efficiency"][-1]
         assert eff > 0.5, f"SpotHologram GS efficiency {eff:.3f}"
+
+    def test_get_amp_ff_pixel(self, simulated_system_factory, subtests):
+        """Spot feedback and statistics read the spots under the pixel's element pattern."""
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+        fs.slm.pixel = (0.9, 0.8)
+        spots = view_kxy_grid(fs, count=3, frac=0.8)
+
+        for feedback in ("computational", "computational_spot"):
+            h = SpotHologram((256, 256), spots, basis="kxy", cameraslm=fs)
+            h.optimize(
+                "WGS-Kim",
+                feedback=feedback,
+                maxiter=40,
+                verbose=False,
+                stat_groups=["computational_spot"],
+            )
+            at_spots = (h.spot_knm_rounded[1, :], h.spot_knm_rounded[0, :])
+            envelope = _np(h._get_pixel_amp()[at_spots]) ** 2
+
+            with subtests.test(f"{feedback} feedback levels the spots under the element pattern"):
+                assert np.ptp(envelope) / np.mean(envelope) > 0.2
+                power = _np(h.amp_ff[at_spots]) ** 2 * envelope
+                assert np.ptp(power) / np.mean(power) < 0.05
+
+            with subtests.test(f"{feedback}: the efficiency is a fraction of the incident power"):
+                efficiency = h.stats["stats"]["computational_spot"]["efficiency"][-1]
+                assert 0.5 * envelope.min() < efficiency < envelope.max()
 
     def test_update_weights(self, simulated_system_factory, subtests):
         """The ``"external_spot"`` feedback branch, which the farfield never enters."""
@@ -1517,6 +1683,64 @@ class TestCompressedSpotHologram:
             assert np.issubdtype(h.spot_ij.dtype, np.floating)
             assert np.any(h.spot_ij[[0, 1]] != np.rint(h.spot_ij[[0, 1]]))
 
+    def test_get_pixel_amp(self, simulated_system_factory, subtests):
+        """The element pattern is evaluated at each spot, wherever the spots are."""
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+        fs.slm.pixel = (0.9, 0.8)
+        spots = view_kxy_grid(fs, count=3, frac=0.8)
+        h = CompressedSpotHologram(spots, basis="kxy", cameraslm=fs, cuda=False)
+
+        with subtests.test("each spot carries the element pattern at its own frequency"):
+            expected = fs.slm.pixel.amplitude(spots)
+            np.testing.assert_allclose(_np(h._get_pixel_amp()).ravel(), expected, rtol=1e-5)
+            assert np.ptp(expected) / np.mean(expected) > 0.1
+
+        with subtests.test("the pattern is held until the spots move"):
+            held = h._get_pixel_amp()
+            assert h._get_pixel_amp() is held
+            h.spot_kxy[:2] *= 0.5
+            np.testing.assert_allclose(
+                _np(h._get_pixel_amp()).ravel(), fs.slm.pixel.amplitude(spots / 2), rtol=1e-5
+            )
+            h.spot_kxy[:2] *= 2
+
+        with subtests.test("WGS levels the spots under the element pattern"):
+            h.optimize(
+                "WGS-Kim",
+                feedback="computational_spot",
+                maxiter=40,
+                verbose=False,
+                stat_groups=["computational_spot"],
+            )
+            power = _np(h._get_amp_ff_pixel()).ravel() ** 2
+            assert np.ptp(power) / np.mean(power) < 0.05
+            raw = _np(h.amp_ff).ravel() ** 2
+            assert np.ptp(raw) / np.mean(raw) > 0.2
+
+        with subtests.test("the efficiency is a fraction of the incident power"):
+            efficiency = h.stats["stats"]["computational_spot"]["efficiency"][-1]
+            assert 0.5 * expected.min() ** 2 < efficiency < expected.max() ** 2
+
+    def test_cg_loss(self, simulated_system_factory, subtests):
+        """Conjugate gradient compares the spots under the element pattern with the target."""
+        _require_cg()
+        seed_for("compressed_cg_loss")
+        fs = simulated_system_factory("matched")
+        install_ground_truth_calibration(fs)
+        fs.slm.pixel = (0.9, 0.8)
+        spots = view_kxy_grid(fs, count=3, frac=0.8)
+        h = CompressedSpotHologram(spots, basis="kxy", cameraslm=fs, cuda=False)
+        h.optimize("CG", feedback="computational_spot", maxiter=150, verbose=False, stat_groups=[])
+
+        with subtests.test("the spots come out level under the element pattern"):
+            power = _np(h._get_amp_ff_pixel()).ravel() ** 2
+            assert np.ptp(power) / np.mean(power) < 0.15
+
+        with subtests.test("so the farfield itself favors the spots the pixel dims"):
+            raw = _np(h.amp_ff).ravel() ** 2
+            assert np.ptp(raw) / np.mean(raw) > 0.2
+
     def test_update_weights(self, simulated_system_factory, subtests):
         """The ``"external_spot"`` feedback branch, as in `SpotHologram`."""
         fs = simulated_system_factory("matched")
@@ -1553,6 +1777,38 @@ class TestCompressedSpotHologram:
 
 
 class TestMultiplaneHologram:
+    @pytest.mark.parametrize("batched", [True, False], ids=["batched", "unbatched"])
+    def test_get_amp_ff_pixel(self, batched, subtests):
+        """Each child weighs its own farfield under the element pattern of its pixel."""
+        slm = TestHologram._pixel_slm()
+        shape = (64, 64)
+        targets = [
+            _spot_target(shape, (8, 8), (32, 40)),
+            _spot_target(shape, (56, 20), (30, 12)),
+        ]
+        mph = MultiplaneHologram([Hologram(target, slm_shape=slm) for target in targets])
+        mph._batched = mph._batched and batched
+        mph.optimize("WGS-Kim", maxiter=60, verbose=False, stat_groups=[])
+        amplitude = slm.pixel.amplitude(TestHologram._pixel_kxy(slm, shape))
+
+        with subtests.test("the parent has no pixel of its own"):
+            assert mph.pixel is None
+
+        for i, (child, target) in enumerate(zip(mph.holograms, targets)):
+            with subtests.test("a child reads its farfield under the element pattern", child=i):
+                np.testing.assert_allclose(
+                    _np(child._get_amp_ff_pixel()),
+                    _np(child.amp_ff) * amplitude,
+                    rtol=1e-5,
+                    atol=1e-9,
+                )
+
+            with subtests.test("and levels its spots under it, not in the farfield", child=i):
+                raw = _np(child.amp_ff)[target > 0] ** 2
+                power = raw * amplitude[target > 0] ** 2
+                assert np.ptp(power) / np.mean(power) < 0.02
+                assert np.ptp(raw) / np.mean(raw) > 0.1
+
     def test_get_multiplane_defocus_blur(self, simulated_system_factory):
         """The blur of a point is that of a Gaussian beam defocused by f^2 P / wav microns."""
         import cv2

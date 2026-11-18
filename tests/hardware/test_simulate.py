@@ -14,6 +14,8 @@ import numpy as np
 import pytest
 from conftest import (
     build_simulated_system,
+    ground_truth_ij_to_kxy,
+    ground_truth_kxy_to_ij,
     in_view_kxy,
     install_ground_truth_calibration,
     seed_for,
@@ -23,7 +25,8 @@ from conftest import (
 from slmsuite.hardware.cameras.simulated import GaussianDetectorNoise, SimulatedCamera
 from slmsuite.hardware.cameraslms import FourierSLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
-from slmsuite.holography import toolbox
+from slmsuite.holography import analysis, toolbox
+from slmsuite.holography.algorithms import SpotHologram
 from slmsuite.holography.analysis.files import load_h5, save_h5
 from slmsuite.holography.toolbox.phase import blaze, zernike_sum
 from slmsuite.misc.xp import as_numpy, cp
@@ -765,6 +768,147 @@ class TestSimulateRadiometry:
 
 HAS_CUPY = cp is not np
 requires_cupy = pytest.mark.skipif(not HAS_CUPY, reason="CuPy is not installed.")
+
+
+class TestSimulatePixel:
+    """
+    With a pixel model on the SLM, the simulated farfield repeats in every Nyquist zone
+    under the pixel's element pattern.
+    """
+
+    PERIOD = 4
+
+    def _blazed(self, **overrides):
+        """A camera two Nyquist zones wide, showing a blaze of ``PERIOD`` pixels along x."""
+        fs = build_simulated_system(
+            "matched", ratio=0.5, slm_resolution=(128, 96), slm_pitch_um=(12.0, 8.0), **overrides
+        )
+        kxy = np.array([1 / (self.PERIOD * fs.slm.pitch[0]), 0])
+        fs.slm.set_phase(blaze(fs.slm, kxy), phase_correct=False)
+        return (fs, kxy)
+
+    @staticmethod
+    def _at(fs, image, kxy):
+        (i, j) = np.rint(ground_truth_kxy_to_ij(fs, kxy)).astype(int).ravel()
+        return image[j, i]
+
+    def test_render(self, subtests):
+        (fs, kxy) = self._blazed()
+        alias = kxy - [1 / fs.slm.pitch[0], 0]
+        unmodeled = fs.cam.render()
+
+        with subtests.test("without a pixel model the alias of the order is dark"):
+            assert self._at(fs, unmodeled, alias) == 0
+
+        fs.slm.pixel = 1
+        full = fs.cam.render()
+
+        with subtests.test("a full pixel dims the order of a P pixel blaze by sinc^2(1/P)"):
+            ratio = self._at(fs, full, kxy) / self._at(fs, unmodeled, kxy)
+            assert ratio == pytest.approx(np.sinc(1 / self.PERIOD) ** 2)
+
+        with subtests.test("the alias in the next zone carries the element pattern's ratio"):
+            ratio = self._at(fs, full, alias) / self._at(fs, full, kxy)
+            expected = (np.sinc(1 / self.PERIOD - 1) / np.sinc(1 / self.PERIOD)) ** 2
+            assert ratio == pytest.approx(expected)
+
+        with subtests.test("fill and reflectance scale the order by the element pattern"):
+            fs.slm.pixel = {"fill": (0.9, 0.8), "reflectance": 0.7}
+            ratio = self._at(fs, fs.cam.render(), kxy) / self._at(fs, unmodeled, kxy)
+            assert ratio == pytest.approx(float(fs.slm.pixel.power(kxy)))
+
+        with subtests.test("removing the model restores the unmodeled frame exactly"):
+            fs.slm.pixel = None
+            assert np.array_equal(fs.cam.render(), unmodeled)
+
+        with subtests.test("less the element pattern, every zone holds the same speckle"):
+            fs.slm.pixel = (0.9, 0.8)
+            rng = np.random.default_rng(0)
+            fs.slm.set_phase(rng.uniform(0, 2 * np.pi, fs.slm.shape), phase_correct=False)
+            (h, w) = fs.cam.shape
+            ij = np.array(np.meshgrid(np.arange(w), np.arange(h))).reshape(2, -1)
+            power = fs.slm.pixel.power(ground_truth_ij_to_kxy(fs, ij)).reshape(h, w)
+            tiled = fs.cam.render() / power
+            np.testing.assert_allclose(tiled[:, : w // 2], tiled[:, w // 2 :], rtol=1e-5)
+            np.testing.assert_allclose(tiled[: h // 2], tiled[h // 2 :], rtol=1e-5)
+
+    def test_render_follows_the_incident_tilt(self, subtests):
+        """The element pattern is centered on the incident beam, not on the optical axis."""
+        (fs, kxy) = self._blazed()
+        fs.slm.set_phase(None, phase_correct=False)
+        fs.slm.source["phase_sim"] = blaze(fs.slm, kxy)
+        unmodeled = fs.cam.render()
+        fs.slm.pixel = 1
+
+        with subtests.test("a tilted beam on flat pixels keeps all of its power"):
+            ratio = self._at(fs, fs.cam.render(), kxy) / self._at(fs, unmodeled, kxy)
+            assert ratio == pytest.approx(1, abs=1e-6)
+
+        with subtests.test("a blaze steering it back on axis pays for the blaze"):
+            fs.slm.set_phase(blaze(fs.slm, -kxy), phase_correct=False)
+            fs.slm.pixel = None
+            unmodeled = fs.cam.render()
+            fs.slm.pixel = 1
+            ratio = self._at(fs, fs.cam.render(), (0, 0)) / self._at(fs, unmodeled, (0, 0))
+            assert ratio == pytest.approx(np.sinc(1 / self.PERIOD) ** 2, rel=1e-5)
+
+    def test_render_identity(self, subtests):
+        """A camera on the SLM's own grid weights its single zone by the element pattern."""
+        fs = build_simulated_system(
+            "identity",
+            slm_resolution=(128, 96),
+            slm_pitch_um=(12.0, 8.0),
+            cam_resolution=(96, 64),
+        )
+        kxy = np.array([1 / (self.PERIOD * fs.slm.pitch[0]), 1 / (8 * fs.slm.pitch[1])])
+        fs.slm.set_phase(blaze(fs.slm, kxy), phase_correct=False)
+        unmodeled = fs.cam.render()
+        fs.slm.pixel = (0.9, 0.8)
+        ratio = self._at(fs, fs.cam.render(), kxy) / self._at(fs, unmodeled, kxy)
+        assert ratio == pytest.approx(float(fs.slm.pixel.power(kxy)))
+
+    def test_render_matches_the_hologram(self, subtests):
+        """A hologram and the camera agree on where the element pattern sits."""
+        fs = _calibrated("fov_larger", slm_resolution=(101, 64), slm_pitch_um=(12.0, 8.0))
+        offset = blaze(fs.slm, (0.15 / fs.slm.pitch[0], -0.1 / fs.slm.pitch[1]))
+        fs.slm.source["amplitude"] = fs.slm.xp.ones(fs.slm.shape)
+        fs.slm.source["phase"] = fs.slm.xp.asarray(offset)
+        fs.slm.source["phase_sim"] = fs.slm.source["phase_sim"] - fs.slm.xp.asarray(offset)
+        fs.slm.pixel = (0.9, 0.8)
+        spots = view_kxy_grid(fs, count=3, frac=0.35)
+
+        def nonuniformity(pixel):
+            fs.slm.pixel = pixel
+            hologram = SpotHologram((512, 512), spots, basis="kxy", cameraslm=fs)
+            hologram.optimize("WGS-Kim", maxiter=40, verbose=False, stat_groups=[])
+            fs.slm.pixel = (0.9, 0.8)
+            fs.slm.set_phase(hologram.get_phase())
+            power = analysis.image_normalization(
+                analysis.take(fs.cam.render(), ground_truth_kxy_to_ij(fs, spots), 9)
+            )
+            return power.std() / power.mean()
+
+        with subtests.test("a hologram given the pixel renders a level array on an odd SLM"):
+            assert nonuniformity((0.9, 0.8)) < 0.06
+
+        with subtests.test("one given no pixel does not"):
+            assert nonuniformity(None) > 0.12
+
+    def test_simulate(self, temp_dir, subtests):
+        fs = _calibrated("matched")
+        fs.slm.pixel = {"fill": (0.9, 0.8), "reflectance": 0.7}
+
+        with subtests.test("the clone carries its own copy of the pixel model"):
+            fs_sim = fs.simulate()
+            assert fs_sim.slm.pixel is not fs.slm.pixel
+            np.testing.assert_allclose(fs_sim.slm.pixel.fill, (0.9, 0.8))
+            assert fs_sim.slm.pixel.reflectance == 0.7
+
+        with subtests.test("the pixel model survives a save and load"):
+            _display(fs_sim)
+            fs_loaded = FourierSLM.load(fs_sim.save(path=temp_dir, name="pixel"))
+            np.testing.assert_allclose(fs_loaded.slm.pixel.fill, (0.9, 0.8))
+            assert np.array_equal(fs_loaded.cam.render(), fs_sim.cam.render())
 
 
 class TestSimulateGPUAcceleration:

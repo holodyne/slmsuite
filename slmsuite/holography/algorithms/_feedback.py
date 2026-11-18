@@ -117,6 +117,8 @@ class FeedbackHologram(Hologram):
             kwargs["slm_shape"] = slm_shape
 
         super().__init__(target=shape, amp=amp, **kwargs)
+        if cameraslm is not None:
+            self._set_pixel(cameraslm)
 
         self._updated_slm = False
         # (key, matrix, cell_ij) memo; keyed on calibration contents, so recalibration invalidates it.
@@ -616,7 +618,7 @@ class FeedbackHologram(Hologram):
         feedback = self.flags["feedback"]
 
         if feedback == "computational":
-            self._update_weights_generic(self.weights, self.amp_ff, self.target)
+            self._update_weights_generic(self.weights, self._get_amp_ff_pixel(), self.target)
         elif feedback == "experimental":
             self.measure("knm")  # Make sure data is there.
             self._update_weights_generic(self.weights, self.img_knm, self.target)

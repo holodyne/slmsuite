@@ -231,6 +231,9 @@ def rectangular_camera_system():
     return fs
 
 
+FARFIELD_CASES = ("matched", "fov_larger", "rotated")
+
+
 class TestFourierSLM:
     """Tests for public methods on FourierSLM."""
 
@@ -495,6 +498,227 @@ class TestFourierSLM:
             assert caplog.text.count("principal focal lengths differ") == 1
             (M, _) = toolbox.convert_affine("kxy", "ij", fs)
             assert f_eff == pytest.approx(np.sqrt(np.abs(np.linalg.det(M))))
+
+    @pytest.mark.parametrize("name", FARFIELD_CASES)
+    def test_farfield_calibrate(self, simulated_system_factory, name, subtests):
+        """Test FourierSLM.farfield_calibrate, which fills the farfield with speckle and
+        captures the 0th order with a flat phase pattern."""
+        fs = simulated_system_factory(name)
+        install_ground_truth_calibration(fs)
+
+        with subtests.test("stores one raw frame per requested realization"):
+            cal = fs.farfield_calibrate(averaging=3)
+            assert cal["efficiency_raw"].shape == (3, *fs.cam.shape)
+            assert cal["exposure_zeroth"] > 0 and cal["exposure_raw"] > 0
+
+        with subtests.test("captures the 0th order at the offset of the affine"):
+            zeroth = fs.calibrations["farfield"]["zeroth"]
+            peak = np.flip(np.unravel_index(np.argmax(zeroth), zeroth.shape))
+            b = np.squeeze(ground_truth_affine(fs)[1])
+            assert np.linalg.norm(peak - b) < max(3.0, 2 * np.max(spot_size_ij(fs)))
+
+    @pytest.mark.parametrize("name", FARFIELD_CASES)
+    def test_farfield_calibration_process(self, simulated_system_factory, name, subtests):
+        """Test FourierSLM.farfield_calibration_process."""
+        fs = simulated_system_factory(name)
+        install_ground_truth_calibration(fs)
+        # Ten speckle realizations, blurred wider than their grain, else this maps speckle.
+        fs.farfield_calibrate()
+        efficiency = fs.farfield_calibration_process(size_blur=5)
+        mask = fs.get_farfield_extent(return_mask=True)
+        # Erode and dilate to stay clear of speckle blur at the aperture edge.
+        eroded = cv2.erode(mask.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
+        dilated = cv2.dilate(mask.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
+
+        with subtests.test("normalized to unity at the brightest usable pixel"):
+            # The 0th order is excluded from the normalization, so it may exceed unity.
+            (yy, xx) = np.indices(fs.cam.shape)
+            b = np.squeeze(ground_truth_affine(fs)[1])
+            usable = np.hypot(xx - b[0], yy - b[1]) > 5 * np.max(spot_size_ij(fs))
+
+            assert efficiency.shape == fs.cam.shape
+            assert np.nanmax(efficiency[usable]) == pytest.approx(1.0)
+            assert np.array_equal(efficiency, fs.get_farfield_efficiency(fourier_crop=False))
+
+        with subtests.test("dark outside the farfield the SLM can address"):
+            inside = efficiency[eroded].mean()
+            assert inside > 0, "the efficiency map is not illuminated."
+            if (~dilated).any():
+                outside = efficiency[~dilated].mean()
+                assert outside < 0.1 * inside, (
+                    f"efficiency outside the aperture ({outside:.3f}) should be far "
+                    f"below inside ({inside:.3f})."
+                )
+
+        with subtests.test("speckle averages away inside the farfield"):
+            values = efficiency[eroded]
+            cv = np.std(values) / np.mean(values)
+            assert cv < 0.5, f"the averaged efficiency map is too nonuniform (CV={cv:.2f})."
+
+        with subtests.test("raises without raw data, which is not saved to file"):
+            with pytest.raises(RuntimeError):
+                FourierSLM(fs.cam, fs.slm).farfield_calibration_process()
+
+    def test_farfield_calibration_process_saturation(self, simulated_system_factory, subtests):
+        """A railed pixel must not set the efficiency normalization."""
+        fs = simulated_system_factory("matched")
+        fs.farfield_calibrate(averaging=3)
+
+        # Averaging sums frames, so it lifts saturation as well as the bitresolution.
+        fs.cam.averaging = 16
+        saturation = fs.cam.bitresolution - fs.cam.averaging
+
+        efficiency = fs.calibrations["farfield"]["efficiency"]
+        (y, x) = np.unravel_index(np.argmin(np.abs(efficiency - 0.5)), fs.cam.shape)
+        raw = fs.calibrations["farfield"]["efficiency_raw"]
+        resolved = raw[:, y, x].copy()
+
+        def peak_away_from(y, x):
+            """The efficiency peak ignoring one pixel and everything the blur touched."""
+            efficiency = np.array(fs.get_farfield_efficiency(fourier_crop=False))
+            efficiency[max(0, y - 2) : y + 3, max(0, x - 2) : x + 3] = 0
+            return np.nanmax(efficiency)
+
+        with subtests.test("a saturated pixel does not set the peak"):
+            raw[:, y, x] = saturation
+            fs.farfield_calibration_process(size_blur=3)
+            assert peak_away_from(y, x) == pytest.approx(1.0)
+
+        with subtests.test("and is reported above unity"):
+            assert fs.get_farfield_efficiency(fourier_crop=False)[y, x] > 1
+
+        with subtests.test("saturating one realization is enough to exclude it"):
+            raw[:, y, x] = resolved
+            raw[0, y, x] = saturation
+            fs.farfield_calibration_process(size_blur=3)
+            assert peak_away_from(y, x) == pytest.approx(1.0)
+
+        with subtests.test("full saturation falls back to the whole frame"):
+            raw[:] = saturation
+            efficiency = fs.farfield_calibration_process(size_blur=3)
+            assert np.all(np.isfinite(efficiency))
+            assert np.nanmax(efficiency) == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("name", ["fov_much_larger", "fov_larger"])
+    def test_get_farfield_efficiency(self, simulated_system_factory, name, subtests):
+        """Test FourierSLM.get_farfield_efficiency: the blind support measurement that
+        fourier_calibrate_auto() bootstraps from, and the crops applied to it."""
+        fs = simulated_system_factory(name)
+        fs.farfield_calibrate(averaging=3)
+        # Smoothing stays below the farfield itself, tens of pixels across when cropped.
+        fs.farfield_calibration_process(size_blur=3)
+
+        with subtests.test("the thresholded support matches the ground truth"):
+            assert "fourier" not in fs.calibrations, "the support is measured blind."
+            support = fs.get_farfield_efficiency(efficiency_threshold=0.1)
+            expected = farfield_support_mask(fs)
+            iou = (support & expected).sum() / (support | expected).sum()
+            assert iou > 0.8, f"support IoU {iou:.2f} too low."
+
+        with subtests.test("fourier_crop masks off everything outside the extent"):
+            install_ground_truth_calibration(fs)
+            mask = fs.get_farfield_extent(return_mask=True)
+            cropped = fs.get_farfield_efficiency(fourier_crop=True)
+            whole = fs.get_farfield_efficiency(fourier_crop=False)
+            assert np.array_equal(cropped[mask], whole[mask])
+            assert (~mask).any() and np.all(np.isnan(cropped[~mask]))
+
+        with subtests.test("raises before the calibration is processed"):
+            with pytest.raises(RuntimeError):
+                FourierSLM(fs.cam, fs.slm).get_farfield_efficiency()
+
+    def test_farfield_products(self, simulated_system_factory, temp_dir, subtests):
+        """The zeroth order, background, and file products of a farfield calibration:
+        get_farfield_zeroth, get_farfield_background, and save_calibration."""
+        fs = simulated_system_factory("fov_larger")
+        install_ground_truth_calibration(fs)
+        fs.farfield_calibrate(averaging=3)
+
+        with subtests.test("the background is bounded by the frames it came from"):
+            background = fs.get_farfield_background()
+            assert background.shape == fs.cam.shape
+            assert np.all(background >= 0)
+            raw = np.asarray(fs.calibrations["farfield"]["efficiency_raw"], float)
+            assert np.nanmax(background) <= np.nanmax(np.mean(raw, axis=0))
+
+        with subtests.test("raw stacks are not saved to file"):
+            path = fs.save_calibration("farfield", path=temp_dir, name="test_farfield")
+            fs.load_calibration("farfield", file_path=path)
+            loaded = fs.calibrations["farfield"]
+            assert "efficiency_raw" not in loaded and "background_raw" not in loaded
+            for key in ("efficiency", "background", "zeroth", "exposure_saturating"):
+                assert key in loaded
+
+        with subtests.test("a loaded calibration still serves its products"):
+            with pytest.raises(RuntimeError):
+                fs.farfield_calibration_process()
+            assert np.all(np.isfinite(fs.get_farfield_zeroth()))
+            assert np.all(np.isfinite(fs.get_farfield_background()))
+
+    def test_farfield_calibration_process_fill(self, simulated_system_factory, subtests):
+        """The efficiency map is the pixel's element pattern, from which its fill is fit."""
+        truth = {"fill": (0.9, 0.8), "reflectance": 0.7}
+
+        for name in ("matched", "fov_larger"):
+            fs = simulated_system_factory(name)
+            install_ground_truth_calibration(fs)
+            fs.slm.pixel = truth
+            fs.farfield_calibrate()
+
+            with subtests.test(f"{name}: the fit recovers the fill along each axis"):
+                np.testing.assert_allclose(
+                    fs.calibrations["farfield"]["fill"], (0.9, 0.8), atol=0.03
+                )
+                assert fs.calibrations["farfield"]["fill_residual"] < 0.1
+
+            with subtests.test(f"{name}: the fill is installed, keeping the reflectance"):
+                np.testing.assert_array_equal(
+                    fs.slm.pixel.fill, fs.calibrations["farfield"]["fill"]
+                )
+                assert fs.slm.pixel.reflectance == 0.7
+
+        with subtests.test("camera noise does not leave a pedestal for the fit to absorb"):
+            noisy = simulated_system_factory("fov_larger", noise="default")
+            install_ground_truth_calibration(noisy)
+            noisy.slm.pixel = truth
+            noisy.farfield_calibrate()
+            np.testing.assert_allclose(
+                noisy.calibrations["farfield"]["fill"], (0.9, 0.8), atol=0.05
+            )
+
+        with subtests.test("a fit the farfield does not constrain is stored but not applied"):
+            narrow = simulated_system_factory("matched", ratio=4.0)
+            install_ground_truth_calibration(narrow)
+            narrow.slm.pixel = truth
+            before = narrow.slm.pixel
+            narrow.farfield_calibrate()
+            assert "fill" in narrow.calibrations["farfield"]
+            assert narrow.slm.pixel is before
+
+        with subtests.test("apply=False leaves the SLM's pixel alone"):
+            fs.slm.pixel = None
+            fs.farfield_calibration_process(apply=False)
+            assert fs.slm.pixel is None
+            fs.farfield_calibration_process()
+            assert fs.slm.pixel.reflectance == 1
+
+        with subtests.test("a blaze in the correction moves the pattern the fit expects"):
+            fs = simulated_system_factory("fov_larger")
+            install_ground_truth_calibration(fs)
+            offset = toolbox.phase.blaze(fs.slm, (0.2 / fs.slm.pitch[0], 0))
+            fs.slm.source["amplitude"] = fs.slm.xp.ones(fs.slm.shape)
+            fs.slm.source["phase"] = fs.slm.xp.asarray(offset)
+            fs.slm.source["phase_sim"] = fs.slm.source["phase_sim"] - fs.slm.xp.asarray(offset)
+            fs.slm.pixel = truth
+            fs.farfield_calibrate()
+            np.testing.assert_allclose(fs.calibrations["farfield"]["fill"], (0.9, 0.8), atol=0.03)
+
+        with subtests.test("without a Fourier calibration there is nothing to fit against"):
+            fs = simulated_system_factory("matched")
+            fs.slm.pixel = truth
+            fs.farfield_calibrate(averaging=2)
+            assert "fill" not in fs.calibrations["farfield"]
+            assert fs.slm.pixel.fill == pytest.approx((0.9, 0.8))
 
     @pytest.mark.parametrize("name", GEOMETRY_CASES)
     def test_get_farfield_extent(self, simulated_system_factory, name, subtests):

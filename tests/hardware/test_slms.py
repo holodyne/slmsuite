@@ -22,8 +22,8 @@ from slmsuite.hardware.slms.segmented import SegmentedSLM
 from slmsuite.hardware.slms.simulated import SimulatedSLM
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.hardware.slms.texasinstruments import PLM
-from slmsuite.holography.toolbox import Aperture
-from slmsuite.holography.toolbox.phase import zernike_sum
+from slmsuite.holography.toolbox import Aperture, Pixel
+from slmsuite.holography.toolbox.phase import blaze, zernike_sum
 from slmsuite.misc.xp import as_numpy
 
 
@@ -46,6 +46,189 @@ class TestSLM:
     def _wrapped_phase(slm):
         """A random phase spanning several wraps."""
         return np.random.default_rng(0).uniform(-3 * np.pi, 3 * np.pi, slm.shape)
+
+    def test_get_source_blaze(self, subtests):
+        """The tilt of the source wavefront, in kxy."""
+        slm = SimulatedSLM(resolution=(96, 64), pitch_um=(12, 8), wav_um=0.5)
+        kxy = np.array([0.004, -0.007])
+        tilt = slm.xp.asarray(2 * np.pi * (kxy[0] * slm.grid[0] + kxy[1] * slm.grid[1]))
+
+        with subtests.test("an unmeasured source has no tilt"):
+            np.testing.assert_array_equal(slm._get_source_blaze(), (0, 0))
+
+        with subtests.test("a blazed correction returns its vector"):
+            slm.source["amplitude"] = slm.xp.ones(slm.shape)
+            slm.source["phase"] = tilt
+            np.testing.assert_allclose(slm._get_source_blaze(), kxy, rtol=1e-5)
+
+        with subtests.test("the simulated wavefront is read separately"):
+            np.testing.assert_array_equal(slm._get_source_blaze(sim=True), (0, 0))
+            slm.source["phase_sim"] = -tilt
+            np.testing.assert_allclose(slm._get_source_blaze(sim=True), -kxy, rtol=1e-5)
+
+        with subtests.test("the tilt is computed once, until the source or aperture changes"):
+            for sim in (False, True):
+                held = slm._get_source_blaze(sim=sim)
+                assert slm._get_source_blaze(sim=sim) is held
+            slm.source["phase_sim"] *= 2
+            np.testing.assert_allclose(slm._get_source_blaze(sim=True), -2 * kxy, rtol=1e-5)
+            held = slm._get_source_blaze()
+            slm.set_aperture(radius=0.4, units="frac")
+            assert slm._get_source_blaze() is not held
+            np.testing.assert_allclose(slm._get_source_blaze(), kxy, rtol=1e-4)
+            slm.set_aperture("cropped")
+
+        with subtests.test("removing from the source drops the tilt it gave"):
+            for remove in (
+                lambda: slm.source.pop("phase"),
+                lambda: slm.source.__delitem__("phase"),
+            ):
+                slm.source["phase"] = tilt
+                np.testing.assert_allclose(slm._get_source_blaze(), kxy, rtol=1e-5)
+                remove()
+                np.testing.assert_array_equal(slm._get_source_blaze(), (0, 0))
+
+        with subtests.test("a segment reads the tilt of its own piece of the source"):
+            slm.source["phase"] = tilt
+            child = SegmentedSLM(slm, window=(16, 48, 8, 40), name="piece")
+            np.testing.assert_allclose(child._get_source_blaze(), kxy, rtol=1e-4)
+
+        with subtests.test("an aberration on top of the tilt leaves the peak of the farfield"):
+            slm.set_source_analytic(units="frac")
+            slm.source["phase"] = tilt + slm.xp.asarray(zernike_sum(slm, (4, 7), (1.0, 0.5)))
+            field = as_numpy(slm.source["amplitude"] * slm.xp.exp(1j * slm.source["phase"]))
+            padded = np.fft.fftshift(np.abs(np.fft.fft2(field, s=(1024, 1024))))
+            (n, m) = np.unravel_index(np.argmax(padded), padded.shape)
+            peak = (np.array([m, n]) - 512) / (1024 * slm.pitch)
+            np.testing.assert_allclose(slm._get_source_blaze(), peak, atol=1 / (1024 * 8))
+
+    def test_get_efficiency(self, subtests):
+        """The fraction of the source power which a phase sends to a point of the farfield."""
+        slm = SimulatedSLM(resolution=(96, 64), pitch_um=(12, 8), wav_um=0.5, bitdepth=8)
+
+        def vector(period):
+            return np.array([1 / (period * slm.pitch[0]), 0])
+
+        with subtests.test("a flat phase sends everything to the undiffracted spot"):
+            assert slm.get_efficiency(np.zeros(slm.shape)) == pytest.approx(1)
+
+        with subtests.test("an unmodeled blaze reaches its order whole and nowhere else"):
+            kxy = vector(4)
+            orders = np.outer(kxy, [1, 0, -1, 2])
+            efficiency = slm.get_efficiency(blaze(slm, kxy), orders)
+            np.testing.assert_allclose(efficiency, (1, 0, 0, 0), atol=1e-6)
+
+        with subtests.test("a full pixel leaves sinc^2(1/P) in the order of a P pixel blaze"):
+            slm.pixel = 1
+            for period in (2, 4, 8):
+                kxy = vector(period)
+                assert slm.get_efficiency(blaze(slm, kxy), kxy) == pytest.approx(
+                    np.sinc(1 / period) ** 2, rel=1e-5
+                )
+
+        with subtests.test("the default is the phase on display"):
+            kxy = vector(8)
+            slm.set_phase(blaze(slm, kxy))
+            assert slm.get_efficiency(kxy=kxy) == pytest.approx(np.sinc(1 / 8) ** 2, rel=1e-5)
+
+        with subtests.test("the orders of a coarse blaze sum to what its row of zones holds"):
+            coarse = SimulatedSLM(
+                resolution=(96, 64), pitch_um=(12, 8), wav_um=0.5, bitdepth=2, pixel=(0.9, 0.8)
+            )
+            kxy = np.array([1 / (8 * coarse.pitch[0]), 0])
+            orders = np.outer(kxy, np.arange(-800, 800))
+            efficiency = coarse.get_efficiency(blaze(coarse, kxy), orders)
+            assert efficiency[801] < 0.9 * coarse.pixel.power(kxy)
+            assert np.sum(efficiency) == pytest.approx(0.9 * 0.8**2, rel=3e-3)
+
+        with subtests.test("the source weights the projection"):
+            slm.pixel = None
+            slm.set_source_analytic(units="frac")
+            x_grid = as_numpy(slm.grid[0])
+            half = np.where(x_grid > 0.3 * x_grid.max(), np.pi, 0)
+            power = as_numpy(slm.source["amplitude"]) ** 2
+            expected = (np.sum(power * np.exp(1j * half)) / np.sum(power)) ** 2
+            assert 0.05 < abs(expected) < 0.95
+            assert slm.get_efficiency(half) == pytest.approx(abs(expected), abs=1e-6)
+
+        with subtests.test("a blaze in the correction shifts the element pattern, not the order"):
+            slm.pixel = 1
+            (offset, kxy) = (vector(8), vector(4))
+            slm.source["phase"] = slm.xp.asarray(blaze(slm, offset))
+            efficiency = slm.get_efficiency(blaze(slm, kxy), np.transpose([kxy, kxy + offset]))
+            assert efficiency[0] == pytest.approx(np.sinc(1 / 4 + 1 / 8) ** 2, rel=1e-4)
+            assert efficiency[1] == pytest.approx(0, abs=1e-6)
+
+    def test_plot_pixel(self, subtests):
+        """plot_pixel renders the element pattern as an image and as a cut along each axis."""
+        slm = SimulatedSLM(resolution=(32, 24), pitch_um=(15, 10), wav_um=0.5)
+
+        with subtests.test("an unmodeled pixel raises"):
+            with pytest.raises(RuntimeError, match="No pixel"):
+                slm.plot_pixel()
+
+        slm.pixel = {"fill": (0.9, 0.8), "reflectance": 0.7}
+        (ax_image, ax_cuts) = slm.plot_pixel(zones=2)
+
+        with subtests.test("the image is the power against cycles per pixel, peaking on axis"):
+            image = ax_image.get_images()[0]
+            assert tuple(image.get_extent()) == (-1, 1, 1, -1)
+            power = np.asarray(image.get_array())
+            assert power[128, 128] == pytest.approx(0.7 * 0.72**2)
+            assert power[128, 192] == pytest.approx(0.7 * 0.72**2 * np.sinc(0.9 * 0.5) ** 2)
+
+        with subtests.test("the element pattern is contoured and the first zone outlined"):
+            drawn = [len(p.vertices) for c in ax_image.collections for p in c.get_paths()]
+            assert len(drawn) == 3 and min(drawn) > 0
+            assert len(ax_image.patches) == 1
+
+        with subtests.test("the cuts follow each axis's fill"):
+            (along_x, along_y) = (line.get_ydata() for line in ax_cuts.get_lines()[:2])
+            assert along_x[192] == pytest.approx(0.7 * 0.72**2 * np.sinc(0.9 * 0.5) ** 2)
+            assert along_y[192] == pytest.approx(0.7 * 0.72**2 * np.sinc(0.8 * 0.5) ** 2)
+
+        plt.close("all")
+
+        with subtests.test("a single zone is not outlined"):
+            (ax_image, _) = slm.plot_pixel()
+            assert len(ax_image.patches) == 0
+            plt.close("all")
+
+    def test_pixel(self, subtests):
+        """The pixel is unmodeled by default; an assignment resolves onto this SLM's pitch."""
+        slm = SimulatedSLM(resolution=(32, 24), pitch_um=(15, 10), wav_um=0.5)
+
+        with subtests.test("the pixel is not modeled by default"):
+            assert slm.pixel is None
+
+        with subtests.test("a fill resolves to a Pixel on the SLM's normalized pitch"):
+            slm.pixel = (0.9, 0.8)
+            assert isinstance(slm.pixel, Pixel)
+            np.testing.assert_allclose(slm.pixel.pitch, (30, 20))
+            np.testing.assert_allclose(slm.pixel.fill, (0.9, 0.8))
+
+        with subtests.test("the constructor takes the same specifications"):
+            built = SimulatedSLM(
+                resolution=(32, 24), pitch_um=(15, 10), wav_um=0.5, pixel={"gap_um": 1}
+            )
+            np.testing.assert_allclose(built.pixel.fill, (1 - 1 / 15, 0.9))
+
+        with subtests.test("None removes the model"):
+            built.pixel = None
+            assert built.pixel is None
+
+        with subtests.test("the pixel survives pickling"):
+            slm.pixel = {"fill": (0.9, 0.8), "reflectance": 0.7}
+            other = SimulatedSLM(resolution=(32, 24), pitch_um=(15, 10), wav_um=0.5)
+            other._unpickle(slm.pickle(attributes=True, metadata=False))
+            np.testing.assert_allclose(other.pixel.fill, (0.9, 0.8))
+            assert other.pixel.reflectance == 0.7
+
+        with subtests.test("an unmodeled pixel stays unmodeled through pickling"):
+            slm.pixel = None
+            fresh = SimulatedSLM(resolution=(32, 24))
+            fresh._unpickle(slm.pickle(attributes=True, metadata=False))
+            assert fresh.pixel is None
 
     def test_selftest(self, slm, subtests):
         """test() drives set_phase, the triggers and info, and leaves the phase as it found it."""
@@ -1172,6 +1355,29 @@ class TestSegmentedSLM:
 
         parent.close()
 
+    def test_pixel(self, subtests):
+        """A segment's pixels are its parent's, so the two share one pixel."""
+        parent = SimulatedSLM(resolution=(64, 64), pixel=0.9)
+        child = SegmentedSLM(parent, window=(16, 32, 8, 24), name="rect")
+
+        with subtests.test("making a segment leaves the parent's pixel alone"):
+            assert np.prod(parent.pixel.fill) == pytest.approx(0.9)
+            assert child.pixel is parent.pixel
+
+        with subtests.test("a change to the parent's pixel reaches the segment"):
+            parent.pixel = 0.8
+            assert child.pixel is parent.pixel
+
+        with subtests.test("setting the segment's pixel sets the parent's"):
+            child.pixel = 0.5
+            assert np.prod(parent.pixel.fill) == pytest.approx(0.5)
+
+        with subtests.test("None on the segment removes the model from both"):
+            child.pixel = None
+            assert parent.pixel is None and child.pixel is None
+
+        parent.close()
+
     def test_init(self, subtests):
         """A segment covers the window it is given, in any of its formats."""
         parent = SimulatedSLM(resolution=(64, 64))
@@ -2249,6 +2455,41 @@ class TestPLMModel:
             slm.set_gamma(np.linspace(0, 0.9, 16))
             slm.set_gamma(None)
             assert np.allclose(as_numpy(slm.gamma), table)
+
+    def test_model_pixel(self, subtests):
+        """A model's pixel keys are a Pixel specification; a model without them is unmodeled."""
+
+        class Sim(_plm._PLMModel, SimulatedSLM):
+            def __init__(self, model_name, **kwargs):
+                self.model_config = self.load_model_config(model_name)
+                super().__init__(
+                    tuple(self.model_config["shape"][::-1]),
+                    pitch_um=tuple(np.array(self.model_config["pitch"]) * 1e6),
+                    pixel=kwargs.pop("pixel", self._model_pixel),
+                )
+
+        with subtests.test("the NIR PLM's area fill is one gap width on its rectangular pixel"):
+            slm = Sim("p67nir")
+            assert np.prod(slm.pixel.fill) == pytest.approx(0.954)
+            gap_um = (1 - slm.pixel.fill) * slm.pitch_um
+            assert gap_um[0] == pytest.approx(gap_um[1])
+            assert slm.pixel.reflectance == 1
+
+        with subtests.test("the .99 PLM takes the fill of the .67 PLM, whose pitch it shares"):
+            np.testing.assert_allclose(Sim("p99").pixel.fill, Sim("p67").pixel.fill)
+
+        with subtests.test("a model without pixel keys is not modeled"):
+            assert Sim("test_small").pixel is None
+
+        with subtests.test("every pixel entry in the database is a valid specification"):
+            for model in _plm._PLMModel.get_model_list():
+                config = _plm._PLMModel.load_model_config(model)
+                if "pixel" in config:
+                    pixel = Pixel(np.array(config["pitch"]) / 0.5e-6, **config["pixel"])
+                    assert np.all(pixel.fill < 1) and 0 < pixel.reflectance <= 1
+
+        with subtests.test("a pixel passed by the user takes precedence"):
+            assert np.prod(Sim("p67nir", pixel=0.5).pixel.fill) == pytest.approx(0.5)
 
     def test_database(self, subtests):
         """Every model has a 16 or 32 state displacement table; only EVM models have electrode data."""

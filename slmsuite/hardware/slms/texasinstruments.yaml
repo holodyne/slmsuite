@@ -44,6 +44,8 @@ p67:
   name: ".67 PLM"
   shape: [800, 1358]
   pitch: [1.08e-05, 1.08e-05]
+  # Area fill factor from TI's PLM Informational deck (1Q25).
+  pixel: {fill: 0.945}
   # Modified to match values in p67 EVM user guide
   displacement_ratios:
     [0.0, 0.0107, 0.0219, 0.0450, 0.0598, 0.0775, 0.1206, 0.1850,
@@ -62,6 +64,8 @@ p67nir:
   # Rows and columns of zero padding on each side of the electrode image.
   display_margin: [0, 2]
   pitch: [1.62e-05, 1.08e-05]
+  # Area fill factor from TI's PLM Informational deck (1Q25).
+  pixel: {fill: 0.954}
   displacement_ratios:
     [0.0, 0.0127, 0.0293, 0.0662, 0.0522, 0.0675, 0.0854, 0.1261,
      0.1427, 0.1834, 0.2166, 0.2803, 0.2561, 0.2968, 0.3299, 0.3962,
@@ -80,6 +84,8 @@ p99:
   name: ".99 PLM"
   shape: [1088, 2048]
   pitch: [1.08e-05, 1.08e-05]
+  # The area fill factor of the .67 PLM, which shares this pitch and mirror gap.
+  pixel: {fill: 0.945}
   displacement_ratios:
     [0.0, 0.0126, 0.0258, 0.0494, 0.0709, 0.0878, 0.1381, 0.2153,
      0.3274, 0.361, 0.4203, 0.5045, 0.5916, 0.6729, 0.8254, 1.0]

@@ -139,6 +139,15 @@ class SegmentedSLM(SLM):
     def lut(self, lut):
         self._lut = lut
 
+    @property
+    def pixel(self):
+        """Element pattern of the parent, whose pixels these are; setting it sets the parent's."""
+        return self.parent.pixel
+
+    @pixel.setter
+    def pixel(self, pixel):
+        self.parent.pixel = pixel
+
     def close(self):
         """Raise an error when attempting to close a segmented SLM."""
         raise RuntimeError("Close the parent SLM instead of the segmented SLM.")

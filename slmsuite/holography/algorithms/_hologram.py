@@ -137,6 +137,13 @@ class Hologram(_HologramStats, _Loggable):
         Stored for computational algorithms which desire to fix the phase in the farfield
         (see :meth:`~slmsuite.holography.algorithms.Hologram.optimize_gs`).
         This is of the same shape as :attr:`target`.
+    pixel : :class:`~slmsuite.holography.toolbox.Pixel` OR None
+        The :attr:`~slmsuite.hardware.slms.slm.SLM.pixel` of the SLM this hologram was
+        built from. Computational feedback and statistics weight :attr:`amp_ff` by its
+        element pattern, so that optimization compensates for the envelope; :attr:`amp_ff`
+        itself stays the discrete Fourier transform. ``None`` if the pixel is not modeled.
+        Assigning a :class:`~slmsuite.holography.toolbox.Pixel` uses it from the next
+        iteration, taking the SLM's wavefront correction to carry no blaze.
     amp_ff : numpy.ndarray OR cupy.ndarray OR None
         **Farfield** amplitude in the ``"knm"`` basis.
         Used for comparing this, the computational result, with the :attr:`target`.
@@ -342,6 +349,7 @@ class Hologram(_HologramStats, _Loggable):
             phase_shape = phase.shape
 
         # Option c
+        self._set_pixel(slm_shape)
         if slm_shape is None:
             slm_shape = (np.nan, np.nan)
         else:
@@ -1841,6 +1849,10 @@ class Hologram(_HologramStats, _Loggable):
         feedback = self.flags["feedback"]
 
         if feedback == "computational" or feedback == "computational_spot":
+            if self.pixel is not None:
+                farfield_torch = farfield_torch * Hologram._get_torch_tensor_from_cupy(
+                    self._get_pixel_amp()
+                )
             return loss(farfield_torch, target_torch)
         elif feedback == "experimental":
             self.measure("knm")  # Make sure data is there.
@@ -1978,7 +1990,57 @@ class Hologram(_HologramStats, _Loggable):
         feedback = self.flags["feedback"]
 
         if feedback == "computational":
-            self._update_weights_generic(self.weights, self.amp_ff, self.target)
+            self._update_weights_generic(self.weights, self._get_amp_ff_pixel(), self.target)
+
+    def _set_pixel(self, slm):
+        """
+        Takes the :attr:`pixel` of ``slm`` (an SLM or CameraSLM; anything else has none),
+        along with the blaze of its wavefront correction.
+        """
+        slm = getattr(slm, "slm", slm)
+        self.pixel = getattr(slm, "pixel", None)
+        if self.pixel is not None:
+            self._pixel_blaze = slm._get_source_blaze()
+
+    @property
+    def pixel(self):
+        return self._pixel
+
+    @pixel.setter
+    def pixel(self, pixel):
+        self._pixel = pixel
+        self._pixel_blaze = np.zeros(2)
+        self._pixel_amp = self._amp_ff_pixel = None
+
+    def _get_pixel_amp(self):
+        """
+        The element pattern of the :attr:`pixel` on the farfield grid, as an amplitude:
+        evaluated at each point's spatial frequency plus the blaze of the wavefront
+        correction which the SLM adds to this hologram's phase.
+        """
+        if self._pixel_amp is None:
+            kxy = cp.stack(
+                cp.meshgrid(
+                    *[
+                        (cp.arange(n) - n // 2) / (n * p) + k
+                        for (n, p, k) in zip(self.shape[::-1], self.pixel.pitch, self._pixel_blaze)
+                    ]
+                )
+            )
+            self._pixel_amp = cp.abs(self.pixel.amplitude(kxy)).astype(self.dtype)
+
+        return self._pixel_amp
+
+    def _get_amp_ff_pixel(self):
+        """
+        The farfield amplitude that computational feedback and statistics read:
+        :attr:`amp_ff`, weighted by the element pattern of the :attr:`pixel` if there is one.
+        """
+        if self.pixel is None:
+            return self.amp_ff
+
+        self._amp_ff_pixel = cp.multiply(self.amp_ff, self._get_pixel_amp(), out=self._amp_ff_pixel)
+        return self._amp_ff_pixel
 
     # Other helper functions.
     def _update_slm(self, force=False, cleanup_images=True):

@@ -205,6 +205,7 @@ class PLM(_PLMModel, ScreenMirrored):
         **kwargs
             Additional arguments for :class:`ScreenMirrored`. Notably ``gpu``, which the
             PLM benefits from more than most SLMs; see the note in the class documentation.
+            ``pixel`` defaults to that of the model, if its entry has one.
         """
         self.dlpc900 = dlpc
 
@@ -272,6 +273,7 @@ class PLM(_PLMModel, ScreenMirrored):
             slm_resolution=model_shape[::-1],  # ScreenMirrored expects (width, height)
             bitdepth=self._model_bitdepth,
             pitch_um=pitch_um,
+            pixel=kwargs.pop("pixel", self._model_pixel),
             name=kwargs.pop("name", model_name),
             **kwargs,
         )

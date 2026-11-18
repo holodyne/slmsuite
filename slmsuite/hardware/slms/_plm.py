@@ -88,6 +88,11 @@ class _PLMModel:
         """Bits per pixel, from the number of displacement ratios in :attr:`model_config`."""
         return int(np.log2(len(self.model_config["displacement_ratios"])))
 
+    @property
+    def _model_pixel(self):
+        """The ``pixel`` keys of :attr:`model_config`, or ``None`` for a model without them."""
+        return self.model_config.get("pixel", None)
+
     def set_gamma(self, gamma=None, levels=None, lut_size=LUT_SIZE):
         r"""
         See :meth:`~slmsuite.hardware.slms.slm.SLM.set_gamma`. As a PLM's levels are unevenly

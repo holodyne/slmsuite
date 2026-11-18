@@ -122,12 +122,18 @@ class _HologramStats:
         if stat_groups is None:
             stat_groups = []
         if "computational" in stat_groups:
+            amp_ff = self._get_amp_ff_pixel()
             stats["computational"] = self._calculate_stats(
-                self.amp_ff,
+                amp_ff,
                 self.target,
                 efficiency_compensation=False,
                 raw="raw_stats" in self.flags and self.flags["raw_stats"],
             )
+            if self.pixel is not None:
+                # The overlap is of shapes; the pixel returns only part of the incident power.
+                stats["computational"]["efficiency"] *= float(
+                    cp.sum(cp.square(amp_ff)) / cp.sum(cp.square(self.amp_ff))
+                )
 
     def _update_stats_dictionary(self, stats):
         """
@@ -449,6 +455,7 @@ class _HologramStats:
         figsize=(8, 4),
         cbar=False,
         axs=None,
+        pixel=True,
     ):
         """
         Plots an overview (left) and zoom (right) view of ``source``.
@@ -484,6 +491,9 @@ class _HologramStats:
             Whether to add colorbars to the plots. Defaults to ``False``.
         axs : matplotlib.axes.Axes OR None
             If provided, uses these axes instead of creating new ones.
+        pixel : bool
+            Whether to contour the element pattern of the :attr:`pixel`, if there is
+            one, at fractions of its on-axis power.
 
         Returns
         -------
@@ -637,6 +647,12 @@ class _HologramStats:
         for ax in axs:
             ax.set_facecolor("#FFEEEE")
             ax.set_aspect(aspect)
+
+        if pixel and self.pixel is not None:
+            power = cp.square(self._get_pixel_amp())
+            if power.shape == npsource.shape:
+                for ax in axs:
+                    self.pixel._plot(ax, power, full.get_extent())
 
         # If _cam_points is defined (i.e. is a FeedbackHologram or subclass),
         # plot a yellow rectangle for the extents of the camera

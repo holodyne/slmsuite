@@ -1163,3 +1163,148 @@ class TestAperture:
             resolved = Aperture.resolve(FakeSLM(normalized_grid), passed)
             assert resolved.spec == passed.spec
             assert resolved.center is None
+
+
+class TestPixel:
+    """Tests for the Pixel class."""
+
+    def test_init(self, subtests):
+        with subtests.test("a pair is the linear fill per axis"):
+            np.testing.assert_allclose(Pixel(10, fill=(0.9, 0.8)).fill, (0.9, 0.8))
+
+        with subtests.test("a scalar is the area fill, the square root on a square pixel"):
+            np.testing.assert_allclose(Pixel(10, fill=0.81).fill, (0.9, 0.9))
+            np.testing.assert_allclose(Pixel(10, fill=np.array(0.81)).fill, (0.9, 0.9))
+
+        with subtests.test("a scalar on a rectangular pixel is one gap width on both axes"):
+            pixel = Pixel((15, 10), fill=0.9)
+            assert np.prod(pixel.fill) == pytest.approx(0.9)
+            gap = (1 - pixel.fill) * pixel.pitch
+            assert gap[0] == pytest.approx(gap[1])
+            assert pixel.fill[0] > pixel.fill[1]
+
+        with subtests.test("a gap takes precedence over the fill"):
+            np.testing.assert_allclose(Pixel((20, 10), fill=0.5, gap=1).fill, (0.95, 0.9))
+            np.testing.assert_allclose(Pixel((20, 10), gap=(2, 3)).fill, (0.9, 0.7))
+
+        with subtests.test("a fill or reflectance out of range raises"):
+            for kwargs in ({"fill": 0}, {"fill": 1.1}, {"gap": 10}, {"fill": (0.5, 1.5)}):
+                with pytest.raises(ValueError, match="fill"):
+                    Pixel(10, **kwargs)
+            for reflectance in (-0.1, 1.1):
+                with pytest.raises(ValueError, match="Reflectance"):
+                    Pixel(10, reflectance=reflectance)
+
+    def test_amplitude(self, subtests):
+        pitch = np.array([15.0, 10.0])
+
+        with subtests.test("a full pixel at the frequency of a P pixel period is sinc(1/P)"):
+            pixel = Pixel(pitch)
+            for P in (2, 3, 4, 8):
+                assert pixel.amplitude([1 / (P * pitch[0]), 0]) == pytest.approx(np.sinc(1 / P))
+                assert pixel.amplitude([0, 1 / (P * pitch[1])]) == pytest.approx(np.sinc(1 / P))
+
+        with subtests.test("a full pixel is dark at every higher order of a flat pattern"):
+            orders = np.array([[1, 0, 2, -3], [0, 1, -1, 2]])
+            np.testing.assert_allclose(
+                Pixel(pitch).amplitude(orders / pitch[:, None]), 0, atol=1e-12
+            )
+
+        with subtests.test("the peak is sqrt(reflectance) times the area fill"):
+            pixel = Pixel(pitch, fill=(0.9, 0.8), reflectance=0.64)
+            assert pixel.amplitude([0, 0]) == pytest.approx(0.8 * 0.72)
+
+        with subtests.test("the pattern is the product of a sinc of the active width per axis"):
+            pixel = Pixel(pitch, fill=(0.9, 0.8))
+            kxy = np.array([[0.013, -0.04], [0.021, 0.07]])
+            expected = 0.72 * np.sinc(0.9 * 15 * kxy[0]) * np.sinc(0.8 * 10 * kxy[1])
+            np.testing.assert_allclose(pixel.amplitude(kxy), expected)
+
+        with subtests.test("the output has the shape of one component of kxy"):
+            assert Pixel(pitch).amplitude(np.zeros((2, 3, 5))).shape == (3, 5)
+
+    def test_power(self, subtests):
+        pitch = np.array([15.0, 10.0])
+        pixel = Pixel(pitch, fill=(0.9, 0.8), reflectance=0.7)
+
+        with subtests.test("power is the squared amplitude"):
+            kxy = np.array([[0.013, -0.04], [0.021, 0.07]])
+            np.testing.assert_allclose(pixel.power(kxy), pixel.amplitude(kxy) ** 2)
+
+        with subtests.test("all Nyquist zones together hold reflectance times the area fill"):
+            orders = np.arange(-2000, 2001)
+            for frequency in ((0, 0), (0.3, -0.2)):
+                kxy = np.array(frequency)[:, None, None] + np.array(np.meshgrid(orders, orders))
+                total = np.sum(pixel.power(kxy / pitch[:, None, None]))
+                assert total == pytest.approx(0.7 * 0.72, rel=1e-3)
+
+        with subtests.test("the power of a complex element pattern is real"):
+
+            class Complex(Pixel):
+                def amplitude(self, kxy):
+                    return 1j * super().amplitude(kxy)
+
+            kxy = np.array([[0.013], [0.021]])
+            power = Complex(pitch, fill=(0.9, 0.8), reflectance=0.7).power(kxy)
+            assert np.isrealobj(power)
+            np.testing.assert_allclose(power, pixel.power(kxy))
+
+    def test_amplitude_gpu(self, has_cupy):
+        if not has_cupy:
+            pytest.skip("cupy not available")
+        import cupy as cp
+
+        pixel = Pixel((15, 10), fill=(0.9, 0.8), reflectance=0.7)
+        kxy = np.array([[0.013, -0.04], [0.021, 0.07]])
+        out = pixel.amplitude(cp.asarray(kxy))
+        assert isinstance(out, cp.ndarray)
+        np.testing.assert_allclose(cp.asnumpy(out), pixel.amplitude(kxy))
+
+    def test_resolve(self, subtests):
+        class FakeSLM:
+            pitch = np.array([15.0, 10.0])
+            wav_um = 0.5
+
+        class FakeCameraSLM:
+            slm = FakeSLM()
+
+        with subtests.test("None is not modeled"):
+            assert Pixel.resolve(FakeSLM(), None) is None
+
+        with subtests.test("a number or pair is the fill, on the pitch of the SLM"):
+            pixel = Pixel.resolve(FakeSLM(), 0.9)
+            np.testing.assert_allclose(pixel.pitch, FakeSLM.pitch)
+            assert np.prod(pixel.fill) == pytest.approx(0.9)
+            np.testing.assert_allclose(Pixel.resolve(FakeSLM(), (0.9, 0.8)).fill, (0.9, 0.8))
+
+        with subtests.test("a dict holds the constructor arguments, with the gap in microns"):
+            pixel = Pixel.resolve(FakeSLM(), {"gap_um": 0.5, "reflectance": 0.7})
+            np.testing.assert_allclose(pixel.fill, (1 - 1 / 15, 0.9))
+            assert pixel.reflectance == 0.7
+
+        with subtests.test("a CameraSLM resolves through its SLM"):
+            np.testing.assert_allclose(Pixel.resolve(FakeCameraSLM(), 1).pitch, FakeSLM.pitch)
+
+        with subtests.test("a Pixel is copied onto the pitch of the SLM, keeping its subclass"):
+
+            class Custom(Pixel):
+                def amplitude(self, kxy):
+                    return 0.5 * super().amplitude(kxy)
+
+            passed = Custom(8, fill=(0.9, 0.8), reflectance=0.7)
+            resolved = Pixel.resolve(FakeSLM(), passed)
+            assert type(resolved) is Custom and resolved is not passed
+            np.testing.assert_allclose(resolved.pitch, FakeSLM.pitch)
+            np.testing.assert_allclose(passed.pitch, (8, 8))
+            np.testing.assert_allclose(resolved.fill, (0.9, 0.8))
+            assert resolved.amplitude([0, 0]) == pytest.approx(0.5 * np.sqrt(0.7) * 0.72)
+
+    def test_pickle(self):
+        class FakeSLM:
+            pitch = np.array([15.0, 10.0])
+            wav_um = 0.5
+
+        pixel = Pixel(FakeSLM.pitch, fill=0.9, reflectance=0.7)
+        restored = Pixel.resolve(FakeSLM(), pixel.pickle())
+        np.testing.assert_allclose(restored.fill, pixel.fill)
+        assert restored.reflectance == pixel.reflectance

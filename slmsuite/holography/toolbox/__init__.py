@@ -12,6 +12,7 @@ from scipy.spatial import Voronoi, distance, voronoi_plot_2d
 from slmsuite._logging import make_logger
 from slmsuite._plotting import _slmsuite_plt_show
 from slmsuite.holography.toolbox._aperture import Aperture as Aperture
+from slmsuite.holography.toolbox._pixel import Pixel as Pixel
 from slmsuite.misc.math import INTEGER_TYPES, REAL_TYPES
 from slmsuite.misc.xp import as_backend, as_numpy, get_array_module
 
