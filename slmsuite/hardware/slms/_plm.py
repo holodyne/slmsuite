@@ -23,17 +23,18 @@ def _load_model_db():
     """The model database read from ``texasinstruments.yaml``."""
     if yaml is None:
         raise ImportError(
-            "pyyaml is required to read the PLM model database. "
+            "pyyaml is required to read the model database. "
             "Install it with `pip install slmsuite[slms]`."
         )
     with open(MODEL_DB_PATH) as f:
         return yaml.safe_load(f)
 
 
-class _PLMModel:
+class _DLPModel:
     """
-    Mixin for :class:`~slmsuite.hardware.slms.slm.SLM` drivers of Texas Instruments PLM
-    chips, whose model database is ``texasinstruments.yaml``.
+    Mixin for :class:`~slmsuite.hardware.slms.slm.SLM` drivers of Texas Instruments DLP
+    chips, whose model database is ``texasinstruments.yaml``. A subclass reads the
+    models which hold its :attr:`_model_key`.
 
     Attributes
     ----------
@@ -41,10 +42,17 @@ class _PLMModel:
         Model configuration from ``texasinstruments.yaml``.
     """
 
-    _gamma_sign = +1  # Increasing displacement increases phase delay.
+    _model_key = None
 
-    @staticmethod
-    def load_model_config(model_name):
+    @classmethod
+    def _load_models(cls):
+        """The models of this kind of chip in the database."""
+        return {
+            name: config for (name, config) in _load_model_db().items() if cls._model_key in config
+        }
+
+    @classmethod
+    def load_model_config(cls, model_name):
         """
         Load model configuration from ``texasinstruments.yaml``.
 
@@ -63,7 +71,7 @@ class _PLMModel:
         ValueError
             If the model is not in the database.
         """
-        model_db = _load_model_db()
+        model_db = cls._load_models()
 
         if model_name not in model_db:
             available = list(model_db.keys())
@@ -71,17 +79,27 @@ class _PLMModel:
 
         return model_db[model_name]
 
-    @staticmethod
-    def get_model_list():
+    @classmethod
+    def get_model_list(cls):
         """
-        Get the list of PLM models in the database.
+        Get the list of models of this kind of chip in the database.
 
         Returns
         -------
         list of str
             Model identifiers available in ``texasinstruments.yaml``.
         """
-        return list(_load_model_db().keys())
+        return list(cls._load_models().keys())
+
+
+class _PLMModel(_DLPModel):
+    """
+    Mixin for :class:`~slmsuite.hardware.slms.slm.SLM` drivers of Texas Instruments PLM
+    chips: the models of ``texasinstruments.yaml`` with displacement ratios.
+    """
+
+    _model_key = "displacement_ratios"
+    _gamma_sign = +1  # Increasing displacement increases phase delay.
 
     @property
     def _model_bitdepth(self):

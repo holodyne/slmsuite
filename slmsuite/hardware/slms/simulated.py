@@ -6,6 +6,7 @@ from typing import ClassVar
 
 import numpy as np
 
+from slmsuite.hardware.slms._dmd import _DMDModel
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.misc.xp import as_backend, as_numpy, get_array_module
 
@@ -142,3 +143,46 @@ class SimulatedSLM(SLM):
         # FUTURE: apply physical effects directly to SLM.display
 
         return
+
+
+class SimulatedDMD(_DMDModel, SimulatedSLM):
+    r"""
+    A simulated Texas Instruments digital micromirror device: a one-bit
+    :class:`SimulatedSLM` whose mirrors are on or off.
+
+    The illumination and the diffraction order which the optics follow are part of the
+    :attr:`~slmsuite.hardware.slms.slm.SLM.pixel`:
+
+    .. highlight:: python
+    .. code-block:: python
+
+        pixel = {"incidence": (-0.24, -0.24), "order": (4, 4)}
+        dmd = SimulatedDMD("dlp6500", wav_um=0.515, pixel=pixel)
+    """
+
+    def __init__(self, model_name, tilt=None, pixel=None, **kwargs):
+        r"""
+        Parameters
+        ----------
+        model_name : str
+            DMD model in ``texasinstruments.yaml`` (e.g. ``"dlp6500"``). See
+            :meth:`get_model_list`.
+        tilt : float OR None
+            Tilt of the on-state mirrors in radians. Defaults to the nominal tilt of the
+            model.
+        pixel : Pixel OR dict OR None
+            A dict adds keywords of :class:`~slmsuite.holography.toolbox.Pixel` to the
+            model's fill and tilt, such as ``incidence`` and ``order``.
+        **kwargs
+            See :meth:`SimulatedSLM.__init__` for permissible options.
+        """
+        self.model_config = self.load_model_config(model_name)
+        if tilt is not None:
+            self.model_config = {**self.model_config, "tilt": np.degrees(tilt)}
+        super().__init__(
+            tuple(self.model_config["shape"][::-1]),
+            pitch_um=tuple(np.array(self.model_config["pitch"]) * 1e6),
+            bitdepth=1,
+            pixel=self._get_model_pixel(pixel),
+            **kwargs,
+        )

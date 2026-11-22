@@ -277,10 +277,7 @@ class _FarfieldCalibration:
 
             if apply and trusted:
                 pixel = self.slm.pixel
-                self.slm.pixel = {
-                    "fill": tuple(fill),
-                    "reflectance": 1 if pixel is None else pixel.reflectance,
-                }
+                self.slm.pixel = {**({} if pixel is None else pixel.pickle()), "fill": tuple(fill)}
 
         # The exposure that would perfectly saturate the brightest spot in the farfield.
         self.calibrations["farfield"]["exposure_saturating"] = self.calibrations["farfield"][

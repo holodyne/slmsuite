@@ -131,6 +131,9 @@ class SLM(_Common, ABC):
     gamma : numpy.ndarray OR cupy.ndarray OR None
         Measured phase response, in units of :math:`2\pi`, resampled onto every one of the
         :attr:`bitresolution` grayscale levels. Set by :meth:`set_gamma`.
+    gamma_amplitude : array_like OR None
+        Amplitude which each of the :attr:`bitresolution` grayscale levels imparts,
+        beside its phase. If ``None`` (the default), every level has unit amplitude.
     lut : numpy.ndarray OR cupy.ndarray OR None
         Lookup table mapping phase onto the grayscale level which realizes it, inverted
         from :attr:`gamma` by :meth:`set_gamma`. If ``None`` (the default), the private
@@ -171,6 +174,7 @@ class SLM(_Common, ABC):
         "display",
     ]
     _gamma_sign = -1  # Increasing grayscale decreases phase delay; +1 for the reverse.
+    gamma_amplitude = None
 
     @abstractmethod
     def __init__(
@@ -783,8 +787,9 @@ class SLM(_Common, ABC):
     def plot_pixel(self, zones=1, axs=None):
         r"""
         Plots the element pattern of the :attr:`pixel`: its power over the farfield
-        (left) and along each axis (right), against the spatial frequency of the
-        displayed pattern in cycles per pixel.
+        (left) and along each axis through its peak (right), against the spatial
+        frequency of the displayed pattern in cycles per pixel. Past the first zone, the
+        orders of a flat pattern are dotted at every integer.
 
         Parameters
         ----------
@@ -819,14 +824,16 @@ class SLM(_Common, ABC):
         self.pixel._plot(axs[0], power, extent)
         if zones > 1:
             axs[0].add_patch(plt.Rectangle((-0.5, -0.5), 1, 1, ec="w", fc="none", ls=":"))
+            orders = np.arange(np.ceil(freq[0]), np.floor(freq[-1]) + 1)
+            axs[0].scatter(*np.meshgrid(orders, orders), s=4, c="w")
         axs[0].set_title("Pixel Power")
         axs[0].set_xlabel(r"$f_x$ [cycles/pixel]")
         axs[0].set_ylabel(r"$f_y$ [cycles/pixel]")
         plt.colorbar(image, ax=axs[0])
 
-        zero = np.zeros_like(freq)
-        for label, cut in (("$x$", (freq, zero)), ("$y$", (zero, freq))):
-            axs[1].plot(freq, self.pixel.power(np.array(cut) / self.pitch[:, None]), label=label)
+        (row, column) = np.unravel_index(np.argmax(power), power.shape)
+        axs[1].plot(freq, power[row], label="$x$")
+        axs[1].plot(freq, power[:, column], label="$y$")
         for edge in (-0.5, 0.5):
             axs[1].axvline(edge, c="gray", ls=":", lw=1)
         axs[1].set_title("Pixel Power along Each Axis")
@@ -975,6 +982,17 @@ class SLM(_Common, ABC):
                 -2 * np.pi / (self.bitresolution * self.phase_scaling)
             )
         return xp.mod(realized, 2 * np.pi).astype(xp.float32)
+
+    def _gray2field(self, gray):
+        """
+        The complex field which each grayscale level in ``gray`` imparts: the phase of
+        :meth:`_gray2phase`, with the amplitude of :attr:`gamma_amplitude` if there is one.
+        """
+        xp = self.xp
+        field = xp.exp(1j * self._gray2phase(gray))
+        if self.gamma_amplitude is not None:
+            field = field * xp.asarray(self.gamma_amplitude, dtype=xp.float32)[gray]
+        return field
 
     def get_realized_phase(self, phase=None):
         r"""
@@ -1143,9 +1161,7 @@ class SLM(_Common, ABC):
 
             # Record the phase that the integer data realizes.
             if self.gamma is None:
-                realized = phase * (
-                    self._gamma_sign * 2 * np.pi / self.phase_scaling / self.bitresolution
-                )
+                realized = self._gray2phase(phase)
             else:
                 realized = self._gamma_sign * 2 * np.pi * self.gamma[phase]
             xp.copyto(self._phase, xp.mod(realized, 2 * np.pi))
@@ -2261,7 +2277,8 @@ class SLM(_Common, ABC):
 
         The phase is quantized as :meth:`get_realized_phase` does, projected onto the
         plane wave leaving toward ``kxy``, and weighted by the :attr:`pixel`'s element
-        pattern. Without a :attr:`pixel`, the loss is that of quantization alone.
+        pattern. Without a :attr:`pixel`, the loss is that of quantization alone. Levels
+        with a :attr:`gamma_amplitude` contribute by that amplitude.
 
         Parameters
         ----------
@@ -2281,12 +2298,16 @@ class SLM(_Common, ABC):
         xp = self.xp
         kxy = toolbox.format_2vectors(kxy)
         correction = self._get_source_phase()
-        if phase is not None:
-            phase = as_backend(phase, xp) + correction
+        if phase is None and self.phase is None:
+            raise ValueError("phase is undefined while hardware frame memory is displayed.")
+        # A copy: _phase2gray scales its input in place.
+        phase = self.phase if phase is None else as_backend(phase, xp) + correction
+        phase = xp.array(phase, dtype=xp.float32)
+        gray = self._phase2gray(phase, out=xp.empty(phase.shape, dtype=self.dtype))
         power = self._get_source_amplitude() ** 2
 
         # The field left once the correction has canceled the aberration it measured.
-        field = power * xp.exp(1j * (self.get_realized_phase(phase) - correction))
+        field = power * self._gray2field(gray) * xp.exp(-1j * correction)
         field = (field / xp.sum(power)).astype(xp.complex64)
 
         # The grid is separable, so every plane wave is a product of two 1D phasors.
@@ -2294,6 +2315,7 @@ class SLM(_Common, ABC):
         (x_grid, y_grid) = self.grid
         phasors_x = xp.exp(1j * kx * x_grid[:1, :])
         phasors_y = xp.exp(1j * ky * y_grid[:, 0])
+
         efficiency = np.abs(as_numpy(xp.sum((phasors_y @ field) * phasors_x, axis=1))) ** 2
 
         if self.pixel is not None:

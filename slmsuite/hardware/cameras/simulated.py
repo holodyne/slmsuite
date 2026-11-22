@@ -413,10 +413,12 @@ class SimulatedCamera(Camera):
         # something clever here to use the existing Hologram's data.
 
         # Quantized phase
-        self._hologram.amp = cp.asarray(
-            self._slm.source["amplitude_sim"], dtype=self._hologram.dtype
-        )
+        amplitude = cp.asarray(self._slm.source["amplitude_sim"], dtype=self._hologram.dtype)
         display = cp.asarray(self._slm.display)
+        if self._slm.gamma_amplitude is not None:
+            levels = cp.asarray(self._slm.gamma_amplitude, dtype=self._hologram.dtype)
+            amplitude = amplitude * levels[display]
+        self._hologram.amp = amplitude
         phase = self._slm._display2phase(display, dtype=self._hologram.dtype)
         phase = (
             phase

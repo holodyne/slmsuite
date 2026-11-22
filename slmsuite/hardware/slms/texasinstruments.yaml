@@ -1,6 +1,7 @@
-# Model specifications for Texas Instruments PLM chips. Models with a memory_lut,
-# electrode_layout and data_flip are driven as displays by a DLPC900 EVM kit
-# (texasinstruments.PLM); the others are driven by another controller (vialux.PLM).
+# Model specifications for Texas Instruments DLP chips: PLMs (models with
+# displacement_ratios) and DMDs (models with a tilt, at the end of the file).
+# PLM models with a memory_lut, electrode_layout and data_flip are driven as displays by a
+# DLPC900 EVM kit (texasinstruments.PLM); the others by another controller (vialux.PLM).
 # The EVM values are adapted from the json files provided in Texas Instruments'
 # https://github.com/TexasInstruments-Sandbox/ti-phase-light-modulator/tree/main
 # Original license below for reference:
@@ -129,3 +130,36 @@ test_monitor:
     - [1, 3]
     - [0, 2]
   data_flip: [0, 1]
+
+
+# DMDs: binary micromirrors on a square lattice which tilt about their diagonal. `tilt`
+# is the nominal on-state tilt in degrees (the off state is its negative; TI specifies
+# both to within one degree) and `tilt_direction` the (x, y) direction in which the
+# on-state mirror normal leans.
+
+# DLP6500FLQ datasheet (TI, DLPS040).
+dlp6500:
+  name: "DLP6500"
+  shape: [1080, 1920]
+  pitch: [7.56e-06, 7.56e-06]
+  tilt: 12
+  tilt_direction: [1, 1]
+  pixel: {fill: 0.92, reflectance: 0.88}
+
+# DLP7000 datasheet (TI, DLPS026).
+dlp7000:
+  name: "DLP7000"
+  shape: [768, 1024]
+  pitch: [13.68e-06, 13.68e-06]
+  tilt: 12
+  tilt_direction: [1, 1]
+  pixel: {fill: 0.92}
+
+# DLP9500 datasheet (TI, DLPS025).
+dlp9500:
+  name: "DLP9500"
+  shape: [1080, 1920]
+  pitch: [10.8e-06, 10.8e-06]
+  tilt: 12
+  tilt_direction: [1, 1]
+  pixel: {fill: 0.94, reflectance: 0.89}

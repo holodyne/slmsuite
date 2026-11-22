@@ -832,6 +832,33 @@ class TestSimulatePixel:
             np.testing.assert_allclose(tiled[:, : w // 2], tiled[:, w // 2 :], rtol=1e-5)
             np.testing.assert_allclose(tiled[: h // 2], tiled[h // 2 :], rtol=1e-5)
 
+    def test_render_amplitude(self, subtests):
+        """Levels with an amplitude render as the source scaled by it."""
+        rng = np.random.default_rng(0)
+        mask = rng.integers(0, 2, (96, 128))
+
+        binary = SimulatedSLM((128, 96), pitch_um=(12, 8), bitdepth=1, pixel=(0.9, 0.8))
+        binary.gamma_amplitude = (0, 1)
+        binary.set_phase(mask.astype(binary.dtype))
+
+        masked = SimulatedSLM((128, 96), pitch_um=(12, 8), pixel=(0.9, 0.8))
+        masked.source["amplitude_sim"] = masked.xp.asarray(mask, dtype=np.float32)
+
+        with subtests.test("a mask of off and on levels renders as a masked source"):
+            np.testing.assert_allclose(
+                as_numpy(SimulatedCamera(binary).render()),
+                as_numpy(SimulatedCamera(masked).render()),
+                rtol=1e-4,
+                atol=1e-9,
+            )
+
+        with subtests.test("the amplitude of a level scales the power"):
+            binary.gamma_amplitude = (0, 0.5)
+            binary.set_phase(np.ones((96, 128), dtype=binary.dtype))
+            dim = as_numpy(SimulatedCamera(binary).render()).sum()
+            binary.gamma_amplitude = (0, 1)
+            assert dim / as_numpy(SimulatedCamera(binary).render()).sum() == pytest.approx(0.25)
+
     def test_render_follows_the_incident_tilt(self, subtests):
         """The element pattern is centered on the incident beam, not on the optical axis."""
         (fs, kxy) = self._blazed()

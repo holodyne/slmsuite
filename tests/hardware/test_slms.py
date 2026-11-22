@@ -14,12 +14,13 @@ import pytest
 from conftest import driver_classes
 from PIL import Image
 
+import slmsuite.hardware.slms._dmd as _dmd
 import slmsuite.hardware.slms._plm as _plm
 import slmsuite.hardware.slms.slm as slm_module
 import slmsuite.hardware.slms.vialux as vialux
 from slmsuite.hardware.slms.screenmirrored import ScreenMirrored
 from slmsuite.hardware.slms.segmented import SegmentedSLM
-from slmsuite.hardware.slms.simulated import SimulatedSLM
+from slmsuite.hardware.slms.simulated import SimulatedDMD, SimulatedSLM
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.hardware.slms.texasinstruments import PLM
 from slmsuite.holography.toolbox import Aperture, Pixel
@@ -178,7 +179,7 @@ class TestSLM:
             assert power[128, 192] == pytest.approx(0.7 * 0.72**2 * np.sinc(0.9 * 0.5) ** 2)
 
         with subtests.test("the element pattern is contoured and the first zone outlined"):
-            drawn = [len(p.vertices) for c in ax_image.collections for p in c.get_paths()]
+            drawn = [len(p.vertices) for c in ax_image.collections[:-1] for p in c.get_paths()]
             assert len(drawn) == 3 and min(drawn) > 0
             assert len(ax_image.patches) == 1
 
@@ -192,6 +193,18 @@ class TestSLM:
         with subtests.test("a single zone is not outlined"):
             (ax_image, _) = slm.plot_pixel()
             assert len(ax_image.patches) == 0
+            plt.close("all")
+
+        with subtests.test("past the first zone, every order of a flat pattern is dotted"):
+            (ax_image, _) = slm.plot_pixel(zones=4)
+            assert len(ax_image.collections[-1].get_offsets()) == 25
+            plt.close("all")
+
+        with subtests.test("the cuts of a tilted pixel pass through its peak"):
+            slm.pixel = {"tilt": (0.01, 0.01)}
+            (_, ax_cuts) = slm.plot_pixel(zones=2)
+            for line in ax_cuts.get_lines()[:2]:
+                assert line.get_ydata().max() == pytest.approx(1, abs=1e-3)
             plt.close("all")
 
     def test_pixel(self, subtests):
@@ -2513,3 +2526,111 @@ class TestPLMModel:
         """A chip without DLPC900 electrode data cannot be opened as a display."""
         with pytest.raises(ValueError, match="electrode layout"):
             PLM("p99", display_number=0)
+
+
+class TestDMDModel:
+    """A DMD is a one-bit SLM whose levels are mirrors off and on."""
+
+    DIAGONAL = np.ones(2) / np.sqrt(2)
+
+    def _dmd(self, incident=34.07, **pixel):
+        """A DLP6500 at 515 nm, lit ``incident`` degrees off normal, followed along (4, 4)."""
+        incidence = -np.sin(np.radians(incident)) * self.DIAGONAL
+        pixel = {"fill": 1, "reflectance": 1, "incidence": incidence, "order": (4, 4), **pixel}
+        return SimulatedDMD("dlp6500", wav_um=0.515, pixel=pixel)
+
+    def test_database(self, subtests):
+        models = _dmd._DMDModel.get_model_list()
+        assert {"dlp6500", "dlp7000", "dlp9500"} <= set(models)
+
+        for model in models:
+            with subtests.test(model):
+                config = _dmd._DMDModel.load_model_config(model)
+                assert len(config["shape"]) == 2 and len(config["pitch"]) == 2
+                assert 0 < config["tilt"] < 20 and len(config["tilt_direction"]) == 2
+
+        with subtests.test("an unknown model raises"):
+            with pytest.raises(ValueError, match="not found"):
+                _dmd._DMDModel.load_model_config("dlp0000")
+
+    def test_model_pixel(self, subtests):
+        dmd = SimulatedDMD("dlp6500", wav_um=0.515)
+
+        with subtests.test("the model gives the shape, the pitch and one bit"):
+            assert dmd.shape == (1080, 1920) and dmd.bitdepth == 1
+            np.testing.assert_allclose(dmd.pitch_um, 7.56)
+
+        with subtests.test("the pixel holds the on-state tilt and the model's fill"):
+            np.testing.assert_allclose(dmd.pixel.tilt, np.radians(12) * self.DIAGONAL)
+            assert np.prod(dmd.pixel.fill) == pytest.approx(dmd.model_config["pixel"]["fill"])
+            assert tuple(dmd.gamma_amplitude) == (0, 1)
+
+        with subtests.test("a dict adds to the model's pixel and a tilt replaces the nominal"):
+            dmd = SimulatedDMD("dlp6500", tilt=0.2, pixel={"order": (4, 4), "fill": 1})
+            np.testing.assert_allclose(dmd.pixel.tilt, 0.2 * self.DIAGONAL)
+            np.testing.assert_allclose(dmd.pixel.order, (4, 4))
+            np.testing.assert_allclose(dmd.pixel.fill, 1)
+
+        with subtests.test("a Pixel is taken as it is"):
+            pixel = Pixel(10, tilt=(0, 0.1))
+            np.testing.assert_allclose(SimulatedDMD("dlp6500", pixel=pixel).pixel.tilt, pixel.tilt)
+
+        with subtests.test("an assigned dict keeps the tilts, and None restores the model"):
+            dmd = SimulatedDMD("dlp6500", tilt=0.2)
+            dmd.pixel = {"fill": 0.9}
+            np.testing.assert_allclose(dmd.pixel.tilt, 0.2 * self.DIAGONAL)
+            assert np.prod(dmd.pixel.fill) == pytest.approx(0.9)
+            dmd.pixel = None
+            assert np.prod(dmd.pixel.fill) == pytest.approx(dmd.model_config["pixel"]["fill"])
+            np.testing.assert_allclose(dmd.pixel.tilt, 0.2 * self.DIAGONAL)
+
+        with subtests.test("a phase response cannot be set"):
+            with pytest.raises(NotImplementedError, match="phase response"):
+                dmd.set_gamma([0, 0.5])
+
+    def test_set_phase(self, subtests):
+        dmd = self._dmd()
+        rng = np.random.default_rng(0)
+
+        with subtests.test("a phase turns a mirror on where its cosine is positive"):
+            phase = rng.uniform(-10, 10, dmd.shape)
+            dmd.set_phase(phase, phase_correct=False)
+            np.testing.assert_array_equal(as_numpy(dmd.display), np.cos(phase) > 0)
+
+        with subtests.test("a mask is displayed as it is and read back from the phase"):
+            mask = rng.integers(0, 2, dmd.shape).astype(dmd.dtype)
+            dmd.set_phase(mask)
+            np.testing.assert_array_equal(as_numpy(dmd.display), mask)
+            np.testing.assert_array_equal(as_numpy(dmd._phase2gray(dmd.phase)), mask)
+            np.testing.assert_array_equal(dmd._viewer_frame, mask)
+
+    def test_get_efficiency(self, subtests):
+        dmd = self._dmd()
+        on = np.ones(dmd.shape, dtype=dmd.dtype)
+
+        with subtests.test("all on at the blaze angle, the order holds all of the power"):
+            dmd.set_phase(on)
+            assert dmd.get_efficiency()[0] == pytest.approx(1, abs=1e-3)
+
+        with subtests.test("all off, the order is dark"):
+            dmd.set_phase(0 * on)
+            assert dmd.get_efficiency()[0] == 0
+
+        with subtests.test("away from the blaze angle the order dims"):
+            drawn = self._dmd(incident=22.666)
+            drawn.set_phase(on)
+            assert drawn.get_efficiency()[0] == pytest.approx(0.674, abs=2e-3)
+
+        with subtests.test("a binary grating of half duty leaves a quarter in the zeroth order"):
+            kxy = np.array([1 / (8 * dmd.pitch[0]), 0])
+            efficiency = dmd.get_efficiency(blaze(dmd, kxy), np.transpose([(0, 0), kxy]))
+            assert efficiency[0] == pytest.approx(1 / 4, rel=1e-2)
+            sampled = 1 / (8 * np.sin(np.pi / 8)) ** 2
+            assert efficiency[1] == pytest.approx(float(dmd.pixel.power(kxy)) * sampled, rel=1e-2)
+
+        with subtests.test("a level contributes by its amplitude"):
+            slm = SimulatedSLM((32, 24), bitdepth=2)
+            slm.gamma_amplitude = (0, 0.5, 1, 0.25)
+            for level, amplitude in enumerate(slm.gamma_amplitude):
+                slm.set_phase(np.full(slm.shape, level, dtype=slm.dtype))
+                assert slm.get_efficiency()[0] == pytest.approx(amplitude**2)

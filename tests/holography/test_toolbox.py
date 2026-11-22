@@ -1195,6 +1195,12 @@ class TestPixel:
                 with pytest.raises(ValueError, match="Reflectance"):
                     Pixel(10, reflectance=reflectance)
 
+        with subtests.test("a tilt or incidence out of range raises"):
+            with pytest.raises(ValueError, match="Tilt"):
+                Pixel(10, tilt=(1.2, 1.2))
+            with pytest.raises(ValueError, match="Incidence"):
+                Pixel(10, incidence=(0.8, 0.8))
+
     def test_amplitude(self, subtests):
         pitch = np.array([15.0, 10.0])
 
@@ -1222,6 +1228,42 @@ class TestPixel:
 
         with subtests.test("the output has the shape of one component of kxy"):
             assert Pixel(pitch).amplitude(np.zeros((2, 3, 5))).shape == (3, 5)
+
+        with subtests.test(
+            "a tilted pixel at normal incidence peaks at the sine of twice the tilt"
+        ):
+            pixel = Pixel(pitch, fill=(0.9, 0.8), tilt=(0.1, 0))
+            assert pixel.amplitude([np.sin(0.2), 0]) == pytest.approx(0.72)
+            assert pixel.amplitude([0, 0]) == pytest.approx(
+                0.72 * np.sinc(0.9 * 15 * 2 * np.tan(0.1))
+            )
+
+        with subtests.test("a tilted pixel peaks on the specular reflection off its surface"):
+            (tilt, incident) = (np.radians(12), np.radians(-34.07))
+            diagonal = np.ones(2) / np.sqrt(2)
+            pixel = Pixel(pitch, tilt=tilt * diagonal, incidence=np.sin(incident) * diagonal)
+            specular = (np.sin(incident + 2 * tilt) - np.sin(incident)) * diagonal
+            assert pixel.amplitude(specular) == pytest.approx(1)
+            assert pixel.amplitude(specular + 0.01) < 0.99
+
+        with subtests.test("a tilted pixel is dark where the outgoing beam is evanescent"):
+            pixel = Pixel(pitch, tilt=(0.1, 0), incidence=(0.5, 0))
+            np.testing.assert_array_equal(pixel.amplitude([[0.5, 0.6], [0, 0.9]]), 0)
+            assert pixel.amplitude([0.4, 0]) != 0
+
+        with subtests.test("frequencies are measured from the order"):
+            kxy = np.array([[0.013, -0.04], [0.021, 0.07]])
+            for kwargs in ({"fill": (0.9, 0.8)}, {"tilt": (0.2, 0.1), "incidence": (-0.3, 0)}):
+                np.testing.assert_allclose(
+                    Pixel(pitch, order=(3, -2), **kwargs).amplitude(kxy),
+                    Pixel(pitch, **kwargs).amplitude(kxy + np.array([[3], [-2]]) / pitch[:, None]),
+                )
+
+        with subtests.test("the incidence leaves a flat pixel as it is"):
+            kxy = np.array([[0.013, -0.04], [0.021, 0.07]])
+            np.testing.assert_array_equal(
+                Pixel(pitch, incidence=(0.3, 0.2)).amplitude(kxy), Pixel(pitch).amplitude(kxy)
+            )
 
     def test_power(self, subtests):
         pitch = np.array([15.0, 10.0])
@@ -1294,6 +1336,7 @@ class TestPixel:
             passed = Custom(8, fill=(0.9, 0.8), reflectance=0.7)
             resolved = Pixel.resolve(FakeSLM(), passed)
             assert type(resolved) is Custom and resolved is not passed
+            assert resolved.power(np.zeros(2)) == pytest.approx(0.25 * 0.7 * 0.72**2)
             np.testing.assert_allclose(resolved.pitch, FakeSLM.pitch)
             np.testing.assert_allclose(passed.pitch, (8, 8))
             np.testing.assert_allclose(resolved.fill, (0.9, 0.8))
