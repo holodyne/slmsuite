@@ -262,19 +262,17 @@ class Santec(SLM):
             try:
                 _drive_temp = ctypes.c_uint32(0)
                 _option_temp = ctypes.c_uint32(0)
-                _read_status = slm_funcs.SLM_Ctrl_ReadT(
-                    self.slm_number, _drive_temp, _option_temp
-                )
+                _read_status = slm_funcs.SLM_Ctrl_ReadT(self.slm_number, _drive_temp, _option_temp)
                 if _read_status == -200:
                     Santec._parse_status(_read_status, raise_error=False)
                     logger.warning(
                         "This may be caused by a prior unclosed Santec instance. "
-                        "Restart the kernel before reconnecting."
+                        "Restart the kernel before reconnecting if set_phase() later fails with SLM_INVAID_MONITOR."
+                        ""
                     )
             except Exception as _read_exc:
                 logger.warning(
-                    "Santec init check failed: %s. "
-                    "Restart kernel if set_phase() later fails with SLM_INVAID_MONITOR.",
+                    "Santec init check failed: %s. ",
                     _read_exc,
                 )
                 
