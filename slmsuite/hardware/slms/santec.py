@@ -254,7 +254,28 @@ class Santec(SLM):
             self.driveboard_id = driveboard_id.value.decode("mbcs")
             self.optionboard_id = optionboard_id.value.decode("mbcs")
             self.product_code_id = names[2]
-
+            
+            # Detect stale USB handle from a prior unclosed instance.
+            # SLM_Ctrl_ReadT is read-only; on multi-init conflict it returns
+            # SLM_NOT_OPEN_USB (-200). We warn early so the user knows to
+            # restart the kernel before set_phase() silently fails.
+            try:
+                _drive_temp = ctypes.c_uint32(0)
+                _option_temp = ctypes.c_uint32(0)
+                _read_status = slm_funcs.SLM_Ctrl_ReadT(self.slm_number, _drive_temp, _option_temp)
+                if _read_status == -200:
+                    Santec._parse_status(_read_status, raise_error=False)
+                    logger.warning(
+                        "This may be caused by a prior unclosed Santec instance. "
+                        "Restart the kernel before reconnecting if set_phase() later fails with SLM_INVAID_MONITOR."
+                        ""
+                    )
+            except Exception as _read_exc:
+                logger.warning(
+                    "Santec init check failed: %s. ",
+                    _read_exc,
+                )
+                
             # Open SLM
             logger.debug("Opening %s...", name)
             Santec._parse_status(slm_funcs.SLM_Disp_Open(self.display_number))
