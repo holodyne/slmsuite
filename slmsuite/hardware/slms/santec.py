@@ -277,7 +277,7 @@ class Santec(SLM):
                     "Restart kernel if set_phase() later fails with SLM_INVAID_MONITOR.",
                     _read_exc,
                 )
-            
+                
             # Open SLM
             logger.debug("Opening %s...", name)
             Santec._parse_status(slm_funcs.SLM_Disp_Open(self.display_number))
