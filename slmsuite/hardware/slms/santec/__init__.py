@@ -18,6 +18,7 @@ curvature. Load these via :meth:`.load_vendor_phase_correction`.
 import importlib
 import time
 from enum import IntEnum
+from typing import ClassVar
 
 import numpy as np
 
@@ -74,16 +75,16 @@ class Santec(SLM):
     product_code_id: str = ""  # DLL backend only
 
     # keyed by _BACKEND; populated lazily by _load_lib()
-    _lib: dict = {}
+    _lib: ClassVar[dict] = {}
 
     # single canonical error bit definitions
-    _DRIVEBOARD_ERROR: dict[int, str] = {
+    _DRIVEBOARD_ERROR: ClassVar[dict[int, str]] = {
         0x01: "Startup error 1 (Drive board)",
         0x02: "Startup error 2 (Drive board)",
         0x04: "Video signal error (No signal)",
         0x08: "Drive board temperature error (70 deg C or higher)",
     }
-    _OPTIONBOARD_ERROR: dict[int, str] = {
+    _OPTIONBOARD_ERROR: ClassVar[dict[int, str]] = {
         0x01: "Startup error 1 (Option board)",
         0x02: "Startup error 2 (Option board)",
         0x04: "Voltage level error (DC 5.0V)",
@@ -121,7 +122,7 @@ class Santec(SLM):
             try:
                 be = _BACKEND[backend.upper()]
             except KeyError:
-                raise RuntimeError("Unknown backend {!r}. Choose 'dll' or 'usb'.".format(backend))
+                raise RuntimeError(f"Unknown backend {backend!r}. Choose 'dll' or 'usb'.") from None
         else:
             be = _BACKEND(backend)
         if be in Santec._lib:
@@ -133,7 +134,7 @@ class Santec(SLM):
             except Exception as exc:
                 raise ImportError(
                     "Santec DLL backend unavailable. Copy SLMFunc.dll and FTD3XX.dll "
-                    "to the runtime directory.\nOriginal error: {}".format(exc)
+                    f"to the runtime directory.\nOriginal error: {exc}"
                 ) from exc
             return _BACKEND.DLL
         if be == _BACKEND.USB:
@@ -144,10 +145,10 @@ class Santec(SLM):
             except (ImportError, OSError) as exc:
                 raise ImportError(
                     "Santec USB backend unavailable. Install PyD3XX: "
-                    "pip install PyD3XX\nOriginal error: {}".format(exc)
+                    f"pip install PyD3XX\nOriginal error: {exc}"
                 ) from exc
             return _BACKEND.USB
-        raise RuntimeError("Unknown backend {!r}. Choose 'dll' or 'usb'.".format(be))
+        raise RuntimeError(f"Unknown backend {be!r}. Choose 'dll' or 'usb'.")
 
     @staticmethod
     def info(backend: str = "usb", verbose: bool = True) -> list:
@@ -187,11 +188,11 @@ class Santec(SLM):
                 status = int(_sf.SLM_Disp_Info2(display_number, width, height, display_name))
                 if status not in (0, -1):
                     name, note = _sf.SLM_STATUS_DICT.get(status, ("SLM_UNKNOWN", ""))
-                    raise RuntimeError("Santec error {}; '{}'".format(name, note))
+                    raise RuntimeError(f"Santec error {name}; '{note}'")
                 name = display_name.value.decode("mbcs")
                 if len(name) > 0:
                     if verbose:
-                        print("{} ({})".format(display_number, name))
+                        print(f"{display_number} ({name})")
                     display_list.append((display_number, name))
             return display_list
         if be == _BACKEND.USB:
@@ -200,7 +201,7 @@ class Santec(SLM):
                 for s in serials:
                     print(s)
             return serials
-        raise RuntimeError("Unknown backend {!r}.".format(backend))
+        raise RuntimeError(f"Unknown backend {backend!r}.")
 
     def __init__(
         self,
@@ -261,11 +262,12 @@ class Santec(SLM):
         try:
             self.backend = _BACKEND[backend.upper()]
         except KeyError:
-            raise RuntimeError("Unknown backend {!r}. Choose 'dll' or 'usb'.".format(backend))
+            raise RuntimeError(f"Unknown backend {backend!r}. Choose 'dll' or 'usb'.") from None
 
         if self.backend == _BACKEND.USB and ftdi_serial is None:
             raise ValueError(
-                "ftdi_serial is required for backend='usb'. " "Use Santec.info() to list connected devices."
+                "ftdi_serial is required for backend='usb'. "
+                "Use Santec.info() to list connected devices."
             )
 
         Santec._load_lib(self.backend)
@@ -299,7 +301,9 @@ class Santec(SLM):
             while current_nm != wav_desired_nm and attempt <= 5:
                 if attempt == 1:
                     logger.debug(
-                        "Current phase table: wav=%d nm, maxphase=%.2fpi", current_nm, current_phase_pi
+                        "Current phase table: wav=%d nm, maxphase=%.2fpi",
+                        current_nm,
+                        current_phase_pi,
                     )
                     logger.debug("Desired phase table: wav=%d nm, maxphase=2.00pi", wav_desired_nm)
                 else:
@@ -331,7 +335,9 @@ class Santec(SLM):
                 else:
                     current_nm, current_phase_pi = self._driver.get_wavelength()
                     logger.debug(
-                        "Updated phase table: wav=%d nm, maxphase=%.2fpi", current_nm, current_phase_pi
+                        "Updated phase table: wav=%d nm, maxphase=%.2fpi",
+                        current_nm,
+                        current_phase_pi,
                     )
 
                 # stop retrying if firmware rejected the first calibration attempt
@@ -342,10 +348,10 @@ class Santec(SLM):
 
             if current_nm != wav_desired_nm or abs(current_phase_pi - 2.0) > 1.0:
                 raise RuntimeError(
-                    "Failed to update Santec phase table to {} nm "
-                    "(current: {} nm, {:.2f}pi). "
+                    f"Failed to update Santec phase table to {wav_desired_nm} nm "
+                    f"(current: {current_nm} nm, {current_phase_pi:.2f}pi). "
                     "Check that wav_design_um matches the SLM's supported wavelength "
-                    "range.".format(wav_desired_nm, current_nm, current_phase_pi)
+                    "range."
                 )
 
             if abs(current_phase_pi - 2.0) > 0.04:
@@ -394,7 +400,9 @@ class Santec(SLM):
             try:
                 self._driver.close()
             except Exception as close_error:
-                logger.warning("Could not close Santec %s after init failure: %s", _id_label, close_error)
+                logger.warning(
+                    "Could not close Santec %s after init failure: %s", _id_label, close_error
+                )
             raise init_error
 
     def close(self) -> None:
@@ -489,7 +497,7 @@ class Santec(SLM):
         """
         code, name, note = self._driver.get_status()
         if code != 0:
-            msg = "Santec status {}; '{}'".format(name, note)
+            msg = f"Santec status {name}; '{note}'"
             if raise_error:
                 raise RuntimeError(msg)
             self.logger.warning(msg)
@@ -530,7 +538,7 @@ class Santec(SLM):
             phase_map = np.loadtxt(file_path, skiprows=1, dtype=int, delimiter=",")[:, 1:]
             if phase_map.shape != tuple(self.shape):
                 raise ValueError(
-                    "Correction shape {} does not match SLM shape {}.".format(phase_map.shape, self.shape)
+                    f"Correction shape {phase_map.shape} does not match SLM shape {self.shape}."
                 )
             phase = (-2 * np.pi / self.bitresolution) * phase_map.astype(float)
             if smooth:
@@ -565,7 +573,9 @@ class Santec(SLM):
             If not using the USB backend.
         """
         if self.backend != _BACKEND.USB:
-            raise NotImplementedError("Input trigger control is not implemented for the DLL backend.")
+            raise NotImplementedError(
+                "Input trigger control is not implemented for the DLL backend."
+            )
         self._driver.set_trigger_input(bool(on))
 
     def set_output_trigger(self, on: bool = False) -> None:
@@ -583,7 +593,9 @@ class Santec(SLM):
             If not using the USB backend.
         """
         if self.backend != _BACKEND.USB:
-            raise NotImplementedError("Output trigger control is not implemented for the DLL backend.")
+            raise NotImplementedError(
+                "Output trigger control is not implemented for the DLL backend."
+            )
         self._driver.set_trigger_output(bool(on))
 
     def load_csv(self, filename: str) -> None:

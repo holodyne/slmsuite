@@ -72,10 +72,10 @@ class _SantecDLLDriver:
         """
         status = int(status)
         if status not in self._sf.SLM_STATUS_DICT:
-            raise ValueError("SLM status '{}' not recognized.".format(status))
+            raise ValueError(f"SLM status '{status}' not recognized.")
         name, note = self._sf.SLM_STATUS_DICT[status]
         if status != 0:
-            msg = "Santec error {}; '{}'".format(name, note)
+            msg = f"Santec error {name}; '{note}'"
             if raise_error:
                 raise RuntimeError(msg)
             logger.warning(msg)
@@ -147,8 +147,8 @@ class _SantecDLLDriver:
         names = name.split(",")
         if names[0] != "LCOS-SLM":
             raise ValueError(
-                "SLM not found at display_number={}. "
-                "Use Santec.info(backend='dll') to list available displays.".format(self._display_number)
+                f"SLM not found at display_number={self._display_number}. "
+                "Use Santec.info(backend='dll') to list available displays."
             )
         self.product_code_id = names[2]
         self._firmware_serial = names[-1]
@@ -187,9 +187,13 @@ class _SantecDLLDriver:
             If ``frame`` is an int or ``index`` is not ``None``.
         """
         if isinstance(frame, (int, np.integer)):
-            raise NotImplementedError("Slot switching is not supported for the DLL backend (DVI mode only).")
+            raise NotImplementedError(
+                "Slot switching is not supported for the DLL backend (DVI mode only)."
+            )
         if index is not None:
-            raise NotImplementedError("Slot-addressed writes are not supported for the DLL backend (DVI mode only).")
+            raise NotImplementedError(
+                "Slot-addressed writes are not supported for the DLL backend (DVI mode only)."
+            )
         matrix = frame.astype(self._sf.USHORT)
         n_h, n_w = frame.shape
         c = matrix.ctypes.data_as(ctypes.POINTER((self._sf.USHORT * n_h) * n_w)).contents
@@ -236,7 +240,7 @@ class _SantecDLLDriver:
         RuntimeError
             On DLL error.
         """
-        phase_val = int(round(max_phase_pi * 100))
+        phase_val = round(max_phase_pi * 100)
         self._check(self._sf.SLM_Ctrl_WriteWL(self._slm_number, ctypes.c_uint32(wav_nm), phase_val))
 
     def save_wavelength(self) -> None:
@@ -299,7 +303,7 @@ class _SantecDLLDriver:
         """
         status = int(self._sf.SLM_Ctrl_ReadSU(self._slm_number))
         if status not in self._sf.SLM_STATUS_DICT:
-            return (status, "SLM_UNKNOWN", "Unknown status code {}.".format(status))
+            return (status, "SLM_UNKNOWN", f"Unknown status code {status}.")
         name, note = self._sf.SLM_STATUS_DICT[status]
         return (status, name, note)
 

@@ -154,7 +154,8 @@ class _SantecUSBDriver:
         """
         if _PyD3XX is None:
             raise RuntimeError(
-                "PyD3XX not available; cannot use the Santec USB backend.\n" "Install it with:  pip install PyD3XX"
+                "PyD3XX not available; cannot use the Santec USB backend.\n"
+                "Install it with:  pip install PyD3XX"
             )
         self.serial_number = serial_number
         self.channel = channel
@@ -217,16 +218,15 @@ class _SantecUSBDriver:
                 serials.append(info.SerialNumber)
                 if info.SerialNumber == self.serial_number:
                     device_index = i
-                    device = info  # reuse FT_Device from FT_GetDeviceInfoDetail (required by FT_Create)
+                    # reuse FT_Device from FT_GetDeviceInfoDetail (required by FT_Create)
+                    device = info
         if device_index is None:
-            raise RuntimeError("Device '{}' not found. Available: {}.".format(self.serial_number, serials))
+            raise RuntimeError(f"Device '{self.serial_number}' not found. Available: {serials}.")
         # pass the same FT_Device object returned by FT_GetDeviceInfoDetail, not a fresh one
         status = _PyD3XX.FT_Create(device_index, _PyD3XX.FT_OPEN_BY_INDEX, device)
         if status != _PyD3XX.FT_OK:
             raise RuntimeError(
-                "Failed to open FTDI device '{}' at index {} (status {}).".format(
-                    self.serial_number, device_index, status
-                )
+                f"Failed to open FTDI device '{self.serial_number}' at index {device_index} (status {status})."
             )
         # FT_GetPipeInformation pipe indices vary by OS and D3XX driver version.
         # On Linux: interface 0, idx 0=OUT(0x02), idx 1=IN(0x82) per FIFO channel.
@@ -255,9 +255,11 @@ class _SantecUSBDriver:
             # use a short timeout so this returns quickly when the pipe is clean
             for _ in range(32):
                 if _PyD3XX.Platform == "windows":
-                    _, ft_buf, n = _PyD3XX.FT_ReadPipeEx(device, self._pipe_in, _STATUS_READ_SIZE, _PyD3XX.NULL)
+                    _, _, n = _PyD3XX.FT_ReadPipeEx(
+                        device, self._pipe_in, _STATUS_READ_SIZE, _PyD3XX.NULL
+                    )
                 else:
-                    _, ft_buf, n = _PyD3XX.FT_ReadPipeEx(device, self._fifo_in, _STATUS_READ_SIZE, 50)
+                    _, _, n = _PyD3XX.FT_ReadPipeEx(device, self._fifo_in, _STATUS_READ_SIZE, 50)
                 if n == 0:
                     break
             last_error: str | Exception = "no attempts made"
@@ -276,10 +278,8 @@ class _SantecUSBDriver:
                 except Exception as e:
                     last_error = e
             raise RuntimeError(
-                "Could not verify firmware for device '{}'. "
-                "Last error: {}. Known versions: {}.".format(
-                    self.serial_number, last_error, sorted(KNOWN_FIRMWARE_VERSIONS)
-                )
+                f"Could not verify firmware for device '{self.serial_number}'. "
+                f"Last error: {last_error}. Known versions: {sorted(KNOWN_FIRMWARE_VERSIONS)}."
             )
         except Exception:
             self._device = None
@@ -400,9 +400,11 @@ class _SantecUSBDriver:
                 self._device, self._fifo_out, ft_buf, len(buffer), _WRITE_TIMEOUT_MS
             )
         if status != _PyD3XX.FT_OK:
-            raise RuntimeError("USB write failed (status {}).".format(status))
+            raise RuntimeError(f"USB write failed (status {status}).")
         if bytes_written != len(buffer):
-            raise RuntimeError("USB write incomplete: {} of {} bytes written.".format(bytes_written, len(buffer)))
+            raise RuntimeError(
+                f"USB write incomplete: {bytes_written} of {len(buffer)} bytes written."
+            )
 
     def _read(self, length: int) -> bytes:
         if self._device is None:
@@ -422,9 +424,9 @@ class _SantecUSBDriver:
                     if bytes_read > 0:
                         break
                     if status != _FT_IO_PENDING:
-                        raise RuntimeError("USB read failed (status {}).".format(status))
+                        raise RuntimeError(f"USB read failed (status {status}).")
                     if time.monotonic() >= deadline:
-                        raise RuntimeError("USB read timed out after {}ms.".format(_PIPE_TIMEOUT_MS))
+                        raise RuntimeError(f"USB read timed out after {_PIPE_TIMEOUT_MS}ms.")
                     time.sleep(0.010)
             else:
                 # Linux/macOS: FIFO index (int) + timeout in ms; 0 is non-blocking
@@ -432,7 +434,7 @@ class _SantecUSBDriver:
                     self._device, self._fifo_in, remaining, _PIPE_TIMEOUT_MS
                 )
                 if bytes_read == 0:
-                    raise RuntimeError("USB read failed (status {}).".format(status))
+                    raise RuntimeError(f"USB read failed (status {status}).")
             received += bytes(ft_buf.Value()[:bytes_read])
         return received
 
@@ -588,7 +590,7 @@ class _SantecUSBDriver:
         str
             FPGA response string.
         """
-        return self._control_command(b"WL", [wav_nm, int(round(max_phase_pi))], longrunning=True)
+        return self._control_command(b"WL", [wav_nm, round(max_phase_pi)], longrunning=True)
 
     def get_wavelength(self, longrunning: bool = False) -> tuple[int, float]:
         """
@@ -611,12 +613,12 @@ class _SantecUSBDriver:
         """
         resp = self._control_command(b"WL", longrunning=longrunning)
         if resp in ("NO RESPONSE", "NG", "BS"):
-            raise RuntimeError("WL read returned {!r}; FPGA may still be busy.".format(resp))
+            raise RuntimeError(f"WL read returned {resp!r}; FPGA may still be busy.")
         parts = resp.split()
         if len(parts) < 2:
             raise RuntimeError(
-                "WL read returned unexpected response {!r}; expected 'NM PHASE' (e.g. '532 2.09'). "
-                "Possible stale response in pipe -- try re-opening the device.".format(resp)
+                f"WL read returned unexpected response {resp!r}; expected 'NM PHASE' (e.g. '532 2.09'). "
+                "Possible stale response in pipe -- try re-opening the device."
             )
         return (int(parts[0]), float(parts[1]))
 
@@ -723,7 +725,7 @@ class _SantecUSBDriver:
             If ``slot`` is out of range.
         """
         if not (self.MIN_SLOT <= slot <= self.MAX_SLOT):
-            raise ValueError("Slot {} out of valid range ({}-{}).".format(slot, self.MIN_SLOT, self.MAX_SLOT))
+            raise ValueError(f"Slot {slot} out of valid range ({self.MIN_SLOT}-{self.MAX_SLOT}).")
         self._control_command(b"MI", [slot])
         image = image.astype(np.uint16)
         buffer = bytearray()
@@ -731,7 +733,9 @@ class _SantecUSBDriver:
             linedata = bytearray(_IMAGE_ROW_PAYLOAD_SIZE)
             row_bytes = row.tobytes()
             linedata[: len(row_bytes)] = row_bytes
-            buffer += self._assemble_packet(_CMD_IMAGEDATA[0], _CMD_IMAGEDATA[1], bytes(linedata), seq_id=i)
+            buffer += self._assemble_packet(
+                _CMD_IMAGEDATA[0], _CMD_IMAGEDATA[1], bytes(linedata), seq_id=i
+            )
         # overwrite last 4 bytes with uint32 checksum; intentional integer overflow
         buffer[-4:] = struct.pack("I", int(image.sum()) % 2**32)
         self._write(bytes(buffer))
@@ -745,6 +749,7 @@ class _SantecUSBDriver:
         ----------
         slot : int
             Memory slot to display, ``MIN_SLOT`` to ``MAX_SLOT``.
+
         Returns
         -------
         str
@@ -756,7 +761,7 @@ class _SantecUSBDriver:
             If ``slot`` is out of range.
         """
         if not (self.MIN_SLOT <= slot <= self.MAX_SLOT):
-            raise ValueError("Slot {} out of valid range ({}-{}).".format(slot, self.MIN_SLOT, self.MAX_SLOT))
+            raise ValueError(f"Slot {slot} out of valid range ({self.MIN_SLOT}-{self.MAX_SLOT}).")
         ret = self._control_command(b"DS", [slot])
         self._active_slot = slot
         return ret
@@ -782,7 +787,9 @@ class _SantecUSBDriver:
         """
         resp = self._control_command(b"DS")
         if resp == "NG":
-            raise RuntimeError("DS read returned NG; firmware may not support reading displayed slot.")
+            raise RuntimeError(
+                "DS read returned NG; firmware may not support reading displayed slot."
+            )
         return int(resp)
 
     def erase_slot(self, slot: int) -> str:
@@ -805,7 +812,7 @@ class _SantecUSBDriver:
             If ``slot`` is out of range.
         """
         if not (self.MIN_SLOT <= slot <= self.MAX_SLOT):
-            raise ValueError("Slot {} out of valid range ({}-{}).".format(slot, self.MIN_SLOT, self.MAX_SLOT))
+            raise ValueError(f"Slot {slot} out of valid range ({self.MIN_SLOT}-{self.MAX_SLOT}).")
         return self._control_command(b"ME", [slot])
 
     # memory table / sequencing
@@ -1201,12 +1208,12 @@ class _SantecUSBDriver:
         return self._control_command(b"SO")
 
     def get_version(self) -> str:
-        """
+        r"""
         Read detailed firmware version strings for all subsystems.
 
         Command code ``VR`` confirmed on hardware. Returns a multi-line string
         with version and SVN revision for the option CPU, drive CPU, and Xilinx
-        FPGA, separated by ``\\r\\n``.
+        FPGA, separated by ``\r\n``.
 
         Example response::
 
