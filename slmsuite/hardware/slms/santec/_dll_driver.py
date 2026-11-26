@@ -1,6 +1,7 @@
 """DLL backend driver for Santec SLMs (wraps the ``_slm_win`` ctypes module)."""
 
 import ctypes
+import time
 import warnings
 
 import numpy as np
@@ -41,6 +42,7 @@ class _SantecDLLDriver:
         self._optionboard_id = ""
         self._firmware_serial = ""
         self.product_code_id = ""
+        self._display_open = False
 
     def _check(self, status: int, raise_error: bool = True) -> tuple[int, str, str]:
         """
@@ -86,14 +88,14 @@ class _SantecDLLDriver:
             On any non-OK, non-busy status from the device.
         """
         self._check(self._sf.SLM_Ctrl_Open(self._slm_number))
-        while True:
-            status = self._sf.SLM_Ctrl_ReadSU(self._slm_number)
-            if status == 0:
+        # wait up to 10 s for the SLM to leave SLM_BS (busy)
+        status = self._sf.SLM_Ctrl_ReadSU(self._slm_number)
+        for _ in range(100):
+            if status != 2:
                 break
-            elif status == 2:
-                continue
-            else:
-                self._check(status)
+            time.sleep(0.1)
+            status = self._sf.SLM_Ctrl_ReadSU(self._slm_number)
+        self._check(status)
         self._check(self._sf.SLM_Ctrl_WriteVI(self._slm_number, 1))
 
     def open_display(self) -> None:
@@ -106,11 +108,14 @@ class _SantecDLLDriver:
             On DLL error.
         """
         self._check(self._sf.SLM_Disp_Open(self._display_number))
+        self._display_open = True
 
     def close(self) -> None:
-        """Close the display window and USB control channel."""
-        self._sf.SLM_Disp_Close(self._display_number)
-        self._sf.SLM_Ctrl_Close(self._slm_number)
+        """Close the display window (if opened) and the USB control channel."""
+        if self._display_open:
+            self._check(self._sf.SLM_Disp_Close(self._display_number))
+            self._display_open = False
+        self._check(self._sf.SLM_Ctrl_Close(self._slm_number))
 
     def get_display_dims(self) -> tuple[int, int]:
         """

@@ -22,7 +22,9 @@ from enum import IntEnum
 
 import numpy as np
 
-from ..slm import SLM
+from slmsuite.hardware.slms.slm import SLM
+from slmsuite.misc.xp import as_numpy
+
 from ._dll_driver import _SantecDLLDriver
 from ._usb_driver import _SantecUSBDriver
 
@@ -183,9 +185,10 @@ class Santec(SLM):
                 width = ctypes.c_ushort(0)
                 height = ctypes.c_ushort(0)
                 display_name = ctypes.create_string_buffer(128)
-                status = _sf.SLM_Disp_Info2(display_number, width, height, display_name)
+                status = int(_sf.SLM_Disp_Info2(display_number, width, height, display_name))
                 if status not in (0, -1):
-                    pass
+                    name, note = _sf.SLM_STATUS_DICT.get(status, ("SLM_UNKNOWN", ""))
+                    raise RuntimeError("Santec error {}; '{}'".format(name, note))
                 name = display_name.value.decode("mbcs")
                 if len(name) > 0:
                     if verbose:
@@ -438,6 +441,8 @@ class Santec(SLM):
             If ``display`` is an int or ``index`` is not ``None`` on the DLL
             backend (DVI mode has no slot concept).
         """
+        if not isinstance(display, (int, np.integer)):
+            display = as_numpy(display)  # the drivers need host memory
         self._driver.write_frame(display, index)
 
     def get_temperature(self) -> tuple[float, float]:
@@ -540,6 +545,10 @@ class Santec(SLM):
         """
         try:
             phase_map = np.loadtxt(file_path, skiprows=1, dtype=int, delimiter=",")[:, 1:]
+            if phase_map.shape != tuple(self.shape):
+                raise ValueError(
+                    "Correction shape {} does not match SLM shape {}.".format(phase_map.shape, self.shape)
+                )
             phase = (-2 * np.pi / self.bitresolution) * phase_map.astype(float)
             if smooth:
                 if _cv2 is None:
@@ -556,7 +565,7 @@ class Santec(SLM):
             return phase
         except Exception as e:
             warnings.warn("Error while loading phase correction.\n{}".format(e))
-            return self.source["phase"]
+            return self.source.get("phase")
 
     def set_input_trigger(self, on: bool = False) -> None:
         """
