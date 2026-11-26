@@ -17,11 +17,11 @@ curvature. Load these via :meth:`.load_vendor_phase_correction`.
 
 import importlib
 import time
-import warnings
 from enum import IntEnum
 
 import numpy as np
 
+from slmsuite._logging import make_logger
 from slmsuite.hardware.slms.slm import SLM
 from slmsuite.misc.xp import as_numpy
 
@@ -34,6 +34,8 @@ except ImportError:
     _cv2 = None
 
 _PACKAGE = __package__
+
+logger = make_logger(__name__)
 
 
 class _BACKEND(IntEnum):
@@ -178,9 +180,6 @@ class Santec(SLM):
 
             _sf = Santec._lib[_BACKEND.DLL]
             display_list = []
-            if verbose:
-                print("Displays detected by Santec")
-                print("display_number, display_name:")
             for display_number in range(1, 9):
                 width = ctypes.c_ushort(0)
                 height = ctypes.c_ushort(0)
@@ -192,15 +191,14 @@ class Santec(SLM):
                 name = display_name.value.decode("mbcs")
                 if len(name) > 0:
                     if verbose:
-                        print("{},  {}".format(display_number, name))
+                        print("{} ({})".format(display_number, name))
                     display_list.append((display_number, name))
             return display_list
         if be == _BACKEND.USB:
             serials = _SantecUSBDriver.list_devices()
             if verbose:
-                print("Santec USB devices detected:")
                 for s in serials:
-                    print("  {}".format(s))
+                    print(s)
             return serials
         raise RuntimeError("Unknown backend {!r}.".format(backend))
 
@@ -214,7 +212,6 @@ class Santec(SLM):
         bitdepth: int = 10,
         wav_um: float = 1,
         pitch_um: tuple[float, float] = (8, 8),
-        verbose: bool = True,
         **kwargs,
     ) -> None:
         r"""
@@ -246,8 +243,6 @@ class Santec(SLM):
             Wavelength of operation in microns. Default 1 um.
         pitch_um : (float, float)
             Pixel pitch in microns. Default ``(8, 8)``.
-        verbose : bool
-            Whether to print initialization progress.
         **kwargs
             See :meth:`.SLM.__init__` for permissible options.
 
@@ -256,7 +251,7 @@ class Santec(SLM):
         The phase table is reconfigured based on ``wav_design_um`` (defaults to
         ``wav_um``). This process takes roughly 40 seconds when a wavelength change
         is needed. If the resulting maximum phase deviates from 2pi by more than 2%,
-        ``wav_design_um`` is corrected automatically and a warning is printed.
+        ``wav_design_um`` is corrected automatically and a warning is logged.
 
         Caution
         ~~~~~~~
@@ -280,11 +275,7 @@ class Santec(SLM):
             wav_design_um = wav_um
 
         _id_label = ftdi_serial if self.backend == _BACKEND.USB else slm_number
-        if verbose:
-            print(
-                "Santec ({}) {} initializing... ".format(backend, _id_label),
-                end="",
-            )
+        logger.debug("Santec (%s) %s initializing...", backend, _id_label)
 
         if self.backend == _BACKEND.DLL:
             _sf = Santec._lib[_BACKEND.DLL]
@@ -300,22 +291,20 @@ class Santec(SLM):
             if self.backend == _BACKEND.USB:
                 self._driver.prime()
 
-            if verbose:
-                print("success")
-
             # --- wavelength calibration (shared between backends) ---
             current_nm, current_phase_pi = self._driver.get_wavelength()
             wav_desired_nm = int(wav_design_um * 1e3)
 
             attempt = 1
             while current_nm != wav_desired_nm and attempt <= 5:
-                if verbose:
-                    if attempt == 1:
-                        print("Current phase table: wav={} nm, maxphase={:.2f}pi".format(current_nm, current_phase_pi))
-                        print("Desired phase table: wav={} nm, maxphase=2.00pi".format(wav_desired_nm))
-                    else:
-                        print("(attempt {})".format(attempt))
-                    print("     ...Updating phase table (this may take 40 seconds)...")
+                if attempt == 1:
+                    logger.debug(
+                        "Current phase table: wav=%d nm, maxphase=%.2fpi", current_nm, current_phase_pi
+                    )
+                    logger.debug("Desired phase table: wav=%d nm, maxphase=2.00pi", wav_desired_nm)
+                else:
+                    logger.debug("(attempt %d)", attempt)
+                logger.debug("...Updating phase table (this may take 40 seconds)...")
 
                 self._driver.set_wavelength(wav_desired_nm, 2.0)
                 self._driver.save_wavelength()
@@ -333,15 +322,17 @@ class Santec(SLM):
                     if not _wl_read_ok:
                         current_nm = wav_desired_nm
                         current_phase_pi = 2.0
-                        warnings.warn(
-                            "Wavelength set to {} nm but ReadWL unavailable (FPGA settling "
+                        logger.warning(
+                            "Wavelength set to %d nm but ReadWL unavailable (FPGA settling "
                             "after calibration). Restart Santec to obtain exact phase "
-                            "deviation and correct wav_design_um.".format(wav_desired_nm)
+                            "deviation and correct wav_design_um.",
+                            wav_desired_nm,
                         )
                 else:
                     current_nm, current_phase_pi = self._driver.get_wavelength()
-                    if verbose:
-                        print("Updated phase table: wav={} nm, maxphase={:.2f}pi".format(current_nm, current_phase_pi))
+                    logger.debug(
+                        "Updated phase table: wav=%d nm, maxphase=%.2fpi", current_nm, current_phase_pi
+                    )
 
                 # stop retrying if firmware rejected the first calibration attempt
                 if attempt == 1 and current_nm != wav_desired_nm:
@@ -357,38 +348,30 @@ class Santec(SLM):
                     "range.".format(wav_desired_nm, current_nm, current_phase_pi)
                 )
 
-            if verbose and abs(current_phase_pi - 2.0) > 0.04:
+            if abs(current_phase_pi - 2.0) > 0.04:
                 wav_design_fixed_um = wav_design_um * (current_phase_pi / 2.0)
-                print("  Warning: phase table maximum deviates >2% from 2pi ({:.2f}pi).".format(current_phase_pi))
-                print(
-                    "    wav_design_um adjusted to {:.4f} um (was {:.4f} um).".format(
-                        wav_design_fixed_um, wav_design_um
-                    )
+                logger.warning(
+                    "Phase table maximum deviates >2%% from 2pi (%.2fpi). "
+                    "wav_design_um adjusted to %.4f um (was %.4f um).",
+                    current_phase_pi,
+                    wav_design_fixed_um,
+                    wav_design_um,
                 )
                 if wav_um / wav_design_fixed_um != 1:
-                    print(
-                        "    phase_scaling={:.4f} != 1; speed implications apply "
-                        "(see set_phase()).".format(wav_um / wav_design_fixed_um)
+                    logger.warning(
+                        "phase_scaling=%.4f != 1; speed implications apply (see set_phase()).",
+                        wav_um / wav_design_fixed_um,
                     )
                 wav_design_um = wav_design_fixed_um
 
             # --- backend-specific post-calibration setup ---
             if self.backend == _BACKEND.DLL:
-                if verbose:
-                    print("Looking for display_number={}... ".format(display_number), end="")
+                logger.debug("Looking for display_number=%s...", display_number)
                 width, height = self._driver.get_display_dims()
-                if verbose:
-                    print("success")
                 self.product_code_id = self._driver.product_code_id
                 self._driver.get_board_serials()
-                if verbose:
-                    print(
-                        "Opening display {}... ".format(self._driver.get_firmware_serial()),
-                        end="",
-                    )
+                logger.debug("Opening display %s...", self._driver.get_firmware_serial())
                 self._driver.open_display()
-                if verbose:
-                    print("success")
             else:
                 width, height = resolution
 
@@ -411,7 +394,7 @@ class Santec(SLM):
             try:
                 self._driver.close()
             except Exception as close_error:
-                print("Could not close Santec {} after init failure: {}".format(_id_label, close_error))
+                logger.warning("Could not close Santec %s after init failure: %s", _id_label, close_error)
             raise init_error
 
     def close(self) -> None:
@@ -485,7 +468,7 @@ class Santec(SLM):
             error_str = "Santec error: " + ", ".join("'" + e + "'" for e in errors)
             if raise_error:
                 raise RuntimeError(error_str)
-            warnings.warn(error_str)
+            self.logger.warning(error_str)
         if return_codes:
             return (drive_bits, option_bits)
         return errors
@@ -509,7 +492,7 @@ class Santec(SLM):
             msg = "Santec status {}; '{}'".format(name, note)
             if raise_error:
                 raise RuntimeError(msg)
-            warnings.warn(msg)
+            self.logger.warning(msg)
         return (code, name, note)
 
     def load_vendor_phase_correction(
@@ -552,8 +535,8 @@ class Santec(SLM):
             phase = (-2 * np.pi / self.bitresolution) * phase_map.astype(float)
             if smooth:
                 if _cv2 is None:
-                    warnings.warn(
-                        "cv2 not installed; skipping smoothing. " "Install opencv-python to enable smooth=True."
+                    self.logger.warning(
+                        "cv2 not installed; skipping smoothing. Install opencv-python to enable smooth=True."
                     )
                 else:
                     size_blur = 15
@@ -564,7 +547,7 @@ class Santec(SLM):
                 self.source["phase"] = phase
             return phase
         except Exception as e:
-            warnings.warn("Error while loading phase correction.\n{}".format(e))
+            self.logger.warning("Error while loading phase correction.\n%s", e)
             return self.source.get("phase")
 
     def set_input_trigger(self, on: bool = False) -> None:

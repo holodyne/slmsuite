@@ -33,10 +33,13 @@ the DLL API, the reverse-engineered protocol, and their mapping.
 import ctypes as _ctypes
 import struct
 import time
-import warnings
 
 import numpy as np
 import numpy.typing as npt
+
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 try:
     import PyD3XX as _PyD3XX
@@ -262,10 +265,12 @@ class _SantecUSBDriver:
                 try:
                     firmware = self.get_firmware_serial()
                     if firmware not in KNOWN_FIRMWARE_VERSIONS:
-                        warnings.warn(
-                            "Unrecognized firmware version '{}' for device '{}'. "
+                        logger.warning(
+                            "Unrecognized firmware version '%s' for device '%s'. "
                             "Proceeding; add to KNOWN_FIRMWARE_VERSIONS if the device "
-                            "works correctly.".format(firmware, self.serial_number)
+                            "works correctly.",
+                            firmware,
+                            self.serial_number,
                         )
                     return
                 except Exception as e:

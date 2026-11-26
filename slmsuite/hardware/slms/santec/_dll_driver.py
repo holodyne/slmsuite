@@ -2,9 +2,12 @@
 
 import ctypes
 import time
-import warnings
 
 import numpy as np
+
+from slmsuite._logging import make_logger
+
+logger = make_logger(__name__)
 
 
 class _SantecDLLDriver:
@@ -75,7 +78,7 @@ class _SantecDLLDriver:
             msg = "Santec error {}; '{}'".format(name, note)
             if raise_error:
                 raise RuntimeError(msg)
-            warnings.warn(msg)
+            logger.warning(msg)
         return (status, name, note)
 
     def open(self) -> None:
